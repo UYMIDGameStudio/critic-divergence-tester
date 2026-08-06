@@ -1,81 +1,127 @@
-# Subagent 审查包
+# Critic Divergence Tester
 
-五个 agent，加一个测试用对照件。代码线两个，学术线三个。
+一组**模型无关**的敌对审查协议，以及一个零依赖的独立 runner。
 
-这不是 Claude Code 意义上的 Agent Team，也不打算是。正式的 Agent Teams 需要设 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` 才启用，teammate 各自独立上下文、共享任务表、可以互相直接发消息，代价是数倍的 token。这里的五个 agent 之间不需要通信，也不并行实现，上那一层只会增加成本和一次综合损耗。需要的是编排规则，不是编排 agent。
+它最初以 Claude Code subagent 的形式出现，但核心从来不需要 Claude Code：两个 critic 本质上是两套不可互相让步的审查前提。现在仓库把“审查协议”和“模型执行器”分开。Claude Code、其他 CLI、本地模型、网页聊天都只是可替换的执行器。
 
-## 安装
+这个项目也不是“让多个 agent 投票得出正确答案”。它做的是 philosophical pressure-test：让不同前提的敌对读者分别攻击同一份稿件，然后由作者本人判断哪些攻击真的改变论证。
 
-代码线放进 billchartes.net 仓库，纳入版本控制：
+## 你平时到底怎么用
 
+不要跑 I₁/I₂/C₁/C₂。那是验证 critic 是否真的不同的测试，不是日常工作流。
+
+写稿时只按需要叫一个：
+
+| 什么时候用 | 协议 | 它只追问什么 |
+| --- | --- | --- |
+| 文章大量使用“结构 / 系统 / 话语 / 资本”等解释 | `critic-individualist` | 能不能还原到具体个体的信念、激励和行动？ |
+| 文章提出自己的解释、概念区分或文本读法 | `critic-contrastivist` | 你解释的是 X 而不是哪个 Y，凭什么排除 Y？ |
+| 投稿 / 发布前核引证 | `citation-auditor` | 每一个“通过”有没有真正的书目和内容证据链？ |
+
+报告互相冲突时不要投票，也不要再加一个 lead agent 把冲突抹平。先看每份报告末尾的 `STATUS` 和 `UNVERIFIED`，再由人决定哪些发现成立。
+
+一个很实用的最小流程是：
+
+```text
+写完一稿
+  ↓
+按文章风险选 1 个 critic
+  ↓
+作者自己处理真正成立的发现
+  ↓
+准备发布时跑 citation-auditor
 ```
-<repo>/.claude/agents/diff-reviewer.md
-<repo>/.claude/agents/build-verifier.md
+
+两个 critic 都值得咬同一篇文章时可以都跑，但必须独立；第二个不能看到第一个的报告。
+
+## 独立运行：不安装任何 agent
+
+需要 Python 3.10+，没有第三方依赖。
+
+先看有哪些协议：
+
+```bash
+python critic_runner.py list
 ```
 
-学术线放进用户级目录，跨项目通用：
+### 方法 A：生成提示词包
 
+这是最通用、也最不容易出问题的方式：
+
+```bash
+python critic_runner.py prepare critic-individualist path/to/draft.md
 ```
-~/.claude/agents/citation-auditor.md
+
+命令会打印一个 `prompt.md` 路径。把这个文件交给任意你愿意使用的模型即可。协议和稿件已经装在同一个自包含提示词里，不依赖 Claude Code 的 `~/.claude/agents`。
+
+### 方法 B：交给任意 CLI 执行器
+
+如果某个模型 CLI 遵守“UTF-8 stdin 读提示词、UTF-8 stdout 写回答”的约定：
+
+```bash
+python critic_runner.py run critic-contrastivist path/to/draft.md -- your-model-command arg1 arg2
+```
+
+runner 不认识也不保存任何 API key，不用 shell 拼接命令，也不绑定某家模型。执行器参数可能包含密钥，因此归档只记录可执行文件名和参数数量，不保存参数值。
+
+`run` 一次只启动**一个**执行器进程。项目故意没有并发 fan-out；要跑第二个 critic，就在第一个结束后再运行一条命令。
+
+## 运行材料不会再丢
+
+`prepare` 和 `run` 都会自动创建 `.critic-runs/<timestamp>--<protocol>/`：
+
+```text
+prompt.md       本次真正送给模型的完整提示词
+report.md       模型输出（run 模式）
+manifest.json   协议、稿件、prompt 的 SHA-256 与执行信息
+stderr.log      执行器错误输出（仅出现错误时）
+```
+
+`.critic-runs/` 默认不进 Git。runner 会在启动执行器前先保存 prompt 和 manifest，执行完成后再补写 report 与退出码。这样以后真要做 I₁/I₂/C₁/C₂，不会再发生“跑完了但原报告没保存，无法复算 W/B”的情况，也能确认四次到底用了哪一版协议。执行器启动失败时，runner 仍会保留 prompt、manifest 和 `stderr.log`。
+
+## Claude Code 仍然可以用，但只是适配器
+
+仓库根目录的 `critic-individualist.md`、`critic-contrastivist.md`、`citation-auditor.md` 仍保留 Claude Code 能识别的 YAML frontmatter，所以原来的安装方式仍可选：
+
+```text
 ~/.claude/agents/critic-individualist.md
 ~/.claude/agents/critic-contrastivist.md
+~/.claude/agents/citation-auditor.md
 ```
 
-`test/critic-generic.md` 不要装。它只在跑分歧度测试时临时使用，装进常规目录会被自动委派。
+独立 runner 会自动剥掉这段 provider-specific frontmatter，只读取真正的审查协议。因此以后即使完全不用 Claude Code，也不需要维护第二套 prompt。
 
-新建 agents 目录后需要重启一次才能加载；目录已存在的话改动几秒内生效。审查类的调用建议用 @-mention 强制指定，不要留给自动判断。
+## 两个辅助审查器
 
-## 编排规则
+`diff-reviewer.md` 用于代码修改后的验收审查。它要求调用方**原样引述用户请求**作为验收标准，并显式给出 worktree / commit-range / branch 范围；没有标准就应 blocked，不能由上游模型自己编一份。
 
-这些规则不该做成 agent。多一个负责综合的 agent 就多一次信息压缩，而报告里的限定词、证据等级和 UNVERIFIED 正是最先被压平的东西。写进项目的 CLAUDE.md，或者做成一个显式调用的 workflow：
+`citation-auditor.md` 的关键制度是证据对称：不仅“不通过”要来源，“通过”也必须有证据链。书目证据和内容证据分轨评级；内容证据不够时不得靠模型记忆判“明确支持”。独立 runner 可以负责打包它的 prompt，但真正执行它的模型仍必须具有可核查外部来源的能力，否则应返回 `partial` / `blocked`，而不是伪造确认。
 
-- 调用 diff-reviewer 前，把用户请求的原文摘出来作为验收标准，原样传入，不要改写成更精确的版本。
-- 两个 critic 必须独立作答，任何一个都不得看到另一个的输出。
-- 每份报告先读 STATUS 和 UNVERIFIED，再读正文。
-- UNVERIFIED 里的条目在最终答复中不得被表述成已确认。
-- 两个 critic 结论冲突时不用投票裁决。冲突本身是信息，把两边都保留下来给人看。
-- 同一个文件不得同时交给两个会写入的 agent。
+`build-verifier.md` 保留为旧版适配器，但不属于 critic divergence 的核心。构建、类型检查、lint、test 本质上应由确定性脚本 / CI 执行，而不是让语言模型决定跑什么。
 
-## 共同的失败上报约定
+## 共同失败出口
 
-五个 agent 的输出末尾都带同一个块：
+审查报告末尾统一使用：
 
-```
+```text
 STATUS: complete | partial | blocked
-UNVERIFIED: <逐条列出没能确认的东西，没有就写 none>
+UNVERIFIED: <逐条列出没有确认的内容；没有则写 none>
 ```
 
-这是整包最重要的设计。没有合法的失败出口，agent 会用一个语气自信的结果填满那个空位，而你无从分辨。
+这不是装饰。没有合法的失败出口，模型最容易用一份语气完整的答案填补自己其实没检查到的东西。
 
-## 这一版改了什么
+## Divergence test 是校准工具，不是日常流程
 
-**diff-reviewer 重写。** 旧版跑裸 `git diff`，看不到暂存区改动和未跟踪文件，`HEAD~1` 也不是可靠基线，可能只审到半个变更集然后自信地报"无发现"。新版要求显式的验收标准和三选一的范围模式，缺任一项直接返回 blocked。报告开头强制回显验收标准原文，用途是让你看出它是引来的还是被上游编出来的——"缺标准就 blocked"这条规则本身会诱使调用方编一份标准来满足契约。
+`divergence-test.md` 回答一个很窄的问题：`critic-individualist` 与 `critic-contrastivist` 的差异，是否明显大于同一 critic 重跑产生的采样噪声。
 
-**citation-auditor 重写。** 旧版只要求"不通过"附来源，等于允许"通过"来自模型记忆，而模型记忆正是引证幻觉的来源。新版每一条判定都要带证据等级 A/B/C/D，并设了硬联锁：C 级或 D 级证据下，"观点一致性"只能判"无法确认"。观点归属改为五级分类，因为"基本一致但有简化"是处理二手概括时最常见的真实情况，二元判定装不下。
+它是 **否决-only** 的：高分歧不能证明意见正确，更不能证明值得每篇都花 token。第二级控制件在 `test/critic-generic.md`，故意不参与普通审稿；runner 要求显式传 `--allow-test-artifact` 才允许执行它。
 
-**critic-operationalist 替换为 critic-contrastivist。** 旧版持验证主义立场，对上批判理论会把"不是经验假说"系统性误判成"论证未完成"，对你写的东西是高频故障。新版换了核心承诺：每个主张必须说明它排除了什么、凭什么排除。这个要求横跨经验解释、文本解释、概念区分、规范论证和批判理论，不需要按类型切换标准，因而不必给它开公允评议的口子。名字一并换掉，因为主 Claude 靠 name 和 description 决定委派，旧名字会引来配错的调用。
+正式测试时仍然跑 I₁、I₂、C₁、C₂，并人工按“同处同因 / 同处异因 / 独有”拆原子指控。不要让模型自己给自己的分歧打分。完整公式和判据见 `divergence-test.md`。
 
-**build-verifier 暂缓。** 它现有形态不理想：核心工作是确定性的（找脚本、跑命令、记退出码），交给会临场发挥的模型不如交给脚本或 hook。但它不污染学术判断，排在最后处理。
+## 开发检查
 
-## 第二轮修正
+```bash
+python -m unittest discover -s test -p 'test_*.py'
+```
 
-**diff-reviewer 的"缺失实现"。** 上一版写着"无法落到具体行的发现不是发现，丢掉"，而"路由根本没建""英文页面漏了"这类未达标恰恰没有行可指。规则等于禁止了最重要的一类发现。现在分两种落地要求：既存代码的缺陷指到文件行，缺失实现则要求引述验收标准原文、指出预期位置、并写出用来确认其缺失的检索范围。缺席主张没有检索记录，同样不算发现。
-
-**commit-range 改用两点。** 三点语法比的是 merge base 到 head，当调用方明确给出两个端点时那不是他要的东西。branch 模式保留三点，因为那里 merge base 确实是正确基线。
-
-**citation 的证据等级拆成两轨。** 上一版用一个字母覆盖四项检查，而 B 级的定义本身就是"未读到被引段落"，联锁却只挡住 C 和 D，于是 B 级可以合法地产出"观点：明确支持"。现在分书目证据和内容证据，各自 A 到 D，并补齐联锁：内容证据非 A 时"语境"只能是无法确认，内容证据 B 时"观点"原则上只能是无法确认。"明确不存在"这一档删掉了，因为书号对不上只证明著录错误，不证明文献不存在。
-
-**"空结论"指标作废。** 上一版拿"四次运行里从未出现整篇无异议"当作制造异议的信号，这个推理不成立：稿件只要有一个真实弱点，四次都不出现空结论完全正常。改成两个 critic 都强制指认"本立场下最强的一处论证"，测的是它能不能承认局部存活，而不是会不会放弃攻击整篇。
-
-**generic 对照件对齐骨架。** 上一版只有一句"找出这篇文章论证上的问题"，与专用 agent 的五项强制任务不可比，输出量差异会伪装成框架差异。现在两者的输出结构、工作量要求和禁止事项完全一致，唯一区别是有没有框架承诺。同时补了去重规则：算覆盖率前必须先把四份专用报告里的重复指控合并成集合，否则最稳定的那些指控会被重复计入分母。
-
-## 待办
-
-1. build-verifier 降级：写一个 shell 脚本做实际验证，模型只保留压缩日志这一件事。
-2. 分歧度测试第一级，见 divergence-test.md。在这一级通过之前，不要把两个 critic 纳入常规流程。
-3. 代码线跑两周，记录失败位置。
-4. 之后再看接单线要不要建。现在设计等于凭空猜测。
-
-## 唯一无条件保留的
-
-citation-auditor。引证幻觉是这类工作里后果最重、人工复核成本最高的错误，同时又是少数能被外部裁决的——文献要么存在要么不存在。其余四个都还需要证明自己。
+项目目前刻意只用 Python 标准库。runner 的边界也刻意很窄：**组装协议、串行执行、完整留档**。联网检索、语义判断、W/B 的人工分类属于别的层，不偷偷塞进 runner。
