@@ -934,8 +934,6 @@ class CriticRunnerTests(unittest.TestCase):
             with redirect_stdout(io.StringIO()):
                 critic_runner.prepare(args)
             run_dir = next((root / "runs").iterdir())
-            report = root / "returned report.md"
-            report.write_text(VALID_REPORT, encoding="utf-8")
 
             completed = subprocess.run(
                 [
@@ -944,11 +942,14 @@ class CriticRunnerTests(unittest.TestCase):
                     "resume",
                     "--runs-dir",
                     str(root / "runs"),
-                    "--report",
-                    str(report),
+                    "--paste",
                 ],
                 cwd=root,
-                input="3\n需要更多材料\n补做材料核对\n",
+                input=(
+                    VALID_REPORT
+                    + f"{critic_runner.PASTE_END_MARKER}\n"
+                    + "3\n需要更多材料\n补做材料核对\n"
+                ),
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -961,6 +962,72 @@ class CriticRunnerTests(unittest.TestCase):
                 "需要更多材料",
                 (run_dir / "revision-plan.md").read_text(encoding="utf-8"),
             )
+            self.assertEqual((run_dir / "report.md").read_bytes(), VALID_REPORT.encode())
+            manifest = json.loads(
+                (run_dir / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["collection"]["method"], "terminal-paste")
+            self.assertEqual(
+                manifest["collection"]["source_name"], "pasted-report.md"
+            )
+
+            manifest["collection"]["source_name"] = "pretend-file.md"
+            (run_dir / "manifest.json").write_text(
+                json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+            )
+            verification = critic_runner.verify_run_dir(run_dir)
+            self.assertFalse(verification.valid)
+            self.assertTrue(
+                any("pasted-report.md" in error for error in verification.errors)
+            )
+
+    def test_invalid_or_oversized_paste_does_not_mutate_prepared_run(self) -> None:
+        for pasted_lines, byte_limit, expected_text in (
+            (["不是有效报告", critic_runner.PASTE_END_MARKER], None, "not imported"),
+            (["12345678901", critic_runner.PASTE_END_MARKER], 10, "超过 10 字节"),
+            (["没有结束标记", EOFError()], None, "结束标记"),
+        ):
+            with self.subTest(expected_text=expected_text):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    root = Path(temp_dir)
+                    args = self._args(root=root)
+                    with redirect_stdout(io.StringIO()):
+                        critic_runner.prepare(args)
+                    run_dir = next((root / "runs").iterdir())
+                    original_manifest = (run_dir / "manifest.json").read_bytes()
+                    limit_patch = (
+                        patch.object(
+                            critic_runner,
+                            "DEFAULT_MAX_OUTPUT_BYTES",
+                            byte_limit,
+                        )
+                        if byte_limit is not None
+                        else patch.object(
+                            critic_runner,
+                            "DEFAULT_MAX_OUTPUT_BYTES",
+                            critic_runner.DEFAULT_MAX_OUTPUT_BYTES,
+                        )
+                    )
+                    errors = io.StringIO()
+                    with limit_patch, patch(
+                        "builtins.input", side_effect=pasted_lines
+                    ):
+                        with redirect_stdout(io.StringIO()), redirect_stderr(errors):
+                            result = critic_runner.resume_command(
+                                argparse.Namespace(
+                                    run_dir=str(run_dir),
+                                    runs_dir=None,
+                                    report=None,
+                                    paste=True,
+                                )
+                            )
+                    self.assertEqual(result, critic_runner.EXIT_INVALID_REPORT)
+                    self.assertIn(expected_text, errors.getvalue())
+                    self.assertEqual(
+                        (run_dir / "manifest.json").read_bytes(), original_manifest
+                    )
+                    self.assertFalse((run_dir / "report.md").exists())
+                    self.assertFalse((run_dir / "adjudication.json").exists())
 
     def test_resume_handles_empty_and_only_damaged_run_roots(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
