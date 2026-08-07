@@ -15,6 +15,7 @@ import json
 import math
 import os
 import re
+import secrets
 import sys
 import uuid
 from dataclasses import dataclass
@@ -38,6 +39,9 @@ from critic_scoring import (
 ROOT = Path(__file__).resolve().parent
 
 PROTOCOLS = {
+    "critic-social-science": ROOT / "critic-social-science.md",
+    "critic-natural-science": ROOT / "critic-natural-science.md",
+    "critic-engineering": ROOT / "critic-engineering.md",
     "critic-individualist": ROOT / "critic-individualist.md",
     "critic-contrastivist": ROOT / "critic-contrastivist.md",
     "citation-auditor": ROOT / "citation-auditor.md",
@@ -45,11 +49,43 @@ PROTOCOLS = {
 }
 
 TEST_ONLY = {"critic-generic"}
+PROTOCOL_PREFIX = {
+    "critic-social-science": "S",
+    "critic-natural-science": "N",
+    "critic-engineering": "E",
+    "critic-individualist": "I",
+    "critic-contrastivist": "C",
+    "citation-auditor": "A",
+    "critic-generic": "G",
+}
 CRITIC_PROTOCOLS = {
+    "critic-social-science",
+    "critic-natural-science",
+    "critic-engineering",
     "critic-individualist",
     "critic-contrastivist",
     "critic-generic",
 }
+
+ACADEMIC_TRACKS = {
+    "humanities-social-science": {
+        "label": "文科·社会科学",
+        "primary": "critic-social-science",
+        "specialists": ("critic-individualist", "critic-contrastivist"),
+    },
+    "natural-science": {
+        "label": "理科·自然科学",
+        "primary": "critic-natural-science",
+        "specialists": (),
+    },
+    "engineering": {
+        "label": "工科·工程学",
+        "primary": "critic-engineering",
+        "specialists": (),
+    },
+}
+
+CROSS_DISCIPLINARY_PROTOCOLS = ("citation-auditor",)
 
 CRITIC_SECTIONS = (
     "## 1. 原子指控",
@@ -197,14 +233,53 @@ def new_run_dir(runs_dir: Path, protocol_name: str) -> Path:
     return target
 
 
-def executor_metadata(executor: list[str] | None) -> dict[str, object] | None:
+def normalize_executor_label(raw_label: object) -> str | None:
+    if raw_label is None:
+        return None
+    if (
+        not isinstance(raw_label, str)
+        or not raw_label
+        or len(raw_label) > 256
+        or any(
+            ord(character) < 32 or ord(character) == 127
+            for character in raw_label
+        )
+    ):
+        raise ValueError("executor label must be 1..256 printable characters")
+    return raw_label
+
+
+def executor_metadata(
+    executor: list[str] | None, label: str | None = None
+) -> dict[str, object] | None:
     """Record useful executor identity without persisting possibly secret arguments."""
     if not executor:
         return None
-    return {
+    metadata: dict[str, object] = {
         "command": Path(executor[0]).name,
         "argument_count": max(0, len(executor) - 1),
     }
+    if label is not None:
+        metadata["label"] = label
+    return metadata
+
+
+def campaign_schedule(
+    protocols: list[str], repeat: int, order_seed: str
+) -> list[tuple[str, int]]:
+    """Build a stable counterbalanced order without relying on random internals."""
+    base = sorted(
+        protocols,
+        key=lambda protocol: (
+            sha256_text(f"counterbalanced-v1\0{order_seed}\0{protocol}"),
+            protocol,
+        ),
+    )
+    schedule: list[tuple[str, int]] = []
+    for repetition in range(1, repeat + 1):
+        round_protocols = base if repetition % 2 else list(reversed(base))
+        schedule.extend((protocol, repetition) for protocol in round_protocols)
+    return schedule
 
 
 def _section_ranges(lines: list[str]) -> dict[str, list[str]] | None:
@@ -829,6 +904,12 @@ def verify_run_dir(run_dir: Path, source_path: Path | None = None) -> Verificati
             or argument_count < 0
         ):
             errors.append("executor.argument_count must be a non-negative integer")
+        label = executor.get("label")
+        if label is not None:
+            try:
+                normalize_executor_label(label)
+            except ValueError as exc:
+                errors.append(f"executor.label is invalid: {exc}")
 
     timeout_seconds = manifest.get("timeout_seconds")
     if status == "prepared":
@@ -918,6 +999,7 @@ def write_run(
     report: str | bytes | None = None,
     stderr: str | bytes | None = None,
     executor: list[str] | None = None,
+    executor_label: str | None = None,
     timeout_seconds: float | None = None,
     max_output_bytes: int | None = None,
     stdout_truncated: bool = False,
@@ -948,7 +1030,7 @@ def write_run(
         "started_at": started_at,
         "completed_at": completed_at,
         "status": status,
-        "executor": executor_metadata(executor),
+        "executor": executor_metadata(executor, executor_label),
         "timeout_seconds": timeout_seconds,
         "max_output_bytes": max_output_bytes,
         "stdout_truncated": stdout_truncated,
@@ -999,6 +1081,7 @@ def run(args: argparse.Namespace) -> int:
         executor = executor[1:]
     if not executor:
         raise ValueError("run requires an executor command after --")
+    executor_label = normalize_executor_label(getattr(args, "executor_label", None))
 
     raw_timeout = getattr(args, "timeout", 900.0)
     try:
@@ -1034,6 +1117,7 @@ def run(args: argparse.Namespace) -> int:
         started_at=started_at,
         status="running",
         executor=executor,
+        executor_label=executor_label,
         timeout_seconds=timeout_seconds,
         max_output_bytes=max_output_bytes,
     )
@@ -1059,6 +1143,7 @@ def run(args: argparse.Namespace) -> int:
             completed_at=utc_now(),
             status="start_failed",
             executor=executor,
+            executor_label=executor_label,
             timeout_seconds=timeout_seconds,
             max_output_bytes=max_output_bytes,
             runner_exit_code=2,
@@ -1077,6 +1162,7 @@ def run(args: argparse.Namespace) -> int:
             completed_at=utc_now(),
             status="interrupted",
             executor=executor,
+            executor_label=executor_label,
             timeout_seconds=timeout_seconds,
             max_output_bytes=max_output_bytes,
             runner_exit_code=EXIT_INTERRUPTED,
@@ -1124,6 +1210,7 @@ def run(args: argparse.Namespace) -> int:
         completed_at=utc_now(),
         status=status,
         executor=executor,
+        executor_label=executor_label,
         timeout_seconds=timeout_seconds,
         max_output_bytes=max_output_bytes,
         stdout_truncated=completed.stdout_truncated,
@@ -1151,6 +1238,7 @@ def campaign(args: argparse.Namespace) -> int:
         executor = executor[1:]
     if not executor:
         raise ValueError("campaign requires an executor command after --")
+    executor_label = normalize_executor_label(getattr(args, "executor_label", None))
 
     if (
         not isinstance(args.repeat, int)
@@ -1172,8 +1260,31 @@ def campaign(args: argparse.Namespace) -> int:
         raise ValueError("campaign max output bytes must be a positive integer") from exc
     if max_output_bytes <= 0:
         raise ValueError("campaign max output bytes must be a positive integer")
+    raw_order_seed = getattr(args, "order_seed", None)
+    if raw_order_seed is None:
+        order_seed = secrets.token_hex(16)
+    elif (
+        not isinstance(raw_order_seed, str)
+        or not raw_order_seed
+        or len(raw_order_seed) > 128
+        or any(
+            ord(character) < 32 or ord(character) == 127
+            for character in raw_order_seed
+        )
+    ):
+        raise ValueError("campaign order seed must be 1..128 printable characters")
+    else:
+        order_seed = raw_order_seed
 
-    protocols = args.protocol or ["critic-individualist", "critic-contrastivist"]
+    requested_tracks = getattr(args, "track", None)
+    if args.protocol and requested_tracks:
+        raise ValueError("campaign accepts either --protocol or --track, not both")
+    protocols = args.protocol
+    if requested_tracks:
+        protocols = [
+            str(ACADEMIC_TRACKS[track]["primary"]) for track in requested_tracks
+        ]
+    protocols = protocols or ["critic-individualist", "critic-contrastivist"]
     if len(set(protocols)) != len(protocols):
         raise ValueError("campaign protocols must not contain duplicates")
     for protocol_name in protocols:
@@ -1188,56 +1299,57 @@ def campaign(args: argparse.Namespace) -> int:
     if os.name == "posix":
         os.chmod(runs_dir, 0o700)
 
-    prefix = {
-        "critic-individualist": "I",
-        "critic-contrastivist": "C",
-        "citation-auditor": "A",
-        "critic-generic": "G",
-    }
+    schedule = campaign_schedule(protocols, args.repeat, order_seed)
     records: list[dict[str, object]] = []
-    for protocol_name in protocols:
-        for repetition in range(1, args.repeat + 1):
-            label = f"{prefix[protocol_name]}{repetition}"
-            run_args = argparse.Namespace(
-                protocol=protocol_name,
-                manuscript=str(source_path),
-                runs_dir=str(runs_dir),
-                allow_test_artifact=args.allow_test_artifact,
-                executor=executor,
-                timeout=timeout_seconds,
-                max_output_bytes=max_output_bytes,
-                quiet=True,
-            )
-            exit_code = run(run_args)
-            run_dir = run_args.run_dir_result
-            manifest = parse_json(
-                (run_dir / "manifest.json").read_text(encoding="utf-8")
-            )
-            relative_run = run_dir.relative_to(campaign_dir).as_posix()
-            records.append(
-                {
-                    "label": label,
-                    "protocol": protocol_name,
-                    "repetition": repetition,
-                    "run_dir": relative_run,
-                    "status": manifest["status"],
-                    "runner_exit_code": exit_code,
-                    "manifest_sha256": sha256_bytes(
-                        (run_dir / "manifest.json").read_bytes()
-                    ),
-                }
-            )
+    for protocol_name, repetition in schedule:
+        label = f"{PROTOCOL_PREFIX[protocol_name]}{repetition}"
+        run_args = argparse.Namespace(
+            protocol=protocol_name,
+            manuscript=str(source_path),
+            runs_dir=str(runs_dir),
+            allow_test_artifact=args.allow_test_artifact,
+            executor=executor,
+            executor_label=executor_label,
+            timeout=timeout_seconds,
+            max_output_bytes=max_output_bytes,
+            quiet=True,
+        )
+        exit_code = run(run_args)
+        run_dir = run_args.run_dir_result
+        manifest = parse_json(
+            (run_dir / "manifest.json").read_text(encoding="utf-8")
+        )
+        relative_run = run_dir.relative_to(campaign_dir).as_posix()
+        records.append(
+            {
+                "label": label,
+                "protocol": protocol_name,
+                "repetition": repetition,
+                "run_dir": relative_run,
+                "status": manifest["status"],
+                "runner_exit_code": exit_code,
+                "manifest_sha256": sha256_bytes(
+                    (run_dir / "manifest.json").read_bytes()
+                ),
+            }
+        )
 
     completed_at = utc_now()
     campaign_manifest = {
-        "schema_version": 2,
+        "schema_version": 3,
         "source_name": source_path.name,
         "source_sha256": sha256_bytes(source_raw),
         "created_at": campaign_started_at,
         "completed_at": completed_at,
-        "executor": executor_metadata(executor),
+        "executor": executor_metadata(executor, executor_label),
         "protocols": protocols,
         "repeat": args.repeat,
+        "order_strategy": "counterbalanced-v1",
+        "order_seed": order_seed,
+        "execution_order": [
+            f"{PROTOCOL_PREFIX[protocol]}{repetition}"
+            for protocol, repetition in schedule
+        ],
         "timeout_seconds": timeout_seconds,
         "max_output_bytes": max_output_bytes,
         "runs": records,
@@ -1387,10 +1499,12 @@ def verify_campaign_dir(
         return VerificationResult(False, ("campaign.json must contain an object",), ())
     manifest: dict[str, object] = manifest_value
     schema_version = manifest.get("schema_version")
-    if schema_version not in {1, 2}:
-        errors.append("campaign schema_version must be 1 or 2")
+    if schema_version not in {1, 2, 3}:
+        errors.append("campaign schema_version must be 1, 2, or 3")
     elif schema_version == 1:
         warnings.append("legacy campaign schema_version 1 has no explicit run matrix")
+    elif schema_version == 2:
+        warnings.append("legacy campaign schema_version 2 has a fixed execution order")
 
     source_name = manifest.get("source_name")
     if (
@@ -1462,7 +1576,7 @@ def verify_campaign_dir(
         errors.append("campaign repeat must be a positive integer")
         repeat = 0
     planned_protocols: list[str] = []
-    if schema_version == 2:
+    if schema_version in {2, 3}:
         raw_protocols = manifest.get("protocols")
         if (
             not isinstance(raw_protocols, list)
@@ -1492,6 +1606,38 @@ def verify_campaign_dir(
         ):
             errors.append("campaign max_output_bytes must be a positive integer")
 
+    declared_execution_order: list[str] = []
+    if schema_version == 3:
+        order_seed = manifest.get("order_seed")
+        execution_order = manifest.get("execution_order")
+        if manifest.get("order_strategy") != "counterbalanced-v1":
+            errors.append("campaign order_strategy must be counterbalanced-v1")
+        if (
+            not isinstance(order_seed, str)
+            or not order_seed
+            or len(order_seed) > 128
+            or any(
+                ord(character) < 32 or ord(character) == 127
+                for character in order_seed
+            )
+        ):
+            errors.append("campaign order_seed must be 1..128 printable characters")
+        if not isinstance(execution_order, list) or any(
+            not isinstance(label, str) for label in execution_order
+        ):
+            errors.append("campaign execution_order must be a string list")
+        else:
+            declared_execution_order = execution_order
+        if planned_protocols and repeat and isinstance(order_seed, str):
+            expected_order = [
+                f"{PROTOCOL_PREFIX[protocol]}{repetition}"
+                for protocol, repetition in campaign_schedule(
+                    planned_protocols, repeat, order_seed
+                )
+            ]
+            if declared_execution_order != expected_order:
+                errors.append("campaign execution_order does not match its seed and plan")
+
     campaign_executor = manifest.get("executor")
     if not isinstance(campaign_executor, dict):
         errors.append("campaign executor must contain redacted metadata")
@@ -1511,16 +1657,16 @@ def verify_campaign_dir(
             or argument_count < 0
         ):
             errors.append("campaign executor.argument_count must be non-negative")
+        label = campaign_executor.get("label")
+        if label is not None:
+            try:
+                normalize_executor_label(label)
+            except ValueError as exc:
+                errors.append(f"campaign executor.label is invalid: {exc}")
 
     labels: set[str] = set()
     run_paths: set[str] = set()
     observed_runs: set[tuple[str, int]] = set()
-    label_prefix = {
-        "critic-individualist": "I",
-        "critic-contrastivist": "C",
-        "citation-auditor": "A",
-        "critic-generic": "G",
-    }
     for index, record in enumerate(records):
         item = f"runs[{index}]"
         if not isinstance(record, dict):
@@ -1549,7 +1695,7 @@ def verify_campaign_dir(
             if run_key in observed_runs:
                 errors.append(f"duplicate campaign run: {run_key}")
             observed_runs.add(run_key)
-            if label != f"{label_prefix[protocol]}{repetition}":
+            if label != f"{PROTOCOL_PREFIX[protocol]}{repetition}":
                 errors.append(f"{item}.label does not match protocol and repetition")
         relative = record.get("run_dir")
         run_dir = _safe_campaign_run_path(campaign_dir, relative)
@@ -1578,7 +1724,7 @@ def verify_campaign_dir(
             errors.append(f"{item} source_sha256 does not match campaign")
         if child_manifest.get("executor") != campaign_executor:
             errors.append(f"{item} executor metadata does not match campaign")
-        if schema_version == 2:
+        if schema_version in {2, 3}:
             if child_manifest.get("timeout_seconds") != manifest.get("timeout_seconds"):
                 errors.append(f"{item} timeout_seconds does not match campaign")
             if child_manifest.get("max_output_bytes") != manifest.get("max_output_bytes"):
@@ -1594,7 +1740,7 @@ def verify_campaign_dir(
         errors.extend(f"{label or item}: {error}" for error in child.errors)
         warnings.extend(f"{label or item}: {warning}" for warning in child.warnings)
 
-    if schema_version == 2 and planned_protocols and repeat:
+    if schema_version in {2, 3} and planned_protocols and repeat:
         expected_runs = {
             (protocol, repetition)
             for protocol in planned_protocols
@@ -1606,6 +1752,14 @@ def verify_campaign_dir(
                 f"missing={sorted(expected_runs - observed_runs)}, "
                 f"extra={sorted(observed_runs - expected_runs)}"
             )
+    if schema_version == 3:
+        observed_execution_order = [
+            str(record.get("label"))
+            for record in records
+            if isinstance(record, dict)
+        ]
+        if observed_execution_order != declared_execution_order:
+            errors.append("campaign run record order does not match execution_order")
 
     return VerificationResult(not errors, tuple(errors), tuple(warnings))
 
@@ -1696,6 +1850,26 @@ def list_protocols(_: argparse.Namespace) -> int:
     return 0
 
 
+def list_tracks(_: argparse.Namespace) -> int:
+    for name, track in ACADEMIC_TRACKS.items():
+        specialists = ", ".join(track["specialists"]) or "none"
+        print(f"{name}: {track['label']}")
+        print(f"  primary: {track['primary']}")
+        print(f"  specialists: {specialists}")
+    print("cross-disciplinary: " + ", ".join(CROSS_DISCIPLINARY_PROTOCOLS))
+    return 0
+
+
+def prepare_track(args: argparse.Namespace) -> int:
+    args.protocol = ACADEMIC_TRACKS[args.track]["primary"]
+    return prepare(args)
+
+
+def run_track(args: argparse.Namespace) -> int:
+    args.protocol = ACADEMIC_TRACKS[args.track]["primary"]
+    return run(args)
+
+
 def positive_seconds(raw: str) -> float:
     try:
         value = float(raw)
@@ -1731,6 +1905,35 @@ def _add_run_inputs(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_track_inputs(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("track", choices=ACADEMIC_TRACKS)
+    parser.add_argument("manuscript", help="UTF-8 manuscript path")
+    parser.add_argument(
+        "--runs-dir",
+        default=".critic-runs",
+        help="archive directory (default: .critic-runs)",
+    )
+
+
+def _add_execution_limits(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--executor-label",
+        help="public reproducibility label for the model/configuration (never put secrets here)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=positive_seconds,
+        default=900.0,
+        help="terminate the executor after this many seconds (default: 900)",
+    )
+    parser.add_argument(
+        "--max-output-bytes",
+        type=positive_integer,
+        default=DEFAULT_MAX_OUTPUT_BYTES,
+        help="terminate after this many combined stdout/stderr bytes (default: 16777216)",
+    )
+
+
 def parser() -> argparse.ArgumentParser:
     top = argparse.ArgumentParser(
         description="Run critic protocols without depending on Claude Code."
@@ -1738,6 +1941,9 @@ def parser() -> argparse.ArgumentParser:
     sub = top.add_subparsers(dest="command", required=True)
 
     sub.add_parser("list", help="list available protocols").set_defaults(func=list_protocols)
+    sub.add_parser("tracks", help="list academic tracks and their protocols").set_defaults(
+        func=list_tracks
+    )
 
     prepare_parser = sub.add_parser(
         "prepare", help="archive a self-contained prompt for manual use"
@@ -1745,23 +1951,31 @@ def parser() -> argparse.ArgumentParser:
     _add_run_inputs(prepare_parser)
     prepare_parser.set_defaults(func=prepare)
 
+    prepare_track_parser = sub.add_parser(
+        "prepare-track", help="prepare the primary protocol for an academic track"
+    )
+    _add_track_inputs(prepare_track_parser)
+    prepare_track_parser.set_defaults(
+        allow_test_artifact=False,
+        func=prepare_track,
+    )
+
     run_parser = sub.add_parser(
         "run", help="run one protocol through an external stdin/stdout command"
     )
     _add_run_inputs(run_parser)
-    run_parser.add_argument(
-        "--timeout",
-        type=positive_seconds,
-        default=900.0,
-        help="terminate the executor after this many seconds (default: 900)",
-    )
-    run_parser.add_argument(
-        "--max-output-bytes",
-        type=positive_integer,
-        default=DEFAULT_MAX_OUTPUT_BYTES,
-        help="terminate after this many combined stdout/stderr bytes (default: 16777216)",
-    )
+    _add_execution_limits(run_parser)
     run_parser.set_defaults(func=run)
+
+    run_track_parser = sub.add_parser(
+        "run-track", help="run the primary protocol for an academic track"
+    )
+    _add_track_inputs(run_track_parser)
+    _add_execution_limits(run_track_parser)
+    run_track_parser.set_defaults(
+        allow_test_artifact=False,
+        func=run_track,
+    )
 
     campaign_parser = sub.add_parser(
         "campaign",
@@ -1775,10 +1989,20 @@ def parser() -> argparse.ArgumentParser:
         help="protocol to include; repeat this option (default: individualist and contrastivist)",
     )
     campaign_parser.add_argument(
+        "--track",
+        action="append",
+        choices=ACADEMIC_TRACKS,
+        help="academic track to include; repeat this option; cannot combine with --protocol",
+    )
+    campaign_parser.add_argument(
         "--repeat",
         type=positive_integer,
         default=2,
         help="serial repetitions per protocol (default: 2)",
+    )
+    campaign_parser.add_argument(
+        "--order-seed",
+        help="reproduce the counterbalanced execution order (default: random seed)",
     )
     campaign_parser.add_argument(
         "--campaigns-dir",
@@ -1797,6 +2021,10 @@ def parser() -> argparse.ArgumentParser:
         "--max-output-bytes",
         type=positive_integer,
         default=DEFAULT_MAX_OUTPUT_BYTES,
+    )
+    campaign_parser.add_argument(
+        "--executor-label",
+        help="public reproducibility label for the model/configuration (never put secrets here)",
     )
     campaign_parser.set_defaults(func=campaign)
 
@@ -1852,13 +2080,13 @@ def main(argv: list[str] | None = None) -> int:
             reconfigure(encoding="utf-8", errors="replace")
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     executor: list[str] = []
-    if raw_argv and raw_argv[0] in {"run", "campaign"} and "--" in raw_argv:
+    if raw_argv and raw_argv[0] in {"run", "run-track", "campaign"} and "--" in raw_argv:
         separator = raw_argv.index("--")
         executor = raw_argv[separator + 1 :]
         raw_argv = raw_argv[:separator]
 
     args = parser().parse_args(raw_argv)
-    if args.command in {"run", "campaign"}:
+    if args.command in {"run", "run-track", "campaign"}:
         args.executor = executor
     try:
         return args.func(args)

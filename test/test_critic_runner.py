@@ -141,6 +141,86 @@ class CriticRunnerTests(unittest.TestCase):
         self.assertIn("你审查一篇文章的论证", body)
         self.assertTrue(raw.startswith(b"---"))
 
+    def test_academic_tracks_are_first_class_and_resolve_to_real_protocols(self) -> None:
+        self.assertEqual(
+            set(critic_runner.ACADEMIC_TRACKS),
+            {"humanities-social-science", "natural-science", "engineering"},
+        )
+        primaries = []
+        for track in critic_runner.ACADEMIC_TRACKS.values():
+            primary = track["primary"]
+            primaries.append(primary)
+            self.assertIn(primary, critic_runner.CRITIC_PROTOCOLS)
+            self.assertNotIn(primary, critic_runner.TEST_ONLY)
+            for specialist in track["specialists"]:
+                self.assertIn(specialist, critic_runner.CRITIC_PROTOCOLS)
+        self.assertEqual(len(primaries), len(set(primaries)))
+        self.assertEqual(
+            critic_runner.CROSS_DISCIPLINARY_PROTOCOLS,
+            ("citation-auditor",),
+        )
+
+    def test_track_prompts_encode_distinct_method_contracts(self) -> None:
+        social, _ = critic_runner.load_protocol("critic-social-science")
+        natural, _ = critic_runner.load_protocol("critic-natural-science")
+        engineering, _ = critic_runner.load_protocol("critic-engineering")
+        self.assertIn("先分型，后审查", social)
+        self.assertIn("不得机械要求 p 值", social)
+        self.assertIn("不得要求它虚构因果识别策略", social)
+        self.assertIn("仪器校准", natural)
+        self.assertIn("误差传播", natural)
+        self.assertIn("验证是否证明", engineering)
+        self.assertIn("确认是否证明", engineering)
+
+    def test_tracks_command_exposes_primary_and_specialist_protocols(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(critic_runner.list_tracks(argparse.Namespace()), 0)
+        rendered = output.getvalue()
+        self.assertIn("humanities-social-science: 文科·社会科学", rendered)
+        self.assertIn("primary: critic-social-science", rendered)
+        self.assertIn("critic-individualist, critic-contrastivist", rendered)
+        self.assertIn("cross-disciplinary: citation-auditor", rendered)
+
+    def test_prepare_track_archives_the_track_primary_protocol(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "draft.md"
+            source.write_text("draft", encoding="utf-8")
+            args = argparse.Namespace(
+                track="humanities-social-science",
+                manuscript=str(source),
+                runs_dir=str(root / "runs"),
+                allow_test_artifact=False,
+            )
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(critic_runner.prepare_track(args), 0)
+            run_dir = next((root / "runs").iterdir())
+            manifest = json.loads(
+                (run_dir / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["protocol"], "critic-social-science")
+            self.assertIn(
+                "第一原则：先分型，后审查",
+                (run_dir / "prompt.md").read_text(encoding="utf-8"),
+            )
+
+    def test_campaign_schedule_is_seeded_and_counterbalanced(self) -> None:
+        protocols = [
+            "critic-social-science",
+            "critic-natural-science",
+            "critic-engineering",
+        ]
+        first = critic_runner.campaign_schedule(protocols, 3, "published-seed")
+        second = critic_runner.campaign_schedule(protocols, 3, "published-seed")
+        self.assertEqual(first, second)
+        round_one = [protocol for protocol, repetition in first if repetition == 1]
+        round_two = [protocol for protocol, repetition in first if repetition == 2]
+        round_three = [protocol for protocol, repetition in first if repetition == 3]
+        self.assertCountEqual(round_one, protocols)
+        self.assertEqual(round_two, list(reversed(round_one)))
+        self.assertEqual(round_three, round_one)
+
     def test_atomic_write_replaces_bytes_without_leaving_temporary_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             target = Path(temp_dir) / "artifact"
@@ -584,6 +664,7 @@ UNVERIFIED: none
                 executor=executor,
                 protocol="critic-contrastivist",
             )
+            args.executor_label = "fixture-model; temperature=0"
 
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 self.assertEqual(critic_runner.run(args), 0)
@@ -597,6 +678,9 @@ UNVERIFIED: none
             self.assertNotIn(str(root), manifest_text)
             self.assertEqual(manifest["executor"]["command"], Path(sys.executable).name)
             self.assertEqual(manifest["executor"]["argument_count"], 3)
+            self.assertEqual(
+                manifest["executor"]["label"], "fixture-model; temperature=0"
+            )
             self.assertEqual(manifest["status"], "succeeded")
             self.assertEqual(manifest["executor_returncode"], 0)
             self.assertEqual(manifest["runner_exit_code"], 0)
@@ -610,6 +694,10 @@ UNVERIFIED: none
                 run_dir, Path(args.manuscript)
             )
             self.assertTrue(verification.valid, verification.errors)
+
+    def test_executor_label_rejects_control_characters(self) -> None:
+        with self.assertRaisesRegex(ValueError, "executor label"):
+            critic_runner.normalize_executor_label("model\nsecret")
 
     def test_invalid_report_changes_successful_executor_to_exit_three(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1170,6 +1258,8 @@ UNVERIFIED: none
                 allow_test_artifact=False,
                 timeout=5.0,
                 max_output_bytes=1024 * 1024,
+                order_seed="test-seed",
+                executor_label="fixture-model; temperature=0",
                 executor=[
                     sys.executable,
                     "-c",
@@ -1185,15 +1275,24 @@ UNVERIFIED: none
             manifest = json.loads(
                 (campaign_dir / "campaign.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(manifest["schema_version"], 2)
+            self.assertEqual(manifest["schema_version"], 3)
+            self.assertEqual(
+                manifest["executor"]["label"], "fixture-model; temperature=0"
+            )
             self.assertEqual(
                 manifest["protocols"],
                 ["critic-individualist", "critic-contrastivist"],
             )
             self.assertEqual(len(manifest["runs"]), 4)
+            expected_order = [
+                f"{critic_runner.PROTOCOL_PREFIX[protocol]}{repetition}"
+                for protocol, repetition in critic_runner.campaign_schedule(
+                    manifest["protocols"], 2, "test-seed"
+                )
+            ]
+            self.assertEqual(manifest["execution_order"], expected_order)
             self.assertEqual(
-                [run["label"] for run in manifest["runs"]],
-                ["I1", "I2", "C1", "C2"],
+                [run["label"] for run in manifest["runs"]], expected_order
             )
             self.assertTrue((campaign_dir / "scorecard.json").is_file())
             self.assertTrue((campaign_dir / "SUMMARY.md").is_file())
@@ -1236,6 +1335,22 @@ UNVERIFIED: none
             incomplete = critic_runner.verify_campaign_dir(campaign_dir, source)
             self.assertFalse(incomplete.valid)
             self.assertTrue(any("run matrix mismatch" in error for error in incomplete.errors))
+            campaign_manifest_path.write_text(
+                original_campaign_manifest, encoding="utf-8"
+            )
+
+            reordered_manifest = json.loads(original_campaign_manifest)
+            reordered_manifest["execution_order"] = list(
+                reversed(reordered_manifest["execution_order"])
+            )
+            campaign_manifest_path.write_text(
+                json.dumps(reordered_manifest), encoding="utf-8"
+            )
+            reordered = critic_runner.verify_campaign_dir(campaign_dir, source)
+            self.assertFalse(reordered.valid)
+            self.assertTrue(
+                any("execution_order" in error for error in reordered.errors)
+            )
             campaign_manifest_path.write_text(
                 original_campaign_manifest, encoding="utf-8"
             )
