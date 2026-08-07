@@ -29,10 +29,12 @@ from critic_scoring import (
     RUN_NAMES,
     WITHIN_COMPARISONS,
     ScorecardError,
+    campaign_pairing_scorecard,
     pairing_scorecard,
     score_divergence,
     score_markdown,
     scorecard_template,
+    validate_pairing_scorecard,
 )
 
 
@@ -1355,25 +1357,34 @@ def campaign(args: argparse.Namespace) -> int:
         "runs": records,
     }
     can_score = (
-        protocols == ["critic-individualist", "critic-contrastivist"]
-        and args.repeat == 2
+        len(protocols) >= 2
+        and args.repeat >= 2
+        and all(protocol in CRITIC_PROTOCOLS for protocol in protocols)
         and all(record["status"] == "succeeded" for record in records)
     )
     if can_score:
         score_runs: dict[str, dict[str, object]] = {}
-        for record in records:
-            label = str(record["label"])
-            run_dir = campaign_dir / str(record["run_dir"])
-            run_manifest = parse_json(
-                (run_dir / "manifest.json").read_text(encoding="utf-8")
-            )
-            report, _ = read_utf8(run_dir / "report.md")
-            score_runs[label] = {
-                "archive": record["run_dir"],
-                "report_sha256": run_manifest["report_sha256"],
-                "claims": extract_critic_claims(report),
-            }
-        template = pairing_scorecard(score_runs)
+        records_by_run = {
+            (str(record["protocol"]), int(record["repetition"])): record
+            for record in records
+        }
+        for protocol_name in protocols:
+            for repetition in range(1, args.repeat + 1):
+                record = records_by_run[(protocol_name, repetition)]
+                label = str(record["label"])
+                run_dir = campaign_dir / str(record["run_dir"])
+                run_manifest = parse_json(
+                    (run_dir / "manifest.json").read_text(encoding="utf-8")
+                )
+                report, _ = read_utf8(run_dir / "report.md")
+                score_runs[label] = {
+                    "protocol": protocol_name,
+                    "repetition": repetition,
+                    "archive": record["run_dir"],
+                    "report_sha256": run_manifest["report_sha256"],
+                    "claims": extract_critic_claims(report),
+                }
+        template = campaign_pairing_scorecard(score_runs)
         atomic_write_text(
             campaign_dir / "scorecard.json",
             json.dumps(template, ensure_ascii=False, indent=2) + "\n",
@@ -1447,15 +1458,83 @@ def _safe_campaign_run_path(campaign_dir: Path, relative: object) -> Path | None
 def verify_scorecard_provenance(
     scorecard_path: Path, scorecard: object
 ) -> tuple[str, ...]:
-    """Re-extract immutable claims from sibling campaign archives for schema v2."""
-    if not isinstance(scorecard, dict) or scorecard.get("schema_version") != 2:
+    """Re-extract immutable claims from sibling campaign archives."""
+    if not isinstance(scorecard, dict) or scorecard.get("schema_version") not in {2, 3}:
         return ()
     errors: list[str] = []
     runs = scorecard.get("runs")
     if not isinstance(runs, dict):
-        return ("schema v2 scorecard runs must be an object",)
+        return ("traceable scorecard runs must be an object",)
+    if scorecard.get("schema_version") == 2:
+        run_names = RUN_NAMES
+        campaign_records: dict[str, dict[str, object]] = {}
+    else:
+        raw_order = scorecard.get("run_order")
+        if (
+            not isinstance(raw_order, list)
+            or any(not isinstance(name, str) for name in raw_order)
+            or len(raw_order) != len(set(raw_order))
+        ):
+            return ("schema v3 scorecard run_order must be a unique string list",)
+        run_names = tuple(raw_order)
+        missing = [name for name in runs if name not in run_names]
+        extra = [name for name in run_names if name not in runs]
+        if missing or extra:
+            errors.append(
+                f"schema v3 scorecard run_order mismatch; missing={missing}, extra={extra}"
+            )
     campaign_dir = scorecard_path.parent
-    for run_name in RUN_NAMES:
+    if scorecard.get("schema_version") == 3:
+        campaign_path = campaign_dir / "campaign.json"
+        if campaign_path.is_symlink():
+            errors.append("campaign.json must not be a symbolic link")
+            campaign_records = {}
+        else:
+            try:
+                campaign = parse_json(campaign_path.read_text(encoding="utf-8"))
+            except (
+                OSError,
+                UnicodeDecodeError,
+                json.JSONDecodeError,
+                DuplicateJsonKeyError,
+            ) as exc:
+                errors.append(f"campaign.json cannot bind scorecard identity: {exc}")
+                campaign_records = {}
+            else:
+                raw_records = campaign.get("runs") if isinstance(campaign, dict) else None
+                if not isinstance(raw_records, list):
+                    errors.append("campaign runs cannot bind scorecard identity")
+                    campaign_records = {}
+                else:
+                    campaign_records = {
+                        str(record.get("label")): record
+                        for record in raw_records
+                        if isinstance(record, dict)
+                        and isinstance(record.get("label"), str)
+                    }
+                    raw_protocols = campaign.get("protocols")
+                    repeat = campaign.get("repeat")
+                    if (
+                        isinstance(raw_protocols, list)
+                        and all(
+                            isinstance(protocol, str)
+                            and protocol in PROTOCOL_PREFIX
+                            for protocol in raw_protocols
+                        )
+                        and isinstance(repeat, int)
+                        and not isinstance(repeat, bool)
+                        and repeat > 0
+                    ):
+                        expected_order = tuple(
+                            f"{PROTOCOL_PREFIX[protocol]}{repetition}"
+                            for protocol in raw_protocols
+                            for repetition in range(1, repeat + 1)
+                        )
+                        if run_names != expected_order:
+                            errors.append(
+                                "schema v3 scorecard run_order does not match campaign plan"
+                            )
+    for run_name in run_names:
         run = runs.get(run_name)
         if not isinstance(run, dict):
             errors.append(f"runs.{run_name} must be an object")
@@ -1464,6 +1543,20 @@ def verify_scorecard_provenance(
         if run_dir is None:
             errors.append(f"runs.{run_name}.archive is unsafe or outside the campaign")
             continue
+        if scorecard.get("schema_version") == 3:
+            record = campaign_records.get(run_name)
+            if record is None:
+                errors.append(f"runs.{run_name} has no matching campaign record")
+            else:
+                for field in ("protocol", "repetition"):
+                    if run.get(field) != record.get(field):
+                        errors.append(
+                            f"runs.{run_name}.{field} does not match campaign record"
+                        )
+                if run.get("archive") != record.get("run_dir"):
+                    errors.append(
+                        f"runs.{run_name}.archive does not match campaign record"
+                    )
         report_path = run_dir / "report.md"
         if report_path.is_symlink():
             errors.append(f"runs.{run_name} report.md must not be a symbolic link")
@@ -1563,6 +1656,14 @@ def verify_campaign_dir(
             ) as exc:
                 errors.append(f"scorecard.json cannot be read: {exc}")
             else:
+                if isinstance(scorecard, dict) and scorecard.get("schema_version") in {
+                    2,
+                    3,
+                }:
+                    try:
+                        validate_pairing_scorecard(scorecard)
+                    except ScorecardError as exc:
+                        errors.append(f"scorecard.json structure is invalid: {exc}")
                 errors.extend(verify_scorecard_provenance(scorecard_path, scorecard))
     elif scorecard_path.exists():
         warnings.append("scorecard.json exists but this campaign did not create a template")

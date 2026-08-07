@@ -111,7 +111,7 @@ runner 默认给每次执行 900 秒和 16 MiB 的 stdout/stderr 合计额度；
 python critic_runner.py campaign path/to/old-draft.md --repeat 2 -- your-model-command arg1 arg2
 ```
 
-`campaign` 仍然严格串行运行，各次执行看不到其他报告。只有四次报告全部成功且结构有效时，它才会在 `.critic-campaigns/<timestamp>--campaign/` 中生成四个独立运行归档、`campaign.json`、可点击的 `SUMMARY.md` 和待填写的 schema v2 `scorecard.json`。scorecard 已从报告第一节提取每条 A 指控及其位置、指控和理由。先遮掉 critic 名称，再在六组比较的 `pairs` 中填写左右 A 编号及 `overlap`、`different_reason` 或 `ambiguous`，完成一组后把 `complete` 改为 `true`；未配对条目会自动计为左右独有。
+`campaign` 仍然严格串行运行，各次执行看不到其他报告。只要至少有两种非引证 critic、每种至少重复两次、全部报告成功且结构有效，它就会生成独立运行归档、`campaign.json`、可点击的 `SUMMARY.md` 和待填写的动态 schema v3 `scorecard.json`。scorecard 已从每份报告第一节提取全部 A 指控及其位置、指控和理由。先遮掉 critic 名称，再在自动生成的 `pairs` 中填写左右 A 编号及 `overlap`、`different_reason` 或 `ambiguous`，完成一组后把 `complete` 改为 `true`；未配对条目会自动计为左右独有。
 
 campaign schema v3 使用带种子的反向轮次平衡：第一轮按种子确定协议顺序，第二轮反向，第三轮再恢复，避免固定的 `I1, I2, C1, C2` 把时间漂移、缓存或执行器热身误当成协议差异。随机种子、策略和实际执行次序全部写入 `campaign.json`；用 `--order-seed published-seed` 可以精确复现，验证器会独立重算顺序并拒绝被调换的记录。
 
@@ -125,7 +125,7 @@ python critic_runner.py campaign draft.md \
   --repeat 2 --order-seed published-seed -- your-model-command
 ```
 
-这种跨线 campaign 用于比较方法视角，不会生成专属于 I₁/I₂/C₁/C₂ 的 W/B scorecard；后者只在默认两协议、各重复两次且全部成功时生成。
+这种跨线 campaign 会生成真正可计分的 N 协议 × R 重复矩阵。组内 W 自动包含同一协议各重复之间的全部组合，组间 B 自动包含不同协议之间的全部组合；每种协议必须使用相同重复次数，避免某一条线因样本更多而获得额外权重。三条线各重复两次会得到 3 组组内比较和 12 组组间比较。比较数随总运行数平方增长，因此日常校准建议先使用两次重复。
 
 ```json
 "I1:I2": {
@@ -140,9 +140,9 @@ python critic_runner.py campaign draft.md \
 python critic_runner.py score .critic-campaigns/<campaign>/scorecard.json --format markdown --output divergence-score.md
 ```
 
-记分器会重新读取四份归档报告，核对原始字节 hash，并再次提取 claims；scorecard 中的证据清单被修改、报告被替换、路径逃出 campaign、同一条 claim 被重复配对或比较尚未明确完成时都会拒绝计分。随后它自动计算每次 d 的上下界、W/B 区间及 `reject` / `advance` / `inconclusive` 判决。它只接管可确定的算术，不替人判断两条指控是否语义重合。
+记分器会重新读取全部归档报告，核对原始字节 hash，并再次提取 claims；它还把 scorecard 的运行顺序、协议归属、重复编号和归档路径反向绑定到 campaign 记录。证据清单被修改、报告被替换、运行身份被重写、路径逃出 campaign、同一条 claim 被重复配对或比较尚未明确完成时都会拒绝计分。随后它自动计算每次 d 的上下界、W/B 区间及 `reject` / `advance` / `inconclusive` 判决。它只接管可确定的算术，不替人判断两条指控是否语义重合。
 
-`python critic_runner.py init-scorecard scorecard.json` 仍可创建兼容的 schema v1 汇总计数表，用于没有 campaign 归档的旧实验；新 campaign 默认使用可追溯的逐条配对 schema v2。整个 campaign 可单独复核：
+`python critic_runner.py init-scorecard scorecard.json` 仍可创建兼容的 schema v1 汇总计数表，用于没有 campaign 归档的旧实验；固定 I₁/I₂/C₁/C₂ 的 schema v2 仍可读取，新 campaign 默认使用可追溯且动态分组的逐条配对 schema v3。整个 campaign 可单独复核：
 
 ```bash
 python critic_runner.py verify-campaign .critic-campaigns/<campaign> --source path/to/old-draft.md

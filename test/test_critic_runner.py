@@ -1053,6 +1053,110 @@ UNVERIFIED: none
         with self.assertRaisesRegex(critic_runner.ScorecardError, "one-to-one"):
             critic_runner.score_divergence(scorecard)
 
+    def test_dynamic_scorecard_scores_three_balanced_academic_tracks(self) -> None:
+        claim = {"id": "A1", "position": "p", "claim": "c", "reason": "r"}
+        runs = {}
+        for prefix, protocol in (
+            ("S", "critic-social-science"),
+            ("N", "critic-natural-science"),
+            ("E", "critic-engineering"),
+        ):
+            for repetition in (1, 2):
+                runs[f"{prefix}{repetition}"] = {
+                    "protocol": protocol,
+                    "repetition": repetition,
+                    "archive": f"runs/{prefix}{repetition}",
+                    "report_sha256": "a" * 64,
+                    "claims": [dict(claim)],
+                }
+        scorecard = critic_runner.campaign_pairing_scorecard(runs)
+        self.assertEqual(scorecard["schema_version"], 3)
+        self.assertEqual(len(scorecard["comparisons"]), 15)
+
+        preview = dict(scorecard)
+        preview["comparisons"] = {
+            name: {"complete": True, "pairs": []}
+            for name in scorecard["comparisons"]
+        }
+        layout = critic_runner.score_divergence(preview)
+        self.assertEqual(len(layout["within_comparisons"]), 3)
+        self.assertEqual(len(layout["between_comparisons"]), 12)
+
+        for name in layout["within_comparisons"]:
+            scorecard["comparisons"][name] = {
+                "complete": True,
+                "pairs": [
+                    {"left": "A1", "right": "A1", "classification": "overlap"}
+                ],
+            }
+        for name in layout["between_comparisons"]:
+            scorecard["comparisons"][name] = {
+                "complete": True,
+                "pairs": [
+                    {
+                        "left": "A1",
+                        "right": "A1",
+                        "classification": "different_reason",
+                    }
+                ],
+            }
+        result = critic_runner.score_divergence(scorecard)
+        self.assertEqual(result["schema_version"], 3)
+        self.assertEqual(result["W"], {"lower": 0.0, "upper": 0.0})
+        self.assertEqual(result["B"], {"lower": 1.0, "upper": 1.0})
+        self.assertEqual(result["verdict"], "advance")
+        self.assertIn("S1:S2", critic_runner.score_markdown(result))
+
+    def test_dynamic_scorecard_rejects_unbalanced_or_ambiguous_run_identity(self) -> None:
+        claim = {"id": "A1", "position": "p", "claim": "c", "reason": "r"}
+
+        def run(protocol: str, repetition: int) -> dict[str, object]:
+            return {
+                "protocol": protocol,
+                "repetition": repetition,
+                "archive": "runs/example",
+                "report_sha256": "a" * 64,
+                "claims": [dict(claim)],
+            }
+
+        with self.assertRaisesRegex(critic_runner.ScorecardError, "same repeat count"):
+            critic_runner.campaign_pairing_scorecard(
+                {
+                    "S1": run("social", 1),
+                    "S2": run("social", 2),
+                    "N1": run("natural", 1),
+                    "N2": run("natural", 2),
+                    "N3": run("natural", 3),
+                }
+            )
+        with self.assertRaisesRegex(critic_runner.ScorecardError, "duplicate"):
+            critic_runner.campaign_pairing_scorecard(
+                {
+                    "S1": run("social", 1),
+                    "S2": run("social", 1),
+                    "N1": run("natural", 1),
+                    "N2": run("natural", 2),
+                }
+            )
+        with self.assertRaisesRegex(critic_runner.ScorecardError, "colon-free"):
+            critic_runner.campaign_pairing_scorecard(
+                {
+                    "S:1": run("social", 1),
+                    "S2": run("social", 2),
+                    "N1": run("natural", 1),
+                    "N2": run("natural", 2),
+                }
+            )
+        with self.assertRaisesRegex(critic_runner.ScorecardError, "continuous"):
+            critic_runner.campaign_pairing_scorecard(
+                {
+                    "S1": run("social", 1),
+                    "S3": run("social", 3),
+                    "N1": run("natural", 1),
+                    "N2": run("natural", 2),
+                }
+            )
+
     def test_extract_critic_claims_preserves_a_item_provenance(self) -> None:
         self.assertEqual(
             critic_runner.extract_critic_claims(VALID_REPORT),
@@ -1300,7 +1404,10 @@ UNVERIFIED: none
             generated_scorecard = json.loads(
                 (campaign_dir / "scorecard.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(generated_scorecard["schema_version"], 2)
+            self.assertEqual(generated_scorecard["schema_version"], 3)
+            self.assertEqual(
+                generated_scorecard["run_order"], ["I1", "I2", "C1", "C2"]
+            )
             self.assertEqual(
                 generated_scorecard["runs"]["I1"]["claims"][0]["id"], "A1"
             )
@@ -1323,6 +1430,42 @@ UNVERIFIED: none
                 any("claims do not match" in error for error in provenance_failure.errors)
             )
             scorecard["runs"]["I1"]["claims"][0]["claim"] = "缺少关键一步。"
+            scorecard_path.write_text(json.dumps(scorecard), encoding="utf-8")
+
+            scorecard["runs"]["I1"]["protocol"] = "critic-natural-science"
+            scorecard_path.write_text(json.dumps(scorecard), encoding="utf-8")
+            identity_failure = critic_runner.verify_campaign_dir(campaign_dir, source)
+            self.assertFalse(identity_failure.valid)
+            self.assertTrue(
+                any("protocol does not match" in error for error in identity_failure.errors)
+            )
+            scorecard["runs"]["I1"]["protocol"] = "critic-individualist"
+
+            scorecard["run_order"] = list(reversed(scorecard["run_order"]))
+            scorecard_path.write_text(json.dumps(scorecard), encoding="utf-8")
+            order_identity_failure = critic_runner.verify_campaign_dir(
+                campaign_dir, source
+            )
+            self.assertFalse(order_identity_failure.valid)
+            self.assertTrue(
+                any(
+                    "run_order does not match campaign" in error
+                    for error in order_identity_failure.errors
+                )
+            )
+            scorecard["run_order"] = ["I1", "I2", "C1", "C2"]
+            scorecard_path.write_text(json.dumps(scorecard), encoding="utf-8")
+
+            scorecard["comparisons"]["I1:I2"]["pairs"] = [
+                {"left": "A999", "right": "A1", "classification": "overlap"}
+            ]
+            scorecard_path.write_text(json.dumps(scorecard), encoding="utf-8")
+            malformed_draft = critic_runner.verify_campaign_dir(campaign_dir, source)
+            self.assertFalse(malformed_draft.valid)
+            self.assertTrue(
+                any("structure is invalid" in error for error in malformed_draft.errors)
+            )
+            scorecard["comparisons"]["I1:I2"]["pairs"] = []
             scorecard_path.write_text(json.dumps(scorecard), encoding="utf-8")
 
             campaign_manifest_path = campaign_dir / "campaign.json"
@@ -1360,6 +1503,57 @@ UNVERIFIED: none
             corrupted = critic_runner.verify_campaign_dir(campaign_dir, source)
             self.assertFalse(corrupted.valid)
             self.assertTrue(any("hash mismatch" in error for error in corrupted.errors))
+
+    def test_cross_track_campaign_creates_a_scoreable_dynamic_matrix(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "draft.md"
+            source.write_text("draft", encoding="utf-8")
+            encoded_report = base64.b64encode(VALID_REPORT.encode("utf-8")).decode()
+            args = argparse.Namespace(
+                manuscript=str(source),
+                protocol=None,
+                track=[
+                    "humanities-social-science",
+                    "natural-science",
+                    "engineering",
+                ],
+                repeat=2,
+                order_seed="cross-track-seed",
+                campaigns_dir=str(root / "campaigns"),
+                allow_test_artifact=False,
+                timeout=5.0,
+                max_output_bytes=1024 * 1024,
+                executor=[
+                    sys.executable,
+                    "-c",
+                    (
+                        "import base64,sys; sys.stdin.buffer.read(); "
+                        f"sys.stdout.buffer.write(base64.b64decode('{encoded_report}'))"
+                    ),
+                ],
+            )
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(critic_runner.campaign(args), 0)
+            campaign_dir = next((root / "campaigns").iterdir())
+            scorecard_path = campaign_dir / "scorecard.json"
+            scorecard = json.loads(scorecard_path.read_text(encoding="utf-8"))
+            self.assertEqual(scorecard["schema_version"], 3)
+            self.assertEqual(
+                scorecard["run_order"], ["S1", "S2", "N1", "N2", "E1", "E2"]
+            )
+            self.assertEqual(len(scorecard["comparisons"]), 15)
+            for comparison in scorecard["comparisons"].values():
+                comparison["complete"] = True
+                comparison["pairs"] = [
+                    {"left": "A1", "right": "A1", "classification": "overlap"}
+                ]
+            scorecard_path.write_text(json.dumps(scorecard), encoding="utf-8")
+            result = critic_runner.score_divergence(scorecard)
+            self.assertEqual(len(result["within_comparisons"]), 3)
+            self.assertEqual(len(result["between_comparisons"]), 12)
+            verification = critic_runner.verify_campaign_dir(campaign_dir, source)
+            self.assertTrue(verification.valid, verification.errors)
 
     def test_cli_run_path_handles_separator_end_to_end(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

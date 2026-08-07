@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+from itertools import combinations
 
 
 WITHIN_COMPARISONS = ("I1:I2", "C1:C2")
@@ -13,6 +14,7 @@ RUN_NAMES = ("I1", "I2", "C1", "C2")
 CLAIM_ID_PATTERN = re.compile(r"A[1-9][0-9]*")
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 PAIR_CLASSIFICATIONS = {"overlap", "different_reason", "ambiguous"}
+RUN_LABEL_PATTERN = re.compile(r"[^:\x00-\x1f\x7f]{1,128}")
 
 
 class ScorecardError(ValueError):
@@ -56,6 +58,28 @@ def pairing_scorecard(runs: dict[str, dict[str, object]]) -> dict[str, object]:
     }
 
 
+def campaign_pairing_scorecard(
+    runs: dict[str, dict[str, object]],
+) -> dict[str, object]:
+    """Create a traceable scorecard for an arbitrary balanced campaign."""
+    scorecard: dict[str, object] = {
+        "schema_version": 3,
+        "margin": 0.2,
+        "instructions": (
+            "For every comparison, add one-to-one A-item pairs, set classification "
+            "to overlap, different_reason, or ambiguous, then set complete=true. "
+            "Unpaired claims are counted as unique automatically."
+        ),
+        "run_order": list(runs),
+        "runs": runs,
+    }
+    _, within, between = _dynamic_layout(scorecard)
+    scorecard["comparisons"] = {
+        name: {"complete": False, "pairs": []} for name in within + between
+    }
+    return scorecard
+
+
 def _score_count(value: object, path: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise ScorecardError(f"{path} must be a non-negative integer")
@@ -74,12 +98,15 @@ def _margin(scorecard: dict[str, object]) -> float:
     return float(raw_margin)
 
 
-def _comparison_object(scorecard: dict[str, object]) -> dict[str, object]:
+def _comparison_object(
+    scorecard: dict[str, object],
+    comparison_names: tuple[str, ...] = ALL_COMPARISONS,
+) -> dict[str, object]:
     comparisons = scorecard.get("comparisons")
     if not isinstance(comparisons, dict):
         raise ScorecardError("comparisons must be a JSON object")
-    missing = [name for name in ALL_COMPARISONS if name not in comparisons]
-    extra = [name for name in comparisons if name not in ALL_COMPARISONS]
+    missing = [name for name in comparison_names if name not in comparisons]
+    extra = [name for name in comparisons if name not in comparison_names]
     if missing or extra:
         raise ScorecardError(f"comparisons mismatch; missing={missing}, extra={extra}")
     return comparisons
@@ -119,19 +146,108 @@ def _aggregate_counts(scorecard: dict[str, object]) -> dict[str, dict[str, int]]
     return counts_by_comparison
 
 
+def _printable_identifier(value: object, path: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 128
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ScorecardError(f"{path} must be 1..128 printable characters")
+    return value
+
+
+def _dynamic_layout(
+    scorecard: dict[str, object],
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    runs = scorecard.get("runs")
+    if not isinstance(runs, dict):
+        raise ScorecardError("runs must be a JSON object")
+    raw_order = scorecard.get("run_order")
+    if (
+        not isinstance(raw_order, list)
+        or any(not isinstance(name, str) for name in raw_order)
+        or len(raw_order) != len(set(raw_order))
+    ):
+        raise ScorecardError("run_order must be a unique string list")
+    run_names = tuple(raw_order)
+    missing = [name for name in runs if name not in run_names]
+    extra = [name for name in run_names if name not in runs]
+    if missing or extra:
+        raise ScorecardError(f"run_order mismatch; missing={missing}, extra={extra}")
+
+    protocol_by_run: dict[str, str] = {}
+    seen_repetitions: set[tuple[str, int]] = set()
+    group_sizes: dict[str, int] = {}
+    repetitions_by_protocol: dict[str, set[int]] = {}
+    for run_name in run_names:
+        if RUN_LABEL_PATTERN.fullmatch(run_name) is None:
+            raise ScorecardError(
+                f"run_order label must be printable, colon-free, and at most 128 characters: "
+                f"{run_name!r}"
+            )
+        run = runs[run_name]
+        if not isinstance(run, dict):
+            raise ScorecardError(f"runs.{run_name} must be an object")
+        protocol = _printable_identifier(
+            run.get("protocol"), f"runs.{run_name}.protocol"
+        )
+        repetition = run.get("repetition")
+        if (
+            not isinstance(repetition, int)
+            or isinstance(repetition, bool)
+            or repetition <= 0
+        ):
+            raise ScorecardError(f"runs.{run_name}.repetition must be a positive integer")
+        run_key = (protocol, repetition)
+        if run_key in seen_repetitions:
+            raise ScorecardError(f"duplicate protocol/repetition in runs: {run_key}")
+        seen_repetitions.add(run_key)
+        protocol_by_run[run_name] = protocol
+        group_sizes[protocol] = group_sizes.get(protocol, 0) + 1
+        repetitions_by_protocol.setdefault(protocol, set()).add(repetition)
+
+    if len(group_sizes) < 2:
+        raise ScorecardError("schema v3 requires at least two protocols")
+    if any(size < 2 for size in group_sizes.values()):
+        raise ScorecardError("schema v3 requires at least two runs per protocol")
+    if len(set(group_sizes.values())) != 1:
+        raise ScorecardError("schema v3 requires the same repeat count for every protocol")
+    repeat = next(iter(group_sizes.values()))
+    expected_repetitions = set(range(1, repeat + 1))
+    if any(
+        repetitions != expected_repetitions
+        for repetitions in repetitions_by_protocol.values()
+    ):
+        raise ScorecardError("schema v3 repetitions must be continuous from 1 to R")
+
+    within: list[str] = []
+    between: list[str] = []
+    for left, right in combinations(run_names, 2):
+        name = f"{left}:{right}"
+        target = (
+            within
+            if protocol_by_run[left] == protocol_by_run[right]
+            else between
+        )
+        target.append(name)
+    return run_names, tuple(within), tuple(between)
+
+
 def _claim_inventories(
     scorecard: dict[str, object],
+    run_names: tuple[str, ...] = RUN_NAMES,
 ) -> dict[str, set[str]]:
     runs = scorecard.get("runs")
     if not isinstance(runs, dict):
         raise ScorecardError("runs must be a JSON object")
-    missing = [name for name in RUN_NAMES if name not in runs]
-    extra = [name for name in runs if name not in RUN_NAMES]
+    missing = [name for name in run_names if name not in runs]
+    extra = [name for name in runs if name not in run_names]
     if missing or extra:
         raise ScorecardError(f"runs mismatch; missing={missing}, extra={extra}")
 
     inventories: dict[str, set[str]] = {}
-    for run_name in RUN_NAMES:
+    for run_name in run_names:
         run = runs[run_name]
         if not isinstance(run, dict):
             raise ScorecardError(f"runs.{run_name} must be an object")
@@ -166,15 +282,24 @@ def _claim_inventories(
     return inventories
 
 
-def _pairing_counts(scorecard: dict[str, object]) -> dict[str, dict[str, int]]:
-    inventories = _claim_inventories(scorecard)
-    comparisons = _comparison_object(scorecard)
+def _pairing_counts(
+    scorecard: dict[str, object],
+    run_names: tuple[str, ...] = RUN_NAMES,
+    comparison_names: tuple[str, ...] = ALL_COMPARISONS,
+    *,
+    require_complete: bool = True,
+) -> dict[str, dict[str, int]]:
+    inventories = _claim_inventories(scorecard, run_names)
+    comparisons = _comparison_object(scorecard, comparison_names)
     counts_by_comparison: dict[str, dict[str, int]] = {}
-    for name in ALL_COMPARISONS:
+    for name in comparison_names:
         comparison = comparisons[name]
         if not isinstance(comparison, dict):
             raise ScorecardError(f"comparisons.{name} must be an object")
-        if comparison.get("complete") is not True:
+        complete = comparison.get("complete")
+        if not isinstance(complete, bool):
+            raise ScorecardError(f"comparisons.{name}.complete must be boolean")
+        if require_complete and complete is not True:
             raise ScorecardError(f"comparisons.{name}.complete must be true after blind pairing")
         pairs = comparison.get("pairs")
         if not isinstance(pairs, list):
@@ -215,14 +340,39 @@ def _pairing_counts(scorecard: dict[str, object]) -> dict[str, dict[str, int]]:
     return counts_by_comparison
 
 
+def validate_pairing_scorecard(scorecard: object) -> None:
+    """Validate a traceable scorecard draft without requiring completed pairing."""
+    if not isinstance(scorecard, dict):
+        raise ScorecardError("scorecard must be a JSON object")
+    schema_version = scorecard.get("schema_version")
+    if schema_version == 2:
+        run_names = RUN_NAMES
+        comparison_names = ALL_COMPARISONS
+    elif schema_version == 3:
+        run_names, within, between = _dynamic_layout(scorecard)
+        comparison_names = within + between
+    else:
+        raise ScorecardError("traceable scorecard schema_version must be 2 or 3")
+    _margin(scorecard)
+    _pairing_counts(
+        scorecard,
+        run_names,
+        comparison_names,
+        require_complete=False,
+    )
+
+
 def _score_counts(
     counts_by_comparison: dict[str, dict[str, int]],
     *,
     margin: float,
     schema_version: int,
+    within_comparisons: tuple[str, ...] = WITHIN_COMPARISONS,
+    between_comparisons: tuple[str, ...] = BETWEEN_COMPARISONS,
 ) -> dict[str, object]:
     results: dict[str, dict[str, object]] = {}
-    for name in ALL_COMPARISONS:
+    comparison_order = within_comparisons + between_comparisons
+    for name in comparison_order:
         counts = counts_by_comparison[name]
         unique = counts["left_unique"] + counts["right_unique"]
         denominator = (
@@ -250,10 +400,10 @@ def _score_counts(
     def average_bound(names: tuple[str, ...], key: str) -> float:
         return sum(float(results[name][key]) for name in names) / len(names)
 
-    w_lower = average_bound(WITHIN_COMPARISONS, "d_lower")
-    w_upper = average_bound(WITHIN_COMPARISONS, "d_upper")
-    b_lower = average_bound(BETWEEN_COMPARISONS, "d_lower")
-    b_upper = average_bound(BETWEEN_COMPARISONS, "d_upper")
+    w_lower = average_bound(within_comparisons, "d_lower")
+    w_upper = average_bound(within_comparisons, "d_upper")
+    b_lower = average_bound(between_comparisons, "d_lower")
+    b_upper = average_bound(between_comparisons, "d_upper")
     if b_upper <= w_lower:
         verdict = "reject"
         reason = "B is certainly no greater than W"
@@ -267,6 +417,9 @@ def _score_counts(
     return {
         "schema_version": schema_version,
         "margin": margin,
+        "comparison_order": list(comparison_order),
+        "within_comparisons": list(within_comparisons),
+        "between_comparisons": list(between_comparisons),
         "comparisons": results,
         "W": {"lower": w_lower, "upper": w_upper},
         "B": {"lower": b_lower, "upper": b_upper},
@@ -281,14 +434,23 @@ def score_divergence(scorecard: object) -> dict[str, object]:
     schema_version = scorecard.get("schema_version")
     if schema_version == 1:
         counts = _aggregate_counts(scorecard)
+        within = WITHIN_COMPARISONS
+        between = BETWEEN_COMPARISONS
     elif schema_version == 2:
         counts = _pairing_counts(scorecard)
+        within = WITHIN_COMPARISONS
+        between = BETWEEN_COMPARISONS
+    elif schema_version == 3:
+        run_names, within, between = _dynamic_layout(scorecard)
+        counts = _pairing_counts(scorecard, run_names, within + between)
     else:
-        raise ScorecardError("scorecard schema_version must be 1 or 2")
+        raise ScorecardError("scorecard schema_version must be 1, 2, or 3")
     return _score_counts(
         counts,
         margin=_margin(scorecard),
         schema_version=schema_version,
+        within_comparisons=within,
+        between_comparisons=between,
     )
 
 
@@ -300,7 +462,7 @@ def score_markdown(result: dict[str, object]) -> str:
         "| Comparison | numerator | denominator | d interval |",
         "| --- | ---: | ---: | ---: |",
     ]
-    for name in ALL_COMPARISONS:
+    for name in result.get("comparison_order", ALL_COMPARISONS):
         item = comparisons[name]
         lower_num = item["lower_numerator"]
         upper_num = item["upper_numerator"]
