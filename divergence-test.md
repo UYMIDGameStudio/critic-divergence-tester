@@ -75,7 +75,7 @@ C₁, C₂  = critic-contrastivist 跑两次
 python critic_runner.py campaign draft.md --repeat 2 -- <executor...>
 ```
 
-它会生成 I₁、I₂、C₁、C₂ 的独立归档和空白 `scorecard.json`。这只是编排，不是并发，也不会把前一份报告放进后一份提示词。等价的逐条命令是：
+四次报告全部有效时，它会生成 I₁、I₂、C₁、C₂ 的独立归档，以及已经列出各报告全部 A 条目的 `scorecard.json`。这只是编排，不是并发，也不会把前一份报告放进后一份提示词。等价的逐条命令是：
 
 ```bash
 python critic_runner.py run critic-individualist draft.md -- <executor...>
@@ -86,13 +86,19 @@ python critic_runner.py run critic-contrastivist draft.md -- <executor...>
 
 不要把四次运行包进并发任务。这个测试测的是输出差异，不需要并发；串行不会损失测试信息。
 
-盲分完成后，把六组一对一配对计数填进 `scorecard.json`。无法确定是“重合”还是“同处异因”的配对填入 `ambiguous`，不要强选。机器会同时计算上下界：
+不要直接拿带有 I/C 或协议名的原始 scorecard 做所谓“盲分”。先运行 `blind-scorecard`，把 identity key 留在实验负责人手中，只把使用 R01/R02 随机别名的 reviewer artifact 发给配对者。盲分时只在各组比较的 `pairs` 数组里记录左右 A 编号，并把分类写成 `overlap`、`different_reason` 或 `ambiguous`；不要手算汇总，无法确定时也不要强选。每组检查完成后显式设置 `complete: true`。未参与配对的左右条目由工具自动计为独有。
+
+最短命令是 `python critic_runner.py blind-scorecard path/to/scorecard.json`。它把 `blind-review.json` 和私密的 `blind-key.json` 默认写在 scorecard 同目录；若文件已经存在则拒绝覆盖。
+
+配对结束后用 `apply-blind-scorecard` 核对 artifact、key、原始 claims 和比较矩阵，再恢复为可计分 scorecard。机器会从逐条配对推导计数并计算上下界：
+
+若使用默认文件名，只需运行 `python critic_runner.py apply-blind-scorecard path/to/scorecard.json`，结果会安全写入同目录的 `completed-scorecard.json`。
 
 ```bash
-python critic_runner.py score path/to/scorecard.json --format markdown
+python critic_runner.py score path/to/completed-scorecard.json --format markdown
 ```
 
-`score` 只有在整个区间都跨过同一判据时才给 `reject` 或 `advance`；边界两端会改变结论时给 `inconclusive`。语义分类仍由人完成，工具只复算分子、分母、W/B 与阈值。
+`score` 会先用归档报告的 hash 和重新提取结果复核 scorecard 的 claim 清单，并强制一对一配对。只有整个区间都跨过同一判据时才给 `reject` 或 `advance`；边界两端会改变结论时给 `inconclusive`。语义分类仍由人完成，工具只复算分子、分母、W/B 与阈值。
 
 组内差异（同一 agent 自己跟自己的分歧）：
 
@@ -106,12 +112,21 @@ W = [ d(I₁,I₂) + d(C₁,C₂) ] / 2
 B = [ d(I₁,C₁) + d(I₁,C₂) + d(I₂,C₁) + d(I₂,C₂) ] / 4
 ```
 
+这套公式现在可以严格推广到 N 个协议、每个协议 R 次重复。令 `P(x)` 表示运行 x 的协议：
+
+```text
+W = 所有 P(x)=P(y) 的 d(x,y) 的算术平均
+B = 所有 P(x)≠P(y) 的 d(x,y) 的算术平均
+```
+
+schema v3 要求 N ≥ 2、R ≥ 2，而且每个协议的 R 相同。runner 从 campaign 记录推导组内／组间比较，不接受 scorecard 自己重写协议归属或重复编号。N=2、R=2 时，这个通式恰好退化为上面的 I₁/I₂/C₁/C₂ 六组比较；因此旧实验的判据不变，三条学术线也能使用同一套可证伪校准。
+
 判据：
 
 - **B ≤ W**：否决。两个立场之间的差异不比同一个模型随机重跑的差异更稳定。删掉一个，保留另一个作为单一 critic。到此为止。
 - **B 明显大于 W**（经验上取 B ≥ W + 0.2）：进入第二级。
 
-分类时把 agent 名字从报告上遮掉再做。你知道哪份是哪个 agent 写的，就会倾向于把措辞差异读成立场差异。
+盲评 artifact 消除了协议名、运行编号、组别、归档路径和 hash 等显式身份线索，但不能消除文本内容自身的风格线索。若配对者从措辞猜到 agent，仍要在实验记录中声明盲法可能失效；不要把工具级去标识误报成绝对双盲。
 
 ## 第二级：框架承诺是否真的起作用
 

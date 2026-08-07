@@ -15,7 +15,9 @@ import json
 import math
 import os
 import re
+import secrets
 import sys
+import tempfile
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -25,17 +27,26 @@ from critic_execution import ExecutorResult, execute_with_limits
 from critic_scoring import (
     ALL_COMPARISONS,
     BETWEEN_COMPARISONS,
+    RUN_NAMES,
     WITHIN_COMPARISONS,
     ScorecardError,
+    apply_blind_pairings,
+    campaign_pairing_scorecard,
+    create_blind_bundle,
+    pairing_scorecard,
     score_divergence,
     score_markdown,
     scorecard_template,
+    validate_pairing_scorecard,
 )
 
 
 ROOT = Path(__file__).resolve().parent
 
 PROTOCOLS = {
+    "critic-social-science": ROOT / "critic-social-science.md",
+    "critic-natural-science": ROOT / "critic-natural-science.md",
+    "critic-engineering": ROOT / "critic-engineering.md",
     "critic-individualist": ROOT / "critic-individualist.md",
     "critic-contrastivist": ROOT / "critic-contrastivist.md",
     "citation-auditor": ROOT / "citation-auditor.md",
@@ -43,11 +54,60 @@ PROTOCOLS = {
 }
 
 TEST_ONLY = {"critic-generic"}
+PROTOCOL_PREFIX = {
+    "critic-social-science": "S",
+    "critic-natural-science": "N",
+    "critic-engineering": "E",
+    "critic-individualist": "I",
+    "critic-contrastivist": "C",
+    "citation-auditor": "A",
+    "critic-generic": "G",
+}
 CRITIC_PROTOCOLS = {
+    "critic-social-science",
+    "critic-natural-science",
+    "critic-engineering",
     "critic-individualist",
     "critic-contrastivist",
     "critic-generic",
 }
+
+ACADEMIC_TRACKS = {
+    "humanities-social-science": {
+        "label": "文科·社会科学",
+        "primary": "critic-social-science",
+        "specialists": ("critic-individualist", "critic-contrastivist"),
+    },
+    "natural-science": {
+        "label": "理科·自然科学",
+        "primary": "critic-natural-science",
+        "specialists": (),
+    },
+    "engineering": {
+        "label": "工科·工程学",
+        "primary": "critic-engineering",
+        "specialists": (),
+    },
+}
+
+QUICKSTART_TRACK_ALIASES = {
+    "1": "humanities-social-science",
+    "文科": "humanities-social-science",
+    "社会科学": "humanities-social-science",
+    "文科社会科学": "humanities-social-science",
+    "humanities-social-science": "humanities-social-science",
+    "2": "natural-science",
+    "理科": "natural-science",
+    "自然科学": "natural-science",
+    "natural-science": "natural-science",
+    "3": "engineering",
+    "工科": "engineering",
+    "工程": "engineering",
+    "工程学": "engineering",
+    "engineering": "engineering",
+}
+
+CROSS_DISCIPLINARY_PROTOCOLS = ("citation-auditor",)
 
 CRITIC_SECTIONS = (
     "## 1. 原子指控",
@@ -93,6 +153,23 @@ class VerificationResult:
     valid: bool
     errors: tuple[str, ...]
     warnings: tuple[str, ...]
+
+
+class DuplicateJsonKeyError(ValueError):
+    """Raised when JSON contains a key whose meaning would be ambiguous."""
+
+
+def _json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise DuplicateJsonKeyError(f"duplicate JSON key: {key}")
+        value[key] = item
+    return value
+
+
+def parse_json(text: str) -> object:
+    return json.loads(text, object_pairs_hook=_json_object)
 
 
 def utc_now() -> str:
@@ -178,14 +255,53 @@ def new_run_dir(runs_dir: Path, protocol_name: str) -> Path:
     return target
 
 
-def executor_metadata(executor: list[str] | None) -> dict[str, object] | None:
+def normalize_executor_label(raw_label: object) -> str | None:
+    if raw_label is None:
+        return None
+    if (
+        not isinstance(raw_label, str)
+        or not raw_label
+        or len(raw_label) > 256
+        or any(
+            ord(character) < 32 or ord(character) == 127
+            for character in raw_label
+        )
+    ):
+        raise ValueError("executor label must be 1..256 printable characters")
+    return raw_label
+
+
+def executor_metadata(
+    executor: list[str] | None, label: str | None = None
+) -> dict[str, object] | None:
     """Record useful executor identity without persisting possibly secret arguments."""
     if not executor:
         return None
-    return {
+    metadata: dict[str, object] = {
         "command": Path(executor[0]).name,
         "argument_count": max(0, len(executor) - 1),
     }
+    if label is not None:
+        metadata["label"] = label
+    return metadata
+
+
+def campaign_schedule(
+    protocols: list[str], repeat: int, order_seed: str
+) -> list[tuple[str, int]]:
+    """Build a stable counterbalanced order without relying on random internals."""
+    base = sorted(
+        protocols,
+        key=lambda protocol: (
+            sha256_text(f"counterbalanced-v1\0{order_seed}\0{protocol}"),
+            protocol,
+        ),
+    )
+    schedule: list[tuple[str, int]] = []
+    for repetition in range(1, repeat + 1):
+        round_protocols = base if repetition % 2 else list(reversed(base))
+        schedule.extend((protocol, repetition) for protocol in round_protocols)
+    return schedule
 
 
 def _section_ranges(lines: list[str]) -> dict[str, list[str]] | None:
@@ -227,6 +343,32 @@ def _item_blocks(lines: list[str]) -> list[tuple[int, list[str]]]:
         end = positions[position + 1][0] if position + 1 < len(positions) else len(lines)
         blocks.append((identifier, lines[start + 1 : end]))
     return blocks
+
+
+def extract_critic_claims(report: str) -> list[dict[str, str]]:
+    """Extract validated section-1 A items for a traceable pairing scorecard."""
+    lines = report.splitlines()
+    sections = _section_ranges(lines)
+    if sections is None:
+        raise ValueError("cannot extract claims from a report with invalid headings")
+    errors: list[str] = []
+    claims: list[dict[str, str]] = []
+    for identifier, block in _item_blocks(sections[CRITIC_SECTIONS[0]]):
+        position = _field_value(block, "位置：", f"A{identifier}", errors)
+        claim = _field_value(block, "指控：", f"A{identifier}", errors)
+        reason = _field_value(block, "理由：", f"A{identifier}", errors)
+        if position is not None and claim is not None and reason is not None:
+            claims.append(
+                {
+                    "id": f"A{identifier}",
+                    "position": position,
+                    "claim": claim,
+                    "reason": reason,
+                }
+            )
+    if errors:
+        raise ValueError("cannot extract claims: " + "; ".join(errors))
+    return claims
 
 
 def _validate_item_fields(
@@ -584,6 +726,9 @@ def _verify_artifact(
     errors: list[str],
 ) -> bytes | None:
     path = run_dir / filename
+    if path.is_symlink():
+        errors.append(f"{filename} must not be a symbolic link")
+        return None
     expected_hash = manifest.get(hash_key)
     if expected_hash is None:
         if required:
@@ -619,10 +764,14 @@ def _parse_timestamp(value: object) -> datetime | None:
 def verify_run_dir(run_dir: Path, source_path: Path | None = None) -> VerificationResult:
     errors: list[str] = []
     warnings: list[str] = []
+    if run_dir.is_symlink():
+        return VerificationResult(False, ("run directory must not be a symbolic link",), ())
     manifest_path = run_dir / "manifest.json"
+    if manifest_path.is_symlink():
+        return VerificationResult(False, ("manifest.json must not be a symbolic link",), ())
     try:
-        manifest_value = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        manifest_value = parse_json(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, DuplicateJsonKeyError) as exc:
         return VerificationResult(
             False,
             (f"cannot read manifest.json: {exc}",),
@@ -777,6 +926,12 @@ def verify_run_dir(run_dir: Path, source_path: Path | None = None) -> Verificati
             or argument_count < 0
         ):
             errors.append("executor.argument_count must be a non-negative integer")
+        label = executor.get("label")
+        if label is not None:
+            try:
+                normalize_executor_label(label)
+            except ValueError as exc:
+                errors.append(f"executor.label is invalid: {exc}")
 
     timeout_seconds = manifest.get("timeout_seconds")
     if status == "prepared":
@@ -866,6 +1021,7 @@ def write_run(
     report: str | bytes | None = None,
     stderr: str | bytes | None = None,
     executor: list[str] | None = None,
+    executor_label: str | None = None,
     timeout_seconds: float | None = None,
     max_output_bytes: int | None = None,
     stdout_truncated: bool = False,
@@ -896,7 +1052,7 @@ def write_run(
         "started_at": started_at,
         "completed_at": completed_at,
         "status": status,
-        "executor": executor_metadata(executor),
+        "executor": executor_metadata(executor, executor_label),
         "timeout_seconds": timeout_seconds,
         "max_output_bytes": max_output_bytes,
         "stdout_truncated": stdout_truncated,
@@ -947,6 +1103,7 @@ def run(args: argparse.Namespace) -> int:
         executor = executor[1:]
     if not executor:
         raise ValueError("run requires an executor command after --")
+    executor_label = normalize_executor_label(getattr(args, "executor_label", None))
 
     raw_timeout = getattr(args, "timeout", 900.0)
     try:
@@ -982,6 +1139,7 @@ def run(args: argparse.Namespace) -> int:
         started_at=started_at,
         status="running",
         executor=executor,
+        executor_label=executor_label,
         timeout_seconds=timeout_seconds,
         max_output_bytes=max_output_bytes,
     )
@@ -1007,6 +1165,7 @@ def run(args: argparse.Namespace) -> int:
             completed_at=utc_now(),
             status="start_failed",
             executor=executor,
+            executor_label=executor_label,
             timeout_seconds=timeout_seconds,
             max_output_bytes=max_output_bytes,
             runner_exit_code=2,
@@ -1025,6 +1184,7 @@ def run(args: argparse.Namespace) -> int:
             completed_at=utc_now(),
             status="interrupted",
             executor=executor,
+            executor_label=executor_label,
             timeout_seconds=timeout_seconds,
             max_output_bytes=max_output_bytes,
             runner_exit_code=EXIT_INTERRUPTED,
@@ -1072,6 +1232,7 @@ def run(args: argparse.Namespace) -> int:
         completed_at=utc_now(),
         status=status,
         executor=executor,
+        executor_label=executor_label,
         timeout_seconds=timeout_seconds,
         max_output_bytes=max_output_bytes,
         stdout_truncated=completed.stdout_truncated,
@@ -1099,8 +1260,53 @@ def campaign(args: argparse.Namespace) -> int:
         executor = executor[1:]
     if not executor:
         raise ValueError("campaign requires an executor command after --")
+    executor_label = normalize_executor_label(getattr(args, "executor_label", None))
 
-    protocols = args.protocol or ["critic-individualist", "critic-contrastivist"]
+    if (
+        not isinstance(args.repeat, int)
+        or isinstance(args.repeat, bool)
+        or args.repeat <= 0
+    ):
+        raise ValueError("campaign repeat must be a positive integer")
+    try:
+        timeout_seconds = float(args.timeout)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("campaign timeout must be a positive finite number") from exc
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise ValueError("campaign timeout must be a positive finite number")
+    if isinstance(args.max_output_bytes, bool):
+        raise ValueError("campaign max output bytes must be a positive integer")
+    try:
+        max_output_bytes = int(args.max_output_bytes)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("campaign max output bytes must be a positive integer") from exc
+    if max_output_bytes <= 0:
+        raise ValueError("campaign max output bytes must be a positive integer")
+    raw_order_seed = getattr(args, "order_seed", None)
+    if raw_order_seed is None:
+        order_seed = secrets.token_hex(16)
+    elif (
+        not isinstance(raw_order_seed, str)
+        or not raw_order_seed
+        or len(raw_order_seed) > 128
+        or any(
+            ord(character) < 32 or ord(character) == 127
+            for character in raw_order_seed
+        )
+    ):
+        raise ValueError("campaign order seed must be 1..128 printable characters")
+    else:
+        order_seed = raw_order_seed
+
+    requested_tracks = getattr(args, "track", None)
+    if args.protocol and requested_tracks:
+        raise ValueError("campaign accepts either --protocol or --track, not both")
+    protocols = args.protocol
+    if requested_tracks:
+        protocols = [
+            str(ACADEMIC_TRACKS[track]["primary"]) for track in requested_tracks
+        ]
+    protocols = protocols or ["critic-individualist", "critic-contrastivist"]
     if len(set(protocols)) != len(protocols):
         raise ValueError("campaign protocols must not contain duplicates")
     for protocol_name in protocols:
@@ -1115,62 +1321,90 @@ def campaign(args: argparse.Namespace) -> int:
     if os.name == "posix":
         os.chmod(runs_dir, 0o700)
 
-    prefix = {
-        "critic-individualist": "I",
-        "critic-contrastivist": "C",
-        "citation-auditor": "A",
-        "critic-generic": "G",
-    }
+    schedule = campaign_schedule(protocols, args.repeat, order_seed)
     records: list[dict[str, object]] = []
-    run_archives: dict[str, str] = {}
-    for protocol_name in protocols:
-        for repetition in range(1, args.repeat + 1):
-            label = f"{prefix[protocol_name]}{repetition}"
-            run_args = argparse.Namespace(
-                protocol=protocol_name,
-                manuscript=str(source_path),
-                runs_dir=str(runs_dir),
-                allow_test_artifact=args.allow_test_artifact,
-                executor=executor,
-                timeout=args.timeout,
-                max_output_bytes=args.max_output_bytes,
-                quiet=True,
-            )
-            exit_code = run(run_args)
-            run_dir = run_args.run_dir_result
-            manifest = json.loads(
-                (run_dir / "manifest.json").read_text(encoding="utf-8")
-            )
-            relative_run = run_dir.relative_to(campaign_dir).as_posix()
-            run_archives[label] = relative_run
-            records.append(
-                {
-                    "label": label,
-                    "protocol": protocol_name,
-                    "repetition": repetition,
-                    "run_dir": relative_run,
-                    "status": manifest["status"],
-                    "runner_exit_code": exit_code,
-                    "manifest_sha256": sha256_bytes(
-                        (run_dir / "manifest.json").read_bytes()
-                    ),
-                }
-            )
+    for protocol_name, repetition in schedule:
+        label = f"{PROTOCOL_PREFIX[protocol_name]}{repetition}"
+        run_args = argparse.Namespace(
+            protocol=protocol_name,
+            manuscript=str(source_path),
+            runs_dir=str(runs_dir),
+            allow_test_artifact=args.allow_test_artifact,
+            executor=executor,
+            executor_label=executor_label,
+            timeout=timeout_seconds,
+            max_output_bytes=max_output_bytes,
+            quiet=True,
+        )
+        exit_code = run(run_args)
+        run_dir = run_args.run_dir_result
+        manifest = parse_json(
+            (run_dir / "manifest.json").read_text(encoding="utf-8")
+        )
+        relative_run = run_dir.relative_to(campaign_dir).as_posix()
+        records.append(
+            {
+                "label": label,
+                "protocol": protocol_name,
+                "repetition": repetition,
+                "run_dir": relative_run,
+                "status": manifest["status"],
+                "runner_exit_code": exit_code,
+                "manifest_sha256": sha256_bytes(
+                    (run_dir / "manifest.json").read_bytes()
+                ),
+            }
+        )
 
     completed_at = utc_now()
     campaign_manifest = {
-        "schema_version": 1,
+        "schema_version": 3,
         "source_name": source_path.name,
         "source_sha256": sha256_bytes(source_raw),
         "created_at": campaign_started_at,
         "completed_at": completed_at,
-        "executor": executor_metadata(executor),
+        "executor": executor_metadata(executor, executor_label),
+        "protocols": protocols,
         "repeat": args.repeat,
+        "order_strategy": "counterbalanced-v1",
+        "order_seed": order_seed,
+        "execution_order": [
+            f"{PROTOCOL_PREFIX[protocol]}{repetition}"
+            for protocol, repetition in schedule
+        ],
+        "timeout_seconds": timeout_seconds,
+        "max_output_bytes": max_output_bytes,
         "runs": records,
     }
-    if protocols == ["critic-individualist", "critic-contrastivist"] and args.repeat == 2:
-        template = scorecard_template()
-        template["run_archives"] = run_archives
+    can_score = (
+        len(protocols) >= 2
+        and args.repeat >= 2
+        and all(protocol in CRITIC_PROTOCOLS for protocol in protocols)
+        and all(record["status"] == "succeeded" for record in records)
+    )
+    if can_score:
+        score_runs: dict[str, dict[str, object]] = {}
+        records_by_run = {
+            (str(record["protocol"]), int(record["repetition"])): record
+            for record in records
+        }
+        for protocol_name in protocols:
+            for repetition in range(1, args.repeat + 1):
+                record = records_by_run[(protocol_name, repetition)]
+                label = str(record["label"])
+                run_dir = campaign_dir / str(record["run_dir"])
+                run_manifest = parse_json(
+                    (run_dir / "manifest.json").read_text(encoding="utf-8")
+                )
+                report, _ = read_utf8(run_dir / "report.md")
+                score_runs[label] = {
+                    "protocol": protocol_name,
+                    "repetition": repetition,
+                    "archive": record["run_dir"],
+                    "report_sha256": run_manifest["report_sha256"],
+                    "claims": extract_critic_claims(report),
+                }
+        template = campaign_pairing_scorecard(score_runs)
         atomic_write_text(
             campaign_dir / "scorecard.json",
             json.dumps(template, ensure_ascii=False, indent=2) + "\n",
@@ -1194,10 +1428,21 @@ def campaign(args: argparse.Namespace) -> int:
         summary.extend(
             [
                 "",
-                "Fill `scorecard.json` after blind one-to-one pairing, then run:",
+                "Create a blinded reviewer artifact and keep its identity key private:",
                 "",
                 "```bash",
-                "python critic_runner.py score path/to/scorecard.json --format markdown",
+                "python critic_runner.py blind-scorecard path/to/scorecard.json",
+                "```",
+                "This creates blind-review.json and blind-key.json beside the scorecard.",
+                "",
+                "After pairing, verify and merge the reviewer artifact:",
+                "",
+                "```bash",
+                "python critic_runner.py apply-blind-scorecard path/to/scorecard.json",
+                "```",
+                "",
+                "```bash",
+                "python critic_runner.py score path/to/completed-scorecard.json --format markdown",
                 "```",
             ]
         )
@@ -1217,21 +1462,172 @@ def campaign(args: argparse.Namespace) -> int:
     return 0 if all(record["runner_exit_code"] == 0 for record in records) else EXIT_CAMPAIGN_FAILED
 
 
+def _safe_campaign_run_path(campaign_dir: Path, relative: object) -> Path | None:
+    if not isinstance(relative, str) or "\\" in relative:
+        return None
+    relative_path = PurePosixPath(relative)
+    if (
+        relative_path.is_absolute()
+        or not relative_path.parts
+        or relative_path.parts[0] != "runs"
+        or any(part in {"", ".", ".."} for part in relative_path.parts)
+    ):
+        return None
+    candidate = campaign_dir
+    for part in relative_path.parts:
+        candidate = candidate / part
+        if candidate.is_symlink():
+            return None
+    try:
+        candidate.resolve().relative_to(campaign_dir.resolve())
+    except (OSError, ValueError):
+        return None
+    return candidate
+
+
+def verify_scorecard_provenance(
+    scorecard_path: Path, scorecard: object
+) -> tuple[str, ...]:
+    """Re-extract immutable claims from sibling campaign archives."""
+    if not isinstance(scorecard, dict) or scorecard.get("schema_version") not in {2, 3}:
+        return ()
+    errors: list[str] = []
+    runs = scorecard.get("runs")
+    if not isinstance(runs, dict):
+        return ("traceable scorecard runs must be an object",)
+    if scorecard.get("schema_version") == 2:
+        run_names = RUN_NAMES
+        campaign_records: dict[str, dict[str, object]] = {}
+    else:
+        raw_order = scorecard.get("run_order")
+        if (
+            not isinstance(raw_order, list)
+            or any(not isinstance(name, str) for name in raw_order)
+            or len(raw_order) != len(set(raw_order))
+        ):
+            return ("schema v3 scorecard run_order must be a unique string list",)
+        run_names = tuple(raw_order)
+        missing = [name for name in runs if name not in run_names]
+        extra = [name for name in run_names if name not in runs]
+        if missing or extra:
+            errors.append(
+                f"schema v3 scorecard run_order mismatch; missing={missing}, extra={extra}"
+            )
+    campaign_dir = scorecard_path.parent
+    if scorecard.get("schema_version") == 3:
+        campaign_path = campaign_dir / "campaign.json"
+        if campaign_path.is_symlink():
+            errors.append("campaign.json must not be a symbolic link")
+            campaign_records = {}
+        else:
+            try:
+                campaign = parse_json(campaign_path.read_text(encoding="utf-8"))
+            except (
+                OSError,
+                UnicodeDecodeError,
+                json.JSONDecodeError,
+                DuplicateJsonKeyError,
+            ) as exc:
+                errors.append(f"campaign.json cannot bind scorecard identity: {exc}")
+                campaign_records = {}
+            else:
+                raw_records = campaign.get("runs") if isinstance(campaign, dict) else None
+                if not isinstance(raw_records, list):
+                    errors.append("campaign runs cannot bind scorecard identity")
+                    campaign_records = {}
+                else:
+                    campaign_records = {
+                        str(record.get("label")): record
+                        for record in raw_records
+                        if isinstance(record, dict)
+                        and isinstance(record.get("label"), str)
+                    }
+                    raw_protocols = campaign.get("protocols")
+                    repeat = campaign.get("repeat")
+                    if (
+                        isinstance(raw_protocols, list)
+                        and all(
+                            isinstance(protocol, str)
+                            and protocol in PROTOCOL_PREFIX
+                            for protocol in raw_protocols
+                        )
+                        and isinstance(repeat, int)
+                        and not isinstance(repeat, bool)
+                        and repeat > 0
+                    ):
+                        expected_order = tuple(
+                            f"{PROTOCOL_PREFIX[protocol]}{repetition}"
+                            for protocol in raw_protocols
+                            for repetition in range(1, repeat + 1)
+                        )
+                        if run_names != expected_order:
+                            errors.append(
+                                "schema v3 scorecard run_order does not match campaign plan"
+                            )
+    for run_name in run_names:
+        run = runs.get(run_name)
+        if not isinstance(run, dict):
+            errors.append(f"runs.{run_name} must be an object")
+            continue
+        run_dir = _safe_campaign_run_path(campaign_dir, run.get("archive"))
+        if run_dir is None:
+            errors.append(f"runs.{run_name}.archive is unsafe or outside the campaign")
+            continue
+        if scorecard.get("schema_version") == 3:
+            record = campaign_records.get(run_name)
+            if record is None:
+                errors.append(f"runs.{run_name} has no matching campaign record")
+            else:
+                for field in ("protocol", "repetition"):
+                    if run.get(field) != record.get(field):
+                        errors.append(
+                            f"runs.{run_name}.{field} does not match campaign record"
+                        )
+                if run.get("archive") != record.get("run_dir"):
+                    errors.append(
+                        f"runs.{run_name}.archive does not match campaign record"
+                    )
+        report_path = run_dir / "report.md"
+        if report_path.is_symlink():
+            errors.append(f"runs.{run_name} report.md must not be a symbolic link")
+            continue
+        try:
+            report_text, report_raw = read_utf8(report_path)
+            extracted = extract_critic_claims(report_text)
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            errors.append(f"runs.{run_name} report cannot be re-extracted: {exc}")
+            continue
+        if sha256_bytes(report_raw) != run.get("report_sha256"):
+            errors.append(f"runs.{run_name}.report_sha256 does not match report.md")
+        if extracted != run.get("claims"):
+            errors.append(f"runs.{run_name}.claims do not match archived report.md")
+    return tuple(errors)
+
+
 def verify_campaign_dir(
     campaign_dir: Path, source_path: Path | None = None
 ) -> VerificationResult:
     errors: list[str] = []
     warnings: list[str] = []
+    if campaign_dir.is_symlink():
+        return VerificationResult(False, ("campaign directory must not be a symbolic link",), ())
     manifest_path = campaign_dir / "campaign.json"
+    if manifest_path.is_symlink():
+        return VerificationResult(False, ("campaign.json must not be a symbolic link",), ())
     try:
-        manifest_value = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        manifest_value = parse_json(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, DuplicateJsonKeyError) as exc:
         return VerificationResult(False, (f"cannot read campaign.json: {exc}",), ())
     if not isinstance(manifest_value, dict):
         return VerificationResult(False, ("campaign.json must contain an object",), ())
     manifest: dict[str, object] = manifest_value
-    if manifest.get("schema_version") != 1:
-        errors.append("campaign schema_version must be 1")
+    schema_version = manifest.get("schema_version")
+    if schema_version not in {1, 2, 3}:
+        errors.append("campaign schema_version must be 1, 2, or 3")
+    elif schema_version == 1:
+        warnings.append("legacy campaign schema_version 1 has no explicit run matrix")
+    elif schema_version == 2:
+        warnings.append("legacy campaign schema_version 2 has a fixed execution order")
 
     source_name = manifest.get("source_name")
     if (
@@ -1271,10 +1667,34 @@ def verify_campaign_dir(
     if template_hash is not None:
         if not _valid_sha256(template_hash):
             errors.append("scorecard_template_sha256 is invalid")
+        elif scorecard_path.is_symlink():
+            errors.append("scorecard.json must not be a symbolic link")
         elif not scorecard_path.is_file():
             errors.append("scorecard.json is missing")
         elif sha256_bytes(scorecard_path.read_bytes()) != template_hash:
-            warnings.append("scorecard.json differs from its blank template, likely because it was filled")
+            warnings.append(
+                "scorecard.json differs from its blank template, likely because it was filled"
+            )
+        if scorecard_path.is_file() and not scorecard_path.is_symlink():
+            try:
+                scorecard = parse_json(scorecard_path.read_text(encoding="utf-8"))
+            except (
+                OSError,
+                UnicodeDecodeError,
+                json.JSONDecodeError,
+                DuplicateJsonKeyError,
+            ) as exc:
+                errors.append(f"scorecard.json cannot be read: {exc}")
+            else:
+                if isinstance(scorecard, dict) and scorecard.get("schema_version") in {
+                    2,
+                    3,
+                }:
+                    try:
+                        validate_pairing_scorecard(scorecard)
+                    except ScorecardError as exc:
+                        errors.append(f"scorecard.json structure is invalid: {exc}")
+                errors.extend(verify_scorecard_provenance(scorecard_path, scorecard))
     elif scorecard_path.exists():
         warnings.append("scorecard.json exists but this campaign did not create a template")
 
@@ -1282,8 +1702,102 @@ def verify_campaign_dir(
     if not isinstance(records, list) or not records:
         errors.append("campaign runs must be a non-empty list")
         records = []
+    repeat = manifest.get("repeat")
+    if not isinstance(repeat, int) or isinstance(repeat, bool) or repeat <= 0:
+        errors.append("campaign repeat must be a positive integer")
+        repeat = 0
+    planned_protocols: list[str] = []
+    if schema_version in {2, 3}:
+        raw_protocols = manifest.get("protocols")
+        if (
+            not isinstance(raw_protocols, list)
+            or not raw_protocols
+            or any(
+                not isinstance(protocol, str) or protocol not in PROTOCOLS
+                for protocol in raw_protocols
+            )
+            or len(set(raw_protocols)) != len(raw_protocols)
+        ):
+            errors.append("campaign protocols must be a non-empty unique protocol list")
+        else:
+            planned_protocols = raw_protocols
+        timeout = manifest.get("timeout_seconds")
+        if (
+            not isinstance(timeout, (int, float))
+            or isinstance(timeout, bool)
+            or not math.isfinite(timeout)
+            or timeout <= 0
+        ):
+            errors.append("campaign timeout_seconds must be positive and finite")
+        max_output = manifest.get("max_output_bytes")
+        if (
+            not isinstance(max_output, int)
+            or isinstance(max_output, bool)
+            or max_output <= 0
+        ):
+            errors.append("campaign max_output_bytes must be a positive integer")
+
+    declared_execution_order: list[str] = []
+    if schema_version == 3:
+        order_seed = manifest.get("order_seed")
+        execution_order = manifest.get("execution_order")
+        if manifest.get("order_strategy") != "counterbalanced-v1":
+            errors.append("campaign order_strategy must be counterbalanced-v1")
+        if (
+            not isinstance(order_seed, str)
+            or not order_seed
+            or len(order_seed) > 128
+            or any(
+                ord(character) < 32 or ord(character) == 127
+                for character in order_seed
+            )
+        ):
+            errors.append("campaign order_seed must be 1..128 printable characters")
+        if not isinstance(execution_order, list) or any(
+            not isinstance(label, str) for label in execution_order
+        ):
+            errors.append("campaign execution_order must be a string list")
+        else:
+            declared_execution_order = execution_order
+        if planned_protocols and repeat and isinstance(order_seed, str):
+            expected_order = [
+                f"{PROTOCOL_PREFIX[protocol]}{repetition}"
+                for protocol, repetition in campaign_schedule(
+                    planned_protocols, repeat, order_seed
+                )
+            ]
+            if declared_execution_order != expected_order:
+                errors.append("campaign execution_order does not match its seed and plan")
+
+    campaign_executor = manifest.get("executor")
+    if not isinstance(campaign_executor, dict):
+        errors.append("campaign executor must contain redacted metadata")
+    else:
+        command = campaign_executor.get("command")
+        argument_count = campaign_executor.get("argument_count")
+        if (
+            not isinstance(command, str)
+            or not command
+            or "/" in command
+            or "\\" in command
+        ):
+            errors.append("campaign executor.command must be a non-empty basename")
+        if (
+            not isinstance(argument_count, int)
+            or isinstance(argument_count, bool)
+            or argument_count < 0
+        ):
+            errors.append("campaign executor.argument_count must be non-negative")
+        label = campaign_executor.get("label")
+        if label is not None:
+            try:
+                normalize_executor_label(label)
+            except ValueError as exc:
+                errors.append(f"campaign executor.label is invalid: {exc}")
+
     labels: set[str] = set()
     run_paths: set[str] = set()
+    observed_runs: set[tuple[str, int]] = set()
     for index, record in enumerate(records):
         item = f"runs[{index}]"
         if not isinstance(record, dict):
@@ -1296,28 +1810,38 @@ def verify_campaign_dir(
             errors.append(f"duplicate campaign label: {label}")
         else:
             labels.add(label)
-        relative = record.get("run_dir")
-        if not isinstance(relative, str):
-            errors.append(f"{item}.run_dir must be a relative POSIX path")
-            continue
-        relative_path = PurePosixPath(relative)
-        if (
-            relative_path.is_absolute()
-            or not relative_path.parts
-            or relative_path.parts[0] != "runs"
-            or any(part in {"", ".", ".."} for part in relative_path.parts)
-            or "\\" in relative
-            or relative in run_paths
+        protocol = record.get("protocol")
+        repetition = record.get("repetition")
+        if not isinstance(protocol, str) or protocol not in PROTOCOLS:
+            errors.append(f"{item}.protocol is invalid")
+        elif (
+            not isinstance(repetition, int)
+            or isinstance(repetition, bool)
+            or repetition <= 0
+            or (repeat and repetition > repeat)
         ):
+            errors.append(f"{item}.repetition is invalid")
+        else:
+            run_key = (protocol, repetition)
+            if run_key in observed_runs:
+                errors.append(f"duplicate campaign run: {run_key}")
+            observed_runs.add(run_key)
+            if label != f"{PROTOCOL_PREFIX[protocol]}{repetition}":
+                errors.append(f"{item}.label does not match protocol and repetition")
+        relative = record.get("run_dir")
+        run_dir = _safe_campaign_run_path(campaign_dir, relative)
+        if run_dir is None or relative in run_paths:
             errors.append(f"{item}.run_dir is unsafe or duplicated: {relative!r}")
             continue
         run_paths.add(relative)
-        run_dir = campaign_dir.joinpath(*relative_path.parts)
         child_manifest_path = run_dir / "manifest.json"
+        if child_manifest_path.is_symlink():
+            errors.append(f"{item} manifest.json must not be a symbolic link")
+            continue
         try:
             child_manifest_bytes = child_manifest_path.read_bytes()
-            child_manifest = json.loads(child_manifest_bytes.decode("utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            child_manifest = parse_json(child_manifest_bytes.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, DuplicateJsonKeyError) as exc:
             errors.append(f"{item} manifest cannot be read: {exc}")
             continue
         if sha256_bytes(child_manifest_bytes) != record.get("manifest_sha256"):
@@ -1325,6 +1849,17 @@ def verify_campaign_dir(
         if not isinstance(child_manifest, dict):
             errors.append(f"{item} manifest must contain an object")
             continue
+        if child_manifest.get("source_name") != source_name:
+            errors.append(f"{item} source_name does not match campaign")
+        if child_manifest.get("source_sha256") != manifest.get("source_sha256"):
+            errors.append(f"{item} source_sha256 does not match campaign")
+        if child_manifest.get("executor") != campaign_executor:
+            errors.append(f"{item} executor metadata does not match campaign")
+        if schema_version in {2, 3}:
+            if child_manifest.get("timeout_seconds") != manifest.get("timeout_seconds"):
+                errors.append(f"{item} timeout_seconds does not match campaign")
+            if child_manifest.get("max_output_bytes") != manifest.get("max_output_bytes"):
+                errors.append(f"{item} max_output_bytes does not match campaign")
         for record_key, manifest_key in (
             ("protocol", "protocol"),
             ("status", "status"),
@@ -1335,6 +1870,27 @@ def verify_campaign_dir(
         child = verify_run_dir(run_dir, source_path)
         errors.extend(f"{label or item}: {error}" for error in child.errors)
         warnings.extend(f"{label or item}: {warning}" for warning in child.warnings)
+
+    if schema_version in {2, 3} and planned_protocols and repeat:
+        expected_runs = {
+            (protocol, repetition)
+            for protocol in planned_protocols
+            for repetition in range(1, repeat + 1)
+        }
+        if observed_runs != expected_runs:
+            errors.append(
+                "campaign run matrix mismatch: "
+                f"missing={sorted(expected_runs - observed_runs)}, "
+                f"extra={sorted(observed_runs - expected_runs)}"
+            )
+    if schema_version == 3:
+        observed_execution_order = [
+            str(record.get("label"))
+            for record in records
+            if isinstance(record, dict)
+        ]
+        if observed_execution_order != declared_execution_order:
+            errors.append("campaign run record order does not match execution_order")
 
     return VerificationResult(not errors, tuple(errors), tuple(warnings))
 
@@ -1349,9 +1905,20 @@ def init_scorecard_command(args: argparse.Namespace) -> int:
 def score_command(args: argparse.Namespace) -> int:
     scorecard_path = Path(args.scorecard).resolve()
     try:
-        scorecard = json.loads(scorecard_path.read_text(encoding="utf-8"))
+        if Path(args.scorecard).is_symlink():
+            raise ScorecardError("scorecard path must not be a symbolic link")
+        scorecard = parse_json(scorecard_path.read_text(encoding="utf-8"))
         result = score_divergence(scorecard)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ScorecardError) as exc:
+        provenance_errors = verify_scorecard_provenance(scorecard_path, scorecard)
+        if provenance_errors:
+            raise ScorecardError("; ".join(provenance_errors))
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        DuplicateJsonKeyError,
+        ScorecardError,
+    ) as exc:
         print(f"scorecard error: {exc}", file=sys.stderr)
         return EXIT_INVALID_SCORECARD
     output = (
@@ -1368,6 +1935,125 @@ def score_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _read_scorecard_json(path: Path, label: str) -> object:
+    if path.is_symlink():
+        raise ScorecardError(f"{label} path must not be a symbolic link")
+    try:
+        return parse_json(path.read_text(encoding="utf-8"))
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        DuplicateJsonKeyError,
+    ) as exc:
+        raise ScorecardError(f"{label} cannot be read: {exc}") from exc
+
+
+def blind_scorecard_command(args: argparse.Namespace) -> int:
+    raw_scorecard_path = Path(args.scorecard)
+    scorecard_path = raw_scorecard_path.resolve()
+    raw_blind_path = (
+        Path(args.output)
+        if getattr(args, "output", None)
+        else scorecard_path.parent / "blind-review.json"
+    )
+    raw_key_path = (
+        Path(args.key_output)
+        if getattr(args, "key_output", None)
+        else scorecard_path.parent / "blind-key.json"
+    )
+    blind_path = raw_blind_path.resolve()
+    key_path = raw_key_path.resolve()
+    try:
+        if raw_scorecard_path.is_symlink():
+            raise ScorecardError("scorecard path must not be a symbolic link")
+        if len({scorecard_path, blind_path, key_path}) != 3:
+            raise ScorecardError("scorecard, blind output, and key output must differ")
+        if raw_blind_path.is_symlink() or raw_key_path.is_symlink():
+            raise ScorecardError("blind and key outputs must not be symbolic links")
+        if blind_path.exists() or key_path.exists():
+            raise ScorecardError(
+                "blind or key output already exists; choose new paths to avoid data loss"
+            )
+        scorecard = _read_scorecard_json(scorecard_path, "scorecard")
+        provenance_errors = verify_scorecard_provenance(scorecard_path, scorecard)
+        if provenance_errors:
+            raise ScorecardError("; ".join(provenance_errors))
+        seed = args.seed if args.seed is not None else secrets.token_hex(16)
+        blind, key = create_blind_bundle(scorecard, seed)
+        atomic_write_text(
+            key_path,
+            json.dumps(key, ensure_ascii=False, indent=2) + "\n",
+        )
+        atomic_write_text(
+            blind_path,
+            json.dumps(blind, ensure_ascii=False, indent=2) + "\n",
+        )
+    except (OSError, ValueError) as exc:
+        print(f"blind scorecard error: {exc}", file=sys.stderr)
+        return EXIT_INVALID_SCORECARD
+    print(blind_path)
+    print(key_path)
+    return 0
+
+
+def apply_blind_scorecard_command(args: argparse.Namespace) -> int:
+    raw_scorecard_path = Path(args.scorecard)
+    scorecard_path = raw_scorecard_path.resolve()
+    raw_blind_path = (
+        Path(args.blind)
+        if getattr(args, "blind", None)
+        else scorecard_path.parent / "blind-review.json"
+    )
+    raw_key_path = (
+        Path(args.key)
+        if getattr(args, "key", None)
+        else scorecard_path.parent / "blind-key.json"
+    )
+    blind_path = raw_blind_path.resolve()
+    key_path = raw_key_path.resolve()
+    raw_output_path = (
+        Path(args.output)
+        if getattr(args, "output", None)
+        else scorecard_path.parent / "completed-scorecard.json"
+    )
+    output_path = raw_output_path.resolve()
+    try:
+        if any(
+            path.is_symlink()
+            for path in (raw_scorecard_path, raw_blind_path, raw_key_path)
+        ):
+            raise ScorecardError(
+                "scorecard, blind artifact, and key must not be symbolic links"
+            )
+        if output_path in {scorecard_path, blind_path, key_path}:
+            raise ScorecardError("output must not overwrite an input artifact")
+        if output_path.parent != scorecard_path.parent:
+            raise ScorecardError(
+                "output must stay beside the original scorecard to preserve campaign provenance"
+            )
+        if raw_output_path.is_symlink():
+            raise ScorecardError("output must not be a symbolic link")
+        if output_path.exists():
+            raise ScorecardError("output already exists; choose a new path to avoid data loss")
+        scorecard = _read_scorecard_json(scorecard_path, "scorecard")
+        blind = _read_scorecard_json(blind_path, "blind artifact")
+        key = _read_scorecard_json(key_path, "blind key")
+        provenance_errors = verify_scorecard_provenance(scorecard_path, scorecard)
+        if provenance_errors:
+            raise ScorecardError("; ".join(provenance_errors))
+        merged = apply_blind_pairings(scorecard, blind, key)
+        atomic_write_text(
+            output_path,
+            json.dumps(merged, ensure_ascii=False, indent=2) + "\n",
+        )
+    except (OSError, ValueError) as exc:
+        print(f"apply blind scorecard error: {exc}", file=sys.stderr)
+        return EXIT_INVALID_SCORECARD
+    print(output_path)
+    return 0
+
+
 def validate_command(args: argparse.Namespace) -> int:
     report_path = Path(args.report).resolve()
     report, _ = read_utf8(report_path)
@@ -1380,7 +2066,7 @@ def validate_command(args: argparse.Namespace) -> int:
 
 
 def verify_run_command(args: argparse.Namespace) -> int:
-    run_dir = Path(args.run_dir).resolve()
+    run_dir = Path(args.run_dir).absolute()
     source_path = Path(args.source).resolve() if args.source else None
     verification = verify_run_dir(run_dir, source_path)
     for warning in verification.warnings:
@@ -1394,7 +2080,7 @@ def verify_run_command(args: argparse.Namespace) -> int:
 
 
 def verify_campaign_command(args: argparse.Namespace) -> int:
-    campaign_dir = Path(args.campaign_dir).resolve()
+    campaign_dir = Path(args.campaign_dir).absolute()
     source_path = Path(args.source).resolve() if args.source else None
     verification = verify_campaign_dir(campaign_dir, source_path)
     for warning in verification.warnings:
@@ -1412,6 +2098,172 @@ def list_protocols(_: argparse.Namespace) -> int:
         suffix = " [test-only]" if name in TEST_ONLY else ""
         print(f"{name}{suffix}")
     return 0
+
+
+def list_tracks(_: argparse.Namespace) -> int:
+    for name, track in ACADEMIC_TRACKS.items():
+        specialists = ", ".join(track["specialists"]) or "none"
+        print(f"{name}: {track['label']}")
+        print(f"  primary: {track['primary']}")
+        print(f"  specialists: {specialists}")
+    print("cross-disciplinary: " + ", ".join(CROSS_DISCIPLINARY_PROTOCOLS))
+    return 0
+
+
+def doctor(args: argparse.Namespace) -> int:
+    errors: list[str] = []
+    checks: list[str] = []
+    if sys.version_info < (3, 10):
+        errors.append("Python 3.10 or newer is required")
+    else:
+        checks.append(f"Python {sys.version_info.major}.{sys.version_info.minor}")
+
+    expected_protocols = set(PROTOCOLS)
+    if set(PROTOCOL_PREFIX) != expected_protocols:
+        errors.append("protocol prefix registry does not match available protocols")
+    elif len(set(PROTOCOL_PREFIX.values())) != len(PROTOCOL_PREFIX):
+        errors.append("protocol prefixes must be unique")
+    else:
+        checks.append("protocol prefixes are complete and unique")
+
+    for name in PROTOCOLS:
+        try:
+            body, _ = load_protocol(name, allow_test_artifact=name in TEST_ONLY)
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            errors.append(f"{name} cannot be loaded: {exc}")
+            continue
+        if name in CRITIC_PROTOCOLS:
+            for heading in CRITIC_SECTIONS:
+                if body.count(heading) != 1:
+                    errors.append(f"{name} must contain {heading!r} exactly once")
+    if not any("cannot be loaded" in error or "must contain" in error for error in errors):
+        checks.append(f"{len(PROTOCOLS)} protocol files are readable and structurally valid")
+
+    referenced_protocols = set(CROSS_DISCIPLINARY_PROTOCOLS)
+    for track in ACADEMIC_TRACKS.values():
+        referenced_protocols.add(str(track["primary"]))
+        referenced_protocols.update(str(name) for name in track["specialists"])
+    missing_references = sorted(referenced_protocols - expected_protocols)
+    if missing_references:
+        errors.append(f"academic track registry references missing protocols: {missing_references}")
+    else:
+        checks.append(f"{len(ACADEMIC_TRACKS)} academic tracks resolve correctly")
+
+    directory = Path(args.directory).resolve()
+    if not directory.is_dir():
+        errors.append(f"working directory does not exist: {directory}")
+    else:
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=directory,
+                prefix=".critic-doctor-",
+                delete=True,
+            ) as handle:
+                handle.write(b"ok")
+                handle.flush()
+        except OSError as exc:
+            errors.append(f"working directory is not writable: {exc}")
+        else:
+            checks.append(f"working directory is writable: {directory}")
+
+    for check in checks:
+        print(f"[ok] {check}")
+    if errors:
+        for error in errors:
+            print(f"[error] {error}", file=sys.stderr)
+        return 2
+    print("ready")
+    return 0
+
+
+def prepare_track(args: argparse.Namespace) -> int:
+    args.protocol = ACADEMIC_TRACKS[args.track]["primary"]
+    return prepare(args)
+
+
+def _unquote_path(raw: str) -> str:
+    value = raw.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        return value[1:-1].strip()
+    return value
+
+
+def quickstart(args: argparse.Namespace) -> int:
+    """Guide a first-time user to a manual, provider-neutral prompt bundle."""
+    print("Critic Divergence Tester 快速开始")
+    print("不会上传文章，也不需要 API key。按 Ctrl+C 可随时退出。")
+
+    manuscript = getattr(args, "manuscript", None)
+    if manuscript is None:
+        try:
+            manuscript = input("\n请粘贴文章路径（.md 或 .txt）：")
+        except EOFError:
+            print("\n错误：没有收到文章路径。", file=sys.stderr)
+            return 2
+        except KeyboardInterrupt:
+            print("\n已取消。", file=sys.stderr)
+            return EXIT_INTERRUPTED
+    manuscript = _unquote_path(str(manuscript))
+    if not manuscript:
+        print("错误：文章路径不能为空。", file=sys.stderr)
+        return 2
+
+    source_path = Path(manuscript).expanduser().resolve()
+    if not source_path.is_file():
+        print(f"错误：找不到文章文件：{source_path}", file=sys.stderr)
+        return 2
+    try:
+        source_text, _ = read_utf8(source_path)
+    except UnicodeDecodeError:
+        print("错误：文章不是 UTF-8 编码，请转换编码后重试。", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"错误：无法读取文章：{exc}", file=sys.stderr)
+        return 2
+    if not source_text.strip():
+        print("错误：文章文件是空的。", file=sys.stderr)
+        return 2
+
+    track = getattr(args, "track", None)
+    if track is not None and track not in ACADEMIC_TRACKS:
+        print(f"错误：未知学术线：{track}", file=sys.stderr)
+        return 2
+    while track is None:
+        print("\n请选择学术线：")
+        print("  1. 文科·社会科学（历史、哲学、法学、经济学、社会学等）")
+        print("  2. 理科·自然科学（实验、观察、理论与模拟）")
+        print("  3. 工科·工程学（软件、产品、系统与实现）")
+        try:
+            choice = input("请输入 1、2 或 3（直接回车默认选 1）：").strip()
+        except EOFError:
+            print("\n错误：没有收到学术线选择。", file=sys.stderr)
+            return 2
+        except KeyboardInterrupt:
+            print("\n已取消。", file=sys.stderr)
+            return EXIT_INTERRUPTED
+        track = QUICKSTART_TRACK_ALIASES.get(choice or "1")
+        if track is None:
+            print("无法识别，请输入 1、2、3，或学术线名称。")
+
+    track_label = str(ACADEMIC_TRACKS[track]["label"])
+    print(f"\n已选择：{track_label}")
+    print("正在生成自包含审查提示……")
+    result = prepare_track(
+        argparse.Namespace(
+            track=track,
+            manuscript=str(source_path),
+            runs_dir=getattr(args, "runs_dir", ".critic-runs"),
+            allow_test_artifact=False,
+        )
+    )
+    if result == 0:
+        print("完成。打开上面显示的 prompt.md，复制全部内容给你常用的 AI。")
+    return result
+
+
+def run_track(args: argparse.Namespace) -> int:
+    args.protocol = ACADEMIC_TRACKS[args.track]["primary"]
+    return run(args)
 
 
 def positive_seconds(raw: str) -> float:
@@ -1449,6 +2301,35 @@ def _add_run_inputs(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_track_inputs(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("track", choices=ACADEMIC_TRACKS)
+    parser.add_argument("manuscript", help="UTF-8 manuscript path")
+    parser.add_argument(
+        "--runs-dir",
+        default=".critic-runs",
+        help="archive directory (default: .critic-runs)",
+    )
+
+
+def _add_execution_limits(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--executor-label",
+        help="public reproducibility label for the model/configuration (never put secrets here)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=positive_seconds,
+        default=900.0,
+        help="terminate the executor after this many seconds (default: 900)",
+    )
+    parser.add_argument(
+        "--max-output-bytes",
+        type=positive_integer,
+        default=DEFAULT_MAX_OUTPUT_BYTES,
+        help="terminate after this many combined stdout/stderr bytes (default: 16777216)",
+    )
+
+
 def parser() -> argparse.ArgumentParser:
     top = argparse.ArgumentParser(
         description="Run critic protocols without depending on Claude Code."
@@ -1456,6 +2337,34 @@ def parser() -> argparse.ArgumentParser:
     sub = top.add_subparsers(dest="command", required=True)
 
     sub.add_parser("list", help="list available protocols").set_defaults(func=list_protocols)
+    sub.add_parser("tracks", help="list academic tracks and their protocols").set_defaults(
+        func=list_tracks
+    )
+    doctor_parser = sub.add_parser(
+        "doctor", help="check Python, protocol files, track mappings, and write access"
+    )
+    doctor_parser.add_argument(
+        "--directory",
+        default=".",
+        help="directory to test for archive write access (default: current directory)",
+    )
+    doctor_parser.set_defaults(func=doctor)
+
+    quickstart_parser = sub.add_parser(
+        "quickstart", help="中文交互引导：选择文章和学术线并生成 prompt"
+    )
+    quickstart_parser.add_argument(
+        "manuscript", nargs="?", help="可选的 UTF-8 文章路径"
+    )
+    quickstart_parser.add_argument(
+        "--track", choices=ACADEMIC_TRACKS, help="可选；跳过交互式学术线选择"
+    )
+    quickstart_parser.add_argument(
+        "--runs-dir",
+        default=".critic-runs",
+        help="归档目录（默认：.critic-runs）",
+    )
+    quickstart_parser.set_defaults(func=quickstart)
 
     prepare_parser = sub.add_parser(
         "prepare", help="archive a self-contained prompt for manual use"
@@ -1463,23 +2372,31 @@ def parser() -> argparse.ArgumentParser:
     _add_run_inputs(prepare_parser)
     prepare_parser.set_defaults(func=prepare)
 
+    prepare_track_parser = sub.add_parser(
+        "prepare-track", help="prepare the primary protocol for an academic track"
+    )
+    _add_track_inputs(prepare_track_parser)
+    prepare_track_parser.set_defaults(
+        allow_test_artifact=False,
+        func=prepare_track,
+    )
+
     run_parser = sub.add_parser(
         "run", help="run one protocol through an external stdin/stdout command"
     )
     _add_run_inputs(run_parser)
-    run_parser.add_argument(
-        "--timeout",
-        type=positive_seconds,
-        default=900.0,
-        help="terminate the executor after this many seconds (default: 900)",
-    )
-    run_parser.add_argument(
-        "--max-output-bytes",
-        type=positive_integer,
-        default=DEFAULT_MAX_OUTPUT_BYTES,
-        help="terminate after this many combined stdout/stderr bytes (default: 16777216)",
-    )
+    _add_execution_limits(run_parser)
     run_parser.set_defaults(func=run)
+
+    run_track_parser = sub.add_parser(
+        "run-track", help="run the primary protocol for an academic track"
+    )
+    _add_track_inputs(run_track_parser)
+    _add_execution_limits(run_track_parser)
+    run_track_parser.set_defaults(
+        allow_test_artifact=False,
+        func=run_track,
+    )
 
     campaign_parser = sub.add_parser(
         "campaign",
@@ -1493,10 +2410,20 @@ def parser() -> argparse.ArgumentParser:
         help="protocol to include; repeat this option (default: individualist and contrastivist)",
     )
     campaign_parser.add_argument(
+        "--track",
+        action="append",
+        choices=ACADEMIC_TRACKS,
+        help="academic track to include; repeat this option; cannot combine with --protocol",
+    )
+    campaign_parser.add_argument(
         "--repeat",
         type=positive_integer,
         default=2,
         help="serial repetitions per protocol (default: 2)",
+    )
+    campaign_parser.add_argument(
+        "--order-seed",
+        help="reproduce the counterbalanced execution order (default: random seed)",
     )
     campaign_parser.add_argument(
         "--campaigns-dir",
@@ -1515,6 +2442,10 @@ def parser() -> argparse.ArgumentParser:
         "--max-output-bytes",
         type=positive_integer,
         default=DEFAULT_MAX_OUTPUT_BYTES,
+    )
+    campaign_parser.add_argument(
+        "--executor-label",
+        help="public reproducibility label for the model/configuration (never put secrets here)",
     )
     campaign_parser.set_defaults(func=campaign)
 
@@ -1560,6 +2491,38 @@ def parser() -> argparse.ArgumentParser:
     score_parser.add_argument("--output", help="optional result file path")
     score_parser.set_defaults(func=score_command)
 
+    blind_scorecard_parser = sub.add_parser(
+        "blind-scorecard",
+        help="create an identity-free pairing artifact and a separate private key",
+    )
+    blind_scorecard_parser.add_argument("scorecard", help="traceable scorecard path")
+    blind_scorecard_parser.add_argument(
+        "--output", help="reviewer JSON path (default: beside scorecard)"
+    )
+    blind_scorecard_parser.add_argument(
+        "--key-output", help="private key JSON path (default: beside scorecard)"
+    )
+    blind_scorecard_parser.add_argument(
+        "--seed", help="optional reproducible blind alias seed"
+    )
+    blind_scorecard_parser.set_defaults(func=blind_scorecard_command)
+
+    apply_blind_parser = sub.add_parser(
+        "apply-blind-scorecard",
+        help="verify and merge blinded human pairings into a scorecard",
+    )
+    apply_blind_parser.add_argument("scorecard", help="original scorecard path")
+    apply_blind_parser.add_argument(
+        "blind", nargs="?", help="completed blind JSON path (default: beside scorecard)"
+    )
+    apply_blind_parser.add_argument(
+        "--key", help="private key JSON path (default: beside scorecard)"
+    )
+    apply_blind_parser.add_argument(
+        "--output", help="merged JSON path (default: beside scorecard)"
+    )
+    apply_blind_parser.set_defaults(func=apply_blind_scorecard_command)
+
     return top
 
 
@@ -1570,13 +2533,13 @@ def main(argv: list[str] | None = None) -> int:
             reconfigure(encoding="utf-8", errors="replace")
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     executor: list[str] = []
-    if raw_argv and raw_argv[0] in {"run", "campaign"} and "--" in raw_argv:
+    if raw_argv and raw_argv[0] in {"run", "run-track", "campaign"} and "--" in raw_argv:
         separator = raw_argv.index("--")
         executor = raw_argv[separator + 1 :]
         raw_argv = raw_argv[:separator]
 
     args = parser().parse_args(raw_argv)
-    if args.command in {"run", "campaign"}:
+    if args.command in {"run", "run-track", "campaign"}:
         args.executor = executor
     try:
         return args.func(args)

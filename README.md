@@ -4,9 +4,163 @@
 
 一组**模型无关**的敌对审查协议，以及一个零依赖的独立 runner。
 
-它最初以 Claude Code subagent 的形式出现，但核心从来不需要 Claude Code：两个 critic 本质上是两套不可互相让步的审查前提。现在仓库把“审查协议”和“模型执行器”分开。Claude Code、其他 CLI、本地模型、网页聊天都只是可替换的执行器。
+它最初以 Claude Code subagent 的形式出现，但核心从来不需要 Claude Code。现在仓库把“学术线”“具体审查协议”和“模型执行器”分开：学术线决定证据观，协议决定攻击入口，Claude Code、其他 CLI、本地模型、网页聊天都只是可替换的执行器。
 
 这个项目也不是“让多个 agent 投票得出正确答案”。它做的是 philosophical pressure-test：让不同前提的敌对读者分别攻击同一份稿件，然后由作者本人判断哪些攻击真的改变论证。
+
+## 5 分钟上手（第一次用就看这里）
+
+最简单的用法**不需要 API key，不需要安装 Claude Code，也不需要配置模型命令**。本工具先把“审查规则 + 你的文章”做成一个 `prompt.md`，你把它完整复制给 ChatGPT、Claude、Gemini 或其他 AI 即可。
+
+### 第 1 步：准备 Python
+
+需要 Python 3.10 或更高版本。在终端里检查：
+
+```powershell
+# Windows PowerShell
+py -3 --version
+```
+
+```bash
+# macOS / Linux
+python3 --version
+```
+
+只要显示 `Python 3.10`、`3.11`、`3.12`、`3.13`、`3.14` 或更高版本即可。Windows 如果提示找不到 `py`，安装 [Python](https://www.python.org/downloads/) 时勾选 **Add Python to PATH**；macOS/Linux 如果提示找不到 `python3`，先用系统的软件管理器安装 Python 3。
+
+### 第 2 步：下载项目
+
+会用 Git：
+
+```bash
+git clone https://github.com/UYMIDGameStudio/critic-divergence-tester.git
+cd critic-divergence-tester
+```
+
+不会用 Git：打开 [项目主页](https://github.com/UYMIDGameStudio/critic-divergence-tester)，点击 **Code → Download ZIP**，解压后在该文件夹里打开终端。
+
+本项目没有第三方依赖，因此不需要运行 `pip install`。
+
+先运行一次自检，确认 Python、协议文件、学术线配置和当前目录都能正常使用：
+
+```powershell
+# Windows
+py -3 critic_runner.py doctor
+```
+
+```bash
+# macOS / Linux
+python3 critic_runner.py doctor
+```
+
+最后显示 `ready` 就可以继续。若出现 `[error]`，按那一行提示处理；这一步不会上传或修改你的文章。
+
+### 第 3 步：运行中文引导
+
+把文章保存为 UTF-8 文本，例如 `draft.md`。普通 `.txt` 文件也可以。然后只运行下面这一条命令：
+
+```powershell
+# Windows
+py -3 critic_runner.py quickstart
+```
+
+```bash
+# macOS / Linux
+python3 critic_runner.py quickstart
+```
+
+程序会用中文询问文章路径和学术线；输入 `1` 选文科·社会科学，`2` 选理科·自然科学，`3` 选工科·工程学。文章路径可以直接复制粘贴，Windows 拖入终端后带双引号也能识别。
+
+如果你不想回答问题，也可以直接写完整命令。文科、历史、哲学、法学、政治学、社会学、经济学等使用：
+
+```powershell
+# Windows
+py -3 critic_runner.py prepare-track humanities-social-science draft.md
+```
+
+```bash
+# macOS / Linux
+python3 critic_runner.py prepare-track humanities-social-science draft.md
+```
+
+自然科学把 `humanities-social-science` 换成 `natural-science`；工程、软件、系统设计把它换成 `engineering`。这是给脚本和熟悉命令行的用户准备的非交互方式。
+
+成功后终端会打印一个类似下面的路径：
+
+```text
+.critic-runs/20260807T120000.000000Z--critic-social-science/prompt.md
+```
+
+### 第 4 步：交给 AI
+
+打开刚生成的 `prompt.md`，复制全部内容，粘贴到你常用的 AI 对话里。AI 返回的六节报告就是审查结果。
+
+runner 本身不会上传文章；当你把 `prompt.md` 粘贴到某个 AI 平台时，文章才会发送给该平台。处理未发表、保密或含个人信息的稿件前，请先确认所用平台的数据政策。`.critic-runs` 中也保存了完整文章，不要把这个目录公开上传。
+
+重点看报告末尾：
+
+- `STATUS: complete`：报告结构完整，且没有声明未核实项目。
+- `STATUS: partial`：可以使用，但先查看 `UNVERIFIED` 里有哪些内容没有确认。
+- `STATUS: blocked`：缺少关键材料，本次报告不能当作完整审查。
+
+不要看到批评就全部接受。这个工具提供的是敌对压力测试，最后仍由作者判断哪条批评真的改变论证。
+
+### 可选：检查 AI 是否遵守输出格式
+
+把 AI 回答保存成 UTF-8 的 `report.md`，然后运行：
+
+```powershell
+# Windows；社会科学示例
+py -3 critic_runner.py validate critic-social-science report.md
+```
+
+```bash
+# macOS / Linux；社会科学示例
+python3 critic_runner.py validate critic-social-science report.md
+```
+
+显示 `valid` 就表示标题、编号和必填字段合格。它只检查结构，不代表报告中的批评一定正确。
+
+### 常见问题
+
+| 问题 | 怎么处理 |
+| --- | --- |
+| 提示找不到 `python` / `py` | 安装 Python 3.10+；Windows 优先尝试 `py -3`，macOS/Linux 使用 `python3` |
+| 提示找不到 `critic_runner.py` | 先用 `cd` 进入解压后的项目文件夹 |
+| 提示找不到 `draft.md` | 确认文章就在当前文件夹，或传入它的完整路径 |
+| 不知道命令里的学术线英文怎么写 | 运行 `quickstart`，直接输入数字 1、2 或 3 |
+| 文件路径里有空格 | 用英文双引号包住路径，例如 `"C:\My Papers\draft.md"` |
+| 中文乱码 | 将文章和保存的报告改为 UTF-8 编码 |
+| `doctor` 显示 `[error]` | 按错误行修复；最常见原因是 Python 版本太旧、下载不完整或当前文件夹不可写 |
+| `validate` 返回很多错误 | 把错误信息交给 AI，让它严格按原提示中的六节格式重新输出 |
+| 不知道选哪条线 | 文科与社会研究选 `humanities-social-science`；自然规律与实验选 `natural-science`；产品、系统与实现选 `engineering` |
+
+如果是用 Git 下载的，更新到最新版：
+
+```bash
+git pull
+```
+
+如果使用 Download ZIP，请重新下载并解压最新版。
+
+## 三条学术线
+
+| 学术线 | 主协议 | 它优先审查什么 |
+| --- | --- | --- |
+| 文科·社会科学 `humanities-social-science` | `critic-social-science` | 主张类型、研究设计、测量、识别、案例与材料、解释边界、规范前提 |
+| 理科·自然科学 `natural-science` | `critic-natural-science` | 假说、实验／观察设计、测量不确定性、统计推断、复现与边界条件 |
+| 工科·工程学 `engineering` | `critic-engineering` | 需求、约束、权衡、接口、失效模式、安全、验证与确认 |
+
+文科·社会科学是当前重点线。它先把承担论证功能的主张分成规范、概念、诠释、描述、因果、预测和评价，再选择相称的检查。经验和因果研究会被追问构念、操作化、样本形成、测量效度、混杂、选择、反向因果、机制与外部效度；定性研究会被追问案例选择、三角互证、过程追踪、负例和反身性；历史、诠释和规范研究则使用来源语境、时代错置、竞争读法、价值前提与分配后果等标准。它明确禁止拿 p 值、随机对照实验或代表性抽样机械审判所有文科研究。
+
+`critic-individualist` 和 `critic-contrastivist` 没有消失；它们现在是文科·社会科学线下的专门敌对视角。`citation-auditor` 是三条线共享的跨学科协议。
+
+先查看分轨和完整协议表：
+
+```bash
+python critic_runner.py tracks
+python critic_runner.py list
+```
 
 ## 你平时到底怎么用
 
@@ -16,6 +170,9 @@
 
 | 什么时候用 | 协议 | 它只追问什么 |
 | --- | --- | --- |
+| 文科或社会科学稿件需要整体方法审查 | `critic-social-science` | 这类主张应接受哪种证据标准，现有推断跨了多远？ |
+| 自然科学论文、实验或模拟 | `critic-natural-science` | 设计、测量、不确定性和可复现性是否支持结论？ |
+| 工程方案、原型或系统报告 | `critic-engineering` | 它能否在声明的需求、约束和失效场景下工作？ |
 | 文章大量使用“结构 / 系统 / 话语 / 资本”等解释 | `critic-individualist` | 能不能还原到具体个体的信念、激励和行动？ |
 | 文章提出自己的解释、概念区分或文本读法 | `critic-contrastivist` | 你解释的是 X 而不是哪个 Y，凭什么排除 Y？ |
 | 投稿 / 发布前核引证 | `citation-auditor` | 每一个“通过”有没有真正的书目和内容证据链？ |
@@ -34,16 +191,19 @@
 准备发布时跑 citation-auditor
 ```
 
-两个 critic 都值得咬同一篇文章时可以都跑，但必须独立；第二个不能看到第一个的报告。
+多个 critic 都值得审同一篇文章时可以都跑，但必须独立；后一个不能看到前一个的报告。
 
-## 独立运行：不安装任何 agent
+## 进阶使用：自动运行与精细协议
 
-需要 Python 3.10+，没有第三方依赖。
+下面内容适合已经完成上面“5 分钟上手”，并希望自动调用模型 CLI、选择更窄审查视角或做正式校准的人。
 
-先看有哪些协议：
+下文统一写 `python`；Windows 如果该命令不可用，直接替换成 `py -3`，macOS/Linux 可替换成 `python3`。
+
+不想记协议名时，直接按学术线准备提示词或运行：
 
 ```bash
-python critic_runner.py list
+python critic_runner.py prepare-track humanities-social-science path/to/draft.md
+python critic_runner.py run-track natural-science path/to/draft.md -- your-model-command
 ```
 
 ### 方法 A：生成提示词包
@@ -66,9 +226,19 @@ python critic_runner.py run critic-contrastivist path/to/draft.md --timeout 900 
 
 runner 不认识也不保存任何 API key，不用 shell 拼接命令，也不绑定某家模型。执行器参数可能包含密钥，因此归档只记录可执行文件名和参数数量，不保存参数值。
 
+为了让实验说明“到底是哪一个模型／配置”，可添加不含密钥的公开标签：
+
+```bash
+python critic_runner.py run-track humanities-social-science draft.md \
+  --executor-label "model-x; temperature=0.2; prompt-profile=v3" \
+  -- your-model-command
+```
+
+标签会进入可验证 manifest，并在 campaign 的所有子运行之间强制一致。它是公开元数据，禁止放 API key、访问令牌或本机敏感路径。
+
 `run` 一次只启动**一个**执行器进程。项目故意没有并发 fan-out；要跑第二个 critic，就在第一个结束后再运行一条命令。
 
-runner 默认给每次执行 900 秒和 16 MiB 的 stdout/stderr 合计额度；可用 `--timeout` 与 `--max-output-bytes` 调整。超时返回 124，超过输出额度返回 125。输出先流入私有临时文件，不会无界堆在内存里；最终归档只保留额度内的原始字节。非法 UTF-8 会原样留档并判为无效报告，不会被静默替换。
+runner 默认给每次执行 900 秒和 16 MiB 的 stdout/stderr 合计额度；可用 `--timeout` 与 `--max-output-bytes` 调整。超时返回 124，超过输出额度返回 125。输出先流入私有临时文件，不会无界堆在内存里；最终归档只保留额度内的原始字节。POSIX 使用独立进程组，Windows 使用启动前绑定的 kill-on-close Job Object，超时、超量或退出后会清理执行器后代。非法 UTF-8 会原样留档并判为无效报告，不会被静默替换。
 
 ### 一键校准：四次隔离运行 + 可复算计分
 
@@ -78,17 +248,64 @@ runner 默认给每次执行 900 秒和 16 MiB 的 stdout/stderr 合计额度；
 python critic_runner.py campaign path/to/old-draft.md --repeat 2 -- your-model-command arg1 arg2
 ```
 
-`campaign` 仍然严格串行运行，各次执行看不到其他报告。它会在 `.critic-campaigns/<timestamp>--campaign/` 中生成四个独立运行归档、`campaign.json`、可点击的 `SUMMARY.md` 和待填写的 `scorecard.json`。先遮掉 critic 名称，人工完成一对一语义配对，再填写每组的重合、同处异因、左右独有和模糊配对数：
+`campaign` 仍然严格串行运行，各次执行看不到其他报告。只要至少有两种非引证 critic、每种至少重复两次、全部报告成功且结构有效，它就会生成独立运行归档、`campaign.json`、可点击的 `SUMMARY.md` 和待填写的动态 schema v3 `scorecard.json`。scorecard 已从每份报告第一节提取全部 A 指控及其位置、指控和理由。
+
+campaign schema v3 使用带种子的反向轮次平衡：第一轮按种子确定协议顺序，第二轮反向，第三轮再恢复，避免固定的 `I1, I2, C1, C2` 把时间漂移、缓存或执行器热身误当成协议差异。随机种子、策略和实际执行次序全部写入 `campaign.json`；用 `--order-seed published-seed` 可以精确复现，验证器会独立重算顺序并拒绝被调换的记录。
+
+三条学术线也能直接组成方法对照 campaign：
 
 ```bash
-python critic_runner.py score .critic-campaigns/<campaign>/scorecard.json --format markdown --output divergence-score.md
+python critic_runner.py campaign draft.md \
+  --track humanities-social-science \
+  --track natural-science \
+  --track engineering \
+  --repeat 2 --order-seed published-seed -- your-model-command
 ```
 
-记分器自动计算每次 d 的上下界、W/B 区间及 `reject` / `advance` / `inconclusive` 判决，还会拒绝“同一报告在不同两两比较中原子指控总数不同”的自相矛盾表格。它只接管可确定的算术，不替人判断两条指控是否语义重合。单独建空表可用 `python critic_runner.py init-scorecard scorecard.json`。
+这种跨线 campaign 会生成真正可计分的 N 协议 × R 重复矩阵。组内 W 自动包含同一协议各重复之间的全部组合，组间 B 自动包含不同协议之间的全部组合；每种协议必须使用相同重复次数，避免某一条线因样本更多而获得额外权重。三条线各重复两次会得到 3 组组内比较和 12 组组间比较。比较数随总运行数平方增长，因此日常校准建议先使用两次重复。
+
+#### 真正的盲分，而不是手动遮名字
+
+原始 `scorecard.json` 必须保存协议身份和证据出处，不能直接交给配对评审者。先生成两个分离的 artifact：
+
+```bash
+python critic_runner.py blind-scorecard .critic-campaigns/<campaign>/scorecard.json
+```
+
+命令会在 `scorecard.json` 旁边生成 `blind-review.json` 和 `blind-key.json`；这些文件都留在默认不进 Git 的 `.critic-campaigns` 目录中。只把 `blind-review.json` 交给评审者。它以随机化的 `R01`、`R02`……替代运行身份，随机排列比较，不含协议名、重复编号、归档路径或报告 hash。`blind-key.json` 保存身份映射，不得在分类结束前交给评审者，也不要提交到 GitHub。
+
+评审者只填写每组 `pairs`，分类使用 `overlap`、`different_reason` 或 `ambiguous`，完成后把 `complete` 改为 `true`。回收时不要覆盖原件：
+
+```bash
+python critic_runner.py apply-blind-scorecard .critic-campaigns/<campaign>/scorecard.json
+```
+
+runner 默认读取同目录的 `blind-review.json` 和 `blind-key.json`，校验后生成 `completed-scorecard.json`。它会确认盲评文件与 key 属于同一个原始 scorecard，claims 没被编辑，别名映射、比较集合、A 编号与一对一约束都成立，再恢复真实比较。已有输出不会被覆盖；如需保留多个版本，可显式传入 `--output`、`--key-output` 或 `--key`。`--seed` 可让别名分配可复现；默认使用随机种子。盲法消除了工具主动泄露的身份元数据，但不能保证稿件引文或 critic 特有措辞本身完全不可识别。
+
+```json
+"I1:I2": {
+  "complete": true,
+  "pairs": [
+    {"left": "A1", "right": "A3", "classification": "different_reason"}
+  ]
+}
+```
+
+```bash
+python critic_runner.py score .critic-campaigns/<campaign>/completed-scorecard.json --format markdown --output divergence-score.md
+```
+
+记分器会重新读取全部归档报告，核对原始字节 hash，并再次提取 claims；它还把 scorecard 的运行顺序、协议归属、重复编号和归档路径反向绑定到 campaign 记录。证据清单被修改、报告被替换、运行身份被重写、路径逃出 campaign、同一条 claim 被重复配对或比较尚未明确完成时都会拒绝计分。随后它自动计算每次 d 的上下界、W/B 区间及 `reject` / `advance` / `inconclusive` 判决。它只接管可确定的算术，不替人判断两条指控是否语义重合。
+
+`python critic_runner.py init-scorecard scorecard.json` 仍可创建兼容的 schema v1 汇总计数表，用于没有 campaign 归档的旧实验；固定 I₁/I₂/C₁/C₂ 的 schema v2 仍可读取，新 campaign 默认使用可追溯且动态分组的逐条配对 schema v3。整个 campaign 可单独复核：
+
+```bash
+python critic_runner.py verify-campaign .critic-campaigns/<campaign> --source path/to/old-draft.md
+```
 
 ### 报告结构校验
 
-三个 critic 使用同一套六节输出骨架。`run` 会自动检查标题顺序、A 编号连续性、第一／二节的一一对应、必填字段、唯一最弱／最强项标记，以及末尾唯一的 `STATUS` / `UNVERIFIED`。`complete` 必须配 `UNVERIFIED: none`；`partial` / `blocked` 必须给出具体未核实原因。
+所有非引证 critic 使用同一套六节输出骨架。`run` 会自动检查标题顺序、A 编号连续性、第一／二节的一一对应、必填字段、唯一最弱／最强项标记，以及末尾唯一的 `STATUS` / `UNVERIFIED`。`complete` 必须配 `UNVERIFIED: none`；`partial` / `blocked` 必须给出具体未核实原因。
 
 `citation-auditor` 使用专用校验器：检查 C 编号、全部审计字段、证据分布计数，以及“内容证据 B/C/D 不得判明确支持或通过语境”“书目证据 D 不得判存在性通过”等硬联锁。执行器即使返回 0，只要结构或联锁不合格，runner 仍返回 3，并把具体错误写到 stderr 和 manifest。
 
@@ -119,9 +336,9 @@ manifest.json   精确字节 SHA-256、生命周期、校验结果与执行信�
 stderr.log      执行器错误输出（仅出现错误时）
 ```
 
-`.critic-runs/` 和 `.critic-campaigns/` 默认不进 Git。runner 会在启动执行器前先原子写入 prompt 和 manifest，执行完成后再原子补写 report、stderr、退出码和结构校验结果。schema v2 记录输出额度与截断状态，同时仍可验证旧版 schema v1 归档。SHA-256 针对磁盘中的原始字节计算，不受 Windows 换行转换影响；UTF-8 BOM 可以读取但不会混进提示词。manifest 只保存稿件文件名，不保存本机绝对路径，也不保存执行器参数值。
+`.critic-runs/` 和 `.critic-campaigns/` 默认不进 Git。runner 会在启动执行器前先原子写入 prompt 和 manifest，执行完成后再原子补写 report、stderr、退出码和结构校验结果。run schema v2 记录输出额度与截断状态；campaign schema v3 还记录计划协议、重复次数、统一资源限制、完整运行矩阵、顺序策略、种子和实际执行次序，并继续验证旧版 schema v1/v2 归档。SHA-256 针对磁盘中的原始字节计算，不受 Windows 换行转换影响；UTF-8 BOM 可以读取但不会混进提示词。JSON 验证会拒绝重复键，避免同一字段出现两种解释。manifest 只保存稿件文件名，不保存本机绝对路径，也不保存执行器参数值。
 
-归档包含完整稿件、模型报告和可能回显敏感信息的 stderr。POSIX 上 runner 把运行目录设为 `0700`、文件设为 `0600`；Windows 上保密性取决于父目录的 ACL。不要把归档放在共享目录，密钥应通过环境变量传给执行器，并在分享归档前检查 `prompt.md`、`report.md` 与 `stderr.log`。
+归档包含完整稿件、模型报告和可能回显敏感信息的 stderr。POSIX 上 runner 把运行目录设为 `0700`、文件设为 `0600`；Windows 上保密性取决于父目录的 ACL。验证器拒绝 manifest、产物和嵌套运行路径中的符号链接，避免归档通过链接逃出预期目录。不要把归档放在共享目录，密钥应通过环境变量传给执行器，并在分享归档前检查 `prompt.md`、`report.md` 与 `stderr.log`。
 
 这样以后真要做 I₁/I₂/C₁/C₂，不会再发生“跑完了但原报告没保存，无法复算 W/B”的情况，也能确认四次到底用了哪一版协议。执行器启动失败、中断或超时时，manifest 会分别记录 `start_failed`、`interrupted` 或 `timed_out`，而不会把未完成运行伪装成成功。
 
@@ -141,12 +358,15 @@ stderr.log      执行器错误输出（仅出现错误时）
 
 ## Claude Code 仍然可以用，但只是适配器
 
-仓库根目录的 `critic-individualist.md`、`critic-contrastivist.md`、`citation-auditor.md` 仍保留 Claude Code 能识别的 YAML frontmatter，所以原来的安装方式仍可选：
+仓库根目录的全部协议文件仍保留 Claude Code 能识别的 YAML frontmatter，所以原来的安装方式仍可选：
 
 ```text
 ~/.claude/agents/critic-individualist.md
 ~/.claude/agents/critic-contrastivist.md
 ~/.claude/agents/citation-auditor.md
+~/.claude/agents/critic-social-science.md
+~/.claude/agents/critic-natural-science.md
+~/.claude/agents/critic-engineering.md
 ```
 
 独立 runner 会自动剥掉这段 provider-specific frontmatter，只读取真正的审查协议。因此以后即使完全不用 Claude Code，也不需要维护第二套 prompt。
@@ -174,7 +394,7 @@ UNVERIFIED: <逐条列出没有确认的内容；没有则写 none>
 
 `divergence-test.md` 回答一个很窄的问题：`critic-individualist` 与 `critic-contrastivist` 的差异，是否明显大于同一 critic 重跑产生的采样噪声。
 
-它是 **否决-only** 的：高分歧不能证明意见正确，更不能证明值得每篇都花 token。第二级控制件在 `test/critic-generic.md`，故意不参与普通审稿；runner 要求显式传 `--allow-test-artifact` 才允许执行它。三个 critic 的六节骨架、原子化要求、逐条跟进量和强制判断项现在相同，generic 只缺少专用框架承诺。
+它是 **否决-only** 的：高分歧不能证明意见正确，更不能证明值得每篇都花 token。第二级控制件在 `test/critic-generic.md`，故意不参与普通审稿；runner 要求显式传 `--allow-test-artifact` 才允许执行它。所有非引证 critic 的六节骨架、原子化要求、逐条跟进量和强制判断项相同，generic 只缺少专用框架承诺。
 
 正式测试时仍然跑 I₁、I₂、C₁、C₂，并人工按“同处同因 / 同处异因 / 独有”拆原子指控。不要让模型自己给自己的分歧打分；`campaign` 和 `score` 只负责隔离运行、留档和复算。完整公式和判据见 `divergence-test.md`。
 

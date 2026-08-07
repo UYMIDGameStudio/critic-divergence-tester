@@ -10,16 +10,18 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 import critic_runner  # noqa: E402
+import critic_execution  # noqa: E402
 
 
 VALID_REPORT = """## 1. 原子指控
@@ -125,6 +127,10 @@ class CriticRunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unterminated"):
             critic_runner.strip_frontmatter("---\nname: example\n")
 
+    def test_json_parser_rejects_duplicate_keys(self) -> None:
+        with self.assertRaisesRegex(critic_runner.DuplicateJsonKeyError, "duplicate"):
+            critic_runner.parse_json('{"status": "succeeded", "status": "failed"}')
+
     def test_generic_protocol_requires_explicit_unlock(self) -> None:
         with self.assertRaisesRegex(ValueError, "test artifact"):
             critic_runner.load_protocol("critic-generic")
@@ -134,6 +140,236 @@ class CriticRunnerTests(unittest.TestCase):
         )
         self.assertIn("你审查一篇文章的论证", body)
         self.assertTrue(raw.startswith(b"---"))
+
+    def test_academic_tracks_are_first_class_and_resolve_to_real_protocols(self) -> None:
+        self.assertEqual(
+            set(critic_runner.ACADEMIC_TRACKS),
+            {"humanities-social-science", "natural-science", "engineering"},
+        )
+        primaries = []
+        for track in critic_runner.ACADEMIC_TRACKS.values():
+            primary = track["primary"]
+            primaries.append(primary)
+            self.assertIn(primary, critic_runner.CRITIC_PROTOCOLS)
+            self.assertNotIn(primary, critic_runner.TEST_ONLY)
+            for specialist in track["specialists"]:
+                self.assertIn(specialist, critic_runner.CRITIC_PROTOCOLS)
+        self.assertEqual(len(primaries), len(set(primaries)))
+        self.assertEqual(
+            critic_runner.CROSS_DISCIPLINARY_PROTOCOLS,
+            ("citation-auditor",),
+        )
+
+    def test_track_prompts_encode_distinct_method_contracts(self) -> None:
+        social, _ = critic_runner.load_protocol("critic-social-science")
+        natural, _ = critic_runner.load_protocol("critic-natural-science")
+        engineering, _ = critic_runner.load_protocol("critic-engineering")
+        self.assertIn("先分型，后审查", social)
+        self.assertIn("不得机械要求 p 值", social)
+        self.assertIn("不得要求它虚构因果识别策略", social)
+        self.assertIn("仪器校准", natural)
+        self.assertIn("误差传播", natural)
+        self.assertIn("验证是否证明", engineering)
+        self.assertIn("确认是否证明", engineering)
+
+    def test_tracks_command_exposes_primary_and_specialist_protocols(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(critic_runner.list_tracks(argparse.Namespace()), 0)
+        rendered = output.getvalue()
+        self.assertIn("humanities-social-science: 文科·社会科学", rendered)
+        self.assertIn("primary: critic-social-science", rendered)
+        self.assertIn("critic-individualist, critic-contrastivist", rendered)
+        self.assertIn("cross-disciplinary: citation-auditor", rendered)
+
+    def test_doctor_checks_a_fresh_install(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = io.StringIO()
+            errors = io.StringIO()
+            with redirect_stdout(output), redirect_stderr(errors):
+                result = critic_runner.doctor(
+                    argparse.Namespace(directory=temp_dir)
+                )
+            self.assertEqual(result, 0)
+            self.assertIn("academic tracks resolve correctly", output.getvalue())
+            self.assertTrue(output.getvalue().rstrip().endswith("ready"))
+            self.assertEqual(errors.getvalue(), "")
+
+    def test_doctor_reports_an_unreadable_protocol(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing = Path(temp_dir) / "missing.md"
+            protocols = dict(critic_runner.PROTOCOLS)
+            protocols["critic-social-science"] = missing
+            output = io.StringIO()
+            errors = io.StringIO()
+            with patch.object(critic_runner, "PROTOCOLS", protocols):
+                with redirect_stdout(output), redirect_stderr(errors):
+                    result = critic_runner.doctor(
+                        argparse.Namespace(directory=temp_dir)
+                    )
+            self.assertEqual(result, 2)
+            self.assertNotIn("\nready\n", f"\n{output.getvalue()}")
+            self.assertIn("critic-social-science cannot be loaded", errors.getvalue())
+
+    def test_quickstart_guides_track_selection_and_accepts_a_quoted_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "my draft.md"
+            source.write_text("工程论证", encoding="utf-8")
+            output = io.StringIO()
+            errors = io.StringIO()
+            with patch(
+                "builtins.input",
+                side_effect=[f'"{source}"', "不是选项", "3"],
+            ):
+                with redirect_stdout(output), redirect_stderr(errors):
+                    result = critic_runner.quickstart(
+                        argparse.Namespace(
+                            manuscript=None,
+                            track=None,
+                            runs_dir=str(root / "runs"),
+                        )
+                    )
+            self.assertEqual(result, 0)
+            self.assertEqual(errors.getvalue(), "")
+            self.assertIn("无法识别", output.getvalue())
+            self.assertIn("已选择：工科·工程学", output.getvalue())
+            run_dir = next((root / "runs").iterdir())
+            manifest = json.loads(
+                (run_dir / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["protocol"], "critic-engineering")
+
+    def test_quickstart_defaults_to_humanities_on_an_empty_track_choice(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "draft.md"
+            source.write_text("社会科学论证", encoding="utf-8")
+            output = io.StringIO()
+            with patch("builtins.input", return_value="") as prompt:
+                with redirect_stdout(output), redirect_stderr(io.StringIO()):
+                    result = critic_runner.quickstart(
+                        argparse.Namespace(
+                            manuscript=str(source),
+                            track=None,
+                            runs_dir=str(root / "runs"),
+                        )
+                    )
+            self.assertEqual(result, 0)
+            prompt.assert_called_once()
+            self.assertIn("已选择：文科·社会科学", output.getvalue())
+
+    def test_quickstart_rejects_missing_or_empty_input_cleanly(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            empty = root / "empty.md"
+            empty.write_text(" \n", encoding="utf-8")
+            invalid_utf8 = root / "invalid.md"
+            invalid_utf8.write_bytes(b"\xff")
+            for response in (
+                "",
+                str(root / "missing.md"),
+                str(empty),
+                str(invalid_utf8),
+            ):
+                errors = io.StringIO()
+                with patch("builtins.input", return_value=response):
+                    with redirect_stdout(io.StringIO()), redirect_stderr(errors):
+                        result = critic_runner.quickstart(
+                            argparse.Namespace(
+                                manuscript=None,
+                                track=None,
+                                runs_dir=str(root / "runs"),
+                            )
+                        )
+                self.assertEqual(result, 2)
+                self.assertIn("错误：", errors.getvalue())
+
+    def test_quickstart_cli_supports_an_explicit_track(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "draft.md"
+            source.write_text("自然科学论证", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "critic_runner.py"),
+                    "quickstart",
+                    str(source),
+                    "--track",
+                    "natural-science",
+                    "--runs-dir",
+                    str(root / "runs"),
+                ],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("已选择：理科·自然科学", completed.stdout)
+            manifest = json.loads(
+                next((root / "runs").glob("*/manifest.json")).read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(manifest["protocol"], "critic-natural-science")
+
+    def test_quickstart_rejects_an_unknown_programmatic_track(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "draft.md"
+            source.write_text("论证", encoding="utf-8")
+            errors = io.StringIO()
+            with redirect_stdout(io.StringIO()), redirect_stderr(errors):
+                result = critic_runner.quickstart(
+                    argparse.Namespace(
+                        manuscript=str(source),
+                        track="unknown",
+                        runs_dir=str(Path(temp_dir) / "runs"),
+                    )
+                )
+            self.assertEqual(result, 2)
+            self.assertIn("未知学术线", errors.getvalue())
+
+    def test_prepare_track_archives_the_track_primary_protocol(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "draft.md"
+            source.write_text("draft", encoding="utf-8")
+            args = argparse.Namespace(
+                track="humanities-social-science",
+                manuscript=str(source),
+                runs_dir=str(root / "runs"),
+                allow_test_artifact=False,
+            )
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(critic_runner.prepare_track(args), 0)
+            run_dir = next((root / "runs").iterdir())
+            manifest = json.loads(
+                (run_dir / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["protocol"], "critic-social-science")
+            self.assertIn(
+                "第一原则：先分型，后审查",
+                (run_dir / "prompt.md").read_text(encoding="utf-8"),
+            )
+
+    def test_campaign_schedule_is_seeded_and_counterbalanced(self) -> None:
+        protocols = [
+            "critic-social-science",
+            "critic-natural-science",
+            "critic-engineering",
+        ]
+        first = critic_runner.campaign_schedule(protocols, 3, "published-seed")
+        second = critic_runner.campaign_schedule(protocols, 3, "published-seed")
+        self.assertEqual(first, second)
+        round_one = [protocol for protocol, repetition in first if repetition == 1]
+        round_two = [protocol for protocol, repetition in first if repetition == 2]
+        round_three = [protocol for protocol, repetition in first if repetition == 3]
+        self.assertCountEqual(round_one, protocols)
+        self.assertEqual(round_two, list(reversed(round_one)))
+        self.assertEqual(round_three, round_one)
 
     def test_atomic_write_replaces_bytes_without_leaving_temporary_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -578,6 +814,7 @@ UNVERIFIED: none
                 executor=executor,
                 protocol="critic-contrastivist",
             )
+            args.executor_label = "fixture-model; temperature=0"
 
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 self.assertEqual(critic_runner.run(args), 0)
@@ -591,6 +828,9 @@ UNVERIFIED: none
             self.assertNotIn(str(root), manifest_text)
             self.assertEqual(manifest["executor"]["command"], Path(sys.executable).name)
             self.assertEqual(manifest["executor"]["argument_count"], 3)
+            self.assertEqual(
+                manifest["executor"]["label"], "fixture-model; temperature=0"
+            )
             self.assertEqual(manifest["status"], "succeeded")
             self.assertEqual(manifest["executor_returncode"], 0)
             self.assertEqual(manifest["runner_exit_code"], 0)
@@ -604,6 +844,10 @@ UNVERIFIED: none
                 run_dir, Path(args.manuscript)
             )
             self.assertTrue(verification.valid, verification.errors)
+
+    def test_executor_label_rejects_control_characters(self) -> None:
+        with self.assertRaisesRegex(ValueError, "executor label"):
+            critic_runner.normalize_executor_label("model\nsecret")
 
     def test_invalid_report_changes_successful_executor_to_exit_three(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -767,10 +1011,17 @@ UNVERIFIED: none
             root = Path(temp_dir)
             args = self._args(
                 root=root,
+                timeout=2,
                 executor=[
                     sys.executable,
                     "-c",
-                    "import sys; sys.stdout.buffer.write(b'x' * 100000)",
+                    (
+                        "import sys,time\n"
+                        "while True:\n"
+                        " sys.stdout.buffer.write(b'x' * 4096)\n"
+                        " sys.stdout.buffer.flush()\n"
+                        " time.sleep(0.005)\n"
+                    ),
                 ],
             )
             args.max_output_bytes = 1024
@@ -822,6 +1073,54 @@ UNVERIFIED: none
             for artifact in run_dir.iterdir():
                 self.assertEqual(stat.S_IMODE(artifact.stat().st_mode), 0o600)
 
+    @unittest.skipUnless(os.name == "posix", "symbolic-link archive attack")
+    def test_verifiers_reject_symbolic_link_artifacts_and_run_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = self._args(
+                root=root,
+                executor=[sys.executable, "-c", "print('invalid')"],
+            )
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(critic_runner.run(args), critic_runner.EXIT_INVALID_REPORT)
+            run_dir = next((root / "runs").iterdir())
+            report_path = run_dir / "report.md"
+            external = root / "external.md"
+            external.write_bytes(report_path.read_bytes())
+            report_path.unlink()
+            report_path.symlink_to(external)
+            verification = critic_runner.verify_run_dir(run_dir, Path(args.manuscript))
+            self.assertFalse(verification.valid)
+            self.assertTrue(any("symbolic link" in error for error in verification.errors))
+
+            campaign_dir = root / "campaign"
+            (campaign_dir / "runs").mkdir(parents=True)
+            (campaign_dir / "runs" / "escaped").symlink_to(
+                root / "outside", target_is_directory=True
+            )
+            self.assertIsNone(
+                critic_runner._safe_campaign_run_path(
+                    campaign_dir, "runs/escaped"
+                )
+            )
+
+            scorecard_target = root / "scorecard-target.json"
+            scorecard_target.write_text("{}", encoding="utf-8")
+            scorecard_link = root / "scorecard-link.json"
+            scorecard_link.symlink_to(scorecard_target)
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    critic_runner.blind_scorecard_command(
+                        argparse.Namespace(
+                            scorecard=str(scorecard_link),
+                            output=str(root / "blind.json"),
+                            key_output=str(root / "key.json"),
+                            seed="seed",
+                        )
+                    ),
+                    critic_runner.EXIT_INVALID_SCORECARD,
+                )
+
     def test_score_divergence_handles_exact_and_ambiguous_pairings(self) -> None:
         scorecard = critic_runner.scorecard_template()
         comparisons = scorecard["comparisons"]
@@ -858,6 +1157,261 @@ UNVERIFIED: none
     def test_score_divergence_rejects_unfilled_template(self) -> None:
         with self.assertRaisesRegex(critic_runner.ScorecardError, "non-negative integer"):
             critic_runner.score_divergence(critic_runner.scorecard_template())
+
+    def test_pairing_scorecard_derives_counts_from_traceable_pairs(self) -> None:
+        claims = [
+            {"id": "A1", "position": "p1", "claim": "c1", "reason": "r1"},
+            {"id": "A2", "position": "p2", "claim": "c2", "reason": "r2"},
+        ]
+        runs = {
+            name: {
+                "archive": f"runs/{name}",
+                "report_sha256": "a" * 64,
+                "claims": [dict(claim) for claim in claims],
+            }
+            for name in ("I1", "I2", "C1", "C2")
+        }
+        scorecard = critic_runner.pairing_scorecard(runs)
+        for name in critic_runner.ALL_COMPARISONS:
+            scorecard["comparisons"][name] = {
+                "complete": True,
+                "pairs": [
+                    {
+                        "left": "A1",
+                        "right": "A1",
+                        "classification": "overlap",
+                    }
+                ],
+            }
+        result = critic_runner.score_divergence(scorecard)
+        self.assertEqual(result["schema_version"], 2)
+        comparison = result["comparisons"]["I1:I2"]
+        self.assertEqual(comparison["overlap"], 1)
+        self.assertEqual(comparison["left_unique"], 1)
+        self.assertEqual(comparison["right_unique"], 1)
+        self.assertEqual(comparison["denominator"], 3)
+
+    def test_pairing_scorecard_rejects_incomplete_unknown_and_reused_claims(self) -> None:
+        claim = {"id": "A1", "position": "p", "claim": "c", "reason": "r"}
+        runs = {
+            name: {
+                "archive": f"runs/{name}",
+                "report_sha256": "a" * 64,
+                "claims": [dict(claim)],
+            }
+            for name in ("I1", "I2", "C1", "C2")
+        }
+        scorecard = critic_runner.pairing_scorecard(runs)
+        with self.assertRaisesRegex(critic_runner.ScorecardError, "complete must be true"):
+            critic_runner.score_divergence(scorecard)
+
+        for name in critic_runner.ALL_COMPARISONS:
+            scorecard["comparisons"][name] = {"complete": True, "pairs": []}
+        scorecard["comparisons"]["I1:I2"]["pairs"] = [
+            {"left": "A2", "right": "A1", "classification": "overlap"}
+        ]
+        with self.assertRaisesRegex(critic_runner.ScorecardError, "not a claim"):
+            critic_runner.score_divergence(scorecard)
+
+        scorecard["comparisons"]["I1:I2"]["pairs"] = [
+            {"left": "A1", "right": "A1", "classification": "overlap"},
+            {"left": "A1", "right": "A1", "classification": "ambiguous"},
+        ]
+        with self.assertRaisesRegex(critic_runner.ScorecardError, "one-to-one"):
+            critic_runner.score_divergence(scorecard)
+
+    def test_dynamic_scorecard_scores_three_balanced_academic_tracks(self) -> None:
+        claim = {"id": "A1", "position": "p", "claim": "c", "reason": "r"}
+        runs = {}
+        for prefix, protocol in (
+            ("S", "critic-social-science"),
+            ("N", "critic-natural-science"),
+            ("E", "critic-engineering"),
+        ):
+            for repetition in (1, 2):
+                runs[f"{prefix}{repetition}"] = {
+                    "protocol": protocol,
+                    "repetition": repetition,
+                    "archive": f"runs/{prefix}{repetition}",
+                    "report_sha256": "a" * 64,
+                    "claims": [dict(claim)],
+                }
+        scorecard = critic_runner.campaign_pairing_scorecard(runs)
+        self.assertEqual(scorecard["schema_version"], 3)
+        self.assertEqual(len(scorecard["comparisons"]), 15)
+
+        preview = dict(scorecard)
+        preview["comparisons"] = {
+            name: {"complete": True, "pairs": []}
+            for name in scorecard["comparisons"]
+        }
+        layout = critic_runner.score_divergence(preview)
+        self.assertEqual(len(layout["within_comparisons"]), 3)
+        self.assertEqual(len(layout["between_comparisons"]), 12)
+
+        for name in layout["within_comparisons"]:
+            scorecard["comparisons"][name] = {
+                "complete": True,
+                "pairs": [
+                    {"left": "A1", "right": "A1", "classification": "overlap"}
+                ],
+            }
+        for name in layout["between_comparisons"]:
+            scorecard["comparisons"][name] = {
+                "complete": True,
+                "pairs": [
+                    {
+                        "left": "A1",
+                        "right": "A1",
+                        "classification": "different_reason",
+                    }
+                ],
+            }
+        result = critic_runner.score_divergence(scorecard)
+        self.assertEqual(result["schema_version"], 3)
+        self.assertEqual(result["W"], {"lower": 0.0, "upper": 0.0})
+        self.assertEqual(result["B"], {"lower": 1.0, "upper": 1.0})
+        self.assertEqual(result["verdict"], "advance")
+        self.assertIn("S1:S2", critic_runner.score_markdown(result))
+
+    def test_dynamic_scorecard_rejects_unbalanced_or_ambiguous_run_identity(self) -> None:
+        claim = {"id": "A1", "position": "p", "claim": "c", "reason": "r"}
+
+        def run(protocol: str, repetition: int) -> dict[str, object]:
+            return {
+                "protocol": protocol,
+                "repetition": repetition,
+                "archive": "runs/example",
+                "report_sha256": "a" * 64,
+                "claims": [dict(claim)],
+            }
+
+        with self.assertRaisesRegex(critic_runner.ScorecardError, "same repeat count"):
+            critic_runner.campaign_pairing_scorecard(
+                {
+                    "S1": run("social", 1),
+                    "S2": run("social", 2),
+                    "N1": run("natural", 1),
+                    "N2": run("natural", 2),
+                    "N3": run("natural", 3),
+                }
+            )
+        with self.assertRaisesRegex(critic_runner.ScorecardError, "duplicate"):
+            critic_runner.campaign_pairing_scorecard(
+                {
+                    "S1": run("social", 1),
+                    "S2": run("social", 1),
+                    "N1": run("natural", 1),
+                    "N2": run("natural", 2),
+                }
+            )
+        with self.assertRaisesRegex(critic_runner.ScorecardError, "colon-free"):
+            critic_runner.campaign_pairing_scorecard(
+                {
+                    "S:1": run("social", 1),
+                    "S2": run("social", 2),
+                    "N1": run("natural", 1),
+                    "N2": run("natural", 2),
+                }
+            )
+        with self.assertRaisesRegex(critic_runner.ScorecardError, "continuous"):
+            critic_runner.campaign_pairing_scorecard(
+                {
+                    "S1": run("social", 1),
+                    "S3": run("social", 3),
+                    "N1": run("natural", 1),
+                    "N2": run("natural", 2),
+                }
+            )
+
+    def test_blind_bundle_hides_identity_and_round_trips_pairings(self) -> None:
+        claim = {"id": "A1", "position": "p", "claim": "c", "reason": "r"}
+        runs = {}
+        for prefix, protocol in (
+            ("S", "critic-social-science"),
+            ("N", "critic-natural-science"),
+        ):
+            for repetition in (1, 2):
+                runs[f"{prefix}{repetition}"] = {
+                    "protocol": protocol,
+                    "repetition": repetition,
+                    "archive": f"runs/{prefix}{repetition}",
+                    "report_sha256": "a" * 64,
+                    "claims": [dict(claim)],
+                }
+        scorecard = critic_runner.campaign_pairing_scorecard(runs)
+        blind, key = critic_runner.create_blind_bundle(scorecard, "blind-seed")
+        repeated_blind, repeated_key = critic_runner.create_blind_bundle(
+            scorecard, "blind-seed"
+        )
+        self.assertEqual(blind, repeated_blind)
+        self.assertEqual(key, repeated_key)
+        rendered_blind = json.dumps(blind, ensure_ascii=False)
+        self.assertNotIn("critic-social-science", rendered_blind)
+        self.assertNotIn("critic-natural-science", rendered_blind)
+        self.assertNotIn("report_sha256", rendered_blind)
+        self.assertNotIn("archive", rendered_blind)
+        self.assertNotIn("source_fingerprint", rendered_blind)
+        self.assertNotIn("repetition", rendered_blind)
+        self.assertNotIn('"S1"', rendered_blind)
+        self.assertNotIn('"N1"', rendered_blind)
+        self.assertEqual(set(blind["runs"]), {"R01", "R02", "R03", "R04"})
+
+        for comparison in blind["comparisons"].values():
+            comparison["complete"] = True
+            comparison["pairs"] = [
+                {"left": "A1", "right": "A1", "classification": "overlap"}
+            ]
+        merged = critic_runner.apply_blind_pairings(scorecard, blind, key)
+        result = critic_runner.score_divergence(merged)
+        self.assertEqual(result["verdict"], "reject")
+        self.assertEqual(set(merged["comparisons"]), set(scorecard["comparisons"]))
+
+    def test_blind_bundle_rejects_modified_evidence_key_and_pair_ids(self) -> None:
+        claim = {"id": "A1", "position": "p", "claim": "c", "reason": "r"}
+        runs = {
+            name: {
+                "archive": f"runs/{name}",
+                "report_sha256": "a" * 64,
+                "claims": [dict(claim)],
+            }
+            for name in critic_runner.RUN_NAMES
+        }
+        scorecard = critic_runner.pairing_scorecard(runs)
+        blind, key = critic_runner.create_blind_bundle(scorecard, "seed-one")
+
+        modified_claims = json.loads(json.dumps(blind))
+        modified_claims["runs"]["R01"]["claims"][0]["claim"] = "changed"
+        with self.assertRaisesRegex(critic_runner.ScorecardError, "claims were modified"):
+            critic_runner.apply_blind_pairings(scorecard, modified_claims, key)
+
+        _, wrong_key = critic_runner.create_blind_bundle(scorecard, "seed-two")
+        with self.assertRaisesRegex(critic_runner.ScorecardError, "do not match"):
+            critic_runner.apply_blind_pairings(scorecard, blind, wrong_key)
+
+        unknown_pair = json.loads(json.dumps(blind))
+        first_comparison = next(iter(unknown_pair["comparisons"].values()))
+        first_comparison["pairs"] = [
+            {"left": "A999", "right": "A1", "classification": "overlap"}
+        ]
+        with self.assertRaisesRegex(critic_runner.ScorecardError, "not a claim"):
+            critic_runner.apply_blind_pairings(scorecard, unknown_pair, key)
+
+        with self.assertRaisesRegex(critic_runner.ScorecardError, "blind seed"):
+            critic_runner.create_blind_bundle(scorecard, "line\nbreak")
+
+    def test_extract_critic_claims_preserves_a_item_provenance(self) -> None:
+        self.assertEqual(
+            critic_runner.extract_critic_claims(VALID_REPORT),
+            [
+                {
+                    "id": "A1",
+                    "position": "“原文”",
+                    "claim": "缺少关键一步。",
+                    "reason": "理由。",
+                }
+            ],
+        )
 
     def test_score_divergence_covers_reject_inconclusive_empty_and_markdown(self) -> None:
         scorecard = critic_runner.scorecard_template()
@@ -979,6 +1533,64 @@ UNVERIFIED: none
                     capture_dir=root,
                 )
 
+    def test_timeout_terminates_executor_descendants(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            marker = root / "descendant-survived"
+            descendant_code = (
+                "import pathlib,time; time.sleep(0.8); "
+                f"pathlib.Path({str(marker)!r}).write_text('alive')"
+            )
+            parent_code = (
+                "import subprocess,sys,time; "
+                f"subprocess.Popen([sys.executable, '-c', {descendant_code!r}]); "
+                "time.sleep(5)"
+            )
+            result = critic_runner.execute_with_limits(
+                [sys.executable, "-c", parent_code],
+                b"prompt",
+                timeout_seconds=0.2,
+                max_output_bytes=1024,
+                capture_dir=root,
+            )
+            self.assertTrue(result.timed_out)
+            time.sleep(1.0)
+            self.assertFalse(marker.exists(), "executor descendant survived timeout")
+
+    def test_normal_executor_exit_does_not_leave_descendants(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            marker = root / "descendant-survived"
+            descendant_code = (
+                "import pathlib,time; time.sleep(0.8); "
+                f"pathlib.Path({str(marker)!r}).write_text('alive')"
+            )
+            parent_code = (
+                "import subprocess,sys; "
+                f"subprocess.Popen([sys.executable, '-c', {descendant_code!r}])"
+            )
+            result = critic_runner.execute_with_limits(
+                [sys.executable, "-c", parent_code],
+                b"prompt",
+                timeout_seconds=2,
+                max_output_bytes=1024,
+                capture_dir=root,
+            )
+            self.assertFalse(result.timed_out)
+            time.sleep(1.0)
+            self.assertFalse(marker.exists(), "executor descendant survived parent exit")
+
+    def test_posix_cleanup_kills_group_even_after_parent_exit(self) -> None:
+        process = Mock(pid=4321)
+        process.poll.return_value = 0
+        with patch.object(critic_execution.os, "name", "posix"), patch.object(
+            critic_execution.os, "killpg", create=True
+        ) as killpg, patch.object(
+            critic_execution.signal, "SIGKILL", 9, create=True
+        ):
+            critic_execution._terminate_process_tree(process)
+        killpg.assert_called_once_with(4321, 9)
+
     def test_campaign_creates_isolated_runs_summary_and_scorecard(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -989,6 +1601,260 @@ UNVERIFIED: none
                 manuscript=str(source),
                 protocol=None,
                 repeat=2,
+                campaigns_dir=str(root / "campaigns"),
+                allow_test_artifact=False,
+                timeout=5.0,
+                max_output_bytes=1024 * 1024,
+                order_seed="test-seed",
+                executor_label="fixture-model; temperature=0",
+                executor=[
+                    sys.executable,
+                    "-c",
+                    (
+                        "import base64,sys; sys.stdin.buffer.read(); "
+                        f"sys.stdout.buffer.write(base64.b64decode('{encoded_report}'))"
+                    ),
+                ],
+            )
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(critic_runner.campaign(args), 0)
+            campaign_dir = next((root / "campaigns").iterdir())
+            manifest = json.loads(
+                (campaign_dir / "campaign.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["schema_version"], 3)
+            self.assertEqual(
+                manifest["executor"]["label"], "fixture-model; temperature=0"
+            )
+            self.assertEqual(
+                manifest["protocols"],
+                ["critic-individualist", "critic-contrastivist"],
+            )
+            self.assertEqual(len(manifest["runs"]), 4)
+            expected_order = [
+                f"{critic_runner.PROTOCOL_PREFIX[protocol]}{repetition}"
+                for protocol, repetition in critic_runner.campaign_schedule(
+                    manifest["protocols"], 2, "test-seed"
+                )
+            ]
+            self.assertEqual(manifest["execution_order"], expected_order)
+            self.assertEqual(
+                [run["label"] for run in manifest["runs"]], expected_order
+            )
+            self.assertTrue((campaign_dir / "scorecard.json").is_file())
+            self.assertTrue((campaign_dir / "SUMMARY.md").is_file())
+            summary_text = (campaign_dir / "SUMMARY.md").read_text(encoding="utf-8")
+            self.assertIn("blind-scorecard", summary_text)
+            self.assertIn("apply-blind-scorecard", summary_text)
+            self.assertEqual(len(list((campaign_dir / "runs").iterdir())), 4)
+            generated_scorecard = json.loads(
+                (campaign_dir / "scorecard.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(generated_scorecard["schema_version"], 3)
+            self.assertEqual(
+                generated_scorecard["run_order"], ["I1", "I2", "C1", "C2"]
+            )
+            self.assertEqual(
+                generated_scorecard["runs"]["I1"]["claims"][0]["id"], "A1"
+            )
+            verification = critic_runner.verify_campaign_dir(campaign_dir, source)
+            self.assertTrue(verification.valid, verification.errors)
+
+            scorecard_path = campaign_dir / "scorecard.json"
+            blind_path = campaign_dir / "blind-review.json"
+            blind_key_path = campaign_dir / "blind-key.json"
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    critic_runner.blind_scorecard_command(
+                        argparse.Namespace(
+                            scorecard=str(scorecard_path),
+                            output=None,
+                            key_output=None,
+                            seed="command-seed",
+                        )
+                    ),
+                    0,
+                )
+            blind_text = blind_path.read_text(encoding="utf-8")
+            self.assertNotIn("critic-individualist", blind_text)
+            self.assertNotIn("critic-contrastivist", blind_text)
+            blind_scorecard = json.loads(blind_text)
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    critic_runner.blind_scorecard_command(
+                        argparse.Namespace(
+                            scorecard=str(scorecard_path),
+                            output=None,
+                            key_output=None,
+                            seed="command-seed",
+                        )
+                    ),
+                    critic_runner.EXIT_INVALID_SCORECARD,
+                )
+            for comparison in blind_scorecard["comparisons"].values():
+                comparison["complete"] = True
+                comparison["pairs"] = [
+                    {"left": "A1", "right": "A1", "classification": "overlap"}
+                ]
+            blind_path.write_text(json.dumps(blind_scorecard), encoding="utf-8")
+            merged_path = campaign_dir / "completed-scorecard.json"
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    critic_runner.apply_blind_scorecard_command(
+                        argparse.Namespace(
+                            scorecard=str(scorecard_path),
+                            blind=None,
+                            key=None,
+                            output=None,
+                        )
+                    ),
+                    0,
+                )
+            merged_scorecard = json.loads(merged_path.read_text(encoding="utf-8"))
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    critic_runner.apply_blind_scorecard_command(
+                        argparse.Namespace(
+                            scorecard=str(scorecard_path),
+                            blind=None,
+                            key=None,
+                            output=None,
+                        )
+                    ),
+                    critic_runner.EXIT_INVALID_SCORECARD,
+                )
+            self.assertEqual(
+                critic_runner.score_divergence(merged_scorecard)["verdict"], "reject"
+            )
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    critic_runner.score_command(
+                        argparse.Namespace(
+                            scorecard=str(merged_path),
+                            format="json",
+                            output=None,
+                        )
+                    ),
+                    0,
+                )
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    critic_runner.apply_blind_scorecard_command(
+                        argparse.Namespace(
+                            scorecard=str(scorecard_path),
+                            blind=str(blind_path),
+                            key=str(blind_key_path),
+                            output=str(root / "detached-scorecard.json"),
+                        )
+                    ),
+                    critic_runner.EXIT_INVALID_SCORECARD,
+                )
+
+            scorecard = json.loads(scorecard_path.read_text(encoding="utf-8"))
+            scorecard["margin"] = 0.3
+            scorecard_path.write_text(json.dumps(scorecard), encoding="utf-8")
+            filled = critic_runner.verify_campaign_dir(campaign_dir, source)
+            self.assertTrue(filled.valid, filled.errors)
+            self.assertTrue(any("filled" in warning for warning in filled.warnings))
+
+            scorecard["runs"]["I1"]["claims"][0]["claim"] = "tampered"
+            scorecard_path.write_text(json.dumps(scorecard), encoding="utf-8")
+            provenance_failure = critic_runner.verify_campaign_dir(campaign_dir, source)
+            self.assertFalse(provenance_failure.valid)
+            self.assertTrue(
+                any("claims do not match" in error for error in provenance_failure.errors)
+            )
+            scorecard["runs"]["I1"]["claims"][0]["claim"] = "缺少关键一步。"
+            scorecard_path.write_text(json.dumps(scorecard), encoding="utf-8")
+
+            scorecard["runs"]["I1"]["protocol"] = "critic-natural-science"
+            scorecard_path.write_text(json.dumps(scorecard), encoding="utf-8")
+            identity_failure = critic_runner.verify_campaign_dir(campaign_dir, source)
+            self.assertFalse(identity_failure.valid)
+            self.assertTrue(
+                any("protocol does not match" in error for error in identity_failure.errors)
+            )
+            scorecard["runs"]["I1"]["protocol"] = "critic-individualist"
+
+            scorecard["run_order"] = list(reversed(scorecard["run_order"]))
+            scorecard_path.write_text(json.dumps(scorecard), encoding="utf-8")
+            order_identity_failure = critic_runner.verify_campaign_dir(
+                campaign_dir, source
+            )
+            self.assertFalse(order_identity_failure.valid)
+            self.assertTrue(
+                any(
+                    "run_order does not match campaign" in error
+                    for error in order_identity_failure.errors
+                )
+            )
+            scorecard["run_order"] = ["I1", "I2", "C1", "C2"]
+            scorecard_path.write_text(json.dumps(scorecard), encoding="utf-8")
+
+            scorecard["comparisons"]["I1:I2"]["pairs"] = [
+                {"left": "A999", "right": "A1", "classification": "overlap"}
+            ]
+            scorecard_path.write_text(json.dumps(scorecard), encoding="utf-8")
+            malformed_draft = critic_runner.verify_campaign_dir(campaign_dir, source)
+            self.assertFalse(malformed_draft.valid)
+            self.assertTrue(
+                any("structure is invalid" in error for error in malformed_draft.errors)
+            )
+            scorecard["comparisons"]["I1:I2"]["pairs"] = []
+            scorecard_path.write_text(json.dumps(scorecard), encoding="utf-8")
+
+            campaign_manifest_path = campaign_dir / "campaign.json"
+            original_campaign_manifest = campaign_manifest_path.read_text(encoding="utf-8")
+            incomplete_manifest = json.loads(original_campaign_manifest)
+            incomplete_manifest["runs"].pop()
+            campaign_manifest_path.write_text(
+                json.dumps(incomplete_manifest), encoding="utf-8"
+            )
+            incomplete = critic_runner.verify_campaign_dir(campaign_dir, source)
+            self.assertFalse(incomplete.valid)
+            self.assertTrue(any("run matrix mismatch" in error for error in incomplete.errors))
+            campaign_manifest_path.write_text(
+                original_campaign_manifest, encoding="utf-8"
+            )
+
+            reordered_manifest = json.loads(original_campaign_manifest)
+            reordered_manifest["execution_order"] = list(
+                reversed(reordered_manifest["execution_order"])
+            )
+            campaign_manifest_path.write_text(
+                json.dumps(reordered_manifest), encoding="utf-8"
+            )
+            reordered = critic_runner.verify_campaign_dir(campaign_dir, source)
+            self.assertFalse(reordered.valid)
+            self.assertTrue(
+                any("execution_order" in error for error in reordered.errors)
+            )
+            campaign_manifest_path.write_text(
+                original_campaign_manifest, encoding="utf-8"
+            )
+
+            first_run = campaign_dir / manifest["runs"][0]["run_dir"]
+            (first_run / "report.md").write_bytes(b"corrupt")
+            corrupted = critic_runner.verify_campaign_dir(campaign_dir, source)
+            self.assertFalse(corrupted.valid)
+            self.assertTrue(any("hash mismatch" in error for error in corrupted.errors))
+
+    def test_cross_track_campaign_creates_a_scoreable_dynamic_matrix(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "draft.md"
+            source.write_text("draft", encoding="utf-8")
+            encoded_report = base64.b64encode(VALID_REPORT.encode("utf-8")).decode()
+            args = argparse.Namespace(
+                manuscript=str(source),
+                protocol=None,
+                track=[
+                    "humanities-social-science",
+                    "natural-science",
+                    "engineering",
+                ],
+                repeat=2,
+                order_seed="cross-track-seed",
                 campaigns_dir=str(root / "campaigns"),
                 allow_test_artifact=False,
                 timeout=5.0,
@@ -1005,33 +1871,24 @@ UNVERIFIED: none
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 self.assertEqual(critic_runner.campaign(args), 0)
             campaign_dir = next((root / "campaigns").iterdir())
-            manifest = json.loads(
-                (campaign_dir / "campaign.json").read_text(encoding="utf-8")
-            )
-            self.assertEqual(len(manifest["runs"]), 4)
-            self.assertEqual(
-                [run["label"] for run in manifest["runs"]],
-                ["I1", "I2", "C1", "C2"],
-            )
-            self.assertTrue((campaign_dir / "scorecard.json").is_file())
-            self.assertTrue((campaign_dir / "SUMMARY.md").is_file())
-            self.assertEqual(len(list((campaign_dir / "runs").iterdir())), 4)
-            verification = critic_runner.verify_campaign_dir(campaign_dir, source)
-            self.assertTrue(verification.valid, verification.errors)
-
             scorecard_path = campaign_dir / "scorecard.json"
             scorecard = json.loads(scorecard_path.read_text(encoding="utf-8"))
-            scorecard["margin"] = 0.3
+            self.assertEqual(scorecard["schema_version"], 3)
+            self.assertEqual(
+                scorecard["run_order"], ["S1", "S2", "N1", "N2", "E1", "E2"]
+            )
+            self.assertEqual(len(scorecard["comparisons"]), 15)
+            for comparison in scorecard["comparisons"].values():
+                comparison["complete"] = True
+                comparison["pairs"] = [
+                    {"left": "A1", "right": "A1", "classification": "overlap"}
+                ]
             scorecard_path.write_text(json.dumps(scorecard), encoding="utf-8")
-            filled = critic_runner.verify_campaign_dir(campaign_dir, source)
-            self.assertTrue(filled.valid, filled.errors)
-            self.assertTrue(any("filled" in warning for warning in filled.warnings))
-
-            first_run = campaign_dir / manifest["runs"][0]["run_dir"]
-            (first_run / "report.md").write_bytes(b"corrupt")
-            corrupted = critic_runner.verify_campaign_dir(campaign_dir, source)
-            self.assertFalse(corrupted.valid)
-            self.assertTrue(any("hash mismatch" in error for error in corrupted.errors))
+            result = critic_runner.score_divergence(scorecard)
+            self.assertEqual(len(result["within_comparisons"]), 3)
+            self.assertEqual(len(result["between_comparisons"]), 12)
+            verification = critic_runner.verify_campaign_dir(campaign_dir, source)
+            self.assertTrue(verification.valid, verification.errors)
 
     def test_cli_run_path_handles_separator_end_to_end(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1127,11 +1984,14 @@ UNVERIFIED: none
             scorecard = json.loads(scorecard_path.read_text(encoding="utf-8"))
             for name in critic_runner.ALL_COMPARISONS:
                 scorecard["comparisons"][name] = {
-                    "overlap": 1,
-                    "different_reason": 0,
-                    "left_unique": 0,
-                    "right_unique": 0,
-                    "ambiguous": 0,
+                    "complete": True,
+                    "pairs": [
+                        {
+                            "left": "A1",
+                            "right": "A1",
+                            "classification": "overlap",
+                        }
+                    ],
                 }
             scorecard_path.write_text(json.dumps(scorecard), encoding="utf-8")
             scored = subprocess.run(
