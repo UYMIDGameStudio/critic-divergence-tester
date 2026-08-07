@@ -39,6 +39,12 @@ from critic_scoring import (
     scorecard_template,
     validate_pairing_scorecard,
 )
+from critic_workflow import (
+    WorkflowError,
+    adjudication_template,
+    revision_plan_markdown,
+    validate_adjudication,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -135,6 +141,7 @@ EXIT_TIMEOUT = 124
 EXIT_OUTPUT_LIMIT = 125
 EXIT_INVALID_SCORECARD = 6
 EXIT_CAMPAIGN_FAILED = 7
+EXIT_INVALID_WORKFLOW = 8
 DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024 * 1024
 
 
@@ -369,6 +376,42 @@ def extract_critic_claims(report: str) -> list[dict[str, str]]:
     if errors:
         raise ValueError("cannot extract claims: " + "; ".join(errors))
     return claims
+
+
+def extract_critic_findings(report: str) -> list[dict[str, str]]:
+    """Merge validated section-1 claims with their section-2 consequence tests."""
+    lines = report.splitlines()
+    sections = _section_ranges(lines)
+    if sections is None:
+        raise ValueError("cannot extract findings from a report with invalid headings")
+    claims = extract_critic_claims(report)
+    errors: list[str] = []
+    consequences: dict[str, dict[str, str]] = {}
+    for identifier, block in _item_blocks(sections[CRITIC_SECTIONS[1]]):
+        label = f"A{identifier}"
+        test = _field_value(block, "检验：", label, errors)
+        conclusion = _field_value(block, "结论：", label, errors)
+        if test is not None and conclusion is not None:
+            consequences[label] = {"test": test, "conclusion": conclusion}
+    if errors:
+        raise ValueError("cannot extract findings: " + "; ".join(errors))
+    claim_ids = [claim["id"] for claim in claims]
+    if set(claim_ids) != set(consequences):
+        raise ValueError("cannot extract findings: section 1 and section 2 IDs differ")
+    return [{**claim, **consequences[claim["id"]]} for claim in claims]
+
+
+def critic_report_context(report: str) -> tuple[str, str]:
+    nonempty = [line.strip() for line in report.splitlines() if line.strip()]
+    if len(nonempty) < 2:
+        raise ValueError("critic report has no status footer")
+    status_match = STATUS_PATTERN.fullmatch(nonempty[-2])
+    if status_match is None or not nonempty[-1].startswith("UNVERIFIED:"):
+        raise ValueError("critic report has an invalid status footer")
+    return (
+        status_match.group(1),
+        nonempty[-1][len("UNVERIFIED:") :].strip(),
+    )
 
 
 def _validate_item_fields(
@@ -770,7 +813,8 @@ def verify_run_dir(run_dir: Path, source_path: Path | None = None) -> Verificati
     if manifest_path.is_symlink():
         return VerificationResult(False, ("manifest.json must not be a symbolic link",), ())
     try:
-        manifest_value = parse_json(manifest_path.read_text(encoding="utf-8"))
+        manifest_bytes = manifest_path.read_bytes()
+        manifest_value = parse_json(manifest_bytes.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, DuplicateJsonKeyError) as exc:
         return VerificationResult(
             False,
@@ -782,8 +826,8 @@ def verify_run_dir(run_dir: Path, source_path: Path | None = None) -> Verificati
     manifest: dict[str, object] = manifest_value
 
     schema_version = manifest.get("schema_version")
-    if schema_version not in {1, 2}:
-        errors.append("unsupported or missing schema_version; expected 1 or 2")
+    if schema_version not in {1, 2, 3}:
+        errors.append("unsupported or missing schema_version; expected 1, 2, or 3")
     elif schema_version == 1:
         warnings.append("legacy schema_version 1 archive has no output-limit metadata")
 
@@ -798,12 +842,14 @@ def verify_run_dir(run_dir: Path, source_path: Path | None = None) -> Verificati
         or Path(source_name).name != source_name
         or "/" in source_name
         or "\\" in source_name
+        or any(ord(character) < 32 or ord(character) == 127 for character in source_name)
     ):
         errors.append("source_name must be a non-empty basename, not a path")
 
     status = manifest.get("status")
     allowed_statuses = {
         "prepared",
+        "collected",
         "running",
         "succeeded",
         "failed",
@@ -837,6 +883,7 @@ def verify_run_dir(run_dir: Path, source_path: Path | None = None) -> Verificati
 
     report_required = status in {
         "succeeded",
+        "collected",
         "failed",
         "invalid_report",
         "timed_out",
@@ -905,9 +952,10 @@ def verify_run_dir(run_dir: Path, source_path: Path | None = None) -> Verificati
                 )
 
     executor = manifest.get("executor")
-    if status == "prepared":
+    manual_status = status in {"prepared", "collected"}
+    if manual_status:
         if executor is not None:
-            errors.append("prepared manifest must have executor=null")
+            errors.append(f"{status} manifest must have executor=null")
     elif not isinstance(executor, dict):
         errors.append("executed run must contain redacted executor metadata")
     else:
@@ -934,9 +982,9 @@ def verify_run_dir(run_dir: Path, source_path: Path | None = None) -> Verificati
                 errors.append(f"executor.label is invalid: {exc}")
 
     timeout_seconds = manifest.get("timeout_seconds")
-    if status == "prepared":
+    if manual_status:
         if timeout_seconds is not None:
-            errors.append("prepared manifest must have timeout_seconds=null")
+            errors.append(f"{status} manifest must have timeout_seconds=null")
     elif (
         not isinstance(timeout_seconds, (int, float))
         or isinstance(timeout_seconds, bool)
@@ -945,11 +993,11 @@ def verify_run_dir(run_dir: Path, source_path: Path | None = None) -> Verificati
     ):
         errors.append("executed run must have a positive finite timeout_seconds")
 
-    if schema_version == 2:
+    if schema_version in {2, 3}:
         max_output_bytes = manifest.get("max_output_bytes")
-        if status == "prepared":
+        if manual_status:
             if max_output_bytes is not None:
-                errors.append("prepared manifest must have max_output_bytes=null")
+                errors.append(f"{status} manifest must have max_output_bytes=null")
         elif (
             not isinstance(max_output_bytes, int)
             or isinstance(max_output_bytes, bool)
@@ -964,6 +1012,7 @@ def verify_run_dir(run_dir: Path, source_path: Path | None = None) -> Verificati
     runner_code = manifest.get("runner_exit_code")
     expected_runner_codes = {
         "prepared": 0,
+        "collected": 0,
         "running": None,
         "succeeded": 0,
         "invalid_report": EXIT_INVALID_REPORT,
@@ -980,6 +1029,8 @@ def verify_run_dir(run_dir: Path, source_path: Path | None = None) -> Verificati
         errors.append("succeeded manifest must have executor_returncode=0")
     if status == "invalid_report" and executor_code != 0:
         errors.append("invalid_report manifest must have executor_returncode=0")
+    if status == "collected" and executor_code is not None:
+        errors.append("collected manifest must have executor_returncode=null")
     if status == "failed":
         if not isinstance(executor_code, int) or executor_code == 0:
             errors.append("failed manifest must have a nonzero executor_returncode")
@@ -1001,8 +1052,124 @@ def verify_run_dir(run_dir: Path, source_path: Path | None = None) -> Verificati
                 errors.append("report_validation does not match a fresh validation pass")
             if status == "succeeded" and not validation.valid:
                 errors.append("succeeded manifest contains an invalid report")
+            if status == "collected" and not validation.valid:
+                errors.append("collected manifest contains an invalid report")
             if status == "invalid_report" and validation.valid:
                 errors.append("invalid_report manifest contains a valid report")
+
+    collection = manifest.get("collection")
+    if schema_version == 3:
+        if "collection" not in manifest:
+            errors.append("run schema_version 3 must contain collection")
+        if status == "collected":
+            if not isinstance(collection, dict):
+                errors.append("collected manifest must contain collection metadata")
+            else:
+                if set(collection) != {"method", "imported_at", "source_name"}:
+                    errors.append("collection metadata has unexpected fields")
+                if collection.get("method") != "manual-import":
+                    errors.append("collection.method must be manual-import")
+                imported_at = _parse_timestamp(collection.get("imported_at"))
+                if imported_at is None:
+                    errors.append("collection.imported_at must be timezone-aware ISO-8601")
+                elif parsed_completed_at is not None and imported_at != parsed_completed_at:
+                    errors.append("collection.imported_at must equal completed_at")
+                report_source_name = collection.get("source_name")
+                if (
+                    not isinstance(report_source_name, str)
+                    or not report_source_name
+                    or Path(report_source_name).name != report_source_name
+                    or "/" in report_source_name
+                    or "\\" in report_source_name
+                    or any(
+                        ord(character) < 32 or ord(character) == 127
+                        for character in report_source_name
+                    )
+                ):
+                    errors.append("collection.source_name must be a basename")
+        elif collection is not None:
+            errors.append("non-collected manifest must have collection=null")
+    elif status == "collected":
+        errors.append("collected status requires run schema_version 3")
+
+    adjudication_path = run_dir / "adjudication.json"
+    revision_plan_path = run_dir / "revision-plan.md"
+    workflow_paths = (adjudication_path, revision_plan_path)
+    if status != "collected":
+        for workflow_path in workflow_paths:
+            if workflow_path.exists() or workflow_path.is_symlink():
+                errors.append(
+                    f"{workflow_path.name} exists outside a collected workflow"
+                )
+    elif isinstance(protocol_name, str) and protocol_name in CRITIC_PROTOCOLS:
+        adjudication_value: object | None = None
+        adjudication_bytes: bytes | None = None
+        if adjudication_path.is_symlink():
+            errors.append("adjudication.json must not be a symbolic link")
+        elif not adjudication_path.is_file():
+            errors.append("collected critic run is missing adjudication.json")
+        else:
+            try:
+                adjudication_bytes = adjudication_path.read_bytes()
+                adjudication_value = parse_json(adjudication_bytes.decode("utf-8"))
+            except (
+                OSError,
+                UnicodeDecodeError,
+                json.JSONDecodeError,
+                DuplicateJsonKeyError,
+            ) as exc:
+                errors.append(f"cannot read adjudication.json: {exc}")
+            else:
+                binding_errors = _adjudication_binding_errors(
+                    manifest,
+                    manifest_bytes,
+                    report_bytes or b"",
+                    adjudication_value,
+                    require_complete=False,
+                )
+                errors.extend(
+                    f"adjudication.json: {error}" for error in binding_errors
+                )
+
+        if revision_plan_path.is_symlink():
+            errors.append("revision-plan.md must not be a symbolic link")
+        elif revision_plan_path.exists():
+            if not revision_plan_path.is_file():
+                errors.append("revision-plan.md must be a regular file")
+            elif adjudication_value is None or adjudication_bytes is None:
+                errors.append("revision-plan.md cannot be verified without adjudication.json")
+            else:
+                complete_errors = _adjudication_binding_errors(
+                    manifest,
+                    manifest_bytes,
+                    report_bytes or b"",
+                    adjudication_value,
+                    require_complete=True,
+                )
+                if complete_errors:
+                    errors.append(
+                        "revision-plan.md exists before adjudication is valid and complete"
+                    )
+                else:
+                    expected_plan = revision_plan_markdown(
+                        adjudication_value,
+                        adjudication_sha256=sha256_bytes(adjudication_bytes),
+                    )
+                    try:
+                        actual_plan = revision_plan_path.read_text(encoding="utf-8")
+                    except (OSError, UnicodeDecodeError) as exc:
+                        errors.append(f"cannot read revision-plan.md: {exc}")
+                    else:
+                        if actual_plan != expected_plan:
+                            errors.append(
+                                "revision-plan.md does not match the current adjudication"
+                            )
+    else:
+        for workflow_path in workflow_paths:
+            if workflow_path.exists() or workflow_path.is_symlink():
+                errors.append(
+                    f"{workflow_path.name} is not supported for protocol {protocol_name!r}"
+                )
 
     return VerificationResult(not errors, tuple(errors), tuple(warnings))
 
@@ -1041,7 +1208,7 @@ def write_run(
         atomic_write_bytes(run_dir / "stderr.log", stderr_bytes)
 
     manifest = {
-        "schema_version": 2,
+        "schema_version": 3,
         "protocol": protocol_name,
         "source_name": source_path.name,
         "source_sha256": sha256_bytes(source_raw),
@@ -1060,12 +1227,13 @@ def write_run(
         "executor_returncode": executor_returncode,
         "runner_exit_code": runner_exit_code,
         "report_validation": validation.as_dict() if validation is not None else None,
+        "collection": None,
     }
     manifest_text = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
     atomic_write_text(run_dir / "manifest.json", manifest_text)
 
 
-def prepare(args: argparse.Namespace) -> int:
+def _prepare_bundle(args: argparse.Namespace) -> Path:
     source_path = Path(args.manuscript).resolve()
     source_text, source_raw = read_utf8(source_path)
     protocol, protocol_raw = load_protocol(args.protocol, args.allow_test_artifact)
@@ -1085,6 +1253,11 @@ def prepare(args: argparse.Namespace) -> int:
         status="prepared",
         runner_exit_code=0,
     )
+    return run_dir
+
+
+def prepare(args: argparse.Namespace) -> int:
+    run_dir = _prepare_bundle(args)
     print(run_dir / "prompt.md")
     return 0
 
@@ -2054,6 +2227,419 @@ def apply_blind_scorecard_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def import_report_command(args: argparse.Namespace) -> int:
+    raw_run_dir = Path(args.run_dir)
+    raw_report_path = Path(args.report)
+    run_dir = raw_run_dir.resolve()
+    report_path = raw_report_path.resolve()
+    manifest_path = run_dir / "manifest.json"
+    archived_report_path = run_dir / "report.md"
+    adjudication_path = (
+        Path(args.adjudication_output).resolve()
+        if getattr(args, "adjudication_output", None)
+        else run_dir / "adjudication.json"
+    )
+
+    if raw_run_dir.is_symlink() or raw_report_path.is_symlink():
+        print(
+            "import report error: run and report paths must not be symbolic links",
+            file=sys.stderr,
+        )
+        return EXIT_INVALID_WORKFLOW
+    if not report_path.is_file():
+        print(
+            f"import report error: report file does not exist: {report_path}",
+            file=sys.stderr,
+        )
+        return EXIT_INVALID_WORKFLOW
+    if report_path == run_dir or run_dir in report_path.parents:
+        print(
+            "import report error: source report must be outside the prepared run",
+            file=sys.stderr,
+        )
+        return EXIT_INVALID_WORKFLOW
+    if archived_report_path.exists() or archived_report_path.is_symlink():
+        print(
+            "import report error: archived report already exists; refusing to overwrite",
+            file=sys.stderr,
+        )
+        return EXIT_INVALID_WORKFLOW
+    if adjudication_path.parent != run_dir:
+        print(
+            "import report error: adjudication must stay inside the run directory",
+            file=sys.stderr,
+        )
+        return EXIT_INVALID_WORKFLOW
+    if adjudication_path.exists() or adjudication_path.is_symlink():
+        print("import report error: adjudication output already exists", file=sys.stderr)
+        return EXIT_INVALID_WORKFLOW
+
+    verification = verify_run_dir(run_dir)
+    if not verification.valid:
+        for error in verification.errors:
+            print(f"import report archive error: {error}", file=sys.stderr)
+        return EXIT_INVALID_ARCHIVE
+
+    try:
+        old_manifest_bytes = manifest_path.read_bytes()
+        manifest_value = parse_json(old_manifest_bytes.decode("utf-8"))
+        report_bytes = report_path.read_bytes()
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, DuplicateJsonKeyError) as exc:
+        print(f"import report error: {exc}", file=sys.stderr)
+        return EXIT_INVALID_WORKFLOW
+    if not isinstance(manifest_value, dict):
+        print("import report error: manifest must be an object", file=sys.stderr)
+        return EXIT_INVALID_WORKFLOW
+    manifest: dict[str, object] = manifest_value
+    if manifest.get("status") != "prepared":
+        print("import report error: only a prepared run can collect a report", file=sys.stderr)
+        return EXIT_INVALID_WORKFLOW
+    if len(report_bytes) > DEFAULT_MAX_OUTPUT_BYTES:
+        print(
+            f"import report error: report exceeds {DEFAULT_MAX_OUTPUT_BYTES} bytes",
+            file=sys.stderr,
+        )
+        return EXIT_INVALID_WORKFLOW
+
+    protocol = manifest.get("protocol")
+    assert isinstance(protocol, str)
+    try:
+        report_text = report_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        print(f"import report error: report is not UTF-8: {exc}", file=sys.stderr)
+        return EXIT_INVALID_REPORT
+    validation = validate_report(protocol, report_text)
+    if not validation.valid:
+        _print_validation_errors(validation)
+        print("report was not imported; fix it and retry", file=sys.stderr)
+        return EXIT_INVALID_REPORT
+
+    imported_at = utc_now()
+    manifest.update(
+        {
+            "schema_version": 3,
+            "report_sha256": sha256_bytes(report_bytes),
+            "completed_at": imported_at,
+            "status": "collected",
+            "executor": None,
+            "timeout_seconds": None,
+            "max_output_bytes": None,
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+            "executor_returncode": None,
+            "runner_exit_code": 0,
+            "report_validation": validation.as_dict(),
+            "collection": {
+                "method": "manual-import",
+                "imported_at": imported_at,
+                "source_name": report_path.name,
+            },
+        }
+    )
+    manifest_bytes = (
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
+    ).encode("utf-8")
+
+    adjudication_bytes: bytes | None = None
+    if protocol in CRITIC_PROTOCOLS:
+        try:
+            findings = extract_critic_findings(report_text)
+            report_status, unverified = critic_report_context(report_text)
+        except ValueError as exc:
+            print(f"import report error: {exc}", file=sys.stderr)
+            return EXIT_INVALID_WORKFLOW
+        adjudication = adjudication_template(
+            protocol=protocol,
+            report_sha256=sha256_bytes(report_bytes),
+            manifest_sha256=sha256_bytes(manifest_bytes),
+            findings=findings,
+            report_status=report_status,
+            unverified=unverified,
+        )
+        adjudication_bytes = (
+            json.dumps(adjudication, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+
+    created_paths: list[Path] = []
+    try:
+        atomic_write_bytes(archived_report_path, report_bytes)
+        created_paths.append(archived_report_path)
+        if adjudication_bytes is not None:
+            atomic_write_bytes(adjudication_path, adjudication_bytes)
+            created_paths.append(adjudication_path)
+        atomic_write_bytes(manifest_path, manifest_bytes)
+    except OSError as exc:
+        for created_path in created_paths:
+            created_path.unlink(missing_ok=True)
+        try:
+            atomic_write_bytes(manifest_path, old_manifest_bytes)
+        except OSError:
+            pass
+        print(f"import report error: {exc}", file=sys.stderr)
+        return EXIT_INVALID_WORKFLOW
+
+    post_verification = verify_run_dir(run_dir)
+    if not post_verification.valid:
+        for created_path in created_paths:
+            created_path.unlink(missing_ok=True)
+        atomic_write_bytes(manifest_path, old_manifest_bytes)
+        for error in post_verification.errors:
+            print(f"import report postcondition error: {error}", file=sys.stderr)
+        return EXIT_INVALID_ARCHIVE
+
+    print(archived_report_path)
+    if adjudication_bytes is not None:
+        print(adjudication_path)
+    return 0
+
+
+def _adjudication_binding_errors(
+    manifest_value: object,
+    manifest_bytes: bytes,
+    report_bytes: bytes,
+    adjudication_value: object,
+    *,
+    require_complete: bool,
+) -> list[str]:
+    errors = validate_adjudication(
+        adjudication_value, require_complete=require_complete
+    )
+    if not isinstance(manifest_value, dict):
+        errors.append("manifest must be an object")
+        return errors
+    if manifest_value.get("status") != "collected":
+        errors.append("run must have collected status")
+    if not isinstance(adjudication_value, dict):
+        return errors
+
+    source = adjudication_value.get("source")
+    protocol = manifest_value.get("protocol")
+    expected_source = {
+        "protocol": protocol,
+        "report_sha256": sha256_bytes(report_bytes),
+        "manifest_sha256": sha256_bytes(manifest_bytes),
+    }
+    if isinstance(protocol, str) and protocol in CRITIC_PROTOCOLS:
+        report_status, unverified = critic_report_context(
+            report_bytes.decode("utf-8-sig")
+        )
+        expected_source.update(
+            {"report_status": report_status, "unverified": unverified}
+        )
+    if source != expected_source:
+        errors.append("adjudication source does not match the collected run")
+    if isinstance(protocol, str) and protocol in CRITIC_PROTOCOLS:
+        expected_findings = extract_critic_findings(report_bytes.decode("utf-8-sig"))
+        findings = adjudication_value.get("findings")
+        if isinstance(findings, list) and len(findings) == len(expected_findings):
+            immutable_keys = (
+                "id",
+                "position",
+                "claim",
+                "reason",
+                "test",
+                "conclusion",
+            )
+            for index, (actual, expected) in enumerate(
+                zip(findings, expected_findings)
+            ):
+                if not isinstance(actual, dict) or any(
+                    actual.get(key) != expected.get(key) for key in immutable_keys
+                ):
+                    errors.append(
+                        f"findings[{index}] was edited outside decision fields"
+                    )
+        else:
+            errors.append("adjudication findings do not match the collected report")
+    else:
+        errors.append("adjudication currently requires a critic protocol")
+    return errors
+
+
+def adjudicate_command(args: argparse.Namespace) -> int:
+    raw_run_dir = Path(args.run_dir)
+    run_dir = raw_run_dir.resolve()
+    adjudication_path = run_dir / "adjudication.json"
+    if raw_run_dir.is_symlink() or adjudication_path.is_symlink():
+        print("adjudication error: paths must not be symbolic links", file=sys.stderr)
+        return EXIT_INVALID_WORKFLOW
+    verification = verify_run_dir(run_dir)
+    if not verification.valid:
+        for error in verification.errors:
+            print(f"adjudication archive error: {error}", file=sys.stderr)
+        return EXIT_INVALID_ARCHIVE
+    try:
+        manifest_bytes = (run_dir / "manifest.json").read_bytes()
+        manifest_value = parse_json(manifest_bytes.decode("utf-8"))
+        report_bytes = (run_dir / "report.md").read_bytes()
+        adjudication_value = parse_json(
+            adjudication_path.read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, DuplicateJsonKeyError) as exc:
+        print(f"adjudication error: {exc}", file=sys.stderr)
+        return EXIT_INVALID_WORKFLOW
+    errors = _adjudication_binding_errors(
+        manifest_value,
+        manifest_bytes,
+        report_bytes,
+        adjudication_value,
+        require_complete=False,
+    )
+    if errors or not isinstance(adjudication_value, dict):
+        for error in errors:
+            print(f"adjudication error: {error}", file=sys.stderr)
+        return EXIT_INVALID_WORKFLOW
+    findings = adjudication_value["findings"]
+    assert isinstance(findings, list)
+    print("人工裁决：AI 的批评不是结论，逐条决定是否采纳。")
+    print("已完成的条目会跳过；每完成一条都会立即保存。")
+    choices = {"1": "accept", "2": "reject", "3": "defer"}
+    for finding in findings:
+        assert isinstance(finding, dict)
+        if finding.get("decision") in choices.values():
+            continue
+        print(f"\n{finding['id']}  {finding['claim']}")
+        print(f"位置：{finding['position']}")
+        print(f"理由：{finding['reason']}")
+        print(f"后果检验：{finding['test']}")
+        while True:
+            try:
+                choice = input("选择 1 接受 / 2 拒绝 / 3 暂缓：").strip()
+            except EOFError:
+                print("\n错误：没有收到裁决。", file=sys.stderr)
+                return 2
+            except KeyboardInterrupt:
+                print("\n已保存当前进度并退出。", file=sys.stderr)
+                return EXIT_INTERRUPTED
+            decision = choices.get(choice)
+            if decision is not None:
+                break
+            print("无法识别，请输入 1、2 或 3。")
+
+        author_reason = ""
+        revision_action = ""
+        try:
+            if decision == "accept":
+                author_reason = input("采纳理由（可直接回车）：").strip()
+                while not revision_action:
+                    revision_action = input("具体修改动作（必填）：").strip()
+                    if not revision_action:
+                        print("接受批评时必须写清具体修改动作。")
+            elif decision == "reject":
+                while not author_reason:
+                    author_reason = input("拒绝理由（必填）：").strip()
+                    if not author_reason:
+                        print("拒绝批评时必须留下理由。")
+            else:
+                while not author_reason:
+                    author_reason = input("暂缓理由（必填）：").strip()
+                    if not author_reason:
+                        print("暂缓时必须说明缺少什么证据或判断。")
+                revision_action = input("后续动作（可直接回车）：").strip()
+        except EOFError:
+            print("\n错误：裁决输入不完整。", file=sys.stderr)
+            return 2
+        except KeyboardInterrupt:
+            print("\n已保存此前进度并退出。", file=sys.stderr)
+            return EXIT_INTERRUPTED
+        finding["decision"] = decision
+        finding["author_reason"] = author_reason
+        finding["revision_action"] = revision_action
+        try:
+            atomic_write_text(
+                adjudication_path,
+                json.dumps(adjudication_value, ensure_ascii=False, indent=2) + "\n",
+            )
+        except OSError as exc:
+            print(f"adjudication error: cannot save decision: {exc}", file=sys.stderr)
+            return EXIT_INVALID_WORKFLOW
+        print(f"已保存 {finding['id']}。")
+
+    print("\n裁决完成，正在生成修改计划……")
+    return revision_plan_command(
+        argparse.Namespace(run_dir=str(run_dir), adjudication=None, output=None)
+    )
+
+
+def revision_plan_command(args: argparse.Namespace) -> int:
+    raw_run_dir = Path(args.run_dir)
+    run_dir = raw_run_dir.resolve()
+    raw_adjudication_path = (
+        Path(args.adjudication)
+        if getattr(args, "adjudication", None)
+        else run_dir / "adjudication.json"
+    )
+    adjudication_path = raw_adjudication_path.resolve()
+    raw_output_path = (
+        Path(args.output)
+        if getattr(args, "output", None)
+        else run_dir / "revision-plan.md"
+    )
+    output_path = raw_output_path.resolve()
+    if any(path.is_symlink() for path in (raw_run_dir, raw_adjudication_path, raw_output_path)):
+        print("revision plan error: paths must not be symbolic links", file=sys.stderr)
+        return EXIT_INVALID_WORKFLOW
+    if adjudication_path.parent != run_dir or output_path.parent != run_dir:
+        print("revision plan error: artifacts must stay inside the run directory", file=sys.stderr)
+        return EXIT_INVALID_WORKFLOW
+    verification = verify_run_dir(run_dir)
+    if not verification.valid:
+        for error in verification.errors:
+            print(f"revision plan archive error: {error}", file=sys.stderr)
+        return EXIT_INVALID_ARCHIVE
+    try:
+        manifest_bytes = (run_dir / "manifest.json").read_bytes()
+        manifest_value = parse_json(manifest_bytes.decode("utf-8"))
+        report_bytes = (run_dir / "report.md").read_bytes()
+        adjudication_bytes = adjudication_path.read_bytes()
+        adjudication_value = parse_json(adjudication_bytes.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, DuplicateJsonKeyError) as exc:
+        print(f"revision plan error: {exc}", file=sys.stderr)
+        return EXIT_INVALID_WORKFLOW
+    errors = _adjudication_binding_errors(
+        manifest_value,
+        manifest_bytes,
+        report_bytes,
+        adjudication_value,
+        require_complete=True,
+    )
+    if errors:
+        for error in errors:
+            print(f"revision plan error: {error}", file=sys.stderr)
+        return EXIT_INVALID_WORKFLOW
+    adjudication_sha256 = sha256_bytes(adjudication_bytes)
+    try:
+        markdown = revision_plan_markdown(
+            adjudication_value,
+            adjudication_sha256=adjudication_sha256,
+        )
+    except WorkflowError as exc:
+        print(f"revision plan error: {exc}", file=sys.stderr)
+        return EXIT_INVALID_WORKFLOW
+    if output_path.exists():
+        try:
+            existing_plan = output_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            print(f"revision plan error: cannot read existing output: {exc}", file=sys.stderr)
+            return EXIT_INVALID_WORKFLOW
+        if existing_plan == markdown:
+            print(output_path)
+            return 0
+        print(
+            "revision plan error: output is stale or modified; "
+            "move it aside or choose another --output path",
+            file=sys.stderr,
+        )
+        return EXIT_INVALID_WORKFLOW
+    try:
+        atomic_write_text(output_path, markdown)
+    except OSError as exc:
+        print(f"revision plan error: {exc}", file=sys.stderr)
+        return EXIT_INVALID_WORKFLOW
+    print(output_path)
+    return 0
+
+
 def validate_command(args: argparse.Namespace) -> int:
     report_path = Path(args.report).resolve()
     report, _ = read_utf8(report_path)
@@ -2248,17 +2834,22 @@ def quickstart(args: argparse.Namespace) -> int:
     track_label = str(ACADEMIC_TRACKS[track]["label"])
     print(f"\n已选择：{track_label}")
     print("正在生成自包含审查提示……")
-    result = prepare_track(
+    run_dir = _prepare_bundle(
         argparse.Namespace(
-            track=track,
+            protocol=ACADEMIC_TRACKS[track]["primary"],
             manuscript=str(source_path),
             runs_dir=getattr(args, "runs_dir", ".critic-runs"),
             allow_test_artifact=False,
         )
     )
-    if result == 0:
-        print("完成。打开上面显示的 prompt.md，复制全部内容给你常用的 AI。")
-    return result
+    prompt_path = run_dir / "prompt.md"
+    print(prompt_path)
+    print("完成。打开上面显示的 prompt.md，复制全部内容给你常用的 AI。")
+    print("把 AI 回答保存为 report-returned.md 后，继续运行：")
+    launcher = "py -3" if os.name == "nt" else "python3"
+    print(f'{launcher} critic_runner.py import-report "{run_dir}" report-returned.md')
+    print(f'{launcher} critic_runner.py adjudicate "{run_dir}"')
+    return 0
 
 
 def run_track(args: argparse.Namespace) -> int:
@@ -2475,6 +3066,40 @@ def parser() -> argparse.ArgumentParser:
     )
     verify_campaign_parser.set_defaults(func=verify_campaign_command)
 
+    import_report_parser = sub.add_parser(
+        "import-report",
+        help="validate and bind a manual AI report to a prepared run",
+    )
+    import_report_parser.add_argument("run_dir", help="prepared run directory")
+    import_report_parser.add_argument("report", help="UTF-8 report returned by the AI")
+    import_report_parser.add_argument(
+        "--adjudication-output",
+        help="adjudication JSON path (default: inside the run directory)",
+    )
+    import_report_parser.set_defaults(func=import_report_command)
+
+    adjudicate_parser = sub.add_parser(
+        "adjudicate",
+        help="中文交互裁决 AI 发现并自动生成修改计划",
+    )
+    adjudicate_parser.add_argument("run_dir", help="collected run directory")
+    adjudicate_parser.set_defaults(func=adjudicate_command)
+
+    revision_plan_parser = sub.add_parser(
+        "revision-plan",
+        help="turn completed human adjudication into an actionable Markdown plan",
+    )
+    revision_plan_parser.add_argument("run_dir", help="collected run directory")
+    revision_plan_parser.add_argument(
+        "--adjudication",
+        help="completed adjudication JSON path (default: inside the run directory)",
+    )
+    revision_plan_parser.add_argument(
+        "--output",
+        help="revision plan Markdown path (default: inside the run directory)",
+    )
+    revision_plan_parser.set_defaults(func=revision_plan_command)
+
     init_scorecard_parser = sub.add_parser(
         "init-scorecard", help="create a blank reproducible W/B scorecard"
     )
@@ -2527,6 +3152,9 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    stdin_reconfigure = getattr(sys.stdin, "reconfigure", None)
+    if stdin_reconfigure is not None:
+        stdin_reconfigure(encoding="utf-8", errors="strict")
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:

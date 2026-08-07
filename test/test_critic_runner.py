@@ -22,6 +22,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 import critic_runner  # noqa: E402
 import critic_execution  # noqa: E402
+import critic_workflow  # noqa: E402
 
 
 VALID_REPORT = """## 1. 原子指控
@@ -131,6 +132,31 @@ class CriticRunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(critic_runner.DuplicateJsonKeyError, "duplicate"):
             critic_runner.parse_json('{"status": "succeeded", "status": "failed"}')
 
+    def test_partial_adjudication_distinguishes_undecided_from_invalid(self) -> None:
+        value = critic_workflow.adjudication_template(
+            protocol="critic-social-science",
+            report_sha256="a" * 64,
+            manifest_sha256="b" * 64,
+            findings=[
+                {
+                    "id": "A1",
+                    "position": "原文",
+                    "claim": "缺少一步",
+                    "reason": "理由",
+                    "test": "补足",
+                    "conclusion": "缩窄",
+                }
+            ],
+        )
+        self.assertEqual(
+            critic_workflow.validate_adjudication(value, require_complete=False), []
+        )
+        value["findings"][0]["decision"] = "accept"
+        errors = critic_workflow.validate_adjudication(
+            value, require_complete=False
+        )
+        self.assertTrue(any("revision_action is required" in error for error in errors))
+
     def test_generic_protocol_requires_explicit_unlock(self) -> None:
         with self.assertRaisesRegex(ValueError, "test artifact"):
             critic_runner.load_protocol("critic-generic")
@@ -234,6 +260,8 @@ class CriticRunnerTests(unittest.TestCase):
             self.assertEqual(errors.getvalue(), "")
             self.assertIn("无法识别", output.getvalue())
             self.assertIn("已选择：工科·工程学", output.getvalue())
+            self.assertIn("import-report", output.getvalue())
+            self.assertIn("adjudicate", output.getvalue())
             run_dir = next((root / "runs").iterdir())
             manifest = json.loads(
                 (run_dir / "manifest.json").read_text(encoding="utf-8")
@@ -355,6 +383,412 @@ class CriticRunnerTests(unittest.TestCase):
                 (run_dir / "prompt.md").read_text(encoding="utf-8"),
             )
 
+    def test_import_report_closes_manual_run_and_creates_adjudication(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = self._args(root=root)
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(critic_runner.prepare(args), 0)
+            run_dir = next((root / "runs").iterdir())
+            returned_report = root / "ai-response.md"
+            returned_report.write_text(VALID_REPORT, encoding="utf-8")
+
+            output = io.StringIO()
+            with redirect_stdout(output), redirect_stderr(io.StringIO()):
+                result = critic_runner.import_report_command(
+                    argparse.Namespace(
+                        run_dir=str(run_dir),
+                        report=str(returned_report),
+                        adjudication_output=None,
+                    )
+                )
+            self.assertEqual(result, 0)
+            self.assertIn("adjudication.json", output.getvalue())
+            self.assertEqual((run_dir / "report.md").read_text(encoding="utf-8"), VALID_REPORT)
+            manifest = json.loads(
+                (run_dir / "manifest.json").read_text(encoding="utf-8")
+            )
+            manifest_text = (run_dir / "manifest.json").read_text(encoding="utf-8")
+            self.assertEqual(manifest["schema_version"], 3)
+            self.assertEqual(manifest["status"], "collected")
+            self.assertIsNone(manifest["executor"])
+            self.assertEqual(manifest["collection"]["method"], "manual-import")
+            self.assertEqual(manifest["collection"]["source_name"], "ai-response.md")
+            self.assertNotIn(str(root), manifest_text)
+            adjudication = json.loads(
+                (run_dir / "adjudication.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(adjudication["findings"][0]["claim"], "缺少关键一步。")
+            self.assertEqual(adjudication["findings"][0]["test"], "补足后的论证。")
+            self.assertEqual(adjudication["source"]["report_status"], "complete")
+            self.assertEqual(adjudication["source"]["unverified"], "none")
+            self.assertIsNone(adjudication["findings"][0]["decision"])
+            verification = critic_runner.verify_run_dir(run_dir)
+            self.assertTrue(verification.valid, verification.errors)
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    critic_runner.import_report_command(
+                        argparse.Namespace(
+                            run_dir=str(run_dir),
+                            report=str(returned_report),
+                            adjudication_output=None,
+                        )
+                    ),
+                    critic_runner.EXIT_INVALID_WORKFLOW,
+                )
+            manifest["collection"]["imported_at"] = "2026-01-01T00:00:00+00:00"
+            (run_dir / "manifest.json").write_text(
+                json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+            )
+            tampered = critic_runner.verify_run_dir(run_dir)
+            self.assertFalse(tampered.valid)
+            self.assertTrue(
+                any("imported_at must equal" in error for error in tampered.errors)
+            )
+
+    def test_import_report_preserves_partial_status_and_uncertainty(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = self._args(root=root)
+            with redirect_stdout(io.StringIO()):
+                critic_runner.prepare(args)
+            run_dir = next((root / "runs").iterdir())
+            partial_report = VALID_REPORT.replace(
+                "STATUS: complete\nUNVERIFIED: none",
+                "STATUS: partial\nUNVERIFIED: 原始数据尚未提供",
+            )
+            report = root / "partial.md"
+            report.write_text(partial_report, encoding="utf-8")
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    critic_runner.import_report_command(
+                        argparse.Namespace(
+                            run_dir=str(run_dir),
+                            report=str(report),
+                            adjudication_output=None,
+                        )
+                    ),
+                    0,
+                )
+            adjudication = json.loads(
+                (run_dir / "adjudication.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(adjudication["source"]["report_status"], "partial")
+            self.assertEqual(
+                adjudication["source"]["unverified"], "原始数据尚未提供"
+            )
+
+    def test_revision_plan_requires_human_decisions_and_preserves_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = self._args(root=root)
+            with redirect_stdout(io.StringIO()):
+                critic_runner.prepare(args)
+            run_dir = next((root / "runs").iterdir())
+            returned_report = root / "report.md"
+            returned_report.write_text(VALID_REPORT, encoding="utf-8")
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    critic_runner.import_report_command(
+                        argparse.Namespace(
+                            run_dir=str(run_dir),
+                            report=str(returned_report),
+                            adjudication_output=None,
+                        )
+                    ),
+                    0,
+                )
+
+            plan_args = argparse.Namespace(
+                run_dir=str(run_dir), adjudication=None, output=None
+            )
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    critic_runner.revision_plan_command(plan_args),
+                    critic_runner.EXIT_INVALID_WORKFLOW,
+                )
+            adjudication_path = run_dir / "adjudication.json"
+            adjudication = json.loads(adjudication_path.read_text(encoding="utf-8"))
+            adjudication["findings"][0]["decision"] = "accept"
+            adjudication["findings"][0]["author_reason"] = "批评成立。"
+            adjudication["findings"][0]["revision_action"] = "补写关键推导并增加反例。"
+            adjudication_path.write_text(
+                json.dumps(adjudication, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(critic_runner.revision_plan_command(plan_args), 0)
+            plan = (run_dir / "revision-plan.md").read_text(encoding="utf-8")
+            self.assertIn("接受：1", plan)
+            self.assertIn("裁决 SHA-256", plan)
+            self.assertIn("报告状态：`complete`", plan)
+            self.assertIn("补写关键推导并增加反例。", plan)
+            self.assertIn(manifest_hash := hashlib.sha256(
+                (run_dir / "manifest.json").read_bytes()
+            ).hexdigest(), adjudication_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(manifest_hash), 64)
+
+    def test_import_report_rejects_invalid_input_without_mutating_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = self._args(root=root)
+            with redirect_stdout(io.StringIO()):
+                critic_runner.prepare(args)
+            run_dir = next((root / "runs").iterdir())
+            original_manifest = (run_dir / "manifest.json").read_bytes()
+            inside_report = run_dir / "returned.md"
+            inside_report.write_text(VALID_REPORT, encoding="utf-8")
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    critic_runner.import_report_command(
+                        argparse.Namespace(
+                            run_dir=str(run_dir),
+                            report=str(inside_report),
+                            adjudication_output=None,
+                        )
+                    ),
+                    critic_runner.EXIT_INVALID_WORKFLOW,
+                )
+            invalid_report = root / "invalid.md"
+            invalid_report.write_text("not a valid report", encoding="utf-8")
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                result = critic_runner.import_report_command(
+                    argparse.Namespace(
+                        run_dir=str(run_dir),
+                        report=str(invalid_report),
+                        adjudication_output=None,
+                    )
+                )
+            self.assertEqual(result, critic_runner.EXIT_INVALID_REPORT)
+            self.assertEqual((run_dir / "manifest.json").read_bytes(), original_manifest)
+            self.assertFalse((run_dir / "report.md").exists())
+            self.assertFalse((run_dir / "adjudication.json").exists())
+
+    def test_revision_plan_rejects_edited_critic_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = self._args(root=root)
+            with redirect_stdout(io.StringIO()):
+                critic_runner.prepare(args)
+            run_dir = next((root / "runs").iterdir())
+            report = root / "report.md"
+            report.write_text(VALID_REPORT, encoding="utf-8")
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                critic_runner.import_report_command(
+                    argparse.Namespace(
+                        run_dir=str(run_dir),
+                        report=str(report),
+                        adjudication_output=None,
+                    )
+                )
+            adjudication_path = run_dir / "adjudication.json"
+            adjudication = json.loads(adjudication_path.read_text(encoding="utf-8"))
+            finding = adjudication["findings"][0]
+            finding["claim"] = "被篡改的批评"
+            finding["decision"] = "reject"
+            finding["author_reason"] = "不成立。"
+            adjudication_path.write_text(
+                json.dumps(adjudication, ensure_ascii=False), encoding="utf-8"
+            )
+            errors = io.StringIO()
+            with redirect_stdout(io.StringIO()), redirect_stderr(errors):
+                result = critic_runner.revision_plan_command(
+                    argparse.Namespace(
+                        run_dir=str(run_dir), adjudication=None, output=None
+                    )
+                )
+            self.assertEqual(result, critic_runner.EXIT_INVALID_ARCHIVE)
+            self.assertIn("edited outside decision fields", errors.getvalue())
+            self.assertFalse((run_dir / "revision-plan.md").exists())
+
+    def test_adjudicate_guides_human_decisions_and_autogenerates_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = self._args(root=root)
+            with redirect_stdout(io.StringIO()):
+                critic_runner.prepare(args)
+            run_dir = next((root / "runs").iterdir())
+            report = root / "report.md"
+            report.write_text(VALID_REPORT, encoding="utf-8")
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                critic_runner.import_report_command(
+                    argparse.Namespace(
+                        run_dir=str(run_dir),
+                        report=str(report),
+                        adjudication_output=None,
+                    )
+                )
+
+            output = io.StringIO()
+            with patch(
+                "builtins.input",
+                side_effect=["未知", "1", "批评成立", "", "补写关键推导"],
+            ):
+                with redirect_stdout(output), redirect_stderr(io.StringIO()):
+                    result = critic_runner.adjudicate_command(
+                        argparse.Namespace(run_dir=str(run_dir))
+                    )
+            self.assertEqual(result, 0)
+            self.assertIn("无法识别", output.getvalue())
+            self.assertIn("必须写清", output.getvalue())
+            adjudication = json.loads(
+                (run_dir / "adjudication.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(adjudication["findings"][0]["decision"], "accept")
+            self.assertEqual(
+                adjudication["findings"][0]["revision_action"], "补写关键推导"
+            )
+            self.assertIn(
+                "补写关键推导",
+                (run_dir / "revision-plan.md").read_text(encoding="utf-8"),
+            )
+            with patch("builtins.input") as prompt:
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    self.assertEqual(
+                        critic_runner.adjudicate_command(
+                            argparse.Namespace(run_dir=str(run_dir))
+                        ),
+                        0,
+                    )
+            prompt.assert_not_called()
+
+            plan_path = run_dir / "revision-plan.md"
+            original_plan = plan_path.read_text(encoding="utf-8")
+            plan_path.write_text(original_plan + "\n被手工修改", encoding="utf-8")
+            errors = io.StringIO()
+            with patch("builtins.input") as prompt:
+                with redirect_stdout(io.StringIO()), redirect_stderr(errors):
+                    self.assertEqual(
+                        critic_runner.adjudicate_command(
+                            argparse.Namespace(run_dir=str(run_dir))
+                        ),
+                        critic_runner.EXIT_INVALID_ARCHIVE,
+                    )
+            prompt.assert_not_called()
+            self.assertIn("revision-plan.md does not match", errors.getvalue())
+            plan_path.write_text(original_plan, encoding="utf-8")
+
+            adjudication["findings"][0]["author_reason"] = "修改后的采纳理由"
+            (run_dir / "adjudication.json").write_text(
+                json.dumps(adjudication, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            errors = io.StringIO()
+            with patch("builtins.input") as prompt:
+                with redirect_stdout(io.StringIO()), redirect_stderr(errors):
+                    self.assertEqual(
+                        critic_runner.adjudicate_command(
+                            argparse.Namespace(run_dir=str(run_dir))
+                        ),
+                        critic_runner.EXIT_INVALID_ARCHIVE,
+                    )
+            prompt.assert_not_called()
+            self.assertIn("revision-plan.md does not match", errors.getvalue())
+
+    def test_import_report_supports_citation_runs_without_fake_findings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = self._args(root=root, protocol="citation-auditor")
+            with redirect_stdout(io.StringIO()):
+                critic_runner.prepare(args)
+            run_dir = next((root / "runs").iterdir())
+            report = root / "citation-report.md"
+            report.write_text(VALID_CITATION_REPORT, encoding="utf-8")
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                result = critic_runner.import_report_command(
+                    argparse.Namespace(
+                        run_dir=str(run_dir),
+                        report=str(report),
+                        adjudication_output=None,
+                    )
+                )
+            self.assertEqual(result, 0)
+            self.assertFalse((run_dir / "adjudication.json").exists())
+            self.assertTrue(critic_runner.verify_run_dir(run_dir).valid)
+
+    def test_empty_valid_report_needs_no_fake_human_decisions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = self._args(root=root)
+            with redirect_stdout(io.StringIO()):
+                critic_runner.prepare(args)
+            run_dir = next((root / "runs").iterdir())
+            report = root / "empty-report.md"
+            report.write_text(EMPTY_VALID_REPORT, encoding="utf-8")
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    critic_runner.import_report_command(
+                        argparse.Namespace(
+                            run_dir=str(run_dir),
+                            report=str(report),
+                            adjudication_output=None,
+                        )
+                    ),
+                    0,
+                )
+            adjudication = json.loads(
+                (run_dir / "adjudication.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(adjudication["findings"], [])
+            with patch("builtins.input") as prompt:
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    self.assertEqual(
+                        critic_runner.adjudicate_command(
+                            argparse.Namespace(run_dir=str(run_dir))
+                        ),
+                        0,
+                    )
+            prompt.assert_not_called()
+            self.assertIn(
+                "没有需要裁决的发现",
+                (run_dir / "revision-plan.md").read_text(encoding="utf-8"),
+            )
+
+    def test_manual_workflow_cli_runs_end_to_end(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = self._args(root=root, protocol="critic-social-science")
+            with redirect_stdout(io.StringIO()):
+                critic_runner.prepare(args)
+            run_dir = next((root / "runs").iterdir())
+            report = root / "returned.md"
+            report.write_text(VALID_REPORT, encoding="utf-8")
+            imported = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "critic_runner.py"),
+                    "import-report",
+                    str(run_dir),
+                    str(report),
+                ],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            self.assertEqual(imported.returncode, 0, imported.stderr)
+            adjudicated = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "critic_runner.py"),
+                    "adjudicate",
+                    str(run_dir),
+                ],
+                cwd=root,
+                input="1\n批评成立\n补写推导\n",
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            self.assertEqual(adjudicated.returncode, 0, adjudicated.stderr)
+            self.assertIn("裁决完成", adjudicated.stdout)
+            self.assertIn(
+                "补写推导",
+                (run_dir / "revision-plan.md").read_text(encoding="utf-8"),
+            )
+
     def test_campaign_schedule_is_seeded_and_counterbalanced(self) -> None:
         protocols = [
             "critic-social-science",
@@ -416,12 +850,21 @@ class CriticRunnerTests(unittest.TestCase):
             )
             self.assertEqual(manifest["source_name"], "draft.md")
             self.assertNotIn(str(root), manifest_text)
+            self.assertEqual(manifest["schema_version"], 3)
+            self.assertIsNone(manifest["collection"])
             self.assertEqual(manifest["status"], "prepared")
             self.assertEqual(manifest["started_at"], manifest["completed_at"])
             self.assertEqual(manifest["runner_exit_code"], 0)
             verification = critic_runner.verify_run_dir(run_dir, source)
             self.assertTrue(verification.valid, verification.errors)
             self.assertEqual(verification.warnings, ())
+            manifest["schema_version"] = 2
+            manifest.pop("collection")
+            (run_dir / "manifest.json").write_text(
+                json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+            )
+            legacy_verification = critic_runner.verify_run_dir(run_dir, source)
+            self.assertTrue(legacy_verification.valid, legacy_verification.errors)
 
     def test_verify_run_detects_tampered_artifact_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1072,6 +1515,29 @@ UNVERIFIED: none
             self.assertEqual(stat.S_IMODE(run_dir.stat().st_mode), 0o700)
             for artifact in run_dir.iterdir():
                 self.assertEqual(stat.S_IMODE(artifact.stat().st_mode), 0o600)
+            report = root / "returned.md"
+            report.write_text(VALID_REPORT, encoding="utf-8")
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    critic_runner.import_report_command(
+                        argparse.Namespace(
+                            run_dir=str(run_dir),
+                            report=str(report),
+                            adjudication_output=None,
+                        )
+                    ),
+                    0,
+                )
+            with patch("builtins.input", side_effect=["1", "", "补写推导"]):
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    self.assertEqual(
+                        critic_runner.adjudicate_command(
+                            argparse.Namespace(run_dir=str(run_dir))
+                        ),
+                        0,
+                    )
+            for artifact in run_dir.iterdir():
+                self.assertEqual(stat.S_IMODE(artifact.stat().st_mode), 0o600)
 
     @unittest.skipUnless(os.name == "posix", "symbolic-link archive attack")
     def test_verifiers_reject_symbolic_link_artifacts_and_run_paths(self) -> None:
@@ -1119,6 +1585,50 @@ UNVERIFIED: none
                         )
                     ),
                     critic_runner.EXIT_INVALID_SCORECARD,
+                )
+
+            manual_root = root / "manual"
+            manual_root.mkdir()
+            manual_args = self._args(root=manual_root)
+            with redirect_stdout(io.StringIO()):
+                critic_runner.prepare(manual_args)
+            manual_run = next((manual_root / "runs").iterdir())
+            returned_target = manual_root / "returned-target.md"
+            returned_target.write_text(VALID_REPORT, encoding="utf-8")
+            returned_link = manual_root / "returned-link.md"
+            returned_link.symlink_to(returned_target)
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    critic_runner.import_report_command(
+                        argparse.Namespace(
+                            run_dir=str(manual_run),
+                            report=str(returned_link),
+                            adjudication_output=None,
+                        )
+                    ),
+                    critic_runner.EXIT_INVALID_WORKFLOW,
+                )
+                self.assertEqual(
+                    critic_runner.import_report_command(
+                        argparse.Namespace(
+                            run_dir=str(manual_run),
+                            report=str(returned_target),
+                            adjudication_output=None,
+                        )
+                    ),
+                    0,
+                )
+            adjudication_path = manual_run / "adjudication.json"
+            external_adjudication = manual_root / "external-adjudication.json"
+            external_adjudication.write_bytes(adjudication_path.read_bytes())
+            adjudication_path.unlink()
+            adjudication_path.symlink_to(external_adjudication)
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    critic_runner.adjudicate_command(
+                        argparse.Namespace(run_dir=str(manual_run))
+                    ),
+                    critic_runner.EXIT_INVALID_WORKFLOW,
                 )
 
     def test_score_divergence_handles_exact_and_ambiguous_pairings(self) -> None:
