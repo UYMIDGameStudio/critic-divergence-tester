@@ -133,6 +133,9 @@ BIBLIOGRAPHY_DISTRIBUTION_PATTERN = re.compile(
 CONTENT_DISTRIBUTION_PATTERN = re.compile(
     r"内容证据分布: A ([0-9]+) / B ([0-9]+) / C ([0-9]+) / D ([0-9]+)"
 )
+PREVIOUS_PLAN_PATTERN = re.compile(
+    r"revision-plan\.previous-([0-9a-f]{12})(?:-([2-9][0-9]*))?\.md\Z"
+)
 
 EXIT_INVALID_REPORT = 3
 EXIT_INVALID_ARCHIVE = 4
@@ -1095,6 +1098,32 @@ def verify_run_dir(run_dir: Path, source_path: Path | None = None) -> Verificati
     adjudication_path = run_dir / "adjudication.json"
     revision_plan_path = run_dir / "revision-plan.md"
     workflow_paths = (adjudication_path, revision_plan_path)
+    previous_plan_paths = list(run_dir.glob("revision-plan.previous-*.md"))
+    for previous_plan_path in previous_plan_paths:
+        if status != "collected" or protocol_name not in CRITIC_PROTOCOLS:
+            errors.append(
+                f"{previous_plan_path.name} exists outside a collected critic workflow"
+            )
+            continue
+        if previous_plan_path.is_symlink():
+            errors.append(f"{previous_plan_path.name} must not be a symbolic link")
+            continue
+        if not previous_plan_path.is_file():
+            errors.append(f"{previous_plan_path.name} must be a regular file")
+            continue
+        match = PREVIOUS_PLAN_PATTERN.fullmatch(previous_plan_path.name)
+        if match is None:
+            errors.append(f"invalid archived revision plan name: {previous_plan_path.name}")
+            continue
+        try:
+            previous_plan_bytes = previous_plan_path.read_bytes()
+        except OSError as exc:
+            errors.append(f"cannot read {previous_plan_path.name}: {exc}")
+            continue
+        if not sha256_bytes(previous_plan_bytes).startswith(match.group(1)):
+            errors.append(
+                f"{previous_plan_path.name} content does not match its hash prefix"
+            )
     if status != "collected":
         for workflow_path in workflow_paths:
             if workflow_path.exists() or workflow_path.is_symlink():
@@ -2456,6 +2485,70 @@ def _adjudication_binding_errors(
     return errors
 
 
+def _python_launcher() -> str:
+    return "py -3" if os.name == "nt" else "python3"
+
+
+def _available_previous_plan_path(run_dir: Path, plan_bytes: bytes) -> Path:
+    digest = sha256_bytes(plan_bytes)[:12]
+    base = run_dir / f"revision-plan.previous-{digest}.md"
+    if not base.exists() and not base.is_symlink():
+        return base
+    for suffix in range(2, 10_000):
+        candidate = run_dir / f"revision-plan.previous-{digest}-{suffix}.md"
+        if not candidate.exists() and not candidate.is_symlink():
+            return candidate
+    raise OSError("too many archived revision plans")
+
+
+def _archive_current_plan(run_dir: Path) -> Path | None:
+    plan_path = run_dir / "revision-plan.md"
+    if not plan_path.exists():
+        return None
+    plan_bytes = plan_path.read_bytes()
+    archived_path = _available_previous_plan_path(run_dir, plan_bytes)
+    os.replace(plan_path, archived_path)
+    if os.name == "posix":
+        os.chmod(archived_path, 0o600)
+    return archived_path
+
+
+def _prompt_decision(*, allow_keep: bool) -> tuple[str, str, str] | None:
+    choices = {"1": "accept", "2": "reject", "3": "defer"}
+    while True:
+        prompt = "选择 1 接受 / 2 拒绝 / 3 暂缓"
+        if allow_keep:
+            prompt += " / 直接回车保留当前裁决"
+        choice = input(prompt + "：").strip()
+        if allow_keep and not choice:
+            return None
+        decision = choices.get(choice)
+        if decision is not None:
+            break
+        print("无法识别，请输入 1、2 或 3。")
+
+    author_reason = ""
+    revision_action = ""
+    if decision == "accept":
+        author_reason = input("采纳理由（可直接回车）：").strip()
+        while not revision_action:
+            revision_action = input("具体修改动作（必填）：").strip()
+            if not revision_action:
+                print("接受批评时必须写清具体修改动作。")
+    elif decision == "reject":
+        while not author_reason:
+            author_reason = input("拒绝理由（必填）：").strip()
+            if not author_reason:
+                print("拒绝批评时必须留下理由。")
+    else:
+        while not author_reason:
+            author_reason = input("暂缓理由（必填）：").strip()
+            if not author_reason:
+                print("暂缓时必须说明缺少什么证据或判断。")
+        revision_action = input("后续动作（可直接回车）：").strip()
+    return decision, author_reason, revision_action
+
+
 def adjudicate_command(args: argparse.Namespace) -> int:
     raw_run_dir = Path(args.run_dir)
     run_dir = raw_run_dir.resolve()
@@ -2491,57 +2584,60 @@ def adjudicate_command(args: argparse.Namespace) -> int:
         return EXIT_INVALID_WORKFLOW
     findings = adjudication_value["findings"]
     assert isinstance(findings, list)
+    review_all = bool(getattr(args, "review_all", False))
     print("人工裁决：AI 的批评不是结论，逐条决定是否采纳。")
-    print("已完成的条目会跳过；每完成一条都会立即保存。")
-    choices = {"1": "accept", "2": "reject", "3": "defer"}
+    if review_all:
+        print("复议模式：直接回车保留原裁决；发生修改前会自动留存旧计划。")
+    else:
+        print("已完成的条目会跳过；每完成一条都会立即保存。")
+    archived_plan: Path | None = None
+    changed = False
     for finding in findings:
         assert isinstance(finding, dict)
-        if finding.get("decision") in choices.values():
+        completed = finding.get("decision") in {"accept", "reject", "defer"}
+        if completed and not review_all:
             continue
         print(f"\n{finding['id']}  {finding['claim']}")
         print(f"位置：{finding['position']}")
         print(f"理由：{finding['reason']}")
         print(f"后果检验：{finding['test']}")
-        while True:
-            try:
-                choice = input("选择 1 接受 / 2 拒绝 / 3 暂缓：").strip()
-            except EOFError:
-                print("\n错误：没有收到裁决。", file=sys.stderr)
-                return 2
-            except KeyboardInterrupt:
-                print("\n已保存当前进度并退出。", file=sys.stderr)
-                return EXIT_INTERRUPTED
-            decision = choices.get(choice)
-            if decision is not None:
-                break
-            print("无法识别，请输入 1、2 或 3。")
-
-        author_reason = ""
-        revision_action = ""
+        if completed and review_all:
+            labels = {"accept": "接受", "reject": "拒绝", "defer": "暂缓"}
+            print(
+                f"当前裁决：{labels[str(finding['decision'])]}；"
+                f"理由：{finding['author_reason'] or '（无）'}；"
+                f"动作：{finding['revision_action'] or '（无）'}"
+            )
         try:
-            if decision == "accept":
-                author_reason = input("采纳理由（可直接回车）：").strip()
-                while not revision_action:
-                    revision_action = input("具体修改动作（必填）：").strip()
-                    if not revision_action:
-                        print("接受批评时必须写清具体修改动作。")
-            elif decision == "reject":
-                while not author_reason:
-                    author_reason = input("拒绝理由（必填）：").strip()
-                    if not author_reason:
-                        print("拒绝批评时必须留下理由。")
-            else:
-                while not author_reason:
-                    author_reason = input("暂缓理由（必填）：").strip()
-                    if not author_reason:
-                        print("暂缓时必须说明缺少什么证据或判断。")
-                revision_action = input("后续动作（可直接回车）：").strip()
+            decision_fields = _prompt_decision(allow_keep=completed and review_all)
         except EOFError:
             print("\n错误：裁决输入不完整。", file=sys.stderr)
             return 2
         except KeyboardInterrupt:
             print("\n已保存此前进度并退出。", file=sys.stderr)
             return EXIT_INTERRUPTED
+        if decision_fields is None:
+            print(f"已保留 {finding['id']}。")
+            continue
+        decision, author_reason, revision_action = decision_fields
+        previous = (
+            finding.get("decision"),
+            finding.get("author_reason"),
+            finding.get("revision_action"),
+        )
+        current = (decision, author_reason, revision_action)
+        if previous == current:
+            print(f"{finding['id']} 没有变化。")
+            continue
+        if not changed:
+            try:
+                archived_plan = _archive_current_plan(run_dir)
+            except OSError as exc:
+                print(
+                    f"adjudication error: cannot archive current plan: {exc}",
+                    file=sys.stderr,
+                )
+                return EXIT_INVALID_WORKFLOW
         finding["decision"] = decision
         finding["author_reason"] = author_reason
         finding["revision_action"] = revision_action
@@ -2553,8 +2649,11 @@ def adjudicate_command(args: argparse.Namespace) -> int:
         except OSError as exc:
             print(f"adjudication error: cannot save decision: {exc}", file=sys.stderr)
             return EXIT_INVALID_WORKFLOW
+        changed = True
         print(f"已保存 {finding['id']}。")
 
+    if archived_plan is not None:
+        print(f"旧修改计划已留存：{archived_plan}")
     print("\n裁决完成，正在生成修改计划……")
     return revision_plan_command(
         argparse.Namespace(run_dir=str(run_dir), adjudication=None, output=None)
@@ -2663,6 +2762,158 @@ def verify_run_command(args: argparse.Namespace) -> int:
     for error in verification.errors:
         print(f"verification error: {error}", file=sys.stderr)
     return EXIT_INVALID_ARCHIVE
+
+
+def _run_status(run_dir: Path) -> tuple[str, str, str, str, VerificationResult]:
+    verification = verify_run_dir(run_dir)
+    if not verification.valid:
+        detail = verification.errors[0] if verification.errors else "unknown error"
+        return "归档损坏", "—", "—", f"先运行 verify-run 检查：{detail}", verification
+    try:
+        manifest_value = parse_json(
+            (run_dir / "manifest.json").read_text(encoding="utf-8")
+        )
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        DuplicateJsonKeyError,
+    ) as exc:
+        invalid = VerificationResult(False, (str(exc),), ())
+        return "归档损坏", "—", "—", f"无法读取 manifest：{exc}", invalid
+    assert isinstance(manifest_value, dict)
+    protocol = str(manifest_value.get("protocol", "—"))
+    source = str(manifest_value.get("source_name", "—"))
+    status = manifest_value.get("status")
+    launcher = _python_launcher()
+    quoted_run = f'"{run_dir}"'
+    if status == "prepared":
+        return (
+            "等待 AI 报告",
+            protocol,
+            source,
+            f"保存 AI 回答后运行：{launcher} critic_runner.py import-report {quoted_run} report-returned.md",
+            verification,
+        )
+    if status == "collected" and protocol in CRITIC_PROTOCOLS:
+        adjudication = parse_json(
+            (run_dir / "adjudication.json").read_text(encoding="utf-8")
+        )
+        assert isinstance(adjudication, dict)
+        findings = adjudication.get("findings")
+        assert isinstance(findings, list)
+        decided = sum(
+            isinstance(finding, dict)
+            and finding.get("decision") in {"accept", "reject", "defer"}
+            for finding in findings
+        )
+        total = len(findings)
+        if decided < total:
+            return (
+                f"人工裁决 {decided}/{total}",
+                protocol,
+                source,
+                f"继续运行：{launcher} critic_runner.py adjudicate {quoted_run}",
+                verification,
+            )
+        if not (run_dir / "revision-plan.md").exists():
+            return (
+                f"待生成修改计划 {decided}/{total}",
+                protocol,
+                source,
+                f"运行：{launcher} critic_runner.py revision-plan {quoted_run}",
+                verification,
+            )
+        return (
+            f"已完成 {decided}/{total}",
+            protocol,
+            source,
+            "查看 revision-plan.md；需要复议时运行："
+            f"{launcher} critic_runner.py adjudicate {quoted_run} --review-all",
+            verification,
+        )
+    if status == "collected":
+        return "报告已回收", protocol, source, "查看 report.md", verification
+    if status == "succeeded":
+        return "自动执行完成", protocol, source, "查看 report.md", verification
+    if status == "running":
+        return "执行中或意外中断", protocol, source, "检查执行进程；必要时运行 verify-run", verification
+    return f"执行未完成：{status}", protocol, source, "查看 manifest.json 和 stderr.log", verification
+
+
+def status_command(args: argparse.Namespace) -> int:
+    requested_run = getattr(args, "run_dir", None)
+    if requested_run:
+        raw_run = Path(requested_run)
+        if raw_run.is_symlink():
+            print("状态：归档损坏")
+            print("问题：run directory must not be a symbolic link")
+            return EXIT_INVALID_ARCHIVE
+        run_dirs = [raw_run.resolve()]
+        detailed = True
+    else:
+        runs_root = Path(getattr(args, "runs_dir", ".critic-runs")).resolve()
+        if runs_root.is_symlink():
+            print("status error: runs directory must not be a symbolic link", file=sys.stderr)
+            return EXIT_INVALID_WORKFLOW
+        if not runs_root.exists():
+            print("还没有运行记录。先运行 quickstart 创建第一次审查。")
+            return 0
+        if not runs_root.is_dir():
+            print("status error: runs path is not a directory", file=sys.stderr)
+            return EXIT_INVALID_WORKFLOW
+        run_dirs = sorted(
+            (
+                entry
+                for entry in runs_root.iterdir()
+                if entry.is_dir() or entry.is_symlink()
+            ),
+            key=lambda entry: entry.name,
+            reverse=True,
+        )
+        detailed = False
+        if not run_dirs:
+            print("还没有运行记录。先运行 quickstart 创建第一次审查。")
+            return 0
+
+    for index, run_dir in enumerate(run_dirs, start=1):
+        if run_dir.is_symlink():
+            stage, protocol, source, next_action = (
+                "归档损坏",
+                "—",
+                "—",
+                "符号链接不会被跟随；请检查此目录",
+            )
+            verification = VerificationResult(
+                False, ("run directory must not be a symbolic link",), ()
+            )
+        else:
+            try:
+                stage, protocol, source, next_action, verification = _run_status(run_dir)
+            except (
+                OSError,
+                UnicodeDecodeError,
+                json.JSONDecodeError,
+                DuplicateJsonKeyError,
+            ) as exc:
+                stage, protocol, source, next_action = (
+                    "归档损坏",
+                    "—",
+                    "—",
+                    f"无法读取：{exc}",
+                )
+                verification = VerificationResult(False, (str(exc),), ())
+        print(f"[{index}] {stage}｜{protocol}｜{source}")
+        print(f"    目录：{run_dir}")
+        print(f"    下一步：{next_action}")
+        if detailed and not verification.valid:
+            for error in verification.errors:
+                print(f"    问题：{error}")
+    if not detailed:
+        print(f"\n共 {len(run_dirs)} 次运行；最新记录显示在最前。")
+    if detailed and not verification.valid:
+        return EXIT_INVALID_ARCHIVE
+    return 0
 
 
 def verify_campaign_command(args: argparse.Namespace) -> int:
@@ -2846,7 +3097,7 @@ def quickstart(args: argparse.Namespace) -> int:
     print(prompt_path)
     print("完成。打开上面显示的 prompt.md，复制全部内容给你常用的 AI。")
     print("把 AI 回答保存为 report-returned.md 后，继续运行：")
-    launcher = "py -3" if os.name == "nt" else "python3"
+    launcher = _python_launcher()
     print(f'{launcher} critic_runner.py import-report "{run_dir}" report-returned.md')
     print(f'{launcher} critic_runner.py adjudicate "{run_dir}"')
     return 0
@@ -3057,6 +3308,19 @@ def parser() -> argparse.ArgumentParser:
     )
     verify_parser.set_defaults(func=verify_run_command)
 
+    status_parser = sub.add_parser(
+        "status", help="中文显示历史运行进度、归档健康状态和下一步命令"
+    )
+    status_parser.add_argument(
+        "run_dir", nargs="?", help="可选；只查看某一个运行目录"
+    )
+    status_parser.add_argument(
+        "--runs-dir",
+        default=".critic-runs",
+        help="未指定 run_dir 时扫描的归档目录（默认：.critic-runs）",
+    )
+    status_parser.set_defaults(func=status_command)
+
     verify_campaign_parser = sub.add_parser(
         "verify-campaign", help="verify a campaign and every archived run"
     )
@@ -3083,6 +3347,11 @@ def parser() -> argparse.ArgumentParser:
         help="中文交互裁决 AI 发现并自动生成修改计划",
     )
     adjudicate_parser.add_argument("run_dir", help="collected run directory")
+    adjudicate_parser.add_argument(
+        "--review-all",
+        action="store_true",
+        help="重新查看全部裁决；首次修改前自动留存当前 revision-plan.md",
+    )
     adjudicate_parser.set_defaults(func=adjudicate_command)
 
     revision_plan_parser = sub.add_parser(

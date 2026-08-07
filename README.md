@@ -138,6 +138,34 @@ python3 critic_runner.py adjudicate ".critic-runs/<run-directory>"
 这份修改计划才是日常工作流的最终产物，而不是 prompt 或 AI 原始回答。
 如果要在计划上继续自由增删，请先复制并另存为其他文件；原始 `revision-plan.md` 保留为可重复生成、可核对的机器产物。
 
+以后运行记录多了，不需要自己翻时间戳目录。直接查看所有审查现在走到哪一步：
+
+```powershell
+# Windows
+py -3 critic_runner.py status
+```
+
+```bash
+# macOS / Linux
+python3 critic_runner.py status
+```
+
+它会把最新记录放在最前，显示文章名、协议、当前进度和一条可以直接复制的“下一步”命令。只看某一次运行时，在后面加运行目录即可，例如 `py -3 critic_runner.py status ".critic-runs/<run-directory>"`。
+
+如果计划生成后改变了判断，不要手改 `adjudication.json`。使用显式复议模式：
+
+```powershell
+# Windows
+py -3 critic_runner.py adjudicate ".critic-runs/<run-directory>" --review-all
+```
+
+```bash
+# macOS / Linux
+python3 critic_runner.py adjudicate ".critic-runs/<run-directory>" --review-all
+```
+
+程序会重新展示全部发现；直接回车保留原裁决，输入 `1`、`2` 或 `3` 才会重做当前裁决。只要有一条发生变化，原 `revision-plan.md` 就会先改名为 `revision-plan.previous-<hash>.md` 留档，再根据新裁决生成当前计划。没有任何变化时不会制造重复备份。
+
 runner 本身不会上传文章；当你把 `prompt.md` 粘贴到某个 AI 平台时，文章才会发送给该平台。处理未发表、保密或含个人信息的稿件前，请先确认所用平台的数据政策。`.critic-runs` 中也保存了完整文章，不要把这个目录公开上传。
 
 重点看报告末尾：
@@ -177,6 +205,8 @@ python3 critic_runner.py validate critic-social-science report.md
 | `doctor` 显示 `[error]` | 按错误行修复；最常见原因是 Python 版本太旧、下载不完整或当前文件夹不可写 |
 | `import-report` / `validate` 返回很多错误 | 把错误信息交给 AI，让它严格按原提示中的六节格式重新输出；无效报告不会污染归档 |
 | `adjudicate` 中途退出 | 已完成的条目已经保存；再次运行同一命令会跳过它们并继续 |
+| 运行太多，不知道该继续哪一个 | 运行 `python3 critic_runner.py status`；Windows 使用 `py -3` |
+| 已完成后想改变某条裁决 | 运行 `adjudicate <运行目录> --review-all`；旧修改计划会自动留档 |
 | 不知道选哪条线 | 文科与社会研究选 `humanities-social-science`；自然规律与实验选 `natural-science`；产品、系统与实现选 `engineering` |
 
 如果是用 Git 下载的，更新到最新版：
@@ -371,7 +401,7 @@ python critic_runner.py validate critic-individualist path/to/report.md
 python critic_runner.py verify-run .critic-runs/<run-directory> --source path/to/draft.md
 ```
 
-省略 `--source` 时仍会检查归档内部文件，但会明确警告原稿字节没有重新核对。对于 `collected` critic 运行，验证器还要求 `adjudication.json` 与报告逐条一致；如果存在 `revision-plan.md`，会从当前裁决重新生成并逐字比较。这个机制用于发现意外损坏和不一致，不是带密钥的防篡改签名；能同时修改文件与 manifest 的攻击者仍可重算哈希。
+省略 `--source` 时仍会检查归档内部文件，但会明确警告原稿字节没有重新核对。对于 `collected` critic 运行，验证器还要求 `adjudication.json` 与报告逐条一致；如果存在 `revision-plan.md`，会从当前裁决重新生成并逐字比较；复议留存的 `revision-plan.previous-<hash>.md` 也会核对文件名中的内容哈希前缀。这个机制用于发现意外损坏和不一致，不是带密钥的防篡改签名；能同时修改文件与 manifest 的攻击者仍可重算哈希。
 
 ## 运行材料不会再丢
 
@@ -383,6 +413,7 @@ report.md       模型输出（run 或 import-report）
 manifest.json   精确字节 SHA-256、生命周期、校验结果与执行信息
 adjudication.json  从报告提取的发现、来源绑定和人工裁决（critic 手动流程）
 revision-plan.md   只根据完成的人类裁决生成的修改计划
+revision-plan.previous-<hash>.md  每次复议前自动留存的旧修改计划
 stderr.log      执行器错误输出（仅出现错误时）
 ```
 

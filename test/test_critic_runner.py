@@ -685,6 +685,128 @@ class CriticRunnerTests(unittest.TestCase):
             prompt.assert_not_called()
             self.assertIn("revision-plan.md does not match", errors.getvalue())
 
+    def test_review_all_preserves_old_plan_and_regenerates_current_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = self._args(root=root)
+            with redirect_stdout(io.StringIO()):
+                critic_runner.prepare(args)
+            run_dir = next((root / "runs").iterdir())
+            report = root / "report.md"
+            report.write_text(VALID_REPORT, encoding="utf-8")
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                critic_runner.import_report_command(
+                    argparse.Namespace(
+                        run_dir=str(run_dir),
+                        report=str(report),
+                        adjudication_output=None,
+                    )
+                )
+            with patch(
+                "builtins.input",
+                side_effect=["1", "原批评成立", "补写原推导"],
+            ):
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    self.assertEqual(
+                        critic_runner.adjudicate_command(
+                            argparse.Namespace(run_dir=str(run_dir))
+                        ),
+                        0,
+                    )
+
+            plan_path = run_dir / "revision-plan.md"
+            old_plan = plan_path.read_bytes()
+            output = io.StringIO()
+            with patch("builtins.input", side_effect=["2", "该批评误读了原文"]):
+                with redirect_stdout(output), redirect_stderr(io.StringIO()):
+                    result = critic_runner.adjudicate_command(
+                        argparse.Namespace(run_dir=str(run_dir), review_all=True)
+                    )
+            self.assertEqual(result, 0)
+            previous_plans = list(run_dir.glob("revision-plan.previous-*.md"))
+            self.assertEqual(len(previous_plans), 1)
+            self.assertEqual(previous_plans[0].read_bytes(), old_plan)
+            current_plan = plan_path.read_bytes()
+            self.assertNotEqual(current_plan, old_plan)
+            self.assertIn("该批评误读了原文", current_plan.decode("utf-8"))
+            self.assertIn("旧修改计划已留存", output.getvalue())
+            self.assertTrue(critic_runner.verify_run_dir(run_dir).valid)
+
+            with patch("builtins.input", side_effect=[""]):
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    self.assertEqual(
+                        critic_runner.adjudicate_command(
+                            argparse.Namespace(run_dir=str(run_dir), review_all=True)
+                        ),
+                        0,
+                    )
+            self.assertEqual(plan_path.read_bytes(), current_plan)
+            self.assertEqual(
+                len(list(run_dir.glob("revision-plan.previous-*.md"))), 1
+            )
+            previous_plans[0].write_text("被修改的旧计划", encoding="utf-8")
+            verification = critic_runner.verify_run_dir(run_dir)
+            self.assertFalse(verification.valid)
+            self.assertTrue(
+                any("hash prefix" in error for error in verification.errors)
+            )
+
+    def test_status_guides_prepared_collected_and_completed_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = self._args(root=root, protocol="critic-social-science")
+            with redirect_stdout(io.StringIO()):
+                critic_runner.prepare(args)
+            run_dir = next((root / "runs").iterdir())
+
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(
+                    critic_runner.status_command(
+                        argparse.Namespace(run_dir=None, runs_dir=str(root / "runs"))
+                    ),
+                    0,
+                )
+            self.assertIn("等待 AI 报告", output.getvalue())
+            self.assertIn("import-report", output.getvalue())
+
+            report = root / "report.md"
+            report.write_text(VALID_REPORT, encoding="utf-8")
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                critic_runner.import_report_command(
+                    argparse.Namespace(
+                        run_dir=str(run_dir),
+                        report=str(report),
+                        adjudication_output=None,
+                    )
+                )
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(
+                    critic_runner.status_command(
+                        argparse.Namespace(run_dir=str(run_dir), runs_dir=None)
+                    ),
+                    0,
+                )
+            self.assertIn("人工裁决 0/1", output.getvalue())
+            self.assertIn("adjudicate", output.getvalue())
+
+            with patch("builtins.input", side_effect=["1", "", "补写推导"]):
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    critic_runner.adjudicate_command(
+                        argparse.Namespace(run_dir=str(run_dir))
+                    )
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(
+                    critic_runner.status_command(
+                        argparse.Namespace(run_dir=str(run_dir), runs_dir=None)
+                    ),
+                    0,
+                )
+            self.assertIn("已完成 1/1", output.getvalue())
+            self.assertIn("--review-all", output.getvalue())
+
     def test_import_report_supports_citation_runs_without_fake_findings(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
