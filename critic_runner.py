@@ -90,6 +90,23 @@ ACADEMIC_TRACKS = {
     },
 }
 
+QUICKSTART_TRACK_ALIASES = {
+    "1": "humanities-social-science",
+    "文科": "humanities-social-science",
+    "社会科学": "humanities-social-science",
+    "文科社会科学": "humanities-social-science",
+    "humanities-social-science": "humanities-social-science",
+    "2": "natural-science",
+    "理科": "natural-science",
+    "自然科学": "natural-science",
+    "natural-science": "natural-science",
+    "3": "engineering",
+    "工科": "engineering",
+    "工程": "engineering",
+    "工程学": "engineering",
+    "engineering": "engineering",
+}
+
 CROSS_DISCIPLINARY_PROTOCOLS = ("citation-auditor",)
 
 CRITIC_SECTIONS = (
@@ -2164,6 +2181,86 @@ def prepare_track(args: argparse.Namespace) -> int:
     return prepare(args)
 
 
+def _unquote_path(raw: str) -> str:
+    value = raw.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        return value[1:-1].strip()
+    return value
+
+
+def quickstart(args: argparse.Namespace) -> int:
+    """Guide a first-time user to a manual, provider-neutral prompt bundle."""
+    print("Critic Divergence Tester 快速开始")
+    print("不会上传文章，也不需要 API key。按 Ctrl+C 可随时退出。")
+
+    manuscript = getattr(args, "manuscript", None)
+    if manuscript is None:
+        try:
+            manuscript = input("\n请粘贴文章路径（.md 或 .txt）：")
+        except EOFError:
+            print("\n错误：没有收到文章路径。", file=sys.stderr)
+            return 2
+        except KeyboardInterrupt:
+            print("\n已取消。", file=sys.stderr)
+            return EXIT_INTERRUPTED
+    manuscript = _unquote_path(str(manuscript))
+    if not manuscript:
+        print("错误：文章路径不能为空。", file=sys.stderr)
+        return 2
+
+    source_path = Path(manuscript).expanduser().resolve()
+    if not source_path.is_file():
+        print(f"错误：找不到文章文件：{source_path}", file=sys.stderr)
+        return 2
+    try:
+        source_text, _ = read_utf8(source_path)
+    except UnicodeDecodeError:
+        print("错误：文章不是 UTF-8 编码，请转换编码后重试。", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"错误：无法读取文章：{exc}", file=sys.stderr)
+        return 2
+    if not source_text.strip():
+        print("错误：文章文件是空的。", file=sys.stderr)
+        return 2
+
+    track = getattr(args, "track", None)
+    if track is not None and track not in ACADEMIC_TRACKS:
+        print(f"错误：未知学术线：{track}", file=sys.stderr)
+        return 2
+    while track is None:
+        print("\n请选择学术线：")
+        print("  1. 文科·社会科学（历史、哲学、法学、经济学、社会学等）")
+        print("  2. 理科·自然科学（实验、观察、理论与模拟）")
+        print("  3. 工科·工程学（软件、产品、系统与实现）")
+        try:
+            choice = input("请输入 1、2 或 3（直接回车默认选 1）：").strip()
+        except EOFError:
+            print("\n错误：没有收到学术线选择。", file=sys.stderr)
+            return 2
+        except KeyboardInterrupt:
+            print("\n已取消。", file=sys.stderr)
+            return EXIT_INTERRUPTED
+        track = QUICKSTART_TRACK_ALIASES.get(choice or "1")
+        if track is None:
+            print("无法识别，请输入 1、2、3，或学术线名称。")
+
+    track_label = str(ACADEMIC_TRACKS[track]["label"])
+    print(f"\n已选择：{track_label}")
+    print("正在生成自包含审查提示……")
+    result = prepare_track(
+        argparse.Namespace(
+            track=track,
+            manuscript=str(source_path),
+            runs_dir=getattr(args, "runs_dir", ".critic-runs"),
+            allow_test_artifact=False,
+        )
+    )
+    if result == 0:
+        print("完成。打开上面显示的 prompt.md，复制全部内容给你常用的 AI。")
+    return result
+
+
 def run_track(args: argparse.Namespace) -> int:
     args.protocol = ACADEMIC_TRACKS[args.track]["primary"]
     return run(args)
@@ -2252,6 +2349,22 @@ def parser() -> argparse.ArgumentParser:
         help="directory to test for archive write access (default: current directory)",
     )
     doctor_parser.set_defaults(func=doctor)
+
+    quickstart_parser = sub.add_parser(
+        "quickstart", help="中文交互引导：选择文章和学术线并生成 prompt"
+    )
+    quickstart_parser.add_argument(
+        "manuscript", nargs="?", help="可选的 UTF-8 文章路径"
+    )
+    quickstart_parser.add_argument(
+        "--track", choices=ACADEMIC_TRACKS, help="可选；跳过交互式学术线选择"
+    )
+    quickstart_parser.add_argument(
+        "--runs-dir",
+        default=".critic-runs",
+        help="归档目录（默认：.critic-runs）",
+    )
+    quickstart_parser.set_defaults(func=quickstart)
 
     prepare_parser = sub.add_parser(
         "prepare", help="archive a self-contained prompt for manual use"

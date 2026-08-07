@@ -55,11 +55,23 @@ python3 critic_runner.py doctor
 
 最后显示 `ready` 就可以继续。若出现 `[error]`，按那一行提示处理；这一步不会上传或修改你的文章。
 
-### 第 3 步：放入文章并选择学术线
+### 第 3 步：运行中文引导
 
-把文章保存为 UTF-8 文本，例如 `draft.md`，放进项目文件夹。普通 `.txt` 文件也可以。
+把文章保存为 UTF-8 文本，例如 `draft.md`。普通 `.txt` 文件也可以。然后只运行下面这一条命令：
 
-文科、历史、哲学、法学、政治学、社会学、经济学等，运行：
+```powershell
+# Windows
+py -3 critic_runner.py quickstart
+```
+
+```bash
+# macOS / Linux
+python3 critic_runner.py quickstart
+```
+
+程序会用中文询问文章路径和学术线；输入 `1` 选文科·社会科学，`2` 选理科·自然科学，`3` 选工科·工程学。文章路径可以直接复制粘贴，Windows 拖入终端后带双引号也能识别。
+
+如果你不想回答问题，也可以直接写完整命令。文科、历史、哲学、法学、政治学、社会学、经济学等使用：
 
 ```powershell
 # Windows
@@ -71,7 +83,7 @@ py -3 critic_runner.py prepare-track humanities-social-science draft.md
 python3 critic_runner.py prepare-track humanities-social-science draft.md
 ```
 
-自然科学把 `humanities-social-science` 换成 `natural-science`；工程、软件、系统设计把它换成 `engineering`。
+自然科学把 `humanities-social-science` 换成 `natural-science`；工程、软件、系统设计把它换成 `engineering`。这是给脚本和熟悉命令行的用户准备的非交互方式。
 
 成功后终端会打印一个类似下面的路径：
 
@@ -116,6 +128,7 @@ python3 critic_runner.py validate critic-social-science report.md
 | 提示找不到 `python` / `py` | 安装 Python 3.10+；Windows 优先尝试 `py -3`，macOS/Linux 使用 `python3` |
 | 提示找不到 `critic_runner.py` | 先用 `cd` 进入解压后的项目文件夹 |
 | 提示找不到 `draft.md` | 确认文章就在当前文件夹，或传入它的完整路径 |
+| 不知道命令里的学术线英文怎么写 | 运行 `quickstart`，直接输入数字 1、2 或 3 |
 | 文件路径里有空格 | 用英文双引号包住路径，例如 `"C:\My Papers\draft.md"` |
 | 中文乱码 | 将文章和保存的报告改为 UTF-8 编码 |
 | `doctor` 显示 `[error]` | 按错误行修复；最常见原因是 Python 版本太旧、下载不完整或当前文件夹不可写 |

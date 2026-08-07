@@ -211,6 +211,127 @@ class CriticRunnerTests(unittest.TestCase):
             self.assertNotIn("\nready\n", f"\n{output.getvalue()}")
             self.assertIn("critic-social-science cannot be loaded", errors.getvalue())
 
+    def test_quickstart_guides_track_selection_and_accepts_a_quoted_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "my draft.md"
+            source.write_text("工程论证", encoding="utf-8")
+            output = io.StringIO()
+            errors = io.StringIO()
+            with patch(
+                "builtins.input",
+                side_effect=[f'"{source}"', "不是选项", "3"],
+            ):
+                with redirect_stdout(output), redirect_stderr(errors):
+                    result = critic_runner.quickstart(
+                        argparse.Namespace(
+                            manuscript=None,
+                            track=None,
+                            runs_dir=str(root / "runs"),
+                        )
+                    )
+            self.assertEqual(result, 0)
+            self.assertEqual(errors.getvalue(), "")
+            self.assertIn("无法识别", output.getvalue())
+            self.assertIn("已选择：工科·工程学", output.getvalue())
+            run_dir = next((root / "runs").iterdir())
+            manifest = json.loads(
+                (run_dir / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["protocol"], "critic-engineering")
+
+    def test_quickstart_defaults_to_humanities_on_an_empty_track_choice(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "draft.md"
+            source.write_text("社会科学论证", encoding="utf-8")
+            output = io.StringIO()
+            with patch("builtins.input", return_value="") as prompt:
+                with redirect_stdout(output), redirect_stderr(io.StringIO()):
+                    result = critic_runner.quickstart(
+                        argparse.Namespace(
+                            manuscript=str(source),
+                            track=None,
+                            runs_dir=str(root / "runs"),
+                        )
+                    )
+            self.assertEqual(result, 0)
+            prompt.assert_called_once()
+            self.assertIn("已选择：文科·社会科学", output.getvalue())
+
+    def test_quickstart_rejects_missing_or_empty_input_cleanly(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            empty = root / "empty.md"
+            empty.write_text(" \n", encoding="utf-8")
+            invalid_utf8 = root / "invalid.md"
+            invalid_utf8.write_bytes(b"\xff")
+            for response in (
+                "",
+                str(root / "missing.md"),
+                str(empty),
+                str(invalid_utf8),
+            ):
+                errors = io.StringIO()
+                with patch("builtins.input", return_value=response):
+                    with redirect_stdout(io.StringIO()), redirect_stderr(errors):
+                        result = critic_runner.quickstart(
+                            argparse.Namespace(
+                                manuscript=None,
+                                track=None,
+                                runs_dir=str(root / "runs"),
+                            )
+                        )
+                self.assertEqual(result, 2)
+                self.assertIn("错误：", errors.getvalue())
+
+    def test_quickstart_cli_supports_an_explicit_track(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "draft.md"
+            source.write_text("自然科学论证", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "critic_runner.py"),
+                    "quickstart",
+                    str(source),
+                    "--track",
+                    "natural-science",
+                    "--runs-dir",
+                    str(root / "runs"),
+                ],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("已选择：理科·自然科学", completed.stdout)
+            manifest = json.loads(
+                next((root / "runs").glob("*/manifest.json")).read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(manifest["protocol"], "critic-natural-science")
+
+    def test_quickstart_rejects_an_unknown_programmatic_track(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "draft.md"
+            source.write_text("论证", encoding="utf-8")
+            errors = io.StringIO()
+            with redirect_stdout(io.StringIO()), redirect_stderr(errors):
+                result = critic_runner.quickstart(
+                    argparse.Namespace(
+                        manuscript=str(source),
+                        track="unknown",
+                        runs_dir=str(Path(temp_dir) / "runs"),
+                    )
+                )
+            self.assertEqual(result, 2)
+            self.assertIn("未知学术线", errors.getvalue())
+
     def test_prepare_track_archives_the_track_primary_protocol(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
