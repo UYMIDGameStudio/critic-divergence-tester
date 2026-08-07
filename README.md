@@ -8,6 +8,113 @@
 
 这个项目也不是“让多个 agent 投票得出正确答案”。它做的是 philosophical pressure-test：让不同前提的敌对读者分别攻击同一份稿件，然后由作者本人判断哪些攻击真的改变论证。
 
+## 5 分钟上手（第一次用就看这里）
+
+最简单的用法**不需要 API key，不需要安装 Claude Code，也不需要配置模型命令**。本工具先把“审查规则 + 你的文章”做成一个 `prompt.md`，你把它完整复制给 ChatGPT、Claude、Gemini 或其他 AI 即可。
+
+### 第 1 步：准备 Python
+
+需要 Python 3.10 或更高版本。在终端里检查：
+
+```powershell
+# Windows PowerShell
+py -3 --version
+```
+
+```bash
+# macOS / Linux
+python3 --version
+```
+
+只要显示 `Python 3.10`、`3.11`、`3.12`、`3.13`、`3.14` 或更高版本即可。Windows 如果提示找不到 `py`，安装 [Python](https://www.python.org/downloads/) 时勾选 **Add Python to PATH**；macOS/Linux 如果提示找不到 `python3`，先用系统的软件管理器安装 Python 3。
+
+### 第 2 步：下载项目
+
+会用 Git：
+
+```bash
+git clone https://github.com/UYMIDGameStudio/critic-divergence-tester.git
+cd critic-divergence-tester
+```
+
+不会用 Git：打开 [项目主页](https://github.com/UYMIDGameStudio/critic-divergence-tester)，点击 **Code → Download ZIP**，解压后在该文件夹里打开终端。
+
+本项目没有第三方依赖，因此不需要运行 `pip install`。
+
+### 第 3 步：放入文章并选择学术线
+
+把文章保存为 UTF-8 文本，例如 `draft.md`，放进项目文件夹。普通 `.txt` 文件也可以。
+
+文科、历史、哲学、法学、政治学、社会学、经济学等，运行：
+
+```powershell
+# Windows
+py -3 critic_runner.py prepare-track humanities-social-science draft.md
+```
+
+```bash
+# macOS / Linux
+python3 critic_runner.py prepare-track humanities-social-science draft.md
+```
+
+自然科学把 `humanities-social-science` 换成 `natural-science`；工程、软件、系统设计把它换成 `engineering`。
+
+成功后终端会打印一个类似下面的路径：
+
+```text
+.critic-runs/20260807T120000.000000Z--critic-social-science/prompt.md
+```
+
+### 第 4 步：交给 AI
+
+打开刚生成的 `prompt.md`，复制全部内容，粘贴到你常用的 AI 对话里。AI 返回的六节报告就是审查结果。
+
+runner 本身不会上传文章；当你把 `prompt.md` 粘贴到某个 AI 平台时，文章才会发送给该平台。处理未发表、保密或含个人信息的稿件前，请先确认所用平台的数据政策。`.critic-runs` 中也保存了完整文章，不要把这个目录公开上传。
+
+重点看报告末尾：
+
+- `STATUS: complete`：报告结构完整，且没有声明未核实项目。
+- `STATUS: partial`：可以使用，但先查看 `UNVERIFIED` 里有哪些内容没有确认。
+- `STATUS: blocked`：缺少关键材料，本次报告不能当作完整审查。
+
+不要看到批评就全部接受。这个工具提供的是敌对压力测试，最后仍由作者判断哪条批评真的改变论证。
+
+### 可选：检查 AI 是否遵守输出格式
+
+把 AI 回答保存成 UTF-8 的 `report.md`，然后运行：
+
+```powershell
+# Windows；社会科学示例
+py -3 critic_runner.py validate critic-social-science report.md
+```
+
+```bash
+# macOS / Linux；社会科学示例
+python3 critic_runner.py validate critic-social-science report.md
+```
+
+显示 `valid` 就表示标题、编号和必填字段合格。它只检查结构，不代表报告中的批评一定正确。
+
+### 常见问题
+
+| 问题 | 怎么处理 |
+| --- | --- |
+| 提示找不到 `python` / `py` | 安装 Python 3.10+；Windows 优先尝试 `py -3`，macOS/Linux 使用 `python3` |
+| 提示找不到 `critic_runner.py` | 先用 `cd` 进入解压后的项目文件夹 |
+| 提示找不到 `draft.md` | 确认文章就在当前文件夹，或传入它的完整路径 |
+| 文件路径里有空格 | 用英文双引号包住路径，例如 `"C:\My Papers\draft.md"` |
+| 中文乱码 | 将文章和保存的报告改为 UTF-8 编码 |
+| `validate` 返回很多错误 | 把错误信息交给 AI，让它严格按原提示中的六节格式重新输出 |
+| 不知道选哪条线 | 文科与社会研究选 `humanities-social-science`；自然规律与实验选 `natural-science`；产品、系统与实现选 `engineering` |
+
+如果是用 Git 下载的，更新到最新版：
+
+```bash
+git pull
+```
+
+如果使用 Download ZIP，请重新下载并解压最新版。
+
 ## 三条学术线
 
 | 学术线 | 主协议 | 它优先审查什么 |
@@ -58,9 +165,11 @@ python critic_runner.py list
 
 多个 critic 都值得审同一篇文章时可以都跑，但必须独立；后一个不能看到前一个的报告。
 
-## 独立运行：不安装任何 agent
+## 进阶使用：自动运行与精细协议
 
-需要 Python 3.10+，没有第三方依赖。
+下面内容适合已经完成上面“5 分钟上手”，并希望自动调用模型 CLI、选择更窄审查视角或做正式校准的人。
+
+下文统一写 `python`；Windows 如果该命令不可用，直接替换成 `py -3`，macOS/Linux 可替换成 `python3`。
 
 不想记协议名时，直接按学术线准备提示词或运行：
 
@@ -111,7 +220,7 @@ runner 默认给每次执行 900 秒和 16 MiB 的 stdout/stderr 合计额度；
 python critic_runner.py campaign path/to/old-draft.md --repeat 2 -- your-model-command arg1 arg2
 ```
 
-`campaign` 仍然严格串行运行，各次执行看不到其他报告。只要至少有两种非引证 critic、每种至少重复两次、全部报告成功且结构有效，它就会生成独立运行归档、`campaign.json`、可点击的 `SUMMARY.md` 和待填写的动态 schema v3 `scorecard.json`。scorecard 已从每份报告第一节提取全部 A 指控及其位置、指控和理由。先遮掉 critic 名称，再在自动生成的 `pairs` 中填写左右 A 编号及 `overlap`、`different_reason` 或 `ambiguous`，完成一组后把 `complete` 改为 `true`；未配对条目会自动计为左右独有。
+`campaign` 仍然严格串行运行，各次执行看不到其他报告。只要至少有两种非引证 critic、每种至少重复两次、全部报告成功且结构有效，它就会生成独立运行归档、`campaign.json`、可点击的 `SUMMARY.md` 和待填写的动态 schema v3 `scorecard.json`。scorecard 已从每份报告第一节提取全部 A 指控及其位置、指控和理由。
 
 campaign schema v3 使用带种子的反向轮次平衡：第一轮按种子确定协议顺序，第二轮反向，第三轮再恢复，避免固定的 `I1, I2, C1, C2` 把时间漂移、缓存或执行器热身误当成协议差异。随机种子、策略和实际执行次序全部写入 `campaign.json`；用 `--order-seed published-seed` 可以精确复现，验证器会独立重算顺序并拒绝被调换的记录。
 
@@ -127,6 +236,30 @@ python critic_runner.py campaign draft.md \
 
 这种跨线 campaign 会生成真正可计分的 N 协议 × R 重复矩阵。组内 W 自动包含同一协议各重复之间的全部组合，组间 B 自动包含不同协议之间的全部组合；每种协议必须使用相同重复次数，避免某一条线因样本更多而获得额外权重。三条线各重复两次会得到 3 组组内比较和 12 组组间比较。比较数随总运行数平方增长，因此日常校准建议先使用两次重复。
 
+#### 真正的盲分，而不是手动遮名字
+
+原始 `scorecard.json` 必须保存协议身份和证据出处，不能直接交给配对评审者。先生成两个分离的 artifact：
+
+```bash
+python critic_runner.py blind-scorecard \
+  .critic-campaigns/<campaign>/scorecard.json \
+  --output blind-review.json \
+  --key-output blind-key.json
+```
+
+只把 `blind-review.json` 交给评审者。它以随机化的 `R01`、`R02`……替代运行身份，随机排列比较，不含协议名、重复编号、归档路径或报告 hash。`blind-key.json` 保存身份映射，不得在分类结束前交给评审者。
+
+评审者只填写每组 `pairs`，分类使用 `overlap`、`different_reason` 或 `ambiguous`，完成后把 `complete` 改为 `true`。回收时不要覆盖原件：
+
+```bash
+python critic_runner.py apply-blind-scorecard \
+  .critic-campaigns/<campaign>/scorecard.json \
+  blind-review.json --key blind-key.json \
+  --output .critic-campaigns/<campaign>/completed-scorecard.json
+```
+
+runner 会确认盲评文件与 key 属于同一个原始 scorecard，claims 没被编辑，别名映射、比较集合、A 编号与一对一约束都成立，再恢复真实比较。`--seed` 可让别名分配可复现；默认使用随机种子。盲法消除了工具主动泄露的身份元数据，但不能保证稿件引文或 critic 特有措辞本身完全不可识别。
+
 ```json
 "I1:I2": {
   "complete": true,
@@ -137,7 +270,7 @@ python critic_runner.py campaign draft.md \
 ```
 
 ```bash
-python critic_runner.py score .critic-campaigns/<campaign>/scorecard.json --format markdown --output divergence-score.md
+python critic_runner.py score .critic-campaigns/<campaign>/completed-scorecard.json --format markdown --output divergence-score.md
 ```
 
 记分器会重新读取全部归档报告，核对原始字节 hash，并再次提取 claims；它还把 scorecard 的运行顺序、协议归属、重复编号和归档路径反向绑定到 campaign 记录。证据清单被修改、报告被替换、运行身份被重写、路径逃出 campaign、同一条 claim 被重复配对或比较尚未明确完成时都会拒绝计分。随后它自动计算每次 d 的上下界、W/B 区间及 `reject` / `advance` / `inconclusive` 判决。它只接管可确定的算术，不替人判断两条指控是否语义重合。

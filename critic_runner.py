@@ -29,7 +29,9 @@ from critic_scoring import (
     RUN_NAMES,
     WITHIN_COMPARISONS,
     ScorecardError,
+    apply_blind_pairings,
     campaign_pairing_scorecard,
+    create_blind_bundle,
     pairing_scorecard,
     score_divergence,
     score_markdown,
@@ -1408,11 +1410,23 @@ def campaign(args: argparse.Namespace) -> int:
         summary.extend(
             [
                 "",
-                "Fill each `scorecard.json` pairs list after blind one-to-one pairing, "
-                "set complete=true, then run:",
+                "Create a blinded reviewer artifact and keep its identity key private:",
                 "",
                 "```bash",
-                "python critic_runner.py score path/to/scorecard.json --format markdown",
+                "python critic_runner.py blind-scorecard path/to/scorecard.json \\",
+                "  --output path/to/blind-review.json --key-output path/to/blind-key.json",
+                "```",
+                "",
+                "After pairing, verify and merge the reviewer artifact:",
+                "",
+                "```bash",
+                "python critic_runner.py apply-blind-scorecard path/to/scorecard.json \\",
+                "  path/to/blind-review.json --key path/to/blind-key.json \\",
+                "  --output path/to/completed-scorecard.json",
+                "```",
+                "",
+                "```bash",
+                "python critic_runner.py score path/to/completed-scorecard.json --format markdown",
                 "```",
             ]
         )
@@ -1905,6 +1919,96 @@ def score_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _read_scorecard_json(path: Path, label: str) -> object:
+    if path.is_symlink():
+        raise ScorecardError(f"{label} path must not be a symbolic link")
+    try:
+        return parse_json(path.read_text(encoding="utf-8"))
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        DuplicateJsonKeyError,
+    ) as exc:
+        raise ScorecardError(f"{label} cannot be read: {exc}") from exc
+
+
+def blind_scorecard_command(args: argparse.Namespace) -> int:
+    raw_scorecard_path = Path(args.scorecard)
+    scorecard_path = raw_scorecard_path.resolve()
+    blind_path = Path(args.output).resolve()
+    key_path = Path(args.key_output).resolve()
+    try:
+        if raw_scorecard_path.is_symlink():
+            raise ScorecardError("scorecard path must not be a symbolic link")
+        if len({scorecard_path, blind_path, key_path}) != 3:
+            raise ScorecardError("scorecard, blind output, and key output must differ")
+        if Path(args.output).is_symlink() or Path(args.key_output).is_symlink():
+            raise ScorecardError("blind and key outputs must not be symbolic links")
+        scorecard = _read_scorecard_json(scorecard_path, "scorecard")
+        provenance_errors = verify_scorecard_provenance(scorecard_path, scorecard)
+        if provenance_errors:
+            raise ScorecardError("; ".join(provenance_errors))
+        seed = args.seed if args.seed is not None else secrets.token_hex(16)
+        blind, key = create_blind_bundle(scorecard, seed)
+        atomic_write_text(
+            key_path,
+            json.dumps(key, ensure_ascii=False, indent=2) + "\n",
+        )
+        atomic_write_text(
+            blind_path,
+            json.dumps(blind, ensure_ascii=False, indent=2) + "\n",
+        )
+    except (OSError, ValueError) as exc:
+        print(f"blind scorecard error: {exc}", file=sys.stderr)
+        return EXIT_INVALID_SCORECARD
+    print(blind_path)
+    print(key_path)
+    return 0
+
+
+def apply_blind_scorecard_command(args: argparse.Namespace) -> int:
+    raw_scorecard_path = Path(args.scorecard)
+    raw_blind_path = Path(args.blind)
+    raw_key_path = Path(args.key)
+    scorecard_path = raw_scorecard_path.resolve()
+    blind_path = raw_blind_path.resolve()
+    key_path = raw_key_path.resolve()
+    output_path = Path(args.output).resolve()
+    try:
+        if any(
+            path.is_symlink()
+            for path in (raw_scorecard_path, raw_blind_path, raw_key_path)
+        ):
+            raise ScorecardError(
+                "scorecard, blind artifact, and key must not be symbolic links"
+            )
+        if output_path in {scorecard_path, blind_path, key_path}:
+            raise ScorecardError("output must not overwrite an input artifact")
+        if output_path.parent != scorecard_path.parent:
+            raise ScorecardError(
+                "output must stay beside the original scorecard to preserve campaign provenance"
+            )
+        if Path(args.output).is_symlink():
+            raise ScorecardError("output must not be a symbolic link")
+        scorecard = _read_scorecard_json(scorecard_path, "scorecard")
+        blind = _read_scorecard_json(blind_path, "blind artifact")
+        key = _read_scorecard_json(key_path, "blind key")
+        provenance_errors = verify_scorecard_provenance(scorecard_path, scorecard)
+        if provenance_errors:
+            raise ScorecardError("; ".join(provenance_errors))
+        merged = apply_blind_pairings(scorecard, blind, key)
+        atomic_write_text(
+            output_path,
+            json.dumps(merged, ensure_ascii=False, indent=2) + "\n",
+        )
+    except (OSError, ValueError) as exc:
+        print(f"apply blind scorecard error: {exc}", file=sys.stderr)
+        return EXIT_INVALID_SCORECARD
+    print(output_path)
+    return 0
+
+
 def validate_command(args: argparse.Namespace) -> int:
     report_path = Path(args.report).resolve()
     report, _ = read_utf8(report_path)
@@ -2170,6 +2274,34 @@ def parser() -> argparse.ArgumentParser:
     )
     score_parser.add_argument("--output", help="optional result file path")
     score_parser.set_defaults(func=score_command)
+
+    blind_scorecard_parser = sub.add_parser(
+        "blind-scorecard",
+        help="create an identity-free pairing artifact and a separate private key",
+    )
+    blind_scorecard_parser.add_argument("scorecard", help="traceable scorecard path")
+    blind_scorecard_parser.add_argument(
+        "--output", required=True, help="reviewer-facing blind JSON path"
+    )
+    blind_scorecard_parser.add_argument(
+        "--key-output", required=True, help="private identity-map JSON path"
+    )
+    blind_scorecard_parser.add_argument(
+        "--seed", help="optional reproducible blind alias seed"
+    )
+    blind_scorecard_parser.set_defaults(func=blind_scorecard_command)
+
+    apply_blind_parser = sub.add_parser(
+        "apply-blind-scorecard",
+        help="verify and merge blinded human pairings into a scorecard",
+    )
+    apply_blind_parser.add_argument("scorecard", help="original scorecard path")
+    apply_blind_parser.add_argument("blind", help="completed blind JSON path")
+    apply_blind_parser.add_argument("--key", required=True, help="private key JSON path")
+    apply_blind_parser.add_argument(
+        "--output", required=True, help="merged scorecard JSON path"
+    )
+    apply_blind_parser.set_defaults(func=apply_blind_scorecard_command)
 
     return top
 

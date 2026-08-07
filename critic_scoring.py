@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
+import json
 import math
 import re
 from itertools import combinations
@@ -15,6 +18,7 @@ CLAIM_ID_PATTERN = re.compile(r"A[1-9][0-9]*")
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 PAIR_CLASSIFICATIONS = {"overlap", "different_reason", "ambiguous"}
 RUN_LABEL_PATTERN = re.compile(r"[^:\x00-\x1f\x7f]{1,128}")
+BLIND_ALIAS_PATTERN = re.compile(r"R[0-9]{2,}")
 
 
 class ScorecardError(ValueError):
@@ -360,6 +364,206 @@ def validate_pairing_scorecard(scorecard: object) -> None:
         comparison_names,
         require_complete=False,
     )
+
+
+def _traceable_layout(
+    scorecard: dict[str, object],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    schema_version = scorecard.get("schema_version")
+    if schema_version == 2:
+        return RUN_NAMES, ALL_COMPARISONS
+    if schema_version == 3:
+        run_names, within, between = _dynamic_layout(scorecard)
+        return run_names, within + between
+    raise ScorecardError("traceable scorecard schema_version must be 2 or 3")
+
+
+def _canonical_sha256(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _scorecard_evidence_fingerprint(
+    scorecard: dict[str, object],
+    run_names: tuple[str, ...],
+    comparison_names: tuple[str, ...],
+) -> str:
+    runs = scorecard["runs"]
+    evidence = {
+        "schema_version": scorecard["schema_version"],
+        "margin": _margin(scorecard),
+        "run_order": list(run_names),
+        "runs": {name: runs[name] for name in run_names},
+        "comparisons": list(comparison_names),
+    }
+    return _canonical_sha256(evidence)
+
+
+def normalize_blind_seed(raw_seed: object) -> str:
+    if (
+        not isinstance(raw_seed, str)
+        or not raw_seed
+        or len(raw_seed) > 128
+        or any(ord(character) < 32 or ord(character) == 127 for character in raw_seed)
+    ):
+        raise ScorecardError("blind seed must be 1..128 printable characters")
+    return raw_seed
+
+
+def create_blind_bundle(
+    scorecard: object,
+    blind_seed: object,
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Create a reviewer artifact and a separate identity key."""
+    validate_pairing_scorecard(scorecard)
+    assert isinstance(scorecard, dict)
+    seed = normalize_blind_seed(blind_seed)
+    run_names, comparison_names = _traceable_layout(scorecard)
+    ranked_runs = sorted(
+        run_names,
+        key=lambda name: (
+            hashlib.sha256(f"blind-v1\0{seed}\0run\0{name}".encode()).hexdigest(),
+            name,
+        ),
+    )
+    alias_by_run = {
+        name: f"R{index:02d}" for index, name in enumerate(ranked_runs, start=1)
+    }
+    alias_to_run = {alias: name for name, alias in alias_by_run.items()}
+    source_fingerprint = _scorecard_evidence_fingerprint(
+        scorecard, run_names, comparison_names
+    )
+    blind_nonce = hashlib.sha256(
+        f"blind-v1\0{seed}\0nonce".encode("utf-8")
+    ).hexdigest()
+    key_core = {
+        "schema_version": 1,
+        "source_fingerprint": source_fingerprint,
+        "blind_nonce": blind_nonce,
+        "alias_to_run": alias_to_run,
+    }
+    key_id = _canonical_sha256(key_core)
+    key = {**key_core, "key_id": key_id}
+
+    source_runs = scorecard["runs"]
+    source_comparisons = scorecard["comparisons"]
+    blind_runs = {
+        alias: {"claims": copy.deepcopy(source_runs[name]["claims"])}
+        for alias, name in alias_to_run.items()
+    }
+    blind_comparisons: dict[str, object] = {}
+    ranked_comparisons = sorted(
+        comparison_names,
+        key=lambda name: (
+            hashlib.sha256(
+                f"blind-v1\0{seed}\0comparison\0{name}".encode()
+            ).hexdigest(),
+            name,
+        ),
+    )
+    for name in ranked_comparisons:
+        left, right = name.split(":", 1)
+        blind_name = f"{alias_by_run[left]}:{alias_by_run[right]}"
+        blind_comparisons[blind_name] = copy.deepcopy(source_comparisons[name])
+    blind = {
+        "schema_version": 1,
+        "key_id": key_id,
+        "instructions": (
+            "Pair claims one-to-one without access to the identity key. Set each "
+            "classification to overlap, different_reason, or ambiguous, then set "
+            "complete=true. Do not edit runs or claims."
+        ),
+        "runs": blind_runs,
+        "comparisons": blind_comparisons,
+    }
+    return blind, key
+
+
+def apply_blind_pairings(
+    scorecard: object,
+    blind: object,
+    key: object,
+) -> dict[str, object]:
+    """Verify and merge blinded human pairings into a traceable scorecard."""
+    validate_pairing_scorecard(scorecard)
+    if not isinstance(scorecard, dict):
+        raise ScorecardError("scorecard must be a JSON object")
+    if not isinstance(blind, dict) or blind.get("schema_version") != 1:
+        raise ScorecardError("blind artifact schema_version must be 1")
+    if not isinstance(key, dict) or key.get("schema_version") != 1:
+        raise ScorecardError("blind key schema_version must be 1")
+
+    run_names, comparison_names = _traceable_layout(scorecard)
+    source_fingerprint = _scorecard_evidence_fingerprint(
+        scorecard, run_names, comparison_names
+    )
+    if key.get("source_fingerprint") != source_fingerprint:
+        raise ScorecardError("blind key does not match scorecard evidence")
+
+    alias_to_run = key.get("alias_to_run")
+    if (
+        not isinstance(alias_to_run, dict)
+        or any(
+            not isinstance(alias, str)
+            or BLIND_ALIAS_PATTERN.fullmatch(alias) is None
+            or not isinstance(name, str)
+            for alias, name in alias_to_run.items()
+        )
+        or len(alias_to_run) != len(set(alias_to_run.values()))
+        or set(alias_to_run.values()) != set(run_names)
+    ):
+        raise ScorecardError("blind key alias_to_run is invalid")
+    key_core = {
+        "schema_version": 1,
+        "source_fingerprint": source_fingerprint,
+        "blind_nonce": key.get("blind_nonce"),
+        "alias_to_run": alias_to_run,
+    }
+    if SHA256_PATTERN.fullmatch(str(key_core["blind_nonce"])) is None:
+        raise ScorecardError("blind key nonce is invalid")
+    key_id = _canonical_sha256(key_core)
+    if key.get("key_id") != key_id or blind.get("key_id") != key_id:
+        raise ScorecardError("blind artifact and identity key do not match")
+
+    blind_runs = blind.get("runs")
+    if not isinstance(blind_runs, dict) or set(blind_runs) != set(alias_to_run):
+        raise ScorecardError("blind artifact runs do not match identity key")
+    source_runs = scorecard["runs"]
+    for alias, name in alias_to_run.items():
+        run = blind_runs[alias]
+        if not isinstance(run, dict) or set(run) != {"claims"}:
+            raise ScorecardError(f"blind runs.{alias} must contain only claims")
+        if run.get("claims") != source_runs[name]["claims"]:
+            raise ScorecardError(f"blind runs.{alias}.claims were modified")
+
+    run_to_alias = {name: alias for alias, name in alias_to_run.items()}
+    blind_name_by_source: dict[str, str] = {}
+    for name in comparison_names:
+        left, right = name.split(":", 1)
+        blind_name_by_source[name] = f"{run_to_alias[left]}:{run_to_alias[right]}"
+    blind_comparisons = blind.get("comparisons")
+    expected_blind_names = set(blind_name_by_source.values())
+    if (
+        not isinstance(blind_comparisons, dict)
+        or set(blind_comparisons) != expected_blind_names
+    ):
+        raise ScorecardError("blind artifact comparisons do not match scorecard")
+
+    merged = copy.deepcopy(scorecard)
+    for source_name, blind_name in blind_name_by_source.items():
+        comparison = blind_comparisons[blind_name]
+        if not isinstance(comparison, dict) or set(comparison) != {"complete", "pairs"}:
+            raise ScorecardError(
+                f"blind comparisons.{blind_name} must contain complete and pairs"
+            )
+        merged["comparisons"][source_name] = copy.deepcopy(comparison)
+    validate_pairing_scorecard(merged)
+    return merged
 
 
 def _score_counts(

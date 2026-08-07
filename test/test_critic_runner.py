@@ -954,6 +954,23 @@ UNVERIFIED: none
                 )
             )
 
+            scorecard_target = root / "scorecard-target.json"
+            scorecard_target.write_text("{}", encoding="utf-8")
+            scorecard_link = root / "scorecard-link.json"
+            scorecard_link.symlink_to(scorecard_target)
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    critic_runner.blind_scorecard_command(
+                        argparse.Namespace(
+                            scorecard=str(scorecard_link),
+                            output=str(root / "blind.json"),
+                            key_output=str(root / "key.json"),
+                            seed="seed",
+                        )
+                    ),
+                    critic_runner.EXIT_INVALID_SCORECARD,
+                )
+
     def test_score_divergence_handles_exact_and_ambiguous_pairings(self) -> None:
         scorecard = critic_runner.scorecard_template()
         comparisons = scorecard["comparisons"]
@@ -1156,6 +1173,82 @@ UNVERIFIED: none
                     "N2": run("natural", 2),
                 }
             )
+
+    def test_blind_bundle_hides_identity_and_round_trips_pairings(self) -> None:
+        claim = {"id": "A1", "position": "p", "claim": "c", "reason": "r"}
+        runs = {}
+        for prefix, protocol in (
+            ("S", "critic-social-science"),
+            ("N", "critic-natural-science"),
+        ):
+            for repetition in (1, 2):
+                runs[f"{prefix}{repetition}"] = {
+                    "protocol": protocol,
+                    "repetition": repetition,
+                    "archive": f"runs/{prefix}{repetition}",
+                    "report_sha256": "a" * 64,
+                    "claims": [dict(claim)],
+                }
+        scorecard = critic_runner.campaign_pairing_scorecard(runs)
+        blind, key = critic_runner.create_blind_bundle(scorecard, "blind-seed")
+        repeated_blind, repeated_key = critic_runner.create_blind_bundle(
+            scorecard, "blind-seed"
+        )
+        self.assertEqual(blind, repeated_blind)
+        self.assertEqual(key, repeated_key)
+        rendered_blind = json.dumps(blind, ensure_ascii=False)
+        self.assertNotIn("critic-social-science", rendered_blind)
+        self.assertNotIn("critic-natural-science", rendered_blind)
+        self.assertNotIn("report_sha256", rendered_blind)
+        self.assertNotIn("archive", rendered_blind)
+        self.assertNotIn("source_fingerprint", rendered_blind)
+        self.assertNotIn("repetition", rendered_blind)
+        self.assertNotIn('"S1"', rendered_blind)
+        self.assertNotIn('"N1"', rendered_blind)
+        self.assertEqual(set(blind["runs"]), {"R01", "R02", "R03", "R04"})
+
+        for comparison in blind["comparisons"].values():
+            comparison["complete"] = True
+            comparison["pairs"] = [
+                {"left": "A1", "right": "A1", "classification": "overlap"}
+            ]
+        merged = critic_runner.apply_blind_pairings(scorecard, blind, key)
+        result = critic_runner.score_divergence(merged)
+        self.assertEqual(result["verdict"], "reject")
+        self.assertEqual(set(merged["comparisons"]), set(scorecard["comparisons"]))
+
+    def test_blind_bundle_rejects_modified_evidence_key_and_pair_ids(self) -> None:
+        claim = {"id": "A1", "position": "p", "claim": "c", "reason": "r"}
+        runs = {
+            name: {
+                "archive": f"runs/{name}",
+                "report_sha256": "a" * 64,
+                "claims": [dict(claim)],
+            }
+            for name in critic_runner.RUN_NAMES
+        }
+        scorecard = critic_runner.pairing_scorecard(runs)
+        blind, key = critic_runner.create_blind_bundle(scorecard, "seed-one")
+
+        modified_claims = json.loads(json.dumps(blind))
+        modified_claims["runs"]["R01"]["claims"][0]["claim"] = "changed"
+        with self.assertRaisesRegex(critic_runner.ScorecardError, "claims were modified"):
+            critic_runner.apply_blind_pairings(scorecard, modified_claims, key)
+
+        _, wrong_key = critic_runner.create_blind_bundle(scorecard, "seed-two")
+        with self.assertRaisesRegex(critic_runner.ScorecardError, "do not match"):
+            critic_runner.apply_blind_pairings(scorecard, blind, wrong_key)
+
+        unknown_pair = json.loads(json.dumps(blind))
+        first_comparison = next(iter(unknown_pair["comparisons"].values()))
+        first_comparison["pairs"] = [
+            {"left": "A999", "right": "A1", "classification": "overlap"}
+        ]
+        with self.assertRaisesRegex(critic_runner.ScorecardError, "not a claim"):
+            critic_runner.apply_blind_pairings(scorecard, unknown_pair, key)
+
+        with self.assertRaisesRegex(critic_runner.ScorecardError, "blind seed"):
+            critic_runner.create_blind_bundle(scorecard, "line\nbreak")
 
     def test_extract_critic_claims_preserves_a_item_provenance(self) -> None:
         self.assertEqual(
@@ -1400,6 +1493,9 @@ UNVERIFIED: none
             )
             self.assertTrue((campaign_dir / "scorecard.json").is_file())
             self.assertTrue((campaign_dir / "SUMMARY.md").is_file())
+            summary_text = (campaign_dir / "SUMMARY.md").read_text(encoding="utf-8")
+            self.assertIn("blind-scorecard", summary_text)
+            self.assertIn("apply-blind-scorecard", summary_text)
             self.assertEqual(len(list((campaign_dir / "runs").iterdir())), 4)
             generated_scorecard = json.loads(
                 (campaign_dir / "scorecard.json").read_text(encoding="utf-8")
@@ -1415,6 +1511,71 @@ UNVERIFIED: none
             self.assertTrue(verification.valid, verification.errors)
 
             scorecard_path = campaign_dir / "scorecard.json"
+            blind_path = campaign_dir / "blind-review.json"
+            blind_key_path = campaign_dir / "blind-key.json"
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    critic_runner.blind_scorecard_command(
+                        argparse.Namespace(
+                            scorecard=str(scorecard_path),
+                            output=str(blind_path),
+                            key_output=str(blind_key_path),
+                            seed="command-seed",
+                        )
+                    ),
+                    0,
+                )
+            blind_text = blind_path.read_text(encoding="utf-8")
+            self.assertNotIn("critic-individualist", blind_text)
+            self.assertNotIn("critic-contrastivist", blind_text)
+            blind_scorecard = json.loads(blind_text)
+            for comparison in blind_scorecard["comparisons"].values():
+                comparison["complete"] = True
+                comparison["pairs"] = [
+                    {"left": "A1", "right": "A1", "classification": "overlap"}
+                ]
+            blind_path.write_text(json.dumps(blind_scorecard), encoding="utf-8")
+            merged_path = campaign_dir / "completed-scorecard.json"
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    critic_runner.apply_blind_scorecard_command(
+                        argparse.Namespace(
+                            scorecard=str(scorecard_path),
+                            blind=str(blind_path),
+                            key=str(blind_key_path),
+                            output=str(merged_path),
+                        )
+                    ),
+                    0,
+                )
+            merged_scorecard = json.loads(merged_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                critic_runner.score_divergence(merged_scorecard)["verdict"], "reject"
+            )
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    critic_runner.score_command(
+                        argparse.Namespace(
+                            scorecard=str(merged_path),
+                            format="json",
+                            output=None,
+                        )
+                    ),
+                    0,
+                )
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    critic_runner.apply_blind_scorecard_command(
+                        argparse.Namespace(
+                            scorecard=str(scorecard_path),
+                            blind=str(blind_path),
+                            key=str(blind_key_path),
+                            output=str(root / "detached-scorecard.json"),
+                        )
+                    ),
+                    critic_runner.EXIT_INVALID_SCORECARD,
+                )
+
             scorecard = json.loads(scorecard_path.read_text(encoding="utf-8"))
             scorecard["margin"] = 0.3
             scorecard_path.write_text(json.dumps(scorecard), encoding="utf-8")
