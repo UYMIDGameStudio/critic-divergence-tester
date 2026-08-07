@@ -88,10 +88,14 @@ python critic_runner.py run critic-contrastivist draft.md -- <executor...>
 
 不要直接拿带有 I/C 或协议名的原始 scorecard 做所谓“盲分”。先运行 `blind-scorecard`，把 identity key 留在实验负责人手中，只把使用 R01/R02 随机别名的 reviewer artifact 发给配对者。盲分时只在各组比较的 `pairs` 数组里记录左右 A 编号，并把分类写成 `overlap`、`different_reason` 或 `ambiguous`；不要手算汇总，无法确定时也不要强选。每组检查完成后显式设置 `complete: true`。未参与配对的左右条目由工具自动计为独有。
 
+最短命令是 `python critic_runner.py blind-scorecard path/to/scorecard.json`。它把 `blind-review.json` 和私密的 `blind-key.json` 默认写在 scorecard 同目录；若文件已经存在则拒绝覆盖。
+
 配对结束后用 `apply-blind-scorecard` 核对 artifact、key、原始 claims 和比较矩阵，再恢复为可计分 scorecard。机器会从逐条配对推导计数并计算上下界：
 
+若使用默认文件名，只需运行 `python critic_runner.py apply-blind-scorecard path/to/scorecard.json`，结果会安全写入同目录的 `completed-scorecard.json`。
+
 ```bash
-python critic_runner.py score path/to/scorecard.json --format markdown
+python critic_runner.py score path/to/completed-scorecard.json --format markdown
 ```
 
 `score` 会先用归档报告的 hash 和重新提取结果复核 scorecard 的 claim 清单，并强制一对一配对。只有整个区间都跨过同一判据时才给 `reject` 或 `advance`；边界两端会改变结论时给 `inconclusive`。语义分类仍由人完成，工具只复算分子、分母、W/B 与阈值。

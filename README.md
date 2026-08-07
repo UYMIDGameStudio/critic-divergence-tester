@@ -41,6 +41,20 @@ cd critic-divergence-tester
 
 本项目没有第三方依赖，因此不需要运行 `pip install`。
 
+先运行一次自检，确认 Python、协议文件、学术线配置和当前目录都能正常使用：
+
+```powershell
+# Windows
+py -3 critic_runner.py doctor
+```
+
+```bash
+# macOS / Linux
+python3 critic_runner.py doctor
+```
+
+最后显示 `ready` 就可以继续。若出现 `[error]`，按那一行提示处理；这一步不会上传或修改你的文章。
+
 ### 第 3 步：放入文章并选择学术线
 
 把文章保存为 UTF-8 文本，例如 `draft.md`，放进项目文件夹。普通 `.txt` 文件也可以。
@@ -104,6 +118,7 @@ python3 critic_runner.py validate critic-social-science report.md
 | 提示找不到 `draft.md` | 确认文章就在当前文件夹，或传入它的完整路径 |
 | 文件路径里有空格 | 用英文双引号包住路径，例如 `"C:\My Papers\draft.md"` |
 | 中文乱码 | 将文章和保存的报告改为 UTF-8 编码 |
+| `doctor` 显示 `[error]` | 按错误行修复；最常见原因是 Python 版本太旧、下载不完整或当前文件夹不可写 |
 | `validate` 返回很多错误 | 把错误信息交给 AI，让它严格按原提示中的六节格式重新输出 |
 | 不知道选哪条线 | 文科与社会研究选 `humanities-social-science`；自然规律与实验选 `natural-science`；产品、系统与实现选 `engineering` |
 
@@ -241,24 +256,18 @@ python critic_runner.py campaign draft.md \
 原始 `scorecard.json` 必须保存协议身份和证据出处，不能直接交给配对评审者。先生成两个分离的 artifact：
 
 ```bash
-python critic_runner.py blind-scorecard \
-  .critic-campaigns/<campaign>/scorecard.json \
-  --output blind-review.json \
-  --key-output blind-key.json
+python critic_runner.py blind-scorecard .critic-campaigns/<campaign>/scorecard.json
 ```
 
-只把 `blind-review.json` 交给评审者。它以随机化的 `R01`、`R02`……替代运行身份，随机排列比较，不含协议名、重复编号、归档路径或报告 hash。`blind-key.json` 保存身份映射，不得在分类结束前交给评审者。
+命令会在 `scorecard.json` 旁边生成 `blind-review.json` 和 `blind-key.json`；这些文件都留在默认不进 Git 的 `.critic-campaigns` 目录中。只把 `blind-review.json` 交给评审者。它以随机化的 `R01`、`R02`……替代运行身份，随机排列比较，不含协议名、重复编号、归档路径或报告 hash。`blind-key.json` 保存身份映射，不得在分类结束前交给评审者，也不要提交到 GitHub。
 
 评审者只填写每组 `pairs`，分类使用 `overlap`、`different_reason` 或 `ambiguous`，完成后把 `complete` 改为 `true`。回收时不要覆盖原件：
 
 ```bash
-python critic_runner.py apply-blind-scorecard \
-  .critic-campaigns/<campaign>/scorecard.json \
-  blind-review.json --key blind-key.json \
-  --output .critic-campaigns/<campaign>/completed-scorecard.json
+python critic_runner.py apply-blind-scorecard .critic-campaigns/<campaign>/scorecard.json
 ```
 
-runner 会确认盲评文件与 key 属于同一个原始 scorecard，claims 没被编辑，别名映射、比较集合、A 编号与一对一约束都成立，再恢复真实比较。`--seed` 可让别名分配可复现；默认使用随机种子。盲法消除了工具主动泄露的身份元数据，但不能保证稿件引文或 critic 特有措辞本身完全不可识别。
+runner 默认读取同目录的 `blind-review.json` 和 `blind-key.json`，校验后生成 `completed-scorecard.json`。它会确认盲评文件与 key 属于同一个原始 scorecard，claims 没被编辑，别名映射、比较集合、A 编号与一对一约束都成立，再恢复真实比较。已有输出不会被覆盖；如需保留多个版本，可显式传入 `--output`、`--key-output` 或 `--key`。`--seed` 可让别名分配可复现；默认使用随机种子。盲法消除了工具主动泄露的身份元数据，但不能保证稿件引文或 critic 特有措辞本身完全不可识别。
 
 ```json
 "I1:I2": {

@@ -17,6 +17,7 @@ import os
 import re
 import secrets
 import sys
+import tempfile
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -1413,16 +1414,14 @@ def campaign(args: argparse.Namespace) -> int:
                 "Create a blinded reviewer artifact and keep its identity key private:",
                 "",
                 "```bash",
-                "python critic_runner.py blind-scorecard path/to/scorecard.json \\",
-                "  --output path/to/blind-review.json --key-output path/to/blind-key.json",
+                "python critic_runner.py blind-scorecard path/to/scorecard.json",
                 "```",
+                "This creates blind-review.json and blind-key.json beside the scorecard.",
                 "",
                 "After pairing, verify and merge the reviewer artifact:",
                 "",
                 "```bash",
-                "python critic_runner.py apply-blind-scorecard path/to/scorecard.json \\",
-                "  path/to/blind-review.json --key path/to/blind-key.json \\",
-                "  --output path/to/completed-scorecard.json",
+                "python critic_runner.py apply-blind-scorecard path/to/scorecard.json",
                 "```",
                 "",
                 "```bash",
@@ -1936,15 +1935,29 @@ def _read_scorecard_json(path: Path, label: str) -> object:
 def blind_scorecard_command(args: argparse.Namespace) -> int:
     raw_scorecard_path = Path(args.scorecard)
     scorecard_path = raw_scorecard_path.resolve()
-    blind_path = Path(args.output).resolve()
-    key_path = Path(args.key_output).resolve()
+    raw_blind_path = (
+        Path(args.output)
+        if getattr(args, "output", None)
+        else scorecard_path.parent / "blind-review.json"
+    )
+    raw_key_path = (
+        Path(args.key_output)
+        if getattr(args, "key_output", None)
+        else scorecard_path.parent / "blind-key.json"
+    )
+    blind_path = raw_blind_path.resolve()
+    key_path = raw_key_path.resolve()
     try:
         if raw_scorecard_path.is_symlink():
             raise ScorecardError("scorecard path must not be a symbolic link")
         if len({scorecard_path, blind_path, key_path}) != 3:
             raise ScorecardError("scorecard, blind output, and key output must differ")
-        if Path(args.output).is_symlink() or Path(args.key_output).is_symlink():
+        if raw_blind_path.is_symlink() or raw_key_path.is_symlink():
             raise ScorecardError("blind and key outputs must not be symbolic links")
+        if blind_path.exists() or key_path.exists():
+            raise ScorecardError(
+                "blind or key output already exists; choose new paths to avoid data loss"
+            )
         scorecard = _read_scorecard_json(scorecard_path, "scorecard")
         provenance_errors = verify_scorecard_provenance(scorecard_path, scorecard)
         if provenance_errors:
@@ -1969,12 +1982,25 @@ def blind_scorecard_command(args: argparse.Namespace) -> int:
 
 def apply_blind_scorecard_command(args: argparse.Namespace) -> int:
     raw_scorecard_path = Path(args.scorecard)
-    raw_blind_path = Path(args.blind)
-    raw_key_path = Path(args.key)
     scorecard_path = raw_scorecard_path.resolve()
+    raw_blind_path = (
+        Path(args.blind)
+        if getattr(args, "blind", None)
+        else scorecard_path.parent / "blind-review.json"
+    )
+    raw_key_path = (
+        Path(args.key)
+        if getattr(args, "key", None)
+        else scorecard_path.parent / "blind-key.json"
+    )
     blind_path = raw_blind_path.resolve()
     key_path = raw_key_path.resolve()
-    output_path = Path(args.output).resolve()
+    raw_output_path = (
+        Path(args.output)
+        if getattr(args, "output", None)
+        else scorecard_path.parent / "completed-scorecard.json"
+    )
+    output_path = raw_output_path.resolve()
     try:
         if any(
             path.is_symlink()
@@ -1989,8 +2015,10 @@ def apply_blind_scorecard_command(args: argparse.Namespace) -> int:
             raise ScorecardError(
                 "output must stay beside the original scorecard to preserve campaign provenance"
             )
-        if Path(args.output).is_symlink():
+        if raw_output_path.is_symlink():
             raise ScorecardError("output must not be a symbolic link")
+        if output_path.exists():
+            raise ScorecardError("output already exists; choose a new path to avoid data loss")
         scorecard = _read_scorecard_json(scorecard_path, "scorecard")
         blind = _read_scorecard_json(blind_path, "blind artifact")
         key = _read_scorecard_json(key_path, "blind key")
@@ -2062,6 +2090,72 @@ def list_tracks(_: argparse.Namespace) -> int:
         print(f"  primary: {track['primary']}")
         print(f"  specialists: {specialists}")
     print("cross-disciplinary: " + ", ".join(CROSS_DISCIPLINARY_PROTOCOLS))
+    return 0
+
+
+def doctor(args: argparse.Namespace) -> int:
+    errors: list[str] = []
+    checks: list[str] = []
+    if sys.version_info < (3, 10):
+        errors.append("Python 3.10 or newer is required")
+    else:
+        checks.append(f"Python {sys.version_info.major}.{sys.version_info.minor}")
+
+    expected_protocols = set(PROTOCOLS)
+    if set(PROTOCOL_PREFIX) != expected_protocols:
+        errors.append("protocol prefix registry does not match available protocols")
+    elif len(set(PROTOCOL_PREFIX.values())) != len(PROTOCOL_PREFIX):
+        errors.append("protocol prefixes must be unique")
+    else:
+        checks.append("protocol prefixes are complete and unique")
+
+    for name in PROTOCOLS:
+        try:
+            body, _ = load_protocol(name, allow_test_artifact=name in TEST_ONLY)
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            errors.append(f"{name} cannot be loaded: {exc}")
+            continue
+        if name in CRITIC_PROTOCOLS:
+            for heading in CRITIC_SECTIONS:
+                if body.count(heading) != 1:
+                    errors.append(f"{name} must contain {heading!r} exactly once")
+    if not any("cannot be loaded" in error or "must contain" in error for error in errors):
+        checks.append(f"{len(PROTOCOLS)} protocol files are readable and structurally valid")
+
+    referenced_protocols = set(CROSS_DISCIPLINARY_PROTOCOLS)
+    for track in ACADEMIC_TRACKS.values():
+        referenced_protocols.add(str(track["primary"]))
+        referenced_protocols.update(str(name) for name in track["specialists"])
+    missing_references = sorted(referenced_protocols - expected_protocols)
+    if missing_references:
+        errors.append(f"academic track registry references missing protocols: {missing_references}")
+    else:
+        checks.append(f"{len(ACADEMIC_TRACKS)} academic tracks resolve correctly")
+
+    directory = Path(args.directory).resolve()
+    if not directory.is_dir():
+        errors.append(f"working directory does not exist: {directory}")
+    else:
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=directory,
+                prefix=".critic-doctor-",
+                delete=True,
+            ) as handle:
+                handle.write(b"ok")
+                handle.flush()
+        except OSError as exc:
+            errors.append(f"working directory is not writable: {exc}")
+        else:
+            checks.append(f"working directory is writable: {directory}")
+
+    for check in checks:
+        print(f"[ok] {check}")
+    if errors:
+        for error in errors:
+            print(f"[error] {error}", file=sys.stderr)
+        return 2
+    print("ready")
     return 0
 
 
@@ -2149,6 +2243,15 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("tracks", help="list academic tracks and their protocols").set_defaults(
         func=list_tracks
     )
+    doctor_parser = sub.add_parser(
+        "doctor", help="check Python, protocol files, track mappings, and write access"
+    )
+    doctor_parser.add_argument(
+        "--directory",
+        default=".",
+        help="directory to test for archive write access (default: current directory)",
+    )
+    doctor_parser.set_defaults(func=doctor)
 
     prepare_parser = sub.add_parser(
         "prepare", help="archive a self-contained prompt for manual use"
@@ -2281,10 +2384,10 @@ def parser() -> argparse.ArgumentParser:
     )
     blind_scorecard_parser.add_argument("scorecard", help="traceable scorecard path")
     blind_scorecard_parser.add_argument(
-        "--output", required=True, help="reviewer-facing blind JSON path"
+        "--output", help="reviewer JSON path (default: beside scorecard)"
     )
     blind_scorecard_parser.add_argument(
-        "--key-output", required=True, help="private identity-map JSON path"
+        "--key-output", help="private key JSON path (default: beside scorecard)"
     )
     blind_scorecard_parser.add_argument(
         "--seed", help="optional reproducible blind alias seed"
@@ -2296,10 +2399,14 @@ def parser() -> argparse.ArgumentParser:
         help="verify and merge blinded human pairings into a scorecard",
     )
     apply_blind_parser.add_argument("scorecard", help="original scorecard path")
-    apply_blind_parser.add_argument("blind", help="completed blind JSON path")
-    apply_blind_parser.add_argument("--key", required=True, help="private key JSON path")
     apply_blind_parser.add_argument(
-        "--output", required=True, help="merged scorecard JSON path"
+        "blind", nargs="?", help="completed blind JSON path (default: beside scorecard)"
+    )
+    apply_blind_parser.add_argument(
+        "--key", help="private key JSON path (default: beside scorecard)"
+    )
+    apply_blind_parser.add_argument(
+        "--output", help="merged JSON path (default: beside scorecard)"
     )
     apply_blind_parser.set_defaults(func=apply_blind_scorecard_command)
 

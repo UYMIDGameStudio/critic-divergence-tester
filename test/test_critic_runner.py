@@ -182,6 +182,35 @@ class CriticRunnerTests(unittest.TestCase):
         self.assertIn("critic-individualist, critic-contrastivist", rendered)
         self.assertIn("cross-disciplinary: citation-auditor", rendered)
 
+    def test_doctor_checks_a_fresh_install(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = io.StringIO()
+            errors = io.StringIO()
+            with redirect_stdout(output), redirect_stderr(errors):
+                result = critic_runner.doctor(
+                    argparse.Namespace(directory=temp_dir)
+                )
+            self.assertEqual(result, 0)
+            self.assertIn("academic tracks resolve correctly", output.getvalue())
+            self.assertTrue(output.getvalue().rstrip().endswith("ready"))
+            self.assertEqual(errors.getvalue(), "")
+
+    def test_doctor_reports_an_unreadable_protocol(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing = Path(temp_dir) / "missing.md"
+            protocols = dict(critic_runner.PROTOCOLS)
+            protocols["critic-social-science"] = missing
+            output = io.StringIO()
+            errors = io.StringIO()
+            with patch.object(critic_runner, "PROTOCOLS", protocols):
+                with redirect_stdout(output), redirect_stderr(errors):
+                    result = critic_runner.doctor(
+                        argparse.Namespace(directory=temp_dir)
+                    )
+            self.assertEqual(result, 2)
+            self.assertNotIn("\nready\n", f"\n{output.getvalue()}")
+            self.assertIn("critic-social-science cannot be loaded", errors.getvalue())
+
     def test_prepare_track_archives_the_track_primary_protocol(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -1518,8 +1547,8 @@ UNVERIFIED: none
                     critic_runner.blind_scorecard_command(
                         argparse.Namespace(
                             scorecard=str(scorecard_path),
-                            output=str(blind_path),
-                            key_output=str(blind_key_path),
+                            output=None,
+                            key_output=None,
                             seed="command-seed",
                         )
                     ),
@@ -1529,6 +1558,18 @@ UNVERIFIED: none
             self.assertNotIn("critic-individualist", blind_text)
             self.assertNotIn("critic-contrastivist", blind_text)
             blind_scorecard = json.loads(blind_text)
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    critic_runner.blind_scorecard_command(
+                        argparse.Namespace(
+                            scorecard=str(scorecard_path),
+                            output=None,
+                            key_output=None,
+                            seed="command-seed",
+                        )
+                    ),
+                    critic_runner.EXIT_INVALID_SCORECARD,
+                )
             for comparison in blind_scorecard["comparisons"].values():
                 comparison["complete"] = True
                 comparison["pairs"] = [
@@ -1541,14 +1582,26 @@ UNVERIFIED: none
                     critic_runner.apply_blind_scorecard_command(
                         argparse.Namespace(
                             scorecard=str(scorecard_path),
-                            blind=str(blind_path),
-                            key=str(blind_key_path),
-                            output=str(merged_path),
+                            blind=None,
+                            key=None,
+                            output=None,
                         )
                     ),
                     0,
                 )
             merged_scorecard = json.loads(merged_path.read_text(encoding="utf-8"))
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    critic_runner.apply_blind_scorecard_command(
+                        argparse.Namespace(
+                            scorecard=str(scorecard_path),
+                            blind=None,
+                            key=None,
+                            output=None,
+                        )
+                    ),
+                    critic_runner.EXIT_INVALID_SCORECARD,
+                )
             self.assertEqual(
                 critic_runner.score_divergence(merged_scorecard)["verdict"], "reject"
             )
