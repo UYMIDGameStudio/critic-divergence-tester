@@ -32,7 +32,21 @@ jobs:
         run: python -m unittest discover -s test -p "test_*.py" -v
 
       - name: Compile Python sources
-        run: python -m compileall -q critic_runner.py test/test_critic_runner.py
+        run: >-
+          python -m compileall -q
+          critic_runner.py
+          critic_execution.py
+          critic_scoring.py
+          critic_workflow.py
+          test/test_critic_runner.py
 
       - name: Smoke-test CLI
-        run: python critic_runner.py list
+        run: |
+          python critic_runner.py doctor
+          python critic_runner.py list
+          python critic_runner.py quickstart --help
+          python critic_runner.py import-report --help
+          python critic_runner.py adjudicate --help
+          python critic_runner.py revision-plan --help
+          python critic_runner.py status --help
+          python critic_runner.py resume --help

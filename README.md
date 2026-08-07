@@ -2,15 +2,27 @@
 
 [![Tests](https://github.com/UYMIDGameStudio/critic-divergence-tester/actions/workflows/tests.yml/badge.svg)](https://github.com/UYMIDGameStudio/critic-divergence-tester/actions/workflows/tests.yml)
 
-一组**模型无关**的敌对审查协议，以及一个零依赖的独立 runner。
+一个**模型无关、零第三方依赖**的论证审查工作流。提示词只是入口，不是最终产品。
 
 它最初以 Claude Code subagent 的形式出现，但核心从来不需要 Claude Code。现在仓库把“学术线”“具体审查协议”和“模型执行器”分开：学术线决定证据观，协议决定攻击入口，Claude Code、其他 CLI、本地模型、网页聊天都只是可替换的执行器。
 
 这个项目也不是“让多个 agent 投票得出正确答案”。它做的是 philosophical pressure-test：让不同前提的敌对读者分别攻击同一份稿件，然后由作者本人判断哪些攻击真的改变论证。
 
+```mermaid
+flowchart LR
+    A["原稿"] --> B["学科适配协议"]
+    B --> C["自包含 prompt"]
+    C --> D["任意 AI 的报告"]
+    D --> E["结构校验与证据归档"]
+    E --> F["逐条人工裁决"]
+    F --> G["可执行修改计划"]
+```
+
+runner 会把每一步绑定到精确字节哈希：AI 负责提出批评，人负责接受、拒绝或暂缓，机器负责阻止漏项、伪完成、证据被改写和归档断链。
+
 ## 5 分钟上手（第一次用就看这里）
 
-最简单的用法**不需要 API key，不需要安装 Claude Code，也不需要配置模型命令**。本工具先把“审查规则 + 你的文章”做成一个 `prompt.md`，你把它完整复制给 ChatGPT、Claude、Gemini 或其他 AI 即可。
+最简单的用法**不需要 API key，不需要安装 Claude Code，也不需要配置模型命令**。工具会生成 prompt、回收 AI 报告、提取结构化发现、引导你逐条裁决，并生成修改计划。
 
 ### 第 1 步：准备 Python
 
@@ -91,9 +103,68 @@ python3 critic_runner.py prepare-track humanities-social-science draft.md
 .critic-runs/20260807T120000.000000Z--critic-social-science/prompt.md
 ```
 
-### 第 4 步：交给 AI
+### 第 4 步：交给 AI，再安全回收报告
 
 打开刚生成的 `prompt.md`，复制全部内容，粘贴到你常用的 AI 对话里。AI 返回的六节报告就是审查结果。
+
+把完整回答保存为 UTF-8 文件，例如 `report-returned.md`，放在项目文件夹。以后只要运行同一条“继续”命令：
+
+```powershell
+# Windows
+py -3 critic_runner.py resume
+```
+
+```bash
+# macOS / Linux
+python3 critic_runner.py resume
+```
+
+程序会自动找到最新的待办审查，显示文章名和学术协议，然后询问 AI 报告的文件路径。路径可以直接拖进终端；带空格或双引号也能识别。如果同时有多次待办，它会明确告诉你本次选择了最新一次；要继续指定运行，可以写 `resume ".critic-runs/<run-directory>"`。
+
+`resume` 会根据真实归档状态自动完成下一步：等待报告时回收报告，裁决未完成时接着裁决，裁决已完成但计划缺失时生成计划。可以随时退出，下次仍运行同一条命令。回收报告时会先验证；无效报告不会写入归档。验证通过后，它会：
+
+- 原样保存 `report.md` 并记录 SHA-256；
+- 把运行状态从 `prepared` 更新为 `collected`；
+- 将每条批评及其后果检验提取到 `adjudication.json`；
+- 把 `STATUS` 与 `UNVERIFIED` 一并带入裁决和修改计划；
+- 把报告、manifest 和裁决文件互相绑定，防止张冠李戴。
+
+随后程序用中文逐条显示批评，让你选择“接受、拒绝、暂缓”。接受必须写具体修改动作，拒绝或暂缓必须留下理由；每裁决一条就立即保存。全部完成后自动生成带裁决文件哈希的修改计划；工具会重新推导并逐字核对已有计划，发现裁决变化或计划被手改时拒绝把旧文件当成当前结果：
+
+```text
+.critic-runs/<run-directory>/revision-plan.md
+```
+
+这份修改计划才是日常工作流的最终产物，而不是 prompt 或 AI 原始回答。
+如果要在计划上继续自由增删，请先复制并另存为其他文件；原始 `revision-plan.md` 保留为可重复生成、可核对的机器产物。
+
+以后运行记录多了，不需要自己翻时间戳目录。直接查看所有审查现在走到哪一步：
+
+```powershell
+# Windows
+py -3 critic_runner.py status
+```
+
+```bash
+# macOS / Linux
+python3 critic_runner.py status
+```
+
+它会把最新记录放在最前，显示文章名、协议、当前进度和一条可以直接复制的“下一步”命令。只看某一次运行时，在后面加运行目录即可，例如 `py -3 critic_runner.py status ".critic-runs/<run-directory>"`。熟悉命令行的用户仍可直接使用底层的 `import-report`、`adjudicate` 和 `revision-plan`；日常使用不需要记住它们。
+
+如果计划生成后改变了判断，不要手改 `adjudication.json`。使用显式复议模式：
+
+```powershell
+# Windows
+py -3 critic_runner.py adjudicate ".critic-runs/<run-directory>" --review-all
+```
+
+```bash
+# macOS / Linux
+python3 critic_runner.py adjudicate ".critic-runs/<run-directory>" --review-all
+```
+
+程序会重新展示全部发现；直接回车保留原裁决，输入 `1`、`2` 或 `3` 才会重做当前裁决。只要有一条发生变化，原 `revision-plan.md` 就会先改名为 `revision-plan.previous-<hash>.md` 留档，再根据新裁决生成当前计划。没有任何变化时不会制造重复备份。
 
 runner 本身不会上传文章；当你把 `prompt.md` 粘贴到某个 AI 平台时，文章才会发送给该平台。处理未发表、保密或含个人信息的稿件前，请先确认所用平台的数据政策。`.critic-runs` 中也保存了完整文章，不要把这个目录公开上传。
 
@@ -105,9 +176,9 @@ runner 本身不会上传文章；当你把 `prompt.md` 粘贴到某个 AI 平�
 
 不要看到批评就全部接受。这个工具提供的是敌对压力测试，最后仍由作者判断哪条批评真的改变论证。
 
-### 可选：检查 AI 是否遵守输出格式
+### 可选：只检查报告格式
 
-把 AI 回答保存成 UTF-8 的 `report.md`，然后运行：
+`import-report` 已经自动执行格式校验。如果只想检查一个外部报告、不打算归档，可以运行：
 
 ```powershell
 # Windows；社会科学示例
@@ -132,7 +203,11 @@ python3 critic_runner.py validate critic-social-science report.md
 | 文件路径里有空格 | 用英文双引号包住路径，例如 `"C:\My Papers\draft.md"` |
 | 中文乱码 | 将文章和保存的报告改为 UTF-8 编码 |
 | `doctor` 显示 `[error]` | 按错误行修复；最常见原因是 Python 版本太旧、下载不完整或当前文件夹不可写 |
-| `validate` 返回很多错误 | 把错误信息交给 AI，让它严格按原提示中的六节格式重新输出 |
+| `import-report` / `validate` 返回很多错误 | 把错误信息交给 AI，让它严格按原提示中的六节格式重新输出；无效报告不会污染归档 |
+| `adjudicate` 中途退出 | 已完成的条目已经保存；再次运行同一命令会跳过它们并继续 |
+| 忘了下一步该运行什么 | 始终运行 `resume`；它会根据归档状态自动判断 |
+| 运行太多，不知道该继续哪一个 | 运行 `python3 critic_runner.py status`；Windows 使用 `py -3` |
+| 已完成后想改变某条裁决 | 运行 `adjudicate <运行目录> --review-all`；旧修改计划会自动留档 |
 | 不知道选哪条线 | 文科与社会研究选 `humanities-social-science`；自然规律与实验选 `natural-science`；产品、系统与实现选 `engineering` |
 
 如果是用 Git 下载的，更新到最新版：
@@ -186,7 +261,11 @@ python critic_runner.py list
   ↓
 按文章风险选 1 个 critic
   ↓
-作者自己处理真正成立的发现
+回收并验证 AI 报告
+  ↓
+人工逐条接受 / 拒绝 / 暂缓
+  ↓
+按照 revision-plan.md 修改
   ↓
 准备发布时跑 citation-auditor
 ```
@@ -323,7 +402,7 @@ python critic_runner.py validate critic-individualist path/to/report.md
 python critic_runner.py verify-run .critic-runs/<run-directory> --source path/to/draft.md
 ```
 
-省略 `--source` 时仍会检查归档内部文件，但会明确警告原稿字节没有重新核对。这个机制用于发现意外损坏和不一致，不是带密钥的防篡改签名；能同时修改文件与 manifest 的攻击者仍可重算哈希。
+省略 `--source` 时仍会检查归档内部文件，但会明确警告原稿字节没有重新核对。对于 `collected` critic 运行，验证器还要求 `adjudication.json` 与报告逐条一致；如果存在 `revision-plan.md`，会从当前裁决重新生成并逐字比较；复议留存的 `revision-plan.previous-<hash>.md` 也会核对文件名中的内容哈希前缀。这个机制用于发现意外损坏和不一致，不是带密钥的防篡改签名；能同时修改文件与 manifest 的攻击者仍可重算哈希。
 
 ## 运行材料不会再丢
 
@@ -331,12 +410,15 @@ python critic_runner.py verify-run .critic-runs/<run-directory> --source path/to
 
 ```text
 prompt.md       本次真正送给模型的完整提示词
-report.md       模型输出（run 模式）
+report.md       模型输出（run 或 import-report）
 manifest.json   精确字节 SHA-256、生命周期、校验结果与执行信息
+adjudication.json  从报告提取的发现、来源绑定和人工裁决（critic 手动流程）
+revision-plan.md   只根据完成的人类裁决生成的修改计划
+revision-plan.previous-<hash>.md  每次复议前自动留存的旧修改计划
 stderr.log      执行器错误输出（仅出现错误时）
 ```
 
-`.critic-runs/` 和 `.critic-campaigns/` 默认不进 Git。runner 会在启动执行器前先原子写入 prompt 和 manifest，执行完成后再原子补写 report、stderr、退出码和结构校验结果。run schema v2 记录输出额度与截断状态；campaign schema v3 还记录计划协议、重复次数、统一资源限制、完整运行矩阵、顺序策略、种子和实际执行次序，并继续验证旧版 schema v1/v2 归档。SHA-256 针对磁盘中的原始字节计算，不受 Windows 换行转换影响；UTF-8 BOM 可以读取但不会混进提示词。JSON 验证会拒绝重复键，避免同一字段出现两种解释。manifest 只保存稿件文件名，不保存本机绝对路径，也不保存执行器参数值。
+`.critic-runs/` 和 `.critic-campaigns/` 默认不进 Git。runner 会在启动执行器前先原子写入 prompt 和 manifest，执行完成后再原子补写 report、stderr、退出码和结构校验结果。run schema v3 增加 `collected` 手动回收状态与不含本机路径的 collection 元数据，并继续验证旧版 schema v1/v2；campaign schema v3 记录计划协议、重复次数、统一资源限制、完整运行矩阵、顺序策略、种子和实际执行次序。SHA-256 针对磁盘中的原始字节计算，不受 Windows 换行转换影响；UTF-8 BOM 可以读取但不会混进提示词。JSON 验证会拒绝重复键，避免同一字段出现两种解释。manifest 只保存稿件和返回报告的文件名，不保存本机绝对路径，也不保存执行器参数值。
 
 归档包含完整稿件、模型报告和可能回显敏感信息的 stderr。POSIX 上 runner 把运行目录设为 `0700`、文件设为 `0600`；Windows 上保密性取决于父目录的 ACL。验证器拒绝 manifest、产物和嵌套运行路径中的符号链接，避免归档通过链接逃出预期目录。不要把归档放在共享目录，密钥应通过环境变量传给执行器，并在分享归档前检查 `prompt.md`、`report.md` 与 `stderr.log`。
 
@@ -352,6 +434,7 @@ stderr.log      执行器错误输出（仅出现错误时）
 | `4` | 归档文件或 manifest 自相矛盾 |
 | `6` | scorecard 缺项、未填写或格式无效 |
 | `7` | campaign 中至少一次运行失败 |
+| `8` | 报告回收、人工裁决或修改计划工作流无效 |
 | `124` | 执行超时 |
 | `125` | 执行器输出超过额度 |
 | 其他非零值 | 执行器自身的失败码 |
