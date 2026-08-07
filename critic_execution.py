@@ -146,16 +146,23 @@ def _read_capped_outputs(
     )
 
 
+def _kill_posix_process_group(process_group_id: int) -> None:
+    if os.name != "posix":
+        return
+    try:
+        os.killpg(process_group_id, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
 def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
     """Best-effort termination of the executor and descendants it created."""
+    if os.name == "posix":
+        _kill_posix_process_group(process.pid)
+        return
     if process.poll() is not None:
         return
-    if os.name == "posix":
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-    elif os.name == "nt":
+    if os.name == "nt":
         try:
             subprocess.run(
                 ["taskkill", "/PID", str(process.pid), "/T", "/F"],
@@ -268,7 +275,9 @@ def execute_with_limits(
             finally:
                 stop_monitor.set()
                 monitor.join()
-                if windows_job is not None:
+                if os.name == "posix":
+                    _kill_posix_process_group(process.pid)
+                elif windows_job is not None:
                     _close_windows_handle(windows_job)
                     windows_job = None
                     time.sleep(0.1)

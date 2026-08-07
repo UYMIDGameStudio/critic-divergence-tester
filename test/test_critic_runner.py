@@ -14,13 +14,14 @@ import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 import critic_runner  # noqa: E402
+import critic_execution  # noqa: E402
 
 
 VALID_REPORT = """## 1. 原子指控
@@ -1143,6 +1144,17 @@ UNVERIFIED: none
             self.assertFalse(result.timed_out)
             time.sleep(1.0)
             self.assertFalse(marker.exists(), "executor descendant survived parent exit")
+
+    def test_posix_cleanup_kills_group_even_after_parent_exit(self) -> None:
+        process = Mock(pid=4321)
+        process.poll.return_value = 0
+        with patch.object(critic_execution.os, "name", "posix"), patch.object(
+            critic_execution.os, "killpg", create=True
+        ) as killpg, patch.object(
+            critic_execution.signal, "SIGKILL", 9, create=True
+        ):
+            critic_execution._terminate_process_tree(process)
+        killpg.assert_called_once_with(4321, 9)
 
     def test_campaign_creates_isolated_runs_summary_and_scorecard(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
