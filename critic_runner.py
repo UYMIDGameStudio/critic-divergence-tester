@@ -165,6 +165,17 @@ class VerificationResult:
     warnings: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class RunOverview:
+    run_dir: Path
+    stage: str
+    protocol: str
+    source: str
+    action: str
+    next_action: str
+    verification: VerificationResult
+
+
 class DuplicateJsonKeyError(ValueError):
     """Raised when JSON contains a key whose meaning would be ambiguous."""
 
@@ -2764,11 +2775,19 @@ def verify_run_command(args: argparse.Namespace) -> int:
     return EXIT_INVALID_ARCHIVE
 
 
-def _run_status(run_dir: Path) -> tuple[str, str, str, str, VerificationResult]:
+def _run_overview(run_dir: Path) -> RunOverview:
     verification = verify_run_dir(run_dir)
     if not verification.valid:
         detail = verification.errors[0] if verification.errors else "unknown error"
-        return "归档损坏", "—", "—", f"先运行 verify-run 检查：{detail}", verification
+        return RunOverview(
+            run_dir,
+            "归档损坏",
+            "—",
+            "—",
+            "invalid",
+            f"先运行 verify-run 检查：{detail}",
+            verification,
+        )
     try:
         manifest_value = parse_json(
             (run_dir / "manifest.json").read_text(encoding="utf-8")
@@ -2780,7 +2799,15 @@ def _run_status(run_dir: Path) -> tuple[str, str, str, str, VerificationResult]:
         DuplicateJsonKeyError,
     ) as exc:
         invalid = VerificationResult(False, (str(exc),), ())
-        return "归档损坏", "—", "—", f"无法读取 manifest：{exc}", invalid
+        return RunOverview(
+            run_dir,
+            "归档损坏",
+            "—",
+            "—",
+            "invalid",
+            f"无法读取 manifest：{exc}",
+            invalid,
+        )
     assert isinstance(manifest_value, dict)
     protocol = str(manifest_value.get("protocol", "—"))
     source = str(manifest_value.get("source_name", "—"))
@@ -2788,11 +2815,14 @@ def _run_status(run_dir: Path) -> tuple[str, str, str, str, VerificationResult]:
     launcher = _python_launcher()
     quoted_run = f'"{run_dir}"'
     if status == "prepared":
-        return (
+        return RunOverview(
+            run_dir,
             "等待 AI 报告",
             protocol,
             source,
-            f"保存 AI 回答后运行：{launcher} critic_runner.py import-report {quoted_run} report-returned.md",
+            "import-report",
+            f"保存 AI 回答后运行：{launcher} critic_runner.py resume {quoted_run} "
+            "--report report-returned.md",
             verification,
         )
     if status == "collected" and protocol in CRITIC_PROTOCOLS:
@@ -2809,36 +2839,127 @@ def _run_status(run_dir: Path) -> tuple[str, str, str, str, VerificationResult]:
         )
         total = len(findings)
         if decided < total:
-            return (
+            return RunOverview(
+                run_dir,
                 f"人工裁决 {decided}/{total}",
                 protocol,
                 source,
-                f"继续运行：{launcher} critic_runner.py adjudicate {quoted_run}",
+                "adjudicate",
+                f"继续运行：{launcher} critic_runner.py resume {quoted_run}",
                 verification,
             )
         if not (run_dir / "revision-plan.md").exists():
-            return (
+            return RunOverview(
+                run_dir,
                 f"待生成修改计划 {decided}/{total}",
                 protocol,
                 source,
-                f"运行：{launcher} critic_runner.py revision-plan {quoted_run}",
+                "revision-plan",
+                f"运行：{launcher} critic_runner.py resume {quoted_run}",
                 verification,
             )
-        return (
+        return RunOverview(
+            run_dir,
             f"已完成 {decided}/{total}",
             protocol,
             source,
+            "complete",
             "查看 revision-plan.md；需要复议时运行："
             f"{launcher} critic_runner.py adjudicate {quoted_run} --review-all",
             verification,
         )
     if status == "collected":
-        return "报告已回收", protocol, source, "查看 report.md", verification
+        return RunOverview(
+            run_dir,
+            "报告已回收",
+            protocol,
+            source,
+            "complete",
+            "查看 report.md",
+            verification,
+        )
     if status == "succeeded":
-        return "自动执行完成", protocol, source, "查看 report.md", verification
+        return RunOverview(
+            run_dir,
+            "自动执行完成",
+            protocol,
+            source,
+            "complete",
+            "查看 report.md",
+            verification,
+        )
     if status == "running":
-        return "执行中或意外中断", protocol, source, "检查执行进程；必要时运行 verify-run", verification
-    return f"执行未完成：{status}", protocol, source, "查看 manifest.json 和 stderr.log", verification
+        return RunOverview(
+            run_dir,
+            "执行中或意外中断",
+            protocol,
+            source,
+            "inspect",
+            "检查执行进程；必要时运行 verify-run",
+            verification,
+        )
+    return RunOverview(
+        run_dir,
+        f"执行未完成：{status}",
+        protocol,
+        source,
+        "inspect",
+        "查看 manifest.json 和 stderr.log",
+        verification,
+    )
+
+
+def _invalid_symlink_overview(run_dir: Path) -> RunOverview:
+    return RunOverview(
+        run_dir,
+        "归档损坏",
+        "—",
+        "—",
+        "invalid",
+        "符号链接不会被跟随；请检查此目录",
+        VerificationResult(False, ("run directory must not be a symbolic link",), ()),
+    )
+
+
+def _list_run_dirs(raw_runs_root: Path) -> list[Path]:
+    if raw_runs_root.is_symlink():
+        raise ValueError("runs directory must not be a symbolic link")
+    runs_root = raw_runs_root.resolve()
+    if not runs_root.exists():
+        return []
+    if not runs_root.is_dir():
+        raise ValueError("runs path is not a directory")
+    return sorted(
+        (
+            entry
+            for entry in runs_root.iterdir()
+            if entry.is_dir() or entry.is_symlink()
+        ),
+        key=lambda entry: entry.name,
+        reverse=True,
+    )
+
+
+def _safe_run_overview(run_dir: Path) -> RunOverview:
+    if run_dir.is_symlink():
+        return _invalid_symlink_overview(run_dir)
+    try:
+        return _run_overview(run_dir)
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        DuplicateJsonKeyError,
+    ) as exc:
+        return RunOverview(
+            run_dir,
+            "归档损坏",
+            "—",
+            "—",
+            "invalid",
+            f"无法读取：{exc}",
+            VerificationResult(False, (str(exc),), ()),
+        )
 
 
 def status_command(args: argparse.Namespace) -> int:
@@ -2852,68 +2973,155 @@ def status_command(args: argparse.Namespace) -> int:
         run_dirs = [raw_run.resolve()]
         detailed = True
     else:
-        runs_root = Path(getattr(args, "runs_dir", ".critic-runs")).resolve()
-        if runs_root.is_symlink():
-            print("status error: runs directory must not be a symbolic link", file=sys.stderr)
+        try:
+            run_dirs = _list_run_dirs(
+                Path(getattr(args, "runs_dir", ".critic-runs"))
+            )
+        except ValueError as exc:
+            print(f"status error: {exc}", file=sys.stderr)
             return EXIT_INVALID_WORKFLOW
-        if not runs_root.exists():
-            print("还没有运行记录。先运行 quickstart 创建第一次审查。")
-            return 0
-        if not runs_root.is_dir():
-            print("status error: runs path is not a directory", file=sys.stderr)
-            return EXIT_INVALID_WORKFLOW
-        run_dirs = sorted(
-            (
-                entry
-                for entry in runs_root.iterdir()
-                if entry.is_dir() or entry.is_symlink()
-            ),
-            key=lambda entry: entry.name,
-            reverse=True,
-        )
         detailed = False
         if not run_dirs:
             print("还没有运行记录。先运行 quickstart 创建第一次审查。")
             return 0
 
     for index, run_dir in enumerate(run_dirs, start=1):
-        if run_dir.is_symlink():
-            stage, protocol, source, next_action = (
-                "归档损坏",
-                "—",
-                "—",
-                "符号链接不会被跟随；请检查此目录",
-            )
-            verification = VerificationResult(
-                False, ("run directory must not be a symbolic link",), ()
-            )
-        else:
-            try:
-                stage, protocol, source, next_action, verification = _run_status(run_dir)
-            except (
-                OSError,
-                UnicodeDecodeError,
-                json.JSONDecodeError,
-                DuplicateJsonKeyError,
-            ) as exc:
-                stage, protocol, source, next_action = (
-                    "归档损坏",
-                    "—",
-                    "—",
-                    f"无法读取：{exc}",
-                )
-                verification = VerificationResult(False, (str(exc),), ())
-        print(f"[{index}] {stage}｜{protocol}｜{source}")
-        print(f"    目录：{run_dir}")
-        print(f"    下一步：{next_action}")
-        if detailed and not verification.valid:
-            for error in verification.errors:
+        overview = _safe_run_overview(run_dir)
+        print(f"[{index}] {overview.stage}｜{overview.protocol}｜{overview.source}")
+        print(f"    目录：{overview.run_dir}")
+        print(f"    下一步：{overview.next_action}")
+        if detailed and not overview.verification.valid:
+            for error in overview.verification.errors:
                 print(f"    问题：{error}")
     if not detailed:
         print(f"\n共 {len(run_dirs)} 次运行；最新记录显示在最前。")
-    if detailed and not verification.valid:
+    if detailed and not overview.verification.valid:
         return EXIT_INVALID_ARCHIVE
     return 0
+
+
+def resume_command(args: argparse.Namespace) -> int:
+    requested_run = getattr(args, "run_dir", None)
+    if requested_run:
+        raw_run = Path(requested_run)
+        overview = _safe_run_overview(
+            raw_run if raw_run.is_symlink() else raw_run.resolve()
+        )
+        actionable_count = 1 if overview.action in {
+            "import-report",
+            "adjudicate",
+            "revision-plan",
+        } else 0
+    else:
+        try:
+            run_dirs = _list_run_dirs(
+                Path(getattr(args, "runs_dir", ".critic-runs"))
+            )
+        except ValueError as exc:
+            print(f"resume error: {exc}", file=sys.stderr)
+            return EXIT_INVALID_WORKFLOW
+        if not run_dirs:
+            print("还没有运行记录。请先运行 quickstart 创建第一次审查。")
+            return 0
+        overviews = [_safe_run_overview(run_dir) for run_dir in run_dirs]
+        damaged = [item for item in overviews if item.action == "invalid"]
+        actionable = [
+            item
+            for item in overviews
+            if item.action in {"import-report", "adjudicate", "revision-plan"}
+        ]
+        if not actionable:
+            if damaged:
+                print("没有可安全继续的运行，但发现损坏归档：", file=sys.stderr)
+                for item in damaged:
+                    print(f"- {item.run_dir}: {item.next_action}", file=sys.stderr)
+                return EXIT_INVALID_ARCHIVE
+            latest = overviews[0]
+            if latest.action == "complete":
+                print("没有待继续的运行。最新一次审查已经结束：")
+            else:
+                print("没有可自动继续的运行。最新记录需要人工检查：")
+            print(f"{latest.stage}｜{latest.protocol}｜{latest.source}")
+            print(latest.run_dir)
+            print(latest.next_action)
+            return 0
+        overview = actionable[0]
+        actionable_count = len(actionable)
+        if damaged:
+            print(
+                f"警告：另有 {len(damaged)} 个损坏归档未处理；可用 status 查看。",
+                file=sys.stderr,
+            )
+
+    if not overview.verification.valid:
+        for error in overview.verification.errors:
+            print(f"resume archive error: {error}", file=sys.stderr)
+        return EXIT_INVALID_ARCHIVE
+    if overview.action not in {"import-report", "adjudicate", "revision-plan"}:
+        if getattr(args, "report", None):
+            print(
+                "resume error: --report can only be used with a prepared run",
+                file=sys.stderr,
+            )
+            return EXIT_INVALID_WORKFLOW
+        print(f"这次运行当前不需要继续：{overview.stage}")
+        print(overview.next_action)
+        return 0
+
+    print(f"继续处理：{overview.source}｜{overview.protocol}｜{overview.stage}")
+    print(f"运行目录：{overview.run_dir}")
+    if actionable_count > 1:
+        print(
+            f"另有 {actionable_count - 1} 次待办；本次自动选择最新的一次。"
+            "如需指定，请使用 resume <运行目录>。"
+        )
+
+    if overview.action == "import-report":
+        report = getattr(args, "report", None)
+        if report is None:
+            try:
+                report = input("请粘贴已保存的 AI 报告路径：")
+            except EOFError:
+                print("\n错误：没有收到报告路径。", file=sys.stderr)
+                return 2
+            except KeyboardInterrupt:
+                print("\n已取消。", file=sys.stderr)
+                return EXIT_INTERRUPTED
+        report = _unquote_path(str(report))
+        if not report:
+            print("错误：报告路径不能为空。", file=sys.stderr)
+            return 2
+        report = str(Path(report).expanduser())
+        result = import_report_command(
+            argparse.Namespace(
+                run_dir=str(overview.run_dir),
+                report=report,
+                adjudication_output=None,
+            )
+        )
+        if result != 0:
+            return result
+        if overview.protocol not in CRITIC_PROTOCOLS:
+            print("报告已安全回收；该协议不需要人工裁决。")
+            return 0
+        return adjudicate_command(
+            argparse.Namespace(run_dir=str(overview.run_dir), review_all=False)
+        )
+    if getattr(args, "report", None):
+        print(
+            "resume error: --report can only be used with a prepared run",
+            file=sys.stderr,
+        )
+        return EXIT_INVALID_WORKFLOW
+    if overview.action == "adjudicate":
+        return adjudicate_command(
+            argparse.Namespace(run_dir=str(overview.run_dir), review_all=False)
+        )
+    return revision_plan_command(
+        argparse.Namespace(
+            run_dir=str(overview.run_dir), adjudication=None, output=None
+        )
+    )
 
 
 def verify_campaign_command(args: argparse.Namespace) -> int:
@@ -3096,10 +3304,9 @@ def quickstart(args: argparse.Namespace) -> int:
     prompt_path = run_dir / "prompt.md"
     print(prompt_path)
     print("完成。打开上面显示的 prompt.md，复制全部内容给你常用的 AI。")
-    print("把 AI 回答保存为 report-returned.md 后，继续运行：")
+    print("把 AI 回答保存为 report-returned.md 后，只需运行：")
     launcher = _python_launcher()
-    print(f'{launcher} critic_runner.py import-report "{run_dir}" report-returned.md')
-    print(f'{launcher} critic_runner.py adjudicate "{run_dir}"')
+    print(f"{launcher} critic_runner.py resume")
     return 0
 
 
@@ -3320,6 +3527,23 @@ def parser() -> argparse.ArgumentParser:
         help="未指定 run_dir 时扫描的归档目录（默认：.critic-runs）",
     )
     status_parser.set_defaults(func=status_command)
+
+    resume_parser = sub.add_parser(
+        "resume", help="中文一键继续最新待办：回收报告、裁决或生成修改计划"
+    )
+    resume_parser.add_argument(
+        "run_dir", nargs="?", help="可选；指定要继续的运行目录"
+    )
+    resume_parser.add_argument(
+        "--runs-dir",
+        default=".critic-runs",
+        help="未指定 run_dir 时扫描的归档目录（默认：.critic-runs）",
+    )
+    resume_parser.add_argument(
+        "--report",
+        help="prepared 运行的 AI 报告路径；省略时使用中文交互询问",
+    )
+    resume_parser.set_defaults(func=resume_command)
 
     verify_campaign_parser = sub.add_parser(
         "verify-campaign", help="verify a campaign and every archived run"

@@ -260,8 +260,7 @@ class CriticRunnerTests(unittest.TestCase):
             self.assertEqual(errors.getvalue(), "")
             self.assertIn("无法识别", output.getvalue())
             self.assertIn("已选择：工科·工程学", output.getvalue())
-            self.assertIn("import-report", output.getvalue())
-            self.assertIn("adjudicate", output.getvalue())
+            self.assertIn("critic_runner.py resume", output.getvalue())
             run_dir = next((root / "runs").iterdir())
             manifest = json.loads(
                 (run_dir / "manifest.json").read_text(encoding="utf-8")
@@ -768,7 +767,7 @@ class CriticRunnerTests(unittest.TestCase):
                     0,
                 )
             self.assertIn("等待 AI 报告", output.getvalue())
-            self.assertIn("import-report", output.getvalue())
+            self.assertIn("critic_runner.py resume", output.getvalue())
 
             report = root / "report.md"
             report.write_text(VALID_REPORT, encoding="utf-8")
@@ -789,7 +788,7 @@ class CriticRunnerTests(unittest.TestCase):
                     0,
                 )
             self.assertIn("人工裁决 0/1", output.getvalue())
-            self.assertIn("adjudicate", output.getvalue())
+            self.assertIn("critic_runner.py resume", output.getvalue())
 
             with patch("builtins.input", side_effect=["1", "", "补写推导"]):
                 with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
@@ -806,6 +805,195 @@ class CriticRunnerTests(unittest.TestCase):
                 )
             self.assertIn("已完成 1/1", output.getvalue())
             self.assertIn("--review-all", output.getvalue())
+
+    def test_resume_completes_manual_workflow_with_one_command(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = self._args(root=root, protocol="critic-social-science")
+            with redirect_stdout(io.StringIO()):
+                critic_runner.prepare(args)
+            run_dir = next((root / "runs").iterdir())
+            report = root / "AI 返回.md"
+            report.write_text(VALID_REPORT, encoding="utf-8")
+
+            output = io.StringIO()
+            with patch(
+                "builtins.input",
+                side_effect=[f'"{report}"', "1", "", "补写因果链"],
+            ):
+                with redirect_stdout(output), redirect_stderr(io.StringIO()):
+                    result = critic_runner.resume_command(
+                        argparse.Namespace(
+                            run_dir=None,
+                            runs_dir=str(root / "runs"),
+                            report=None,
+                        )
+                    )
+            self.assertEqual(result, 0)
+            self.assertIn("继续处理：稿件.md", output.getvalue())
+            self.assertIn("裁决完成", output.getvalue())
+            self.assertIn(
+                "补写因果链",
+                (run_dir / "revision-plan.md").read_text(encoding="utf-8"),
+            )
+            self.assertTrue(critic_runner.verify_run_dir(run_dir).valid)
+
+            (run_dir / "revision-plan.md").unlink()
+            with patch("builtins.input") as prompt:
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    self.assertEqual(
+                        critic_runner.resume_command(
+                            argparse.Namespace(
+                                run_dir=None,
+                                runs_dir=str(root / "runs"),
+                                report=None,
+                            )
+                        ),
+                        0,
+                    )
+            prompt.assert_not_called()
+            self.assertTrue((run_dir / "revision-plan.md").is_file())
+
+            output = io.StringIO()
+            with patch("builtins.input") as prompt:
+                with redirect_stdout(output), redirect_stderr(io.StringIO()):
+                    self.assertEqual(
+                        critic_runner.resume_command(
+                            argparse.Namespace(
+                                run_dir=None,
+                                runs_dir=str(root / "runs"),
+                                report=None,
+                            )
+                        ),
+                        0,
+                    )
+            prompt.assert_not_called()
+            self.assertIn("没有待继续的运行", output.getvalue())
+
+    def test_resume_selects_latest_of_multiple_pending_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = self._args(root=root)
+            with redirect_stdout(io.StringIO()):
+                critic_runner.prepare(args)
+                critic_runner.prepare(args)
+            run_dirs = sorted((root / "runs").iterdir(), key=lambda path: path.name)
+            older, newer = run_dirs
+            report = root / "report.md"
+            report.write_text(VALID_REPORT, encoding="utf-8")
+
+            output = io.StringIO()
+            with patch("builtins.input", side_effect=["2", "该批评误读原文"]):
+                with redirect_stdout(output), redirect_stderr(io.StringIO()):
+                    result = critic_runner.resume_command(
+                        argparse.Namespace(
+                            run_dir=None,
+                            runs_dir=str(root / "runs"),
+                            report=str(report),
+                        )
+                    )
+            self.assertEqual(result, 0)
+            self.assertIn("另有 1 次待办", output.getvalue())
+            self.assertFalse((older / "report.md").exists())
+            self.assertTrue((newer / "revision-plan.md").exists())
+            older_manifest = json.loads(
+                (older / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(older_manifest["status"], "prepared")
+
+    def test_resume_collects_citation_report_without_fake_adjudication(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = self._args(root=root, protocol="citation-auditor")
+            with redirect_stdout(io.StringIO()):
+                critic_runner.prepare(args)
+            run_dir = next((root / "runs").iterdir())
+            report = root / "citation.md"
+            report.write_text(VALID_CITATION_REPORT, encoding="utf-8")
+            output = io.StringIO()
+            with patch("builtins.input") as prompt:
+                with redirect_stdout(output), redirect_stderr(io.StringIO()):
+                    result = critic_runner.resume_command(
+                        argparse.Namespace(
+                            run_dir=str(run_dir),
+                            runs_dir=None,
+                            report=str(report),
+                        )
+                    )
+            self.assertEqual(result, 0)
+            prompt.assert_not_called()
+            self.assertIn("不需要人工裁决", output.getvalue())
+            self.assertTrue((run_dir / "report.md").exists())
+            self.assertFalse((run_dir / "adjudication.json").exists())
+            self.assertTrue(critic_runner.verify_run_dir(run_dir).valid)
+
+    def test_resume_cli_accepts_piped_chinese_decisions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = self._args(root=root, protocol="critic-social-science")
+            with redirect_stdout(io.StringIO()):
+                critic_runner.prepare(args)
+            run_dir = next((root / "runs").iterdir())
+            report = root / "returned report.md"
+            report.write_text(VALID_REPORT, encoding="utf-8")
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "critic_runner.py"),
+                    "resume",
+                    "--runs-dir",
+                    str(root / "runs"),
+                    "--report",
+                    str(report),
+                ],
+                cwd=root,
+                input="3\n需要更多材料\n补做材料核对\n",
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("继续处理", completed.stdout)
+            self.assertIn("裁决完成", completed.stdout)
+            self.assertIn(
+                "需要更多材料",
+                (run_dir / "revision-plan.md").read_text(encoding="utf-8"),
+            )
+
+    def test_resume_handles_empty_and_only_damaged_run_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = io.StringIO()
+            with redirect_stdout(output), redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    critic_runner.resume_command(
+                        argparse.Namespace(
+                            run_dir=None,
+                            runs_dir=str(root / "missing-runs"),
+                            report=None,
+                        )
+                    ),
+                    0,
+                )
+            self.assertIn("先运行 quickstart", output.getvalue())
+
+            damaged = root / "runs" / "broken"
+            damaged.mkdir(parents=True)
+            errors = io.StringIO()
+            with redirect_stdout(io.StringIO()), redirect_stderr(errors):
+                self.assertEqual(
+                    critic_runner.resume_command(
+                        argparse.Namespace(
+                            run_dir=None,
+                            runs_dir=str(root / "runs"),
+                            report=None,
+                        )
+                    ),
+                    critic_runner.EXIT_INVALID_ARCHIVE,
+                )
+            self.assertIn("损坏归档", errors.getvalue())
 
     def test_import_report_supports_citation_runs_without_fake_findings(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -49,3 +49,4 @@ jobs:
           python critic_runner.py adjudicate --help
           python critic_runner.py revision-plan --help
           python critic_runner.py status --help
+          python critic_runner.py resume --help

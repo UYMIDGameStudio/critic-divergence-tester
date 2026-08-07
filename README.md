@@ -107,21 +107,21 @@ python3 critic_runner.py prepare-track humanities-social-science draft.md
 
 打开刚生成的 `prompt.md`，复制全部内容，粘贴到你常用的 AI 对话里。AI 返回的六节报告就是审查结果。
 
-把完整回答保存为 UTF-8 文件，例如 `report-returned.md`，放在项目文件夹。`quickstart` 已经在终端末尾打印了两条带真实运行路径的后续命令，直接复制即可。它们类似：
+把完整回答保存为 UTF-8 文件，例如 `report-returned.md`，放在项目文件夹。以后只要运行同一条“继续”命令：
 
 ```powershell
 # Windows
-py -3 critic_runner.py import-report ".critic-runs/<run-directory>" report-returned.md
-py -3 critic_runner.py adjudicate ".critic-runs/<run-directory>"
+py -3 critic_runner.py resume
 ```
 
 ```bash
 # macOS / Linux
-python3 critic_runner.py import-report ".critic-runs/<run-directory>" report-returned.md
-python3 critic_runner.py adjudicate ".critic-runs/<run-directory>"
+python3 critic_runner.py resume
 ```
 
-第一条命令会先验证报告；无效报告不会写入归档。验证通过后，它会：
+程序会自动找到最新的待办审查，显示文章名和学术协议，然后询问 AI 报告的文件路径。路径可以直接拖进终端；带空格或双引号也能识别。如果同时有多次待办，它会明确告诉你本次选择了最新一次；要继续指定运行，可以写 `resume ".critic-runs/<run-directory>"`。
+
+`resume` 会根据真实归档状态自动完成下一步：等待报告时回收报告，裁决未完成时接着裁决，裁决已完成但计划缺失时生成计划。可以随时退出，下次仍运行同一条命令。回收报告时会先验证；无效报告不会写入归档。验证通过后，它会：
 
 - 原样保存 `report.md` 并记录 SHA-256；
 - 把运行状态从 `prepared` 更新为 `collected`；
@@ -129,7 +129,7 @@ python3 critic_runner.py adjudicate ".critic-runs/<run-directory>"
 - 把 `STATUS` 与 `UNVERIFIED` 一并带入裁决和修改计划；
 - 把报告、manifest 和裁决文件互相绑定，防止张冠李戴。
 
-第二条命令用中文逐条显示批评，让你选择“接受、拒绝、暂缓”。接受必须写具体修改动作，拒绝或暂缓必须留下理由；每裁决一条就立即保存。全部完成后自动生成带裁决文件哈希的修改计划；工具会重新推导并逐字核对已有计划，发现裁决变化或计划被手改时拒绝把旧文件当成当前结果：
+随后程序用中文逐条显示批评，让你选择“接受、拒绝、暂缓”。接受必须写具体修改动作，拒绝或暂缓必须留下理由；每裁决一条就立即保存。全部完成后自动生成带裁决文件哈希的修改计划；工具会重新推导并逐字核对已有计划，发现裁决变化或计划被手改时拒绝把旧文件当成当前结果：
 
 ```text
 .critic-runs/<run-directory>/revision-plan.md
@@ -150,7 +150,7 @@ py -3 critic_runner.py status
 python3 critic_runner.py status
 ```
 
-它会把最新记录放在最前，显示文章名、协议、当前进度和一条可以直接复制的“下一步”命令。只看某一次运行时，在后面加运行目录即可，例如 `py -3 critic_runner.py status ".critic-runs/<run-directory>"`。
+它会把最新记录放在最前，显示文章名、协议、当前进度和一条可以直接复制的“下一步”命令。只看某一次运行时，在后面加运行目录即可，例如 `py -3 critic_runner.py status ".critic-runs/<run-directory>"`。熟悉命令行的用户仍可直接使用底层的 `import-report`、`adjudicate` 和 `revision-plan`；日常使用不需要记住它们。
 
 如果计划生成后改变了判断，不要手改 `adjudication.json`。使用显式复议模式：
 
@@ -205,6 +205,7 @@ python3 critic_runner.py validate critic-social-science report.md
 | `doctor` 显示 `[error]` | 按错误行修复；最常见原因是 Python 版本太旧、下载不完整或当前文件夹不可写 |
 | `import-report` / `validate` 返回很多错误 | 把错误信息交给 AI，让它严格按原提示中的六节格式重新输出；无效报告不会污染归档 |
 | `adjudicate` 中途退出 | 已完成的条目已经保存；再次运行同一命令会跳过它们并继续 |
+| 忘了下一步该运行什么 | 始终运行 `resume`；它会根据归档状态自动判断 |
 | 运行太多，不知道该继续哪一个 | 运行 `python3 critic_runner.py status`；Windows 使用 `py -3` |
 | 已完成后想改变某条裁决 | 运行 `adjudicate <运行目录> --review-all`；旧修改计划会自动留档 |
 | 不知道选哪条线 | 文科与社会研究选 `humanities-social-science`；自然规律与实验选 `natural-science`；产品、系统与实现选 `engineering` |
