@@ -146,6 +146,8 @@ EXIT_INVALID_SCORECARD = 6
 EXIT_CAMPAIGN_FAILED = 7
 EXIT_INVALID_WORKFLOW = 8
 DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024 * 1024
+PASTE_END_MARKER = "::END::"
+COLLECTION_METHODS = {"manual-import", "terminal-paste"}
 
 
 
@@ -1081,8 +1083,11 @@ def verify_run_dir(run_dir: Path, source_path: Path | None = None) -> Verificati
             else:
                 if set(collection) != {"method", "imported_at", "source_name"}:
                     errors.append("collection metadata has unexpected fields")
-                if collection.get("method") != "manual-import":
-                    errors.append("collection.method must be manual-import")
+                collection_method = collection.get("method")
+                if collection_method not in COLLECTION_METHODS:
+                    errors.append(
+                        "collection.method must be manual-import or terminal-paste"
+                    )
                 imported_at = _parse_timestamp(collection.get("imported_at"))
                 if imported_at is None:
                     errors.append("collection.imported_at must be timezone-aware ISO-8601")
@@ -1101,6 +1106,13 @@ def verify_run_dir(run_dir: Path, source_path: Path | None = None) -> Verificati
                     )
                 ):
                     errors.append("collection.source_name must be a basename")
+                elif (
+                    collection_method == "terminal-paste"
+                    and report_source_name != "pasted-report.md"
+                ):
+                    errors.append(
+                        "terminal-paste collection.source_name must be pasted-report.md"
+                    )
         elif collection is not None:
             errors.append("non-collected manifest must have collection=null")
     elif status == "collected":
@@ -2279,6 +2291,25 @@ def import_report_command(args: argparse.Namespace) -> int:
         if getattr(args, "adjudication_output", None)
         else run_dir / "adjudication.json"
     )
+    collection_method = getattr(args, "collection_method", "manual-import")
+    collection_source_name = getattr(args, "collection_source_name", report_path.name)
+
+    if collection_method not in COLLECTION_METHODS:
+        print("import report error: unknown collection method", file=sys.stderr)
+        return EXIT_INVALID_WORKFLOW
+    if collection_method == "terminal-paste":
+        if collection_source_name != "pasted-report.md":
+            print(
+                "import report error: terminal paste must use pasted-report.md",
+                file=sys.stderr,
+            )
+            return EXIT_INVALID_WORKFLOW
+    elif collection_source_name != report_path.name:
+        print(
+            "import report error: imported source name must match the report file",
+            file=sys.stderr,
+        )
+        return EXIT_INVALID_WORKFLOW
 
     if raw_run_dir.is_symlink() or raw_report_path.is_symlink():
         print(
@@ -2370,9 +2401,9 @@ def import_report_command(args: argparse.Namespace) -> int:
             "runner_exit_code": 0,
             "report_validation": validation.as_dict(),
             "collection": {
-                "method": "manual-import",
+                "method": collection_method,
                 "imported_at": imported_at,
-                "source_name": report_path.name,
+                "source_name": collection_source_name,
             },
         }
     )
@@ -2821,8 +2852,7 @@ def _run_overview(run_dir: Path) -> RunOverview:
             protocol,
             source,
             "import-report",
-            f"保存 AI 回答后运行：{launcher} critic_runner.py resume {quoted_run} "
-            "--report report-returned.md",
+            f"直接粘贴 AI 回答：{launcher} critic_runner.py resume {quoted_run} --paste",
             verification,
         )
     if status == "collected" and protocol in CRITIC_PROTOCOLS:
@@ -3000,7 +3030,45 @@ def status_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def read_pasted_report_bytes() -> bytes:
+    print("请从下一行开始粘贴完整 AI 回答。")
+    print(f"粘贴结束后，另起一行只输入 {PASTE_END_MARKER} 并回车。")
+    lines: list[str] = []
+    total_bytes = 0
+    too_large = False
+    while True:
+        try:
+            line = input()
+        except EOFError as exc:
+            raise ValueError(
+                f"输入在结束标记 {PASTE_END_MARKER} 之前结束；报告未导入"
+            ) from exc
+        if line.strip() == PASTE_END_MARKER:
+            break
+        try:
+            line_size = len((line + "\n").encode("utf-8"))
+        except UnicodeEncodeError as exc:
+            raise ValueError(f"粘贴内容无法编码为 UTF-8：{exc}") from exc
+        total_bytes += line_size
+        if total_bytes > DEFAULT_MAX_OUTPUT_BYTES:
+            too_large = True
+            continue
+        lines.append(line)
+    if too_large:
+        raise ValueError(
+            f"粘贴报告超过 {DEFAULT_MAX_OUTPUT_BYTES} 字节；报告未导入"
+        )
+    if not any(line.strip() for line in lines):
+        raise ValueError("粘贴报告不能为空")
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
 def resume_command(args: argparse.Namespace) -> int:
+    pasted_input = bool(getattr(args, "paste", False))
+    report_argument = getattr(args, "report", None)
+    if pasted_input and report_argument:
+        print("resume error: --paste and --report cannot be combined", file=sys.stderr)
+        return EXIT_INVALID_WORKFLOW
     requested_run = getattr(args, "run_dir", None)
     if requested_run:
         raw_run = Path(requested_run)
@@ -3058,9 +3126,9 @@ def resume_command(args: argparse.Namespace) -> int:
             print(f"resume archive error: {error}", file=sys.stderr)
         return EXIT_INVALID_ARCHIVE
     if overview.action not in {"import-report", "adjudicate", "revision-plan"}:
-        if getattr(args, "report", None):
+        if report_argument or pasted_input:
             print(
-                "resume error: --report can only be used with a prepared run",
+                "resume error: --report/--paste can only be used with a prepared run",
                 file=sys.stderr,
             )
             return EXIT_INVALID_WORKFLOW
@@ -3077,28 +3145,54 @@ def resume_command(args: argparse.Namespace) -> int:
         )
 
     if overview.action == "import-report":
-        report = getattr(args, "report", None)
-        if report is None:
+        if pasted_input:
             try:
-                report = input("请粘贴已保存的 AI 报告路径：")
-            except EOFError:
-                print("\n错误：没有收到报告路径。", file=sys.stderr)
-                return 2
+                pasted_report = read_pasted_report_bytes()
+            except ValueError as exc:
+                print(f"错误：{exc}", file=sys.stderr)
+                return EXIT_INVALID_REPORT
             except KeyboardInterrupt:
                 print("\n已取消。", file=sys.stderr)
                 return EXIT_INTERRUPTED
-        report = _unquote_path(str(report))
-        if not report:
-            print("错误：报告路径不能为空。", file=sys.stderr)
-            return 2
-        report = str(Path(report).expanduser())
-        result = import_report_command(
-            argparse.Namespace(
-                run_dir=str(overview.run_dir),
-                report=report,
-                adjudication_output=None,
+            try:
+                with tempfile.TemporaryDirectory(prefix="critic-paste-") as temp_dir:
+                    report_path = Path(temp_dir) / "pasted-report.md"
+                    atomic_write_bytes(report_path, pasted_report)
+                    result = import_report_command(
+                        argparse.Namespace(
+                            run_dir=str(overview.run_dir),
+                            report=str(report_path),
+                            adjudication_output=None,
+                            collection_method="terminal-paste",
+                            collection_source_name="pasted-report.md",
+                        )
+                    )
+            except OSError as exc:
+                print(f"resume paste error: {exc}", file=sys.stderr)
+                return EXIT_INVALID_WORKFLOW
+        else:
+            report = report_argument
+            if report is None:
+                try:
+                    report = input("请粘贴已保存的 AI 报告路径：")
+                except EOFError:
+                    print("\n错误：没有收到报告路径。", file=sys.stderr)
+                    return 2
+                except KeyboardInterrupt:
+                    print("\n已取消。", file=sys.stderr)
+                    return EXIT_INTERRUPTED
+            report = _unquote_path(str(report))
+            if not report:
+                print("错误：报告路径不能为空。", file=sys.stderr)
+                return 2
+            report = str(Path(report).expanduser())
+            result = import_report_command(
+                argparse.Namespace(
+                    run_dir=str(overview.run_dir),
+                    report=report,
+                    adjudication_output=None,
+                )
             )
-        )
         if result != 0:
             return result
         if overview.protocol not in CRITIC_PROTOCOLS:
@@ -3107,9 +3201,9 @@ def resume_command(args: argparse.Namespace) -> int:
         return adjudicate_command(
             argparse.Namespace(run_dir=str(overview.run_dir), review_all=False)
         )
-    if getattr(args, "report", None):
+    if report_argument or pasted_input:
         print(
-            "resume error: --report can only be used with a prepared run",
+            "resume error: --report/--paste can only be used with a prepared run",
             file=sys.stderr,
         )
         return EXIT_INVALID_WORKFLOW
@@ -3304,9 +3398,9 @@ def quickstart(args: argparse.Namespace) -> int:
     prompt_path = run_dir / "prompt.md"
     print(prompt_path)
     print("完成。打开上面显示的 prompt.md，复制全部内容给你常用的 AI。")
-    print("把 AI 回答保存为 report-returned.md 后，只需运行：")
+    print("AI 回答完成后，只需运行下面命令并直接粘贴回答：")
     launcher = _python_launcher()
-    print(f"{launcher} critic_runner.py resume")
+    print(f"{launcher} critic_runner.py resume --paste")
     return 0
 
 
@@ -3539,9 +3633,15 @@ def parser() -> argparse.ArgumentParser:
         default=".critic-runs",
         help="未指定 run_dir 时扫描的归档目录（默认：.critic-runs）",
     )
-    resume_parser.add_argument(
+    resume_input = resume_parser.add_mutually_exclusive_group()
+    resume_input.add_argument(
         "--report",
         help="prepared 运行的 AI 报告路径；省略时使用中文交互询问",
+    )
+    resume_input.add_argument(
+        "--paste",
+        action="store_true",
+        help=f"直接粘贴 AI 回答，并以单独一行 {PASTE_END_MARKER} 结束",
     )
     resume_parser.set_defaults(func=resume_command)
 

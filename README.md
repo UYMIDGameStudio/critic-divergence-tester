@@ -107,19 +107,23 @@ python3 critic_runner.py prepare-track humanities-social-science draft.md
 
 打开刚生成的 `prompt.md`，复制全部内容，粘贴到你常用的 AI 对话里。AI 返回的六节报告就是审查结果。
 
-把完整回答保存为 UTF-8 文件，例如 `report-returned.md`，放在项目文件夹。以后只要运行同一条“继续”命令：
+不用先创建报告文件。AI 回答完成后，运行“继续并粘贴”命令：
 
 ```powershell
 # Windows
-py -3 critic_runner.py resume
+py -3 critic_runner.py resume --paste
 ```
 
 ```bash
 # macOS / Linux
-python3 critic_runner.py resume
+python3 critic_runner.py resume --paste
 ```
 
-程序会自动找到最新的待办审查，显示文章名和学术协议，然后询问 AI 报告的文件路径。路径可以直接拖进终端；带空格或双引号也能识别。如果同时有多次待办，它会明确告诉你本次选择了最新一次；要继续指定运行，可以写 `resume ".critic-runs/<run-directory>"`。
+程序会自动找到最新的待办审查并显示文章名和学术协议。把 AI 的完整回答粘贴进去；粘贴完成后另起一行，只输入 `::END::` 并回车。程序只有看到这条结束标记后才开始处理，因此回答里的普通空行不会提前结束输入。
+
+如果同时有多次待办，它会明确告诉你本次选择了最新一次；要继续指定运行，可以写 `resume ".critic-runs/<run-directory>" --paste`。
+
+喜欢先保存文件也可以：把回答保存为 UTF-8 的 `report-returned.md`，然后运行 `resume --report report-returned.md`。直接运行不带选项的 `resume` 时，程序也会询问报告文件路径。文件模式保留文件中的精确原始字节；粘贴模式保存终端实际收到并统一为 UTF-8、换行结尾的内容，manifest 会明确记录 `terminal-paste`，不会伪装成文件导入。
 
 `resume` 会根据真实归档状态自动完成下一步：等待报告时回收报告，裁决未完成时接着裁决，裁决已完成但计划缺失时生成计划。可以随时退出，下次仍运行同一条命令。回收报告时会先验证；无效报告不会写入归档。验证通过后，它会：
 
@@ -206,6 +210,7 @@ python3 critic_runner.py validate critic-social-science report.md
 | `import-report` / `validate` 返回很多错误 | 把错误信息交给 AI，让它严格按原提示中的六节格式重新输出；无效报告不会污染归档 |
 | `adjudicate` 中途退出 | 已完成的条目已经保存；再次运行同一命令会跳过它们并继续 |
 | 忘了下一步该运行什么 | 始终运行 `resume`；它会根据归档状态自动判断 |
+| 不会把 AI 回答另存为 UTF-8 文件 | 使用 `resume --paste`，粘贴后单独输入一行 `::END::` |
 | 运行太多，不知道该继续哪一个 | 运行 `python3 critic_runner.py status`；Windows 使用 `py -3` |
 | 已完成后想改变某条裁决 | 运行 `adjudicate <运行目录> --review-all`；旧修改计划会自动留档 |
 | 不知道选哪条线 | 文科与社会研究选 `humanities-social-science`；自然规律与实验选 `natural-science`；产品、系统与实现选 `engineering` |
@@ -410,7 +415,7 @@ python critic_runner.py verify-run .critic-runs/<run-directory> --source path/to
 
 ```text
 prompt.md       本次真正送给模型的完整提示词
-report.md       模型输出（run 或 import-report）
+report.md       模型输出（run、文件导入或终端粘贴）
 manifest.json   精确字节 SHA-256、生命周期、校验结果与执行信息
 adjudication.json  从报告提取的发现、来源绑定和人工裁决（critic 手动流程）
 revision-plan.md   只根据完成的人类裁决生成的修改计划
@@ -418,7 +423,7 @@ revision-plan.previous-<hash>.md  每次复议前自动留存的旧修改计划
 stderr.log      执行器错误输出（仅出现错误时）
 ```
 
-`.critic-runs/` 和 `.critic-campaigns/` 默认不进 Git。runner 会在启动执行器前先原子写入 prompt 和 manifest，执行完成后再原子补写 report、stderr、退出码和结构校验结果。run schema v3 增加 `collected` 手动回收状态与不含本机路径的 collection 元数据，并继续验证旧版 schema v1/v2；campaign schema v3 记录计划协议、重复次数、统一资源限制、完整运行矩阵、顺序策略、种子和实际执行次序。SHA-256 针对磁盘中的原始字节计算，不受 Windows 换行转换影响；UTF-8 BOM 可以读取但不会混进提示词。JSON 验证会拒绝重复键，避免同一字段出现两种解释。manifest 只保存稿件和返回报告的文件名，不保存本机绝对路径，也不保存执行器参数值。
+`.critic-runs/` 和 `.critic-campaigns/` 默认不进 Git。runner 会在启动执行器前先原子写入 prompt 和 manifest，执行完成后再原子补写 report、stderr、退出码和结构校验结果。run schema v3 增加 `collected` 手动回收状态，以及区分 `manual-import` / `terminal-paste`、不含本机路径的 collection 元数据，并继续验证旧版 schema v1/v2；campaign schema v3 记录计划协议、重复次数、统一资源限制、完整运行矩阵、顺序策略、种子和实际执行次序。SHA-256 针对磁盘中的原始字节计算，不受 Windows 换行转换影响；UTF-8 BOM 可以读取但不会混进提示词。JSON 验证会拒绝重复键，避免同一字段出现两种解释。manifest 只保存稿件和返回报告的文件名或粘贴来源标签，不保存本机绝对路径，也不保存执行器参数值。
 
 归档包含完整稿件、模型报告和可能回显敏感信息的 stderr。POSIX 上 runner 把运行目录设为 `0700`、文件设为 `0600`；Windows 上保密性取决于父目录的 ACL。验证器拒绝 manifest、产物和嵌套运行路径中的符号链接，避免归档通过链接逃出预期目录。不要把归档放在共享目录，密钥应通过环境变量传给执行器，并在分享归档前检查 `prompt.md`、`report.md` 与 `stderr.log`。
 
