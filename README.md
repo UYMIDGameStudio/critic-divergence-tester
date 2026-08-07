@@ -68,7 +68,7 @@ runner 不认识也不保存任何 API key，不用 shell 拼接命令，也不�
 
 `run` 一次只启动**一个**执行器进程。项目故意没有并发 fan-out；要跑第二个 critic，就在第一个结束后再运行一条命令。
 
-runner 默认给每次执行 900 秒和 16 MiB 的 stdout/stderr 合计额度；可用 `--timeout` 与 `--max-output-bytes` 调整。超时返回 124，超过输出额度返回 125。输出先流入私有临时文件，不会无界堆在内存里；最终归档只保留额度内的原始字节。非法 UTF-8 会原样留档并判为无效报告，不会被静默替换。
+runner 默认给每次执行 900 秒和 16 MiB 的 stdout/stderr 合计额度；可用 `--timeout` 与 `--max-output-bytes` 调整。超时返回 124，超过输出额度返回 125。输出先流入私有临时文件，不会无界堆在内存里；最终归档只保留额度内的原始字节。POSIX 使用独立进程组，Windows 使用启动前绑定的 kill-on-close Job Object，超时、超量或退出后会清理执行器后代。非法 UTF-8 会原样留档并判为无效报告，不会被静默替换。
 
 ### 一键校准：四次隔离运行 + 可复算计分
 
@@ -78,13 +78,28 @@ runner 默认给每次执行 900 秒和 16 MiB 的 stdout/stderr 合计额度；
 python critic_runner.py campaign path/to/old-draft.md --repeat 2 -- your-model-command arg1 arg2
 ```
 
-`campaign` 仍然严格串行运行，各次执行看不到其他报告。它会在 `.critic-campaigns/<timestamp>--campaign/` 中生成四个独立运行归档、`campaign.json`、可点击的 `SUMMARY.md` 和待填写的 `scorecard.json`。先遮掉 critic 名称，人工完成一对一语义配对，再填写每组的重合、同处异因、左右独有和模糊配对数：
+`campaign` 仍然严格串行运行，各次执行看不到其他报告。只有四次报告全部成功且结构有效时，它才会在 `.critic-campaigns/<timestamp>--campaign/` 中生成四个独立运行归档、`campaign.json`、可点击的 `SUMMARY.md` 和待填写的 schema v2 `scorecard.json`。scorecard 已从报告第一节提取每条 A 指控及其位置、指控和理由。先遮掉 critic 名称，再在六组比较的 `pairs` 中填写左右 A 编号及 `overlap`、`different_reason` 或 `ambiguous`，完成一组后把 `complete` 改为 `true`；未配对条目会自动计为左右独有。
+
+```json
+"I1:I2": {
+  "complete": true,
+  "pairs": [
+    {"left": "A1", "right": "A3", "classification": "different_reason"}
+  ]
+}
+```
 
 ```bash
 python critic_runner.py score .critic-campaigns/<campaign>/scorecard.json --format markdown --output divergence-score.md
 ```
 
-记分器自动计算每次 d 的上下界、W/B 区间及 `reject` / `advance` / `inconclusive` 判决，还会拒绝“同一报告在不同两两比较中原子指控总数不同”的自相矛盾表格。它只接管可确定的算术，不替人判断两条指控是否语义重合。单独建空表可用 `python critic_runner.py init-scorecard scorecard.json`。
+记分器会重新读取四份归档报告，核对原始字节 hash，并再次提取 claims；scorecard 中的证据清单被修改、报告被替换、路径逃出 campaign、同一条 claim 被重复配对或比较尚未明确完成时都会拒绝计分。随后它自动计算每次 d 的上下界、W/B 区间及 `reject` / `advance` / `inconclusive` 判决。它只接管可确定的算术，不替人判断两条指控是否语义重合。
+
+`python critic_runner.py init-scorecard scorecard.json` 仍可创建兼容的 schema v1 汇总计数表，用于没有 campaign 归档的旧实验；新 campaign 默认使用可追溯的逐条配对 schema v2。整个 campaign 可单独复核：
+
+```bash
+python critic_runner.py verify-campaign .critic-campaigns/<campaign> --source path/to/old-draft.md
+```
 
 ### 报告结构校验
 
@@ -119,9 +134,9 @@ manifest.json   精确字节 SHA-256、生命周期、校验结果与执行信�
 stderr.log      执行器错误输出（仅出现错误时）
 ```
 
-`.critic-runs/` 和 `.critic-campaigns/` 默认不进 Git。runner 会在启动执行器前先原子写入 prompt 和 manifest，执行完成后再原子补写 report、stderr、退出码和结构校验结果。schema v2 记录输出额度与截断状态，同时仍可验证旧版 schema v1 归档。SHA-256 针对磁盘中的原始字节计算，不受 Windows 换行转换影响；UTF-8 BOM 可以读取但不会混进提示词。manifest 只保存稿件文件名，不保存本机绝对路径，也不保存执行器参数值。
+`.critic-runs/` 和 `.critic-campaigns/` 默认不进 Git。runner 会在启动执行器前先原子写入 prompt 和 manifest，执行完成后再原子补写 report、stderr、退出码和结构校验结果。run schema v2 记录输出额度与截断状态；campaign schema v2 记录计划协议、重复次数、统一资源限制和完整运行矩阵；两者仍可验证旧版 schema v1 归档。SHA-256 针对磁盘中的原始字节计算，不受 Windows 换行转换影响；UTF-8 BOM 可以读取但不会混进提示词。JSON 验证会拒绝重复键，避免同一字段出现两种解释。manifest 只保存稿件文件名，不保存本机绝对路径，也不保存执行器参数值。
 
-归档包含完整稿件、模型报告和可能回显敏感信息的 stderr。POSIX 上 runner 把运行目录设为 `0700`、文件设为 `0600`；Windows 上保密性取决于父目录的 ACL。不要把归档放在共享目录，密钥应通过环境变量传给执行器，并在分享归档前检查 `prompt.md`、`report.md` 与 `stderr.log`。
+归档包含完整稿件、模型报告和可能回显敏感信息的 stderr。POSIX 上 runner 把运行目录设为 `0700`、文件设为 `0600`；Windows 上保密性取决于父目录的 ACL。验证器拒绝 manifest、产物和嵌套运行路径中的符号链接，避免归档通过链接逃出预期目录。不要把归档放在共享目录，密钥应通过环境变量传给执行器，并在分享归档前检查 `prompt.md`、`report.md` 与 `stderr.log`。
 
 这样以后真要做 I₁/I₂/C₁/C₂，不会再发生“跑完了但原报告没保存，无法复算 W/B”的情况，也能确认四次到底用了哪一版协议。执行器启动失败、中断或超时时，manifest 会分别记录 `start_failed`、`interrupted` 或 `timed_out`，而不会把未完成运行伪装成成功。
 

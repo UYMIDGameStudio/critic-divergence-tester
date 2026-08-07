@@ -25,8 +25,10 @@ from critic_execution import ExecutorResult, execute_with_limits
 from critic_scoring import (
     ALL_COMPARISONS,
     BETWEEN_COMPARISONS,
+    RUN_NAMES,
     WITHIN_COMPARISONS,
     ScorecardError,
+    pairing_scorecard,
     score_divergence,
     score_markdown,
     scorecard_template,
@@ -93,6 +95,23 @@ class VerificationResult:
     valid: bool
     errors: tuple[str, ...]
     warnings: tuple[str, ...]
+
+
+class DuplicateJsonKeyError(ValueError):
+    """Raised when JSON contains a key whose meaning would be ambiguous."""
+
+
+def _json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise DuplicateJsonKeyError(f"duplicate JSON key: {key}")
+        value[key] = item
+    return value
+
+
+def parse_json(text: str) -> object:
+    return json.loads(text, object_pairs_hook=_json_object)
 
 
 def utc_now() -> str:
@@ -227,6 +246,32 @@ def _item_blocks(lines: list[str]) -> list[tuple[int, list[str]]]:
         end = positions[position + 1][0] if position + 1 < len(positions) else len(lines)
         blocks.append((identifier, lines[start + 1 : end]))
     return blocks
+
+
+def extract_critic_claims(report: str) -> list[dict[str, str]]:
+    """Extract validated section-1 A items for a traceable pairing scorecard."""
+    lines = report.splitlines()
+    sections = _section_ranges(lines)
+    if sections is None:
+        raise ValueError("cannot extract claims from a report with invalid headings")
+    errors: list[str] = []
+    claims: list[dict[str, str]] = []
+    for identifier, block in _item_blocks(sections[CRITIC_SECTIONS[0]]):
+        position = _field_value(block, "位置：", f"A{identifier}", errors)
+        claim = _field_value(block, "指控：", f"A{identifier}", errors)
+        reason = _field_value(block, "理由：", f"A{identifier}", errors)
+        if position is not None and claim is not None and reason is not None:
+            claims.append(
+                {
+                    "id": f"A{identifier}",
+                    "position": position,
+                    "claim": claim,
+                    "reason": reason,
+                }
+            )
+    if errors:
+        raise ValueError("cannot extract claims: " + "; ".join(errors))
+    return claims
 
 
 def _validate_item_fields(
@@ -584,6 +629,9 @@ def _verify_artifact(
     errors: list[str],
 ) -> bytes | None:
     path = run_dir / filename
+    if path.is_symlink():
+        errors.append(f"{filename} must not be a symbolic link")
+        return None
     expected_hash = manifest.get(hash_key)
     if expected_hash is None:
         if required:
@@ -619,10 +667,14 @@ def _parse_timestamp(value: object) -> datetime | None:
 def verify_run_dir(run_dir: Path, source_path: Path | None = None) -> VerificationResult:
     errors: list[str] = []
     warnings: list[str] = []
+    if run_dir.is_symlink():
+        return VerificationResult(False, ("run directory must not be a symbolic link",), ())
     manifest_path = run_dir / "manifest.json"
+    if manifest_path.is_symlink():
+        return VerificationResult(False, ("manifest.json must not be a symbolic link",), ())
     try:
-        manifest_value = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        manifest_value = parse_json(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, DuplicateJsonKeyError) as exc:
         return VerificationResult(
             False,
             (f"cannot read manifest.json: {exc}",),
@@ -1100,6 +1152,27 @@ def campaign(args: argparse.Namespace) -> int:
     if not executor:
         raise ValueError("campaign requires an executor command after --")
 
+    if (
+        not isinstance(args.repeat, int)
+        or isinstance(args.repeat, bool)
+        or args.repeat <= 0
+    ):
+        raise ValueError("campaign repeat must be a positive integer")
+    try:
+        timeout_seconds = float(args.timeout)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("campaign timeout must be a positive finite number") from exc
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise ValueError("campaign timeout must be a positive finite number")
+    if isinstance(args.max_output_bytes, bool):
+        raise ValueError("campaign max output bytes must be a positive integer")
+    try:
+        max_output_bytes = int(args.max_output_bytes)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("campaign max output bytes must be a positive integer") from exc
+    if max_output_bytes <= 0:
+        raise ValueError("campaign max output bytes must be a positive integer")
+
     protocols = args.protocol or ["critic-individualist", "critic-contrastivist"]
     if len(set(protocols)) != len(protocols):
         raise ValueError("campaign protocols must not contain duplicates")
@@ -1122,7 +1195,6 @@ def campaign(args: argparse.Namespace) -> int:
         "critic-generic": "G",
     }
     records: list[dict[str, object]] = []
-    run_archives: dict[str, str] = {}
     for protocol_name in protocols:
         for repetition in range(1, args.repeat + 1):
             label = f"{prefix[protocol_name]}{repetition}"
@@ -1132,17 +1204,16 @@ def campaign(args: argparse.Namespace) -> int:
                 runs_dir=str(runs_dir),
                 allow_test_artifact=args.allow_test_artifact,
                 executor=executor,
-                timeout=args.timeout,
-                max_output_bytes=args.max_output_bytes,
+                timeout=timeout_seconds,
+                max_output_bytes=max_output_bytes,
                 quiet=True,
             )
             exit_code = run(run_args)
             run_dir = run_args.run_dir_result
-            manifest = json.loads(
+            manifest = parse_json(
                 (run_dir / "manifest.json").read_text(encoding="utf-8")
             )
             relative_run = run_dir.relative_to(campaign_dir).as_posix()
-            run_archives[label] = relative_run
             records.append(
                 {
                     "label": label,
@@ -1159,18 +1230,38 @@ def campaign(args: argparse.Namespace) -> int:
 
     completed_at = utc_now()
     campaign_manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "source_name": source_path.name,
         "source_sha256": sha256_bytes(source_raw),
         "created_at": campaign_started_at,
         "completed_at": completed_at,
         "executor": executor_metadata(executor),
+        "protocols": protocols,
         "repeat": args.repeat,
+        "timeout_seconds": timeout_seconds,
+        "max_output_bytes": max_output_bytes,
         "runs": records,
     }
-    if protocols == ["critic-individualist", "critic-contrastivist"] and args.repeat == 2:
-        template = scorecard_template()
-        template["run_archives"] = run_archives
+    can_score = (
+        protocols == ["critic-individualist", "critic-contrastivist"]
+        and args.repeat == 2
+        and all(record["status"] == "succeeded" for record in records)
+    )
+    if can_score:
+        score_runs: dict[str, dict[str, object]] = {}
+        for record in records:
+            label = str(record["label"])
+            run_dir = campaign_dir / str(record["run_dir"])
+            run_manifest = parse_json(
+                (run_dir / "manifest.json").read_text(encoding="utf-8")
+            )
+            report, _ = read_utf8(run_dir / "report.md")
+            score_runs[label] = {
+                "archive": record["run_dir"],
+                "report_sha256": run_manifest["report_sha256"],
+                "claims": extract_critic_claims(report),
+            }
+        template = pairing_scorecard(score_runs)
         atomic_write_text(
             campaign_dir / "scorecard.json",
             json.dumps(template, ensure_ascii=False, indent=2) + "\n",
@@ -1194,7 +1285,8 @@ def campaign(args: argparse.Namespace) -> int:
         summary.extend(
             [
                 "",
-                "Fill `scorecard.json` after blind one-to-one pairing, then run:",
+                "Fill each `scorecard.json` pairs list after blind one-to-one pairing, "
+                "set complete=true, then run:",
                 "",
                 "```bash",
                 "python critic_runner.py score path/to/scorecard.json --format markdown",
@@ -1217,21 +1309,88 @@ def campaign(args: argparse.Namespace) -> int:
     return 0 if all(record["runner_exit_code"] == 0 for record in records) else EXIT_CAMPAIGN_FAILED
 
 
+def _safe_campaign_run_path(campaign_dir: Path, relative: object) -> Path | None:
+    if not isinstance(relative, str) or "\\" in relative:
+        return None
+    relative_path = PurePosixPath(relative)
+    if (
+        relative_path.is_absolute()
+        or not relative_path.parts
+        or relative_path.parts[0] != "runs"
+        or any(part in {"", ".", ".."} for part in relative_path.parts)
+    ):
+        return None
+    candidate = campaign_dir
+    for part in relative_path.parts:
+        candidate = candidate / part
+        if candidate.is_symlink():
+            return None
+    try:
+        candidate.resolve().relative_to(campaign_dir.resolve())
+    except (OSError, ValueError):
+        return None
+    return candidate
+
+
+def verify_scorecard_provenance(
+    scorecard_path: Path, scorecard: object
+) -> tuple[str, ...]:
+    """Re-extract immutable claims from sibling campaign archives for schema v2."""
+    if not isinstance(scorecard, dict) or scorecard.get("schema_version") != 2:
+        return ()
+    errors: list[str] = []
+    runs = scorecard.get("runs")
+    if not isinstance(runs, dict):
+        return ("schema v2 scorecard runs must be an object",)
+    campaign_dir = scorecard_path.parent
+    for run_name in RUN_NAMES:
+        run = runs.get(run_name)
+        if not isinstance(run, dict):
+            errors.append(f"runs.{run_name} must be an object")
+            continue
+        run_dir = _safe_campaign_run_path(campaign_dir, run.get("archive"))
+        if run_dir is None:
+            errors.append(f"runs.{run_name}.archive is unsafe or outside the campaign")
+            continue
+        report_path = run_dir / "report.md"
+        if report_path.is_symlink():
+            errors.append(f"runs.{run_name} report.md must not be a symbolic link")
+            continue
+        try:
+            report_text, report_raw = read_utf8(report_path)
+            extracted = extract_critic_claims(report_text)
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            errors.append(f"runs.{run_name} report cannot be re-extracted: {exc}")
+            continue
+        if sha256_bytes(report_raw) != run.get("report_sha256"):
+            errors.append(f"runs.{run_name}.report_sha256 does not match report.md")
+        if extracted != run.get("claims"):
+            errors.append(f"runs.{run_name}.claims do not match archived report.md")
+    return tuple(errors)
+
+
 def verify_campaign_dir(
     campaign_dir: Path, source_path: Path | None = None
 ) -> VerificationResult:
     errors: list[str] = []
     warnings: list[str] = []
+    if campaign_dir.is_symlink():
+        return VerificationResult(False, ("campaign directory must not be a symbolic link",), ())
     manifest_path = campaign_dir / "campaign.json"
+    if manifest_path.is_symlink():
+        return VerificationResult(False, ("campaign.json must not be a symbolic link",), ())
     try:
-        manifest_value = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        manifest_value = parse_json(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, DuplicateJsonKeyError) as exc:
         return VerificationResult(False, (f"cannot read campaign.json: {exc}",), ())
     if not isinstance(manifest_value, dict):
         return VerificationResult(False, ("campaign.json must contain an object",), ())
     manifest: dict[str, object] = manifest_value
-    if manifest.get("schema_version") != 1:
-        errors.append("campaign schema_version must be 1")
+    schema_version = manifest.get("schema_version")
+    if schema_version not in {1, 2}:
+        errors.append("campaign schema_version must be 1 or 2")
+    elif schema_version == 1:
+        warnings.append("legacy campaign schema_version 1 has no explicit run matrix")
 
     source_name = manifest.get("source_name")
     if (
@@ -1271,10 +1430,26 @@ def verify_campaign_dir(
     if template_hash is not None:
         if not _valid_sha256(template_hash):
             errors.append("scorecard_template_sha256 is invalid")
+        elif scorecard_path.is_symlink():
+            errors.append("scorecard.json must not be a symbolic link")
         elif not scorecard_path.is_file():
             errors.append("scorecard.json is missing")
         elif sha256_bytes(scorecard_path.read_bytes()) != template_hash:
-            warnings.append("scorecard.json differs from its blank template, likely because it was filled")
+            warnings.append(
+                "scorecard.json differs from its blank template, likely because it was filled"
+            )
+        if scorecard_path.is_file() and not scorecard_path.is_symlink():
+            try:
+                scorecard = parse_json(scorecard_path.read_text(encoding="utf-8"))
+            except (
+                OSError,
+                UnicodeDecodeError,
+                json.JSONDecodeError,
+                DuplicateJsonKeyError,
+            ) as exc:
+                errors.append(f"scorecard.json cannot be read: {exc}")
+            else:
+                errors.extend(verify_scorecard_provenance(scorecard_path, scorecard))
     elif scorecard_path.exists():
         warnings.append("scorecard.json exists but this campaign did not create a template")
 
@@ -1282,8 +1457,70 @@ def verify_campaign_dir(
     if not isinstance(records, list) or not records:
         errors.append("campaign runs must be a non-empty list")
         records = []
+    repeat = manifest.get("repeat")
+    if not isinstance(repeat, int) or isinstance(repeat, bool) or repeat <= 0:
+        errors.append("campaign repeat must be a positive integer")
+        repeat = 0
+    planned_protocols: list[str] = []
+    if schema_version == 2:
+        raw_protocols = manifest.get("protocols")
+        if (
+            not isinstance(raw_protocols, list)
+            or not raw_protocols
+            or any(
+                not isinstance(protocol, str) or protocol not in PROTOCOLS
+                for protocol in raw_protocols
+            )
+            or len(set(raw_protocols)) != len(raw_protocols)
+        ):
+            errors.append("campaign protocols must be a non-empty unique protocol list")
+        else:
+            planned_protocols = raw_protocols
+        timeout = manifest.get("timeout_seconds")
+        if (
+            not isinstance(timeout, (int, float))
+            or isinstance(timeout, bool)
+            or not math.isfinite(timeout)
+            or timeout <= 0
+        ):
+            errors.append("campaign timeout_seconds must be positive and finite")
+        max_output = manifest.get("max_output_bytes")
+        if (
+            not isinstance(max_output, int)
+            or isinstance(max_output, bool)
+            or max_output <= 0
+        ):
+            errors.append("campaign max_output_bytes must be a positive integer")
+
+    campaign_executor = manifest.get("executor")
+    if not isinstance(campaign_executor, dict):
+        errors.append("campaign executor must contain redacted metadata")
+    else:
+        command = campaign_executor.get("command")
+        argument_count = campaign_executor.get("argument_count")
+        if (
+            not isinstance(command, str)
+            or not command
+            or "/" in command
+            or "\\" in command
+        ):
+            errors.append("campaign executor.command must be a non-empty basename")
+        if (
+            not isinstance(argument_count, int)
+            or isinstance(argument_count, bool)
+            or argument_count < 0
+        ):
+            errors.append("campaign executor.argument_count must be non-negative")
+
     labels: set[str] = set()
     run_paths: set[str] = set()
+    observed_runs: set[tuple[str, int]] = set()
+    label_prefix = {
+        "critic-individualist": "I",
+        "critic-contrastivist": "C",
+        "citation-auditor": "A",
+        "critic-generic": "G",
+    }
     for index, record in enumerate(records):
         item = f"runs[{index}]"
         if not isinstance(record, dict):
@@ -1296,28 +1533,38 @@ def verify_campaign_dir(
             errors.append(f"duplicate campaign label: {label}")
         else:
             labels.add(label)
-        relative = record.get("run_dir")
-        if not isinstance(relative, str):
-            errors.append(f"{item}.run_dir must be a relative POSIX path")
-            continue
-        relative_path = PurePosixPath(relative)
-        if (
-            relative_path.is_absolute()
-            or not relative_path.parts
-            or relative_path.parts[0] != "runs"
-            or any(part in {"", ".", ".."} for part in relative_path.parts)
-            or "\\" in relative
-            or relative in run_paths
+        protocol = record.get("protocol")
+        repetition = record.get("repetition")
+        if not isinstance(protocol, str) or protocol not in PROTOCOLS:
+            errors.append(f"{item}.protocol is invalid")
+        elif (
+            not isinstance(repetition, int)
+            or isinstance(repetition, bool)
+            or repetition <= 0
+            or (repeat and repetition > repeat)
         ):
+            errors.append(f"{item}.repetition is invalid")
+        else:
+            run_key = (protocol, repetition)
+            if run_key in observed_runs:
+                errors.append(f"duplicate campaign run: {run_key}")
+            observed_runs.add(run_key)
+            if label != f"{label_prefix[protocol]}{repetition}":
+                errors.append(f"{item}.label does not match protocol and repetition")
+        relative = record.get("run_dir")
+        run_dir = _safe_campaign_run_path(campaign_dir, relative)
+        if run_dir is None or relative in run_paths:
             errors.append(f"{item}.run_dir is unsafe or duplicated: {relative!r}")
             continue
         run_paths.add(relative)
-        run_dir = campaign_dir.joinpath(*relative_path.parts)
         child_manifest_path = run_dir / "manifest.json"
+        if child_manifest_path.is_symlink():
+            errors.append(f"{item} manifest.json must not be a symbolic link")
+            continue
         try:
             child_manifest_bytes = child_manifest_path.read_bytes()
-            child_manifest = json.loads(child_manifest_bytes.decode("utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            child_manifest = parse_json(child_manifest_bytes.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, DuplicateJsonKeyError) as exc:
             errors.append(f"{item} manifest cannot be read: {exc}")
             continue
         if sha256_bytes(child_manifest_bytes) != record.get("manifest_sha256"):
@@ -1325,6 +1572,17 @@ def verify_campaign_dir(
         if not isinstance(child_manifest, dict):
             errors.append(f"{item} manifest must contain an object")
             continue
+        if child_manifest.get("source_name") != source_name:
+            errors.append(f"{item} source_name does not match campaign")
+        if child_manifest.get("source_sha256") != manifest.get("source_sha256"):
+            errors.append(f"{item} source_sha256 does not match campaign")
+        if child_manifest.get("executor") != campaign_executor:
+            errors.append(f"{item} executor metadata does not match campaign")
+        if schema_version == 2:
+            if child_manifest.get("timeout_seconds") != manifest.get("timeout_seconds"):
+                errors.append(f"{item} timeout_seconds does not match campaign")
+            if child_manifest.get("max_output_bytes") != manifest.get("max_output_bytes"):
+                errors.append(f"{item} max_output_bytes does not match campaign")
         for record_key, manifest_key in (
             ("protocol", "protocol"),
             ("status", "status"),
@@ -1335,6 +1593,19 @@ def verify_campaign_dir(
         child = verify_run_dir(run_dir, source_path)
         errors.extend(f"{label or item}: {error}" for error in child.errors)
         warnings.extend(f"{label or item}: {warning}" for warning in child.warnings)
+
+    if schema_version == 2 and planned_protocols and repeat:
+        expected_runs = {
+            (protocol, repetition)
+            for protocol in planned_protocols
+            for repetition in range(1, repeat + 1)
+        }
+        if observed_runs != expected_runs:
+            errors.append(
+                "campaign run matrix mismatch: "
+                f"missing={sorted(expected_runs - observed_runs)}, "
+                f"extra={sorted(observed_runs - expected_runs)}"
+            )
 
     return VerificationResult(not errors, tuple(errors), tuple(warnings))
 
@@ -1349,9 +1620,20 @@ def init_scorecard_command(args: argparse.Namespace) -> int:
 def score_command(args: argparse.Namespace) -> int:
     scorecard_path = Path(args.scorecard).resolve()
     try:
-        scorecard = json.loads(scorecard_path.read_text(encoding="utf-8"))
+        if Path(args.scorecard).is_symlink():
+            raise ScorecardError("scorecard path must not be a symbolic link")
+        scorecard = parse_json(scorecard_path.read_text(encoding="utf-8"))
         result = score_divergence(scorecard)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ScorecardError) as exc:
+        provenance_errors = verify_scorecard_provenance(scorecard_path, scorecard)
+        if provenance_errors:
+            raise ScorecardError("; ".join(provenance_errors))
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        DuplicateJsonKeyError,
+        ScorecardError,
+    ) as exc:
         print(f"scorecard error: {exc}", file=sys.stderr)
         return EXIT_INVALID_SCORECARD
     output = (
@@ -1380,7 +1662,7 @@ def validate_command(args: argparse.Namespace) -> int:
 
 
 def verify_run_command(args: argparse.Namespace) -> int:
-    run_dir = Path(args.run_dir).resolve()
+    run_dir = Path(args.run_dir).absolute()
     source_path = Path(args.source).resolve() if args.source else None
     verification = verify_run_dir(run_dir, source_path)
     for warning in verification.warnings:
@@ -1394,7 +1676,7 @@ def verify_run_command(args: argparse.Namespace) -> int:
 
 
 def verify_campaign_command(args: argparse.Namespace) -> int:
-    campaign_dir = Path(args.campaign_dir).resolve()
+    campaign_dir = Path(args.campaign_dir).absolute()
     source_path = Path(args.source).resolve() if args.source else None
     verification = verify_campaign_dir(campaign_dir, source_path)
     for warning in verification.warnings:

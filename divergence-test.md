@@ -75,7 +75,7 @@ C₁, C₂  = critic-contrastivist 跑两次
 python critic_runner.py campaign draft.md --repeat 2 -- <executor...>
 ```
 
-它会生成 I₁、I₂、C₁、C₂ 的独立归档和空白 `scorecard.json`。这只是编排，不是并发，也不会把前一份报告放进后一份提示词。等价的逐条命令是：
+四次报告全部有效时，它会生成 I₁、I₂、C₁、C₂ 的独立归档，以及已经列出各报告全部 A 条目的 `scorecard.json`。这只是编排，不是并发，也不会把前一份报告放进后一份提示词。等价的逐条命令是：
 
 ```bash
 python critic_runner.py run critic-individualist draft.md -- <executor...>
@@ -86,13 +86,13 @@ python critic_runner.py run critic-contrastivist draft.md -- <executor...>
 
 不要把四次运行包进并发任务。这个测试测的是输出差异，不需要并发；串行不会损失测试信息。
 
-盲分完成后，把六组一对一配对计数填进 `scorecard.json`。无法确定是“重合”还是“同处异因”的配对填入 `ambiguous`，不要强选。机器会同时计算上下界：
+盲分时只在六组比较的 `pairs` 数组里记录左右 A 编号，并把分类写成 `overlap`、`different_reason` 或 `ambiguous`；不要手算汇总，无法确定时也不要强选。每组检查完成后显式设置 `complete: true`。未参与配对的左右条目由工具自动计为独有。机器会从逐条配对推导计数并计算上下界：
 
 ```bash
 python critic_runner.py score path/to/scorecard.json --format markdown
 ```
 
-`score` 只有在整个区间都跨过同一判据时才给 `reject` 或 `advance`；边界两端会改变结论时给 `inconclusive`。语义分类仍由人完成，工具只复算分子、分母、W/B 与阈值。
+`score` 会先用归档报告的 hash 和重新提取结果复核 scorecard 的 claim 清单，并强制一对一配对。只有整个区间都跨过同一判据时才给 `reject` 或 `advance`；边界两端会改变结论时给 `inconclusive`。语义分类仍由人完成，工具只复算分子、分母、W/B 与阈值。
 
 组内差异（同一 agent 自己跟自己的分歧）：
 
