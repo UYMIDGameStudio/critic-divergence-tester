@@ -1,5 +1,7 @@
 # Critic Divergence Tester
 
+[![Tests](https://github.com/UYMIDGameStudio/critic-divergence-tester/actions/workflows/tests.yml/badge.svg)](https://github.com/UYMIDGameStudio/critic-divergence-tester/actions/workflows/tests.yml)
+
 一组**模型无关**的敌对审查协议，以及一个零依赖的独立 runner。
 
 它最初以 Claude Code subagent 的形式出现，但核心从来不需要 Claude Code：两个 critic 本质上是两套不可互相让步的审查前提。现在仓库把“审查协议”和“模型执行器”分开。Claude Code、其他 CLI、本地模型、网页聊天都只是可替换的执行器。
@@ -59,12 +61,36 @@ python critic_runner.py prepare critic-individualist path/to/draft.md
 如果某个模型 CLI 遵守“UTF-8 stdin 读提示词、UTF-8 stdout 写回答”的约定：
 
 ```bash
-python critic_runner.py run critic-contrastivist path/to/draft.md -- your-model-command arg1 arg2
+python critic_runner.py run critic-contrastivist path/to/draft.md --timeout 900 -- your-model-command arg1 arg2
 ```
 
 runner 不认识也不保存任何 API key，不用 shell 拼接命令，也不绑定某家模型。执行器参数可能包含密钥，因此归档只记录可执行文件名和参数数量，不保存参数值。
 
 `run` 一次只启动**一个**执行器进程。项目故意没有并发 fan-out；要跑第二个 critic，就在第一个结束后再运行一条命令。
+
+runner 默认给每次执行 900 秒；可用 `--timeout` 调整，但必须是正的有限数。超时会保存已经拿到的输出并返回 124，避免某个执行器永久挂住校准流程。
+
+### 报告结构校验
+
+三个 critic 使用同一套六节输出骨架。`run` 会自动检查标题顺序、A 编号连续性、第一／二节的一一对应、必填字段、唯一最弱／最强项标记，以及末尾唯一的 `STATUS` / `UNVERIFIED`。
+
+`citation-auditor` 使用专用校验器：检查 C 编号、全部审计字段、证据分布计数，以及“内容证据 B/C/D 不得判明确支持或通过语境”“书目证据 D 不得判存在性通过”等硬联锁。执行器即使返回 0，只要结构或联锁不合格，runner 仍返回 3，并把具体错误写到 stderr 和 manifest。
+
+已有报告可以单独检查：
+
+```bash
+python critic_runner.py validate critic-individualist path/to/report.md
+```
+
+这是结构校验，不判断指控是否正确、两条指控是否语义重合，也不代替 W/B 的人工盲分。
+
+归档完成后可以重新计算文件哈希、复核生命周期与退出码不变量，并再次执行报告结构校验：
+
+```bash
+python critic_runner.py verify-run .critic-runs/<run-directory> --source path/to/draft.md
+```
+
+省略 `--source` 时仍会检查归档内部文件，但会明确警告原稿字节没有重新核对。这个机制用于发现意外损坏和不一致，不是带密钥的防篡改签名；能同时修改文件与 manifest 的攻击者仍可重算哈希。
 
 ## 运行材料不会再丢
 
@@ -73,11 +99,24 @@ runner 不认识也不保存任何 API key，不用 shell 拼接命令，也不�
 ```text
 prompt.md       本次真正送给模型的完整提示词
 report.md       模型输出（run 模式）
-manifest.json   协议、稿件、prompt 的 SHA-256 与执行信息
+manifest.json   精确字节 SHA-256、生命周期、校验结果与执行信息
 stderr.log      执行器错误输出（仅出现错误时）
 ```
 
-`.critic-runs/` 默认不进 Git。runner 会在启动执行器前先保存 prompt 和 manifest，执行完成后再补写 report 与退出码。这样以后真要做 I₁/I₂/C₁/C₂，不会再发生“跑完了但原报告没保存，无法复算 W/B”的情况，也能确认四次到底用了哪一版协议。执行器启动失败时，runner 仍会保留 prompt、manifest 和 `stderr.log`。
+`.critic-runs/` 默认不进 Git。runner 会在启动执行器前先原子写入 prompt 和 manifest，执行完成后再原子补写 report、stderr、退出码和结构校验结果。SHA-256 针对磁盘中的原始字节计算，不受 Windows 换行转换影响；UTF-8 BOM 可以读取但不会混进提示词。manifest 只保存稿件文件名，不保存本机绝对路径，也不保存执行器参数值。
+
+这样以后真要做 I₁/I₂/C₁/C₂，不会再发生“跑完了但原报告没保存，无法复算 W/B”的情况，也能确认四次到底用了哪一版协议。执行器启动失败、中断或超时时，manifest 会分别记录 `start_failed`、`interrupted` 或 `timed_out`，而不会把未完成运行伪装成成功。
+
+常用退出码：
+
+| 退出码 | 含义 |
+| --- | --- |
+| `0` | 执行器成功且报告结构有效 |
+| `2` | 输入、协议或执行器启动错误 |
+| `3` | 执行器成功，但报告结构无效 |
+| `4` | 归档文件或 manifest 自相矛盾 |
+| `124` | 执行超时 |
+| 其他非零值 | 执行器自身的失败码 |
 
 ## Claude Code 仍然可以用，但只是适配器
 
@@ -114,7 +153,7 @@ UNVERIFIED: <逐条列出没有确认的内容；没有则写 none>
 
 `divergence-test.md` 回答一个很窄的问题：`critic-individualist` 与 `critic-contrastivist` 的差异，是否明显大于同一 critic 重跑产生的采样噪声。
 
-它是 **否决-only** 的：高分歧不能证明意见正确，更不能证明值得每篇都花 token。第二级控制件在 `test/critic-generic.md`，故意不参与普通审稿；runner 要求显式传 `--allow-test-artifact` 才允许执行它。
+它是 **否决-only** 的：高分歧不能证明意见正确，更不能证明值得每篇都花 token。第二级控制件在 `test/critic-generic.md`，故意不参与普通审稿；runner 要求显式传 `--allow-test-artifact` 才允许执行它。三个 critic 的六节骨架、原子化要求、逐条跟进量和强制判断项现在相同，generic 只缺少专用框架承诺。
 
 正式测试时仍然跑 I₁、I₂、C₁、C₂，并人工按“同处同因 / 同处异因 / 独有”拆原子指控。不要让模型自己给自己的分歧打分。完整公式和判据见 `divergence-test.md`。
 
@@ -124,4 +163,6 @@ UNVERIFIED: <逐条列出没有确认的内容；没有则写 none>
 python -m unittest discover -s test -p 'test_*.py'
 ```
 
-项目目前刻意只用 Python 标准库。runner 的边界也刻意很窄：**组装协议、串行执行、完整留档**。联网检索、语义判断、W/B 的人工分类属于别的层，不偷偷塞进 runner。
+CI 在 Ubuntu 与 Windows 上分别覆盖 Python 3.10 和 3.14；外部 action 固定到已核对的发布提交 SHA，工作流权限只读。
+
+项目目前刻意只用 Python 标准库。runner 的边界也刻意很窄：**组装协议、串行执行、完整留档、确定性结构校验**。联网检索、语义判断、W/B 的人工分类属于别的层，不偷偷塞进 runner。
