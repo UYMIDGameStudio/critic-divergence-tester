@@ -1,3 +1,4 @@
 .critic-runs/
+.critic-campaigns/
 __pycache__/
 *.py[cod]

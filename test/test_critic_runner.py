@@ -5,6 +5,8 @@ import base64
 import hashlib
 import io
 import json
+import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -454,6 +456,18 @@ UNVERIFIED: none
         self.assertFalse(result.valid)
         self.assertTrue(any("exactly one valid STATUS" in error for error in result.errors))
 
+    def test_validator_enforces_status_and_unverified_consistency(self) -> None:
+        cases = (
+            VALID_REPORT.replace("UNVERIFIED: none", "UNVERIFIED: A1 location"),
+            VALID_REPORT.replace("STATUS: complete", "STATUS: partial"),
+            VALID_REPORT.replace("STATUS: complete", "STATUS: blocked"),
+        )
+        for report in cases:
+            with self.subTest(footer=report.splitlines()[-2:]):
+                result = critic_runner.validate_report("critic-individualist", report)
+                self.assertFalse(result.valid)
+                self.assertTrue(any("UNVERIFIED" in error for error in result.errors))
+
     def test_validator_rejects_reordered_sections(self) -> None:
         report = VALID_REPORT.replace(
             "## 1. 原子指控", "## TEMP", 1
@@ -652,7 +666,9 @@ UNVERIFIED: none
             root = Path(temp_dir)
             args = self._args(root=root, executor=["executor"])
 
-            with patch.object(critic_runner.subprocess, "run", side_effect=KeyboardInterrupt):
+            with patch.object(
+                critic_runner, "execute_with_limits", side_effect=KeyboardInterrupt
+            ):
                 with self.assertRaises(KeyboardInterrupt):
                     critic_runner.run(args)
 
@@ -670,11 +686,14 @@ UNVERIFIED: none
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             args = self._args(root=root, executor=["executor"], timeout=0.25)
-            timeout = subprocess.TimeoutExpired(
-                cmd=["executor"], timeout=0.25, output=b"partial", stderr=b"warning"
+            timeout = critic_runner.ExecutorResult(
+                returncode=-9,
+                stdout=b"partial",
+                stderr=b"warning",
+                timed_out=True,
             )
 
-            with patch.object(critic_runner.subprocess, "run", side_effect=timeout):
+            with patch.object(critic_runner, "execute_with_limits", return_value=timeout):
                 with redirect_stderr(io.StringIO()):
                     self.assertEqual(
                         critic_runner.run(args), critic_runner.EXIT_TIMEOUT
@@ -739,6 +758,280 @@ UNVERIFIED: none
             ["run", "critic-individualist", "draft.md"]
         )
         self.assertEqual(args.timeout, 900.0)
+        self.assertEqual(
+            args.max_output_bytes, critic_runner.DEFAULT_MAX_OUTPUT_BYTES
+        )
+
+    def test_executor_output_limit_bounds_archived_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = self._args(
+                root=root,
+                executor=[
+                    sys.executable,
+                    "-c",
+                    "import sys; sys.stdout.buffer.write(b'x' * 100000)",
+                ],
+            )
+            args.max_output_bytes = 1024
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(critic_runner.run(args), critic_runner.EXIT_OUTPUT_LIMIT)
+            run_dir = next((root / "runs").iterdir())
+            manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["status"], "output_limit_exceeded")
+            self.assertEqual(manifest["runner_exit_code"], critic_runner.EXIT_OUTPUT_LIMIT)
+            self.assertLessEqual((run_dir / "report.md").stat().st_size, 1024)
+            self.assertTrue(manifest["stdout_truncated"])
+            self.assertTrue(
+                critic_runner.verify_run_dir(run_dir, Path(args.manuscript)).valid
+            )
+
+    def test_invalid_utf8_executor_output_is_archived_and_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = self._args(
+                root=root,
+                executor=[
+                    sys.executable,
+                    "-c",
+                    "import sys; sys.stdout.buffer.write(b'\\xff')",
+                ],
+            )
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(critic_runner.run(args), critic_runner.EXIT_INVALID_REPORT)
+            run_dir = next((root / "runs").iterdir())
+            self.assertEqual((run_dir / "report.md").read_bytes(), b"\xff")
+            verification = critic_runner.verify_run_dir(run_dir, Path(args.manuscript))
+            self.assertTrue(verification.valid, verification.errors)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX mode bits only")
+    def test_run_archives_are_private_on_posix(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = argparse.Namespace(
+                protocol="critic-individualist",
+                manuscript=str(root / "draft.md"),
+                runs_dir=str(root / "runs"),
+                allow_test_artifact=False,
+            )
+            (root / "draft.md").write_text("draft", encoding="utf-8")
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(critic_runner.prepare(args), 0)
+            run_dir = next((root / "runs").iterdir())
+            self.assertEqual(stat.S_IMODE(run_dir.stat().st_mode), 0o700)
+            for artifact in run_dir.iterdir():
+                self.assertEqual(stat.S_IMODE(artifact.stat().st_mode), 0o600)
+
+    def test_score_divergence_handles_exact_and_ambiguous_pairings(self) -> None:
+        scorecard = critic_runner.scorecard_template()
+        comparisons = scorecard["comparisons"]
+        for name in critic_runner.WITHIN_COMPARISONS:
+            comparisons[name] = {
+                "overlap": 10,
+                "different_reason": 0,
+                "left_unique": 0,
+                "right_unique": 0,
+                "ambiguous": 0,
+            }
+        for name in critic_runner.BETWEEN_COMPARISONS:
+            comparisons[name] = {
+                "overlap": 1,
+                "different_reason": 8,
+                "left_unique": 1,
+                "right_unique": 1,
+                "ambiguous": 0,
+            }
+        result = critic_runner.score_divergence(scorecard)
+        self.assertEqual(result["verdict"], "advance")
+        self.assertEqual(result["W"], {"lower": 0.0, "upper": 0.0})
+        self.assertEqual(result["B"]["lower"], result["B"]["upper"])
+        self.assertGreater(result["B"]["lower"], 0.9)
+
+        comparisons["I1:C1"]["different_reason"] = 0
+        comparisons["I1:C1"]["ambiguous"] = 8
+        uncertain = critic_runner.score_divergence(scorecard)
+        self.assertLess(
+            uncertain["comparisons"]["I1:C1"]["d_lower"],
+            uncertain["comparisons"]["I1:C1"]["d_upper"],
+        )
+
+    def test_score_divergence_rejects_unfilled_template(self) -> None:
+        with self.assertRaisesRegex(critic_runner.ScorecardError, "non-negative integer"):
+            critic_runner.score_divergence(critic_runner.scorecard_template())
+
+    def test_score_divergence_covers_reject_inconclusive_empty_and_markdown(self) -> None:
+        scorecard = critic_runner.scorecard_template()
+        comparisons = scorecard["comparisons"]
+        for name in critic_runner.ALL_COMPARISONS:
+            comparisons[name] = {
+                "overlap": 0,
+                "different_reason": 0,
+                "left_unique": 0,
+                "right_unique": 0,
+                "ambiguous": 0,
+            }
+        empty = critic_runner.score_divergence(scorecard)
+        self.assertEqual(empty["verdict"], "reject")
+        self.assertEqual(empty["B"], {"lower": 0.0, "upper": 0.0})
+
+        for name in critic_runner.WITHIN_COMPARISONS:
+            comparisons[name]["overlap"] = 10
+        for name in critic_runner.BETWEEN_COMPARISONS:
+            comparisons[name]["overlap"] = 9
+            comparisons[name]["different_reason"] = 1
+        inconclusive = critic_runner.score_divergence(scorecard)
+        self.assertEqual(inconclusive["verdict"], "inconclusive")
+        markdown = critic_runner.score_markdown(inconclusive)
+        self.assertIn("# Divergence score", markdown)
+        self.assertIn("**inconclusive**", markdown)
+
+        for name in critic_runner.WITHIN_COMPARISONS:
+            comparisons[name]["overlap"] = 0
+            comparisons[name]["different_reason"] = 10
+        rejected = critic_runner.score_divergence(scorecard)
+        self.assertEqual(rejected["verdict"], "reject")
+
+    def test_score_divergence_rejects_invalid_shapes(self) -> None:
+        invalid = (
+            None,
+            {},
+            {"schema_version": 1, "margin": float("nan"), "comparisons": {}},
+            {"schema_version": 1, "margin": 0.2, "comparisons": []},
+        )
+        for value in invalid:
+            with self.subTest(value=value):
+                with self.assertRaises(critic_runner.ScorecardError):
+                    critic_runner.score_divergence(value)
+
+        scorecard = critic_runner.scorecard_template()
+        scorecard["comparisons"]["extra"] = {}
+        with self.assertRaisesRegex(critic_runner.ScorecardError, "mismatch"):
+            critic_runner.score_divergence(scorecard)
+
+        inconsistent = critic_runner.scorecard_template()
+        for name in critic_runner.ALL_COMPARISONS:
+            inconsistent["comparisons"][name] = {
+                "overlap": 1,
+                "different_reason": 0,
+                "left_unique": 0,
+                "right_unique": 0,
+                "ambiguous": 0,
+            }
+        inconsistent["comparisons"]["I1:C1"]["left_unique"] = 1
+        with self.assertRaisesRegex(critic_runner.ScorecardError, "inconsistent"):
+            critic_runner.score_divergence(inconsistent)
+
+    def test_score_commands_write_template_and_markdown(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            scorecard_path = root / "scorecard.json"
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(
+                    critic_runner.init_scorecard_command(
+                        argparse.Namespace(output=str(scorecard_path))
+                    ),
+                    0,
+                )
+            scorecard = json.loads(scorecard_path.read_text(encoding="utf-8"))
+            for name in critic_runner.ALL_COMPARISONS:
+                scorecard["comparisons"][name] = {
+                    "overlap": 1,
+                    "different_reason": 0,
+                    "left_unique": 0,
+                    "right_unique": 0,
+                    "ambiguous": 0,
+                }
+            scorecard_path.write_text(json.dumps(scorecard), encoding="utf-8")
+            output_path = root / "score.md"
+            args = argparse.Namespace(
+                scorecard=str(scorecard_path),
+                format="markdown",
+                output=str(output_path),
+            )
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(critic_runner.score_command(args), 0)
+            self.assertIn("Divergence score", output_path.read_text(encoding="utf-8"))
+
+            scorecard_path.write_text("{}", encoding="utf-8")
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    critic_runner.score_command(args),
+                    critic_runner.EXIT_INVALID_SCORECARD,
+                )
+
+    def test_execute_with_limits_times_out_and_rejects_invalid_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            result = critic_runner.execute_with_limits(
+                [sys.executable, "-c", "import time; time.sleep(5)"],
+                b"prompt",
+                timeout_seconds=0.05,
+                max_output_bytes=1024,
+                capture_dir=root,
+            )
+            self.assertTrue(result.timed_out)
+            with self.assertRaisesRegex(ValueError, "positive integer"):
+                critic_runner.execute_with_limits(
+                    [sys.executable, "-c", "pass"],
+                    b"prompt",
+                    timeout_seconds=1,
+                    max_output_bytes=0,
+                    capture_dir=root,
+                )
+
+    def test_campaign_creates_isolated_runs_summary_and_scorecard(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "draft.md"
+            source.write_text("draft", encoding="utf-8")
+            encoded_report = base64.b64encode(VALID_REPORT.encode("utf-8")).decode()
+            args = argparse.Namespace(
+                manuscript=str(source),
+                protocol=None,
+                repeat=2,
+                campaigns_dir=str(root / "campaigns"),
+                allow_test_artifact=False,
+                timeout=5.0,
+                max_output_bytes=1024 * 1024,
+                executor=[
+                    sys.executable,
+                    "-c",
+                    (
+                        "import base64,sys; sys.stdin.buffer.read(); "
+                        f"sys.stdout.buffer.write(base64.b64decode('{encoded_report}'))"
+                    ),
+                ],
+            )
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(critic_runner.campaign(args), 0)
+            campaign_dir = next((root / "campaigns").iterdir())
+            manifest = json.loads(
+                (campaign_dir / "campaign.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(len(manifest["runs"]), 4)
+            self.assertEqual(
+                [run["label"] for run in manifest["runs"]],
+                ["I1", "I2", "C1", "C2"],
+            )
+            self.assertTrue((campaign_dir / "scorecard.json").is_file())
+            self.assertTrue((campaign_dir / "SUMMARY.md").is_file())
+            self.assertEqual(len(list((campaign_dir / "runs").iterdir())), 4)
+            verification = critic_runner.verify_campaign_dir(campaign_dir, source)
+            self.assertTrue(verification.valid, verification.errors)
+
+            scorecard_path = campaign_dir / "scorecard.json"
+            scorecard = json.loads(scorecard_path.read_text(encoding="utf-8"))
+            scorecard["margin"] = 0.3
+            scorecard_path.write_text(json.dumps(scorecard), encoding="utf-8")
+            filled = critic_runner.verify_campaign_dir(campaign_dir, source)
+            self.assertTrue(filled.valid, filled.errors)
+            self.assertTrue(any("filled" in warning for warning in filled.warnings))
+
+            first_run = campaign_dir / manifest["runs"][0]["run_dir"]
+            (first_run / "report.md").write_bytes(b"corrupt")
+            corrupted = critic_runner.verify_campaign_dir(campaign_dir, source)
+            self.assertFalse(corrupted.valid)
+            self.assertTrue(any("hash mismatch" in error for error in corrupted.errors))
 
     def test_cli_run_path_handles_separator_end_to_end(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -777,6 +1070,86 @@ UNVERIFIED: none
             self.assertEqual(completed.returncode, 0, completed.stderr)
             report_path = Path(completed.stdout.strip())
             self.assertEqual(report_path.read_text(encoding="utf-8"), VALID_REPORT)
+
+    def test_cli_campaign_score_and_verify_end_to_end(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "draft.md"
+            source.write_text("draft", encoding="utf-8")
+            executor_script = root / "executor.py"
+            encoded_report = base64.b64encode(VALID_REPORT.encode("utf-8")).decode()
+            executor_script.write_text(
+                "import base64, sys\n"
+                "sys.stdin.buffer.read()\n"
+                f"sys.stdout.buffer.write(base64.b64decode('{encoded_report}'))\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "critic_runner.py"),
+                    "campaign",
+                    str(source),
+                    "--campaigns-dir",
+                    str(root / "campaigns"),
+                    "--timeout",
+                    "5",
+                    "--",
+                    sys.executable,
+                    str(executor_script),
+                ],
+                text=True,
+                encoding="utf-8",
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            campaign_dir = Path(completed.stdout.strip())
+
+            verified = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "critic_runner.py"),
+                    "verify-campaign",
+                    str(campaign_dir),
+                    "--source",
+                    str(source),
+                ],
+                text=True,
+                encoding="utf-8",
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+
+            scorecard_path = campaign_dir / "scorecard.json"
+            scorecard = json.loads(scorecard_path.read_text(encoding="utf-8"))
+            for name in critic_runner.ALL_COMPARISONS:
+                scorecard["comparisons"][name] = {
+                    "overlap": 1,
+                    "different_reason": 0,
+                    "left_unique": 0,
+                    "right_unique": 0,
+                    "ambiguous": 0,
+                }
+            scorecard_path.write_text(json.dumps(scorecard), encoding="utf-8")
+            scored = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "critic_runner.py"),
+                    "score",
+                    str(scorecard_path),
+                    "--format",
+                    "markdown",
+                ],
+                text=True,
+                encoding="utf-8",
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(scored.returncode, 0, scored.stderr)
+            self.assertIn("Verdict: **reject**", scored.stdout)
 
 
 if __name__ == "__main__":

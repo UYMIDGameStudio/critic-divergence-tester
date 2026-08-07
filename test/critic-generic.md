@@ -59,4 +59,6 @@ STATUS: complete | partial | blocked
 UNVERIFIED: <无法确认的内容；没有则写 none>
 ```
 
+只有 `UNVERIFIED: none` 时才能写 `STATUS: complete`；`partial` 或 `blocked` 必须逐条写明未确认原因。
+
 如果没有任何原子指控，仍然输出六节：第一节写“无实质异议。理由：……”，第二节写“不适用：第一节没有原子指控”，第四节用 `不适用：` 开头说明没有最弱项，第五节仍必须用 `位置：` 指认最强论证，或用 `无一处满足：` 说明理由。这是合法且有信息量的结论。

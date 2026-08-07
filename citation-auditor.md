@@ -91,7 +91,9 @@ color: purple
 STATUS: complete | partial | blocked
 书目证据分布: A <n> / B <n> / C <n> / D <n>
 内容证据分布: A <n> / B <n> / C <n> / D <n>
-UNVERIFIED: <列出所有内容证据为 C 或 D、以及书目证据为 C 或 D 的条目编号及原因。若无则写 none。>
+UNVERIFIED: <列出所有内容证据为 B、C 或 D，以及书目证据为 C 或 D 的条目编号及原因。若无则写 none。>
 ```
+
+只有 `UNVERIFIED: none` 时才能写 `STATUS: complete`；`partial` 或 `blocked` 必须逐条写明未确认原因。
 
 这两行分布是给人看的。内容证据的 A 级占比通常远低于书目证据，这本身正常；但如果内容证据几乎全是 C，那么整份报告里所有"观点：明确支持"都应该不存在，出现了就说明联锁被违反了，整份报告作废。

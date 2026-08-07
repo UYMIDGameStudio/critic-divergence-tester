@@ -61,18 +61,34 @@ python critic_runner.py prepare critic-individualist path/to/draft.md
 如果某个模型 CLI 遵守“UTF-8 stdin 读提示词、UTF-8 stdout 写回答”的约定：
 
 ```bash
-python critic_runner.py run critic-contrastivist path/to/draft.md --timeout 900 -- your-model-command arg1 arg2
+python critic_runner.py run critic-contrastivist path/to/draft.md --timeout 900 --max-output-bytes 16777216 -- your-model-command arg1 arg2
 ```
 
 runner 不认识也不保存任何 API key，不用 shell 拼接命令，也不绑定某家模型。执行器参数可能包含密钥，因此归档只记录可执行文件名和参数数量，不保存参数值。
 
 `run` 一次只启动**一个**执行器进程。项目故意没有并发 fan-out；要跑第二个 critic，就在第一个结束后再运行一条命令。
 
-runner 默认给每次执行 900 秒；可用 `--timeout` 调整，但必须是正的有限数。超时会保存已经拿到的输出并返回 124，避免某个执行器永久挂住校准流程。
+runner 默认给每次执行 900 秒和 16 MiB 的 stdout/stderr 合计额度；可用 `--timeout` 与 `--max-output-bytes` 调整。超时返回 124，超过输出额度返回 125。输出先流入私有临时文件，不会无界堆在内存里；最终归档只保留额度内的原始字节。非法 UTF-8 会原样留档并判为无效报告，不会被静默替换。
+
+### 一键校准：四次隔离运行 + 可复算计分
+
+需要正式验证两个 critic 是否真的不同，不必再手工管理 I₁/I₂/C₁/C₂：
+
+```bash
+python critic_runner.py campaign path/to/old-draft.md --repeat 2 -- your-model-command arg1 arg2
+```
+
+`campaign` 仍然严格串行运行，各次执行看不到其他报告。它会在 `.critic-campaigns/<timestamp>--campaign/` 中生成四个独立运行归档、`campaign.json`、可点击的 `SUMMARY.md` 和待填写的 `scorecard.json`。先遮掉 critic 名称，人工完成一对一语义配对，再填写每组的重合、同处异因、左右独有和模糊配对数：
+
+```bash
+python critic_runner.py score .critic-campaigns/<campaign>/scorecard.json --format markdown --output divergence-score.md
+```
+
+记分器自动计算每次 d 的上下界、W/B 区间及 `reject` / `advance` / `inconclusive` 判决，还会拒绝“同一报告在不同两两比较中原子指控总数不同”的自相矛盾表格。它只接管可确定的算术，不替人判断两条指控是否语义重合。单独建空表可用 `python critic_runner.py init-scorecard scorecard.json`。
 
 ### 报告结构校验
 
-三个 critic 使用同一套六节输出骨架。`run` 会自动检查标题顺序、A 编号连续性、第一／二节的一一对应、必填字段、唯一最弱／最强项标记，以及末尾唯一的 `STATUS` / `UNVERIFIED`。
+三个 critic 使用同一套六节输出骨架。`run` 会自动检查标题顺序、A 编号连续性、第一／二节的一一对应、必填字段、唯一最弱／最强项标记，以及末尾唯一的 `STATUS` / `UNVERIFIED`。`complete` 必须配 `UNVERIFIED: none`；`partial` / `blocked` 必须给出具体未核实原因。
 
 `citation-auditor` 使用专用校验器：检查 C 编号、全部审计字段、证据分布计数，以及“内容证据 B/C/D 不得判明确支持或通过语境”“书目证据 D 不得判存在性通过”等硬联锁。执行器即使返回 0，只要结构或联锁不合格，runner 仍返回 3，并把具体错误写到 stderr 和 manifest。
 
@@ -103,7 +119,9 @@ manifest.json   精确字节 SHA-256、生命周期、校验结果与执行信�
 stderr.log      执行器错误输出（仅出现错误时）
 ```
 
-`.critic-runs/` 默认不进 Git。runner 会在启动执行器前先原子写入 prompt 和 manifest，执行完成后再原子补写 report、stderr、退出码和结构校验结果。SHA-256 针对磁盘中的原始字节计算，不受 Windows 换行转换影响；UTF-8 BOM 可以读取但不会混进提示词。manifest 只保存稿件文件名，不保存本机绝对路径，也不保存执行器参数值。
+`.critic-runs/` 和 `.critic-campaigns/` 默认不进 Git。runner 会在启动执行器前先原子写入 prompt 和 manifest，执行完成后再原子补写 report、stderr、退出码和结构校验结果。schema v2 记录输出额度与截断状态，同时仍可验证旧版 schema v1 归档。SHA-256 针对磁盘中的原始字节计算，不受 Windows 换行转换影响；UTF-8 BOM 可以读取但不会混进提示词。manifest 只保存稿件文件名，不保存本机绝对路径，也不保存执行器参数值。
+
+归档包含完整稿件、模型报告和可能回显敏感信息的 stderr。POSIX 上 runner 把运行目录设为 `0700`、文件设为 `0600`；Windows 上保密性取决于父目录的 ACL。不要把归档放在共享目录，密钥应通过环境变量传给执行器，并在分享归档前检查 `prompt.md`、`report.md` 与 `stderr.log`。
 
 这样以后真要做 I₁/I₂/C₁/C₂，不会再发生“跑完了但原报告没保存，无法复算 W/B”的情况，也能确认四次到底用了哪一版协议。执行器启动失败、中断或超时时，manifest 会分别记录 `start_failed`、`interrupted` 或 `timed_out`，而不会把未完成运行伪装成成功。
 
@@ -115,7 +133,10 @@ stderr.log      执行器错误输出（仅出现错误时）
 | `2` | 输入、协议或执行器启动错误 |
 | `3` | 执行器成功，但报告结构无效 |
 | `4` | 归档文件或 manifest 自相矛盾 |
+| `6` | scorecard 缺项、未填写或格式无效 |
+| `7` | campaign 中至少一次运行失败 |
 | `124` | 执行超时 |
+| `125` | 执行器输出超过额度 |
 | 其他非零值 | 执行器自身的失败码 |
 
 ## Claude Code 仍然可以用，但只是适配器
@@ -155,7 +176,7 @@ UNVERIFIED: <逐条列出没有确认的内容；没有则写 none>
 
 它是 **否决-only** 的：高分歧不能证明意见正确，更不能证明值得每篇都花 token。第二级控制件在 `test/critic-generic.md`，故意不参与普通审稿；runner 要求显式传 `--allow-test-artifact` 才允许执行它。三个 critic 的六节骨架、原子化要求、逐条跟进量和强制判断项现在相同，generic 只缺少专用框架承诺。
 
-正式测试时仍然跑 I₁、I₂、C₁、C₂，并人工按“同处同因 / 同处异因 / 独有”拆原子指控。不要让模型自己给自己的分歧打分。完整公式和判据见 `divergence-test.md`。
+正式测试时仍然跑 I₁、I₂、C₁、C₂，并人工按“同处同因 / 同处异因 / 独有”拆原子指控。不要让模型自己给自己的分歧打分；`campaign` 和 `score` 只负责隔离运行、留档和复算。完整公式和判据见 `divergence-test.md`。
 
 ## 开发检查
 
@@ -165,4 +186,4 @@ python -m unittest discover -s test -p 'test_*.py'
 
 CI 在 Ubuntu 与 Windows 上分别覆盖 Python 3.10 和 3.14；外部 action 固定到已核对的发布提交 SHA，工作流权限只读。
 
-项目目前刻意只用 Python 标准库。runner 的边界也刻意很窄：**组装协议、串行执行、完整留档、确定性结构校验**。联网检索、语义判断、W/B 的人工分类属于别的层，不偷偷塞进 runner。
+项目目前刻意只用 Python 标准库。工具边界仍然明确：**组装协议、受限串行执行、完整留档、确定性结构校验、可复算计分**。联网检索和语义配对属于人的判断层，不偷偷塞进 runner。

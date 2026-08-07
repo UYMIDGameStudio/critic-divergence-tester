@@ -15,12 +15,22 @@ import json
 import math
 import os
 import re
-import subprocess
 import sys
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+
+from critic_execution import ExecutorResult, execute_with_limits
+from critic_scoring import (
+    ALL_COMPARISONS,
+    BETWEEN_COMPARISONS,
+    WITHIN_COMPARISONS,
+    ScorecardError,
+    score_divergence,
+    score_markdown,
+    scorecard_template,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -62,6 +72,11 @@ EXIT_INVALID_REPORT = 3
 EXIT_INVALID_ARCHIVE = 4
 EXIT_INTERRUPTED = 130
 EXIT_TIMEOUT = 124
+EXIT_OUTPUT_LIMIT = 125
+EXIT_INVALID_SCORECARD = 6
+EXIT_CAMPAIGN_FAILED = 7
+DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024 * 1024
+
 
 
 @dataclass(frozen=True)
@@ -105,11 +120,14 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
         f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     )
     try:
-        with temporary.open("xb") as handle:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
+        if os.name == "posix":
+            os.chmod(path, 0o600)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -155,6 +173,8 @@ def new_run_dir(runs_dir: Path, protocol_name: str) -> Path:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     target = runs_dir / f"{stamp}--{protocol_name}"
     target.mkdir(parents=True, exist_ok=False)
+    if os.name == "posix":
+        os.chmod(target, 0o700)
     return target
 
 
@@ -258,6 +278,14 @@ def _validate_footer(
         errors.append("last non-empty line must start with UNVERIFIED:")
     elif not nonempty[-1][len("UNVERIFIED:") :].strip():
         errors.append("UNVERIFIED must contain a value; use none when nothing is unverified")
+    if len(status_lines) == 1 and len(unverified_lines) == 1:
+        status = STATUS_PATTERN.fullmatch(status_lines[0]).group(1)
+        unverified = unverified_lines[0][len("UNVERIFIED:") :].strip()
+        is_none = unverified.casefold() == "none"
+        if status == "complete" and not is_none:
+            errors.append("STATUS complete requires UNVERIFIED: none")
+        if status in {"partial", "blocked"} and is_none:
+            errors.append(f"STATUS {status} requires a concrete UNVERIFIED reason")
     return nonempty
 
 
@@ -349,6 +377,7 @@ def _validate_citation_report(report: str) -> ValidationResult:
 
     actual_bibliography = dict.fromkeys("ABCD", 0)
     actual_content = dict.fromkeys("ABCD", 0)
+    has_unverified_evidence = False
     for identifier, block in blocks:
         item_name = f"C{identifier}"
         for field in (
@@ -377,6 +406,8 @@ def _validate_citation_report(report: str) -> ValidationResult:
             errors.append(f"{item_name} 内容证据 must be A, B, C, or D")
         else:
             actual_content[content_grade] += 1
+        if bibliography_grade in {"C", "D"} or content_grade in {"B", "C", "D"}:
+            has_unverified_evidence = True
 
         if existence not in {"通过", "无法确认"}:
             errors.append(f"{item_name} has an invalid 存在性 verdict")
@@ -429,6 +460,13 @@ def _validate_citation_report(report: str) -> ValidationResult:
             "content evidence distribution does not match item grades: "
             f"declared={content_counts}, actual={actual_content}"
         )
+
+    status_match = STATUS_PATTERN.fullmatch(nonempty[-4])
+    if has_unverified_evidence and status_match is not None:
+        if status_match.group(1) == "complete":
+            errors.append("citation report with unverified evidence cannot be STATUS complete")
+        if nonempty[-1].casefold() == "unverified: none":
+            errors.append("citation report must list items with unverified evidence")
 
     return ValidationResult(not errors, tuple(errors))
 
@@ -594,8 +632,11 @@ def verify_run_dir(run_dir: Path, source_path: Path | None = None) -> Verificati
         return VerificationResult(False, ("manifest.json must contain an object",), ())
     manifest: dict[str, object] = manifest_value
 
-    if manifest.get("schema_version") != 1:
-        errors.append("unsupported or missing schema_version; expected 1")
+    schema_version = manifest.get("schema_version")
+    if schema_version not in {1, 2}:
+        errors.append("unsupported or missing schema_version; expected 1 or 2")
+    elif schema_version == 1:
+        warnings.append("legacy schema_version 1 archive has no output-limit metadata")
 
     protocol_name = manifest.get("protocol")
     if not isinstance(protocol_name, str) or protocol_name not in PROTOCOLS:
@@ -606,6 +647,8 @@ def verify_run_dir(run_dir: Path, source_path: Path | None = None) -> Verificati
         not isinstance(source_name, str)
         or not source_name
         or Path(source_name).name != source_name
+        or "/" in source_name
+        or "\\" in source_name
     ):
         errors.append("source_name must be a non-empty basename, not a path")
 
@@ -619,6 +662,7 @@ def verify_run_dir(run_dir: Path, source_path: Path | None = None) -> Verificati
         "start_failed",
         "interrupted",
         "timed_out",
+        "output_limit_exceeded",
     }
     if status not in allowed_statuses:
         errors.append(f"unknown run status: {status!r}")
@@ -642,8 +686,18 @@ def verify_run_dir(run_dir: Path, source_path: Path | None = None) -> Verificati
     ):
         errors.append("completed_at cannot be earlier than started_at")
 
-    report_required = status in {"succeeded", "failed", "invalid_report", "timed_out"}
-    stderr_required = status in {"start_failed", "timed_out"}
+    report_required = status in {
+        "succeeded",
+        "failed",
+        "invalid_report",
+        "timed_out",
+        "output_limit_exceeded",
+    }
+    stderr_required = status in {
+        "start_failed",
+        "timed_out",
+        "output_limit_exceeded",
+    }
     _verify_artifact(
         run_dir,
         manifest,
@@ -736,6 +790,21 @@ def verify_run_dir(run_dir: Path, source_path: Path | None = None) -> Verificati
     ):
         errors.append("executed run must have a positive finite timeout_seconds")
 
+    if schema_version == 2:
+        max_output_bytes = manifest.get("max_output_bytes")
+        if status == "prepared":
+            if max_output_bytes is not None:
+                errors.append("prepared manifest must have max_output_bytes=null")
+        elif (
+            not isinstance(max_output_bytes, int)
+            or isinstance(max_output_bytes, bool)
+            or max_output_bytes <= 0
+        ):
+            errors.append("executed run must have a positive integer max_output_bytes")
+        for key in ("stdout_truncated", "stderr_truncated"):
+            if not isinstance(manifest.get(key), bool):
+                errors.append(f"{key} must be a boolean")
+
     executor_code = manifest.get("executor_returncode")
     runner_code = manifest.get("runner_exit_code")
     expected_runner_codes = {
@@ -746,6 +815,7 @@ def verify_run_dir(run_dir: Path, source_path: Path | None = None) -> Verificati
         "start_failed": 2,
         "interrupted": EXIT_INTERRUPTED,
         "timed_out": EXIT_TIMEOUT,
+        "output_limit_exceeded": EXIT_OUTPUT_LIMIT,
     }
     if status in expected_runner_codes and runner_code != expected_runner_codes[status]:
         errors.append(
@@ -765,7 +835,11 @@ def verify_run_dir(run_dir: Path, source_path: Path | None = None) -> Verificati
         try:
             report_text = report_bytes.decode("utf-8-sig")
         except UnicodeDecodeError as exc:
-            errors.append(f"report.md is not UTF-8: {exc}")
+            validation = ValidationResult(False, (f"report is not UTF-8: {exc}",))
+            if manifest.get("report_validation") != validation.as_dict():
+                errors.append("report_validation does not match the UTF-8 decoding failure")
+            if status != "invalid_report":
+                errors.append("non-UTF-8 report must have status invalid_report")
         else:
             validation = validate_report(protocol_name, report_text)
             if manifest.get("report_validation") != validation.as_dict():
@@ -789,17 +863,20 @@ def write_run(
     started_at: str,
     status: str,
     completed_at: str | None = None,
-    report: str | None = None,
-    stderr: str | None = None,
+    report: str | bytes | None = None,
+    stderr: str | bytes | None = None,
     executor: list[str] | None = None,
     timeout_seconds: float | None = None,
+    max_output_bytes: int | None = None,
+    stdout_truncated: bool = False,
+    stderr_truncated: bool = False,
     executor_returncode: int | None = None,
     runner_exit_code: int | None = None,
     validation: ValidationResult | None = None,
 ) -> None:
     prompt_bytes = prompt.encode("utf-8")
-    report_bytes = report.encode("utf-8") if report is not None else None
-    stderr_bytes = stderr.encode("utf-8") if stderr else None
+    report_bytes = report.encode("utf-8") if isinstance(report, str) else report
+    stderr_bytes = stderr.encode("utf-8") if isinstance(stderr, str) else stderr
 
     atomic_write_bytes(run_dir / "prompt.md", prompt_bytes)
     if report_bytes is not None:
@@ -808,7 +885,7 @@ def write_run(
         atomic_write_bytes(run_dir / "stderr.log", stderr_bytes)
 
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "protocol": protocol_name,
         "source_name": source_path.name,
         "source_sha256": sha256_bytes(source_raw),
@@ -821,6 +898,9 @@ def write_run(
         "status": status,
         "executor": executor_metadata(executor),
         "timeout_seconds": timeout_seconds,
+        "max_output_bytes": max_output_bytes,
+        "stdout_truncated": stdout_truncated,
+        "stderr_truncated": stderr_truncated,
         "executor_returncode": executor_returncode,
         "runner_exit_code": runner_exit_code,
         "report_validation": validation.as_dict() if validation is not None else None,
@@ -853,14 +933,6 @@ def prepare(args: argparse.Namespace) -> int:
     return 0
 
 
-def _stream_text(value: str | bytes | None) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return value
-
-
 def _print_validation_errors(validation: ValidationResult) -> None:
     for error in validation.errors:
         print(f"validation error: {error}", file=sys.stderr)
@@ -883,12 +955,22 @@ def run(args: argparse.Namespace) -> int:
         raise ValueError("timeout must be a positive finite number") from exc
     if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise ValueError("timeout must be a positive finite number")
+    raw_max_output = getattr(args, "max_output_bytes", DEFAULT_MAX_OUTPUT_BYTES)
+    if isinstance(raw_max_output, bool):
+        raise ValueError("max output bytes must be a positive integer")
+    try:
+        max_output_bytes = int(raw_max_output)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("max output bytes must be a positive integer") from exc
+    if max_output_bytes <= 0:
+        raise ValueError("max output bytes must be a positive integer")
     source_path = Path(args.manuscript).resolve()
     source_text, source_raw = read_utf8(source_path)
     protocol, protocol_raw = load_protocol(args.protocol, args.allow_test_artifact)
     prompt = build_prompt(protocol, source_text, source_path.name)
     started_at = utc_now()
     run_dir = new_run_dir(Path(args.runs_dir), args.protocol)
+    args.run_dir_result = run_dir
 
     write_run(
         run_dir=run_dir,
@@ -901,44 +983,17 @@ def run(args: argparse.Namespace) -> int:
         status="running",
         executor=executor,
         timeout_seconds=timeout_seconds,
+        max_output_bytes=max_output_bytes,
     )
 
     try:
-        completed = subprocess.run(
+        completed = execute_with_limits(
             executor,
-            input=prompt,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-            check=False,
-            timeout=timeout_seconds,
-        )
-    except subprocess.TimeoutExpired as exc:
-        report = _stream_text(exc.stdout)
-        stderr = _stream_text(exc.stderr)
-        message = f"executor timed out after {timeout_seconds:g} seconds"
-        stderr = f"{stderr.rstrip()}\n{message}\n" if stderr else message + "\n"
-        validation = validate_report(args.protocol, report)
-        write_run(
-            run_dir=run_dir,
-            protocol_name=args.protocol,
-            source_path=source_path,
-            source_raw=source_raw,
-            protocol_raw=protocol_raw,
-            prompt=prompt,
-            report=report,
-            stderr=stderr,
-            started_at=started_at,
-            completed_at=utc_now(),
-            status="timed_out",
-            executor=executor,
+            prompt.encode("utf-8"),
             timeout_seconds=timeout_seconds,
-            runner_exit_code=EXIT_TIMEOUT,
-            validation=validation,
+            max_output_bytes=max_output_bytes,
+            capture_dir=run_dir,
         )
-        print(f"error: {message}; details archived in {run_dir}", file=sys.stderr)
-        return EXIT_TIMEOUT
     except OSError as exc:
         write_run(
             run_dir=run_dir,
@@ -953,6 +1008,7 @@ def run(args: argparse.Namespace) -> int:
             status="start_failed",
             executor=executor,
             timeout_seconds=timeout_seconds,
+            max_output_bytes=max_output_bytes,
             runner_exit_code=2,
         )
         print(f"error: executor failed to start; details archived in {run_dir}", file=sys.stderr)
@@ -970,12 +1026,30 @@ def run(args: argparse.Namespace) -> int:
             status="interrupted",
             executor=executor,
             timeout_seconds=timeout_seconds,
+            max_output_bytes=max_output_bytes,
             runner_exit_code=EXIT_INTERRUPTED,
         )
         raise
 
-    validation = validate_report(args.protocol, completed.stdout)
-    if completed.returncode != 0:
+    try:
+        report_text = completed.stdout.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        validation = ValidationResult(False, (f"report is not UTF-8: {exc}",))
+    else:
+        validation = validate_report(args.protocol, report_text)
+
+    stderr = completed.stderr
+    if completed.output_limit_exceeded:
+        message = f"executor exceeded the {max_output_bytes}-byte combined output limit"
+        stderr = stderr.rstrip() + (b"\n" if stderr else b"") + message.encode() + b"\n"
+        runner_exit_code = EXIT_OUTPUT_LIMIT
+        status = "output_limit_exceeded"
+    elif completed.timed_out:
+        message = f"executor timed out after {timeout_seconds:g} seconds"
+        stderr = stderr.rstrip() + (b"\n" if stderr else b"") + message.encode() + b"\n"
+        runner_exit_code = EXIT_TIMEOUT
+        status = "timed_out"
+    elif completed.returncode != 0:
         runner_exit_code = completed.returncode
         status = "failed"
     elif not validation.valid:
@@ -993,21 +1067,305 @@ def run(args: argparse.Namespace) -> int:
         protocol_raw=protocol_raw,
         prompt=prompt,
         report=completed.stdout,
-        stderr=completed.stderr,
+        stderr=stderr,
         started_at=started_at,
         completed_at=utc_now(),
         status=status,
         executor=executor,
         timeout_seconds=timeout_seconds,
+        max_output_bytes=max_output_bytes,
+        stdout_truncated=completed.stdout_truncated,
+        stderr_truncated=completed.stderr_truncated,
         executor_returncode=completed.returncode,
         runner_exit_code=runner_exit_code,
         validation=validation,
     )
 
-    print(run_dir / "report.md")
+    quiet = bool(getattr(args, "quiet", False))
+    if status in {"timed_out", "output_limit_exceeded"}:
+        print(f"error: {message}; details archived in {run_dir}", file=sys.stderr)
+    elif not quiet:
+        print(run_dir / "report.md")
     if not validation.valid:
         _print_validation_errors(validation)
     return runner_exit_code
+
+
+def campaign(args: argparse.Namespace) -> int:
+    if not args.executor:
+        raise ValueError("campaign requires an executor command after --")
+    executor = list(args.executor)
+    if executor and executor[0] == "--":
+        executor = executor[1:]
+    if not executor:
+        raise ValueError("campaign requires an executor command after --")
+
+    protocols = args.protocol or ["critic-individualist", "critic-contrastivist"]
+    if len(set(protocols)) != len(protocols):
+        raise ValueError("campaign protocols must not contain duplicates")
+    for protocol_name in protocols:
+        load_protocol(protocol_name, args.allow_test_artifact)
+
+    source_path = Path(args.manuscript).resolve()
+    _, source_raw = read_utf8(source_path)
+    campaign_started_at = utc_now()
+    campaign_dir = new_run_dir(Path(args.campaigns_dir), "campaign")
+    runs_dir = campaign_dir / "runs"
+    runs_dir.mkdir()
+    if os.name == "posix":
+        os.chmod(runs_dir, 0o700)
+
+    prefix = {
+        "critic-individualist": "I",
+        "critic-contrastivist": "C",
+        "citation-auditor": "A",
+        "critic-generic": "G",
+    }
+    records: list[dict[str, object]] = []
+    run_archives: dict[str, str] = {}
+    for protocol_name in protocols:
+        for repetition in range(1, args.repeat + 1):
+            label = f"{prefix[protocol_name]}{repetition}"
+            run_args = argparse.Namespace(
+                protocol=protocol_name,
+                manuscript=str(source_path),
+                runs_dir=str(runs_dir),
+                allow_test_artifact=args.allow_test_artifact,
+                executor=executor,
+                timeout=args.timeout,
+                max_output_bytes=args.max_output_bytes,
+                quiet=True,
+            )
+            exit_code = run(run_args)
+            run_dir = run_args.run_dir_result
+            manifest = json.loads(
+                (run_dir / "manifest.json").read_text(encoding="utf-8")
+            )
+            relative_run = run_dir.relative_to(campaign_dir).as_posix()
+            run_archives[label] = relative_run
+            records.append(
+                {
+                    "label": label,
+                    "protocol": protocol_name,
+                    "repetition": repetition,
+                    "run_dir": relative_run,
+                    "status": manifest["status"],
+                    "runner_exit_code": exit_code,
+                    "manifest_sha256": sha256_bytes(
+                        (run_dir / "manifest.json").read_bytes()
+                    ),
+                }
+            )
+
+    completed_at = utc_now()
+    campaign_manifest = {
+        "schema_version": 1,
+        "source_name": source_path.name,
+        "source_sha256": sha256_bytes(source_raw),
+        "created_at": campaign_started_at,
+        "completed_at": completed_at,
+        "executor": executor_metadata(executor),
+        "repeat": args.repeat,
+        "runs": records,
+    }
+    if protocols == ["critic-individualist", "critic-contrastivist"] and args.repeat == 2:
+        template = scorecard_template()
+        template["run_archives"] = run_archives
+        atomic_write_text(
+            campaign_dir / "scorecard.json",
+            json.dumps(template, ensure_ascii=False, indent=2) + "\n",
+        )
+
+    summary = [
+        "# Critic campaign",
+        "",
+        f"Source: `{source_path.name}`",
+        "",
+        "| Run | Protocol | Status | Report |",
+        "| --- | --- | --- | --- |",
+    ]
+    for record in records:
+        report_link = f"{record['run_dir']}/report.md"
+        summary.append(
+            f"| {record['label']} | {record['protocol']} | {record['status']} | "
+            f"[report]({report_link}) |"
+        )
+    if (campaign_dir / "scorecard.json").exists():
+        summary.extend(
+            [
+                "",
+                "Fill `scorecard.json` after blind one-to-one pairing, then run:",
+                "",
+                "```bash",
+                "python critic_runner.py score path/to/scorecard.json --format markdown",
+                "```",
+            ]
+        )
+    summary_path = campaign_dir / "SUMMARY.md"
+    atomic_write_text(summary_path, "\n".join(summary) + "\n")
+    scorecard_path = campaign_dir / "scorecard.json"
+    campaign_manifest["summary_sha256"] = sha256_bytes(summary_path.read_bytes())
+    campaign_manifest["scorecard_template_sha256"] = (
+        sha256_bytes(scorecard_path.read_bytes()) if scorecard_path.exists() else None
+    )
+    atomic_write_text(
+        campaign_dir / "campaign.json",
+        json.dumps(campaign_manifest, ensure_ascii=False, indent=2) + "\n",
+    )
+
+    print(campaign_dir)
+    return 0 if all(record["runner_exit_code"] == 0 for record in records) else EXIT_CAMPAIGN_FAILED
+
+
+def verify_campaign_dir(
+    campaign_dir: Path, source_path: Path | None = None
+) -> VerificationResult:
+    errors: list[str] = []
+    warnings: list[str] = []
+    manifest_path = campaign_dir / "campaign.json"
+    try:
+        manifest_value = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return VerificationResult(False, (f"cannot read campaign.json: {exc}",), ())
+    if not isinstance(manifest_value, dict):
+        return VerificationResult(False, ("campaign.json must contain an object",), ())
+    manifest: dict[str, object] = manifest_value
+    if manifest.get("schema_version") != 1:
+        errors.append("campaign schema_version must be 1")
+
+    source_name = manifest.get("source_name")
+    if (
+        not isinstance(source_name, str)
+        or not source_name
+        or "/" in source_name
+        or "\\" in source_name
+    ):
+        errors.append("campaign source_name must be a non-empty basename")
+    if not _valid_sha256(manifest.get("source_sha256")):
+        errors.append("campaign source_sha256 is invalid")
+    if source_path is None:
+        warnings.append("source bytes not supplied; campaign source_sha256 was not rechecked")
+    else:
+        try:
+            source_raw = source_path.read_bytes()
+        except OSError as exc:
+            errors.append(f"cannot read source file: {exc}")
+        else:
+            if source_path.name != source_name:
+                errors.append("campaign source name does not match supplied source")
+            if sha256_bytes(source_raw) != manifest.get("source_sha256"):
+                errors.append("supplied source bytes do not match campaign source_sha256")
+
+    created_at = _parse_timestamp(manifest.get("created_at"))
+    completed_at = _parse_timestamp(manifest.get("completed_at"))
+    if created_at is None or completed_at is None:
+        errors.append("campaign timestamps must be timezone-aware ISO-8601 values")
+    elif completed_at < created_at:
+        errors.append("campaign completed_at cannot be earlier than created_at")
+
+    _verify_artifact(
+        campaign_dir, manifest, "SUMMARY.md", "summary_sha256", True, errors
+    )
+    template_hash = manifest.get("scorecard_template_sha256")
+    scorecard_path = campaign_dir / "scorecard.json"
+    if template_hash is not None:
+        if not _valid_sha256(template_hash):
+            errors.append("scorecard_template_sha256 is invalid")
+        elif not scorecard_path.is_file():
+            errors.append("scorecard.json is missing")
+        elif sha256_bytes(scorecard_path.read_bytes()) != template_hash:
+            warnings.append("scorecard.json differs from its blank template, likely because it was filled")
+    elif scorecard_path.exists():
+        warnings.append("scorecard.json exists but this campaign did not create a template")
+
+    records = manifest.get("runs")
+    if not isinstance(records, list) or not records:
+        errors.append("campaign runs must be a non-empty list")
+        records = []
+    labels: set[str] = set()
+    run_paths: set[str] = set()
+    for index, record in enumerate(records):
+        item = f"runs[{index}]"
+        if not isinstance(record, dict):
+            errors.append(f"{item} must be an object")
+            continue
+        label = record.get("label")
+        if not isinstance(label, str) or not label:
+            errors.append(f"{item}.label must be a non-empty string")
+        elif label in labels:
+            errors.append(f"duplicate campaign label: {label}")
+        else:
+            labels.add(label)
+        relative = record.get("run_dir")
+        if not isinstance(relative, str):
+            errors.append(f"{item}.run_dir must be a relative POSIX path")
+            continue
+        relative_path = PurePosixPath(relative)
+        if (
+            relative_path.is_absolute()
+            or not relative_path.parts
+            or relative_path.parts[0] != "runs"
+            or any(part in {"", ".", ".."} for part in relative_path.parts)
+            or "\\" in relative
+            or relative in run_paths
+        ):
+            errors.append(f"{item}.run_dir is unsafe or duplicated: {relative!r}")
+            continue
+        run_paths.add(relative)
+        run_dir = campaign_dir.joinpath(*relative_path.parts)
+        child_manifest_path = run_dir / "manifest.json"
+        try:
+            child_manifest_bytes = child_manifest_path.read_bytes()
+            child_manifest = json.loads(child_manifest_bytes.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            errors.append(f"{item} manifest cannot be read: {exc}")
+            continue
+        if sha256_bytes(child_manifest_bytes) != record.get("manifest_sha256"):
+            errors.append(f"{item} manifest_sha256 mismatch")
+        if not isinstance(child_manifest, dict):
+            errors.append(f"{item} manifest must contain an object")
+            continue
+        for record_key, manifest_key in (
+            ("protocol", "protocol"),
+            ("status", "status"),
+            ("runner_exit_code", "runner_exit_code"),
+        ):
+            if record.get(record_key) != child_manifest.get(manifest_key):
+                errors.append(f"{item}.{record_key} does not match its run manifest")
+        child = verify_run_dir(run_dir, source_path)
+        errors.extend(f"{label or item}: {error}" for error in child.errors)
+        warnings.extend(f"{label or item}: {warning}" for warning in child.warnings)
+
+    return VerificationResult(not errors, tuple(errors), tuple(warnings))
+
+
+def init_scorecard_command(args: argparse.Namespace) -> int:
+    output = Path(args.output).resolve()
+    atomic_write_text(output, json.dumps(scorecard_template(), indent=2) + "\n")
+    print(output)
+    return 0
+
+
+def score_command(args: argparse.Namespace) -> int:
+    scorecard_path = Path(args.scorecard).resolve()
+    try:
+        scorecard = json.loads(scorecard_path.read_text(encoding="utf-8"))
+        result = score_divergence(scorecard)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ScorecardError) as exc:
+        print(f"scorecard error: {exc}", file=sys.stderr)
+        return EXIT_INVALID_SCORECARD
+    output = (
+        score_markdown(result)
+        if args.format == "markdown"
+        else json.dumps(result, ensure_ascii=False, indent=2) + "\n"
+    )
+    if args.output:
+        output_path = Path(args.output).resolve()
+        atomic_write_text(output_path, output)
+        print(output_path)
+    else:
+        print(output, end="")
+    return 0
 
 
 def validate_command(args: argparse.Namespace) -> int:
@@ -1035,6 +1393,20 @@ def verify_run_command(args: argparse.Namespace) -> int:
     return EXIT_INVALID_ARCHIVE
 
 
+def verify_campaign_command(args: argparse.Namespace) -> int:
+    campaign_dir = Path(args.campaign_dir).resolve()
+    source_path = Path(args.source).resolve() if args.source else None
+    verification = verify_campaign_dir(campaign_dir, source_path)
+    for warning in verification.warnings:
+        print(f"verification warning: {warning}", file=sys.stderr)
+    if verification.valid:
+        print("verified")
+        return 0
+    for error in verification.errors:
+        print(f"verification error: {error}", file=sys.stderr)
+    return EXIT_INVALID_ARCHIVE
+
+
 def list_protocols(_: argparse.Namespace) -> int:
     for name in PROTOCOLS:
         suffix = " [test-only]" if name in TEST_ONLY else ""
@@ -1049,6 +1421,16 @@ def positive_seconds(raw: str) -> float:
         raise argparse.ArgumentTypeError("timeout must be a number") from exc
     if not math.isfinite(value) or value <= 0:
         raise argparse.ArgumentTypeError("timeout must be a positive finite number")
+    return value
+
+
+def positive_integer(raw: str) -> int:
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("value must be an integer") from exc
+    if value <= 0:
+        raise argparse.ArgumentTypeError("value must be a positive integer")
     return value
 
 
@@ -1091,7 +1473,50 @@ def parser() -> argparse.ArgumentParser:
         default=900.0,
         help="terminate the executor after this many seconds (default: 900)",
     )
+    run_parser.add_argument(
+        "--max-output-bytes",
+        type=positive_integer,
+        default=DEFAULT_MAX_OUTPUT_BYTES,
+        help="terminate after this many combined stdout/stderr bytes (default: 16777216)",
+    )
     run_parser.set_defaults(func=run)
+
+    campaign_parser = sub.add_parser(
+        "campaign",
+        help="run a serial, isolated multi-protocol calibration campaign",
+    )
+    campaign_parser.add_argument("manuscript", help="UTF-8 manuscript path")
+    campaign_parser.add_argument(
+        "--protocol",
+        action="append",
+        choices=PROTOCOLS,
+        help="protocol to include; repeat this option (default: individualist and contrastivist)",
+    )
+    campaign_parser.add_argument(
+        "--repeat",
+        type=positive_integer,
+        default=2,
+        help="serial repetitions per protocol (default: 2)",
+    )
+    campaign_parser.add_argument(
+        "--campaigns-dir",
+        default=".critic-campaigns",
+        help="campaign archive directory (default: .critic-campaigns)",
+    )
+    campaign_parser.add_argument(
+        "--allow-test-artifact",
+        action="store_true",
+        help="allow critic-generic for second-stage calibration",
+    )
+    campaign_parser.add_argument(
+        "--timeout", type=positive_seconds, default=900.0
+    )
+    campaign_parser.add_argument(
+        "--max-output-bytes",
+        type=positive_integer,
+        default=DEFAULT_MAX_OUTPUT_BYTES,
+    )
+    campaign_parser.set_defaults(func=campaign)
 
     validate_parser = sub.add_parser(
         "validate", help="validate the deterministic report structure"
@@ -1110,19 +1535,48 @@ def parser() -> argparse.ArgumentParser:
     )
     verify_parser.set_defaults(func=verify_run_command)
 
+    verify_campaign_parser = sub.add_parser(
+        "verify-campaign", help="verify a campaign and every archived run"
+    )
+    verify_campaign_parser.add_argument("campaign_dir", help="campaign directory")
+    verify_campaign_parser.add_argument(
+        "--source", help="optional original source file to recheck"
+    )
+    verify_campaign_parser.set_defaults(func=verify_campaign_command)
+
+    init_scorecard_parser = sub.add_parser(
+        "init-scorecard", help="create a blank reproducible W/B scorecard"
+    )
+    init_scorecard_parser.add_argument("output", help="output JSON path")
+    init_scorecard_parser.set_defaults(func=init_scorecard_command)
+
+    score_parser = sub.add_parser(
+        "score", help="calculate divergence intervals and the W/B verdict"
+    )
+    score_parser.add_argument("scorecard", help="completed scorecard JSON path")
+    score_parser.add_argument(
+        "--format", choices=("json", "markdown"), default="json"
+    )
+    score_parser.add_argument("--output", help="optional result file path")
+    score_parser.set_defaults(func=score_command)
+
     return top
 
 
 def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     executor: list[str] = []
-    if raw_argv and raw_argv[0] == "run" and "--" in raw_argv:
+    if raw_argv and raw_argv[0] in {"run", "campaign"} and "--" in raw_argv:
         separator = raw_argv.index("--")
         executor = raw_argv[separator + 1 :]
         raw_argv = raw_argv[:separator]
 
     args = parser().parse_args(raw_argv)
-    if args.command == "run":
+    if args.command in {"run", "campaign"}:
         args.executor = executor
     try:
         return args.func(args)
