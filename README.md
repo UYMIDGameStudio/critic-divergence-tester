@@ -203,6 +203,8 @@ python3 critic_runner.py validate critic-social-science report.md
 | 提示找不到 `python` / `py` | 安装 Python 3.10+；Windows 优先尝试 `py -3`，macOS/Linux 使用 `python3` |
 | 提示找不到 `critic_runner.py` | 先用 `cd` 进入解压后的项目文件夹 |
 | 提示找不到 `draft.md` | 确认文章就在当前文件夹，或传入它的完整路径 |
+| 输入 `path/to/draft.md` 后提示找不到 | 这是文档占位符，不是真实文件；换成你自己的文章完整路径 |
+| 提示“稿件文件是空的” | 用记事本打开该文件，粘贴正文并以 UTF-8 保存；文件不能只有空格 |
 | 不知道命令里的学术线英文怎么写 | 运行 `quickstart`，直接输入数字 1、2 或 3 |
 | 文件路径里有空格 | 用英文双引号包住路径，例如 `"C:\My Papers\draft.md"` |
 | 中文乱码 | 将文章和保存的报告改为 UTF-8 编码 |
@@ -248,27 +250,30 @@ check plan 使用规范化引用结构：完整 Argument IR 只保存一次，�
 
 先让工具为原稿生成一份**抽取提示词**：
 
-以下命令只需要 Python 3.10 或更高版本；Windows 如果没有 `python` 命令，就把它替换成 `py -3`。
+以下命令只需要 Python 3.10 或更高版本。**不要原样输入 `path/to/draft.md`**：它只是文档里的占位写法，仓库中没有这个文件。Windows PowerShell 最不容易输错的方法是先让终端询问真实路径：
 
-```bash
-python critic_runner.py ir prepare path/to/draft.md
+```powershell
+$article = Read-Host "请输入文章的真实完整路径（也可以把文件拖进窗口）"
+py -3 critic_runner.py ir prepare $article
 ```
 
 把生成的 `draft.argument-ir-prompt.md` 全部交给任意 AI。把 AI 返回的**纯 JSON**保存为 `argument-ir.json`，然后逐步运行：
 
-```bash
+```powershell
 # 1. 确认 IR 没有伪造引文、错绑原稿或破坏图结构
-python critic_runner.py ir validate path/to/draft.md argument-ir.json
+py -3 critic_runner.py ir validate $article .\argument-ir.json
 
 # 2. 由程序选择适用检查，并生成给 AI 的短执行提示词
-python critic_runner.py ir plan path/to/draft.md argument-ir.json --depth core
+py -3 critic_runner.py ir plan $article .\argument-ir.json --depth core
 
 # 3. 把 argument-check-prompt.md 交给 AI；将纯 JSON 回答保存为 argument-check-results.json
-python critic_runner.py ir validate-results argument-check-plan.json argument-check-results.json
+py -3 critic_runner.py ir validate-results .\argument-check-plan.json .\argument-check-results.json
 
 # 4. 只把 fail / uncertain 确定性转换为发现
-python critic_runner.py ir findings argument-check-plan.json argument-check-results.json
+py -3 critic_runner.py ir findings .\argument-check-plan.json .\argument-check-results.json
 ```
+
+macOS / Linux 可把 `py -3` 换成 `python3`，并直接把 `$article` 换成带引号的真实文件路径。
 
 最后得到 `argument-findings.json`。check plan 和结果互相用精确文件哈希绑定；模型不能悄悄增删、合并或重排任务，也不能引用当前 Claim 论证链之外的节点充当证据。命令重复运行时，只会复用完全相同的输出；若目标文件内容不同，工具会拒绝覆盖。
 

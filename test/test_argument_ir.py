@@ -119,6 +119,79 @@ class ArgumentIRTests(unittest.TestCase):
             }.issubset(identifiers)
         )
 
+    def test_placeholder_manuscript_path_has_copyable_windows_guidance(self) -> None:
+        stdout = StringIO()
+        stderr = StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            exit_code = critic_runner.main(
+                ["ir", "prepare", "path/to/draft.md"]
+            )
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("README 示例占位路径", stderr.getvalue())
+        self.assertIn("py -3 critic_runner.py ir prepare", stderr.getvalue())
+        self.assertIn("Downloads", stderr.getvalue())
+
+    def test_missing_manuscript_path_reports_resolved_path_and_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            missing = Path(temporary) / "does-not-exist.md"
+            stderr = StringIO()
+            with redirect_stdout(StringIO()), redirect_stderr(stderr):
+                exit_code = critic_runner.main(["ir", "prepare", str(missing)])
+            self.assertEqual(exit_code, 2)
+            self.assertIn("找不到稿件文件", stderr.getvalue())
+            self.assertIn(str(missing.resolve()), stderr.getvalue())
+            self.assertIn("当前工作目录", stderr.getvalue())
+            self.assertIn("双引号", stderr.getvalue())
+
+    def test_quoted_manuscript_path_with_spaces_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "folder with spaces"
+            root.mkdir()
+            manuscript = root / "article with spaces.md"
+            manuscript.write_text("一个可审查的主张。", encoding="utf-8")
+            output = root / "prompt.md"
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                exit_code = critic_runner.main(
+                    [
+                        "ir",
+                        "prepare",
+                        f'"{manuscript}"',
+                        "--output",
+                        str(output),
+                    ]
+                )
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(output.is_file())
+
+    def test_empty_manuscript_explains_how_to_fix_the_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            manuscript = Path(temporary) / ".txt"
+            manuscript.write_text(" \n\t", encoding="utf-8")
+            stderr = StringIO()
+            with redirect_stdout(StringIO()), redirect_stderr(stderr):
+                exit_code = critic_runner.main(
+                    ["ir", "prepare", str(manuscript)]
+                )
+            self.assertEqual(exit_code, 2)
+            self.assertIn("稿件文件是空的", stderr.getvalue())
+            self.assertIn(str(manuscript.resolve()), stderr.getvalue())
+            self.assertIn("记事本", stderr.getvalue())
+            self.assertIn("UTF-8", stderr.getvalue())
+
+    def test_non_utf8_manuscript_explains_encoding_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            manuscript = Path(temporary) / "legacy.txt"
+            manuscript.write_bytes(b"\x81\x81\x81")
+            stderr = StringIO()
+            with redirect_stdout(StringIO()), redirect_stderr(stderr):
+                exit_code = critic_runner.main(
+                    ["ir", "prepare", str(manuscript)]
+                )
+            self.assertEqual(exit_code, 2)
+            self.assertIn("不是 UTF-8 编码", stderr.getvalue())
+            self.assertIn("另存为", stderr.getvalue())
+
     def test_ir_binds_exact_source_and_provenance(self) -> None:
         value = valid_ir(self.source_bytes)
         self.assertEqual(
