@@ -127,6 +127,15 @@ class ArgumentIRTests(unittest.TestCase):
             ),
             [],
         )
+        normalized = argument_ir.canonicalize_argument_ir(
+            value,
+            source_bytes=self.source_bytes,
+            source_name="article.md",
+        )
+        self.assertRegex(normalized["claims"][0]["position"], r"^L1:C\d+-L1:C\d+$")
+        self.assertNotEqual(
+            normalized["claims"][0]["position"], value["claims"][0]["position"]
+        )
 
         forged_quote = copy.deepcopy(value)
         forged_quote["claims"][0]["source_quote"] = "原稿里不存在的话"
@@ -149,6 +158,19 @@ class ArgumentIRTests(unittest.TestCase):
                 for error in argument_ir.validate_argument_ir(
                     wrong_hash,
                     source_bytes=self.source_bytes,
+                    source_name="article.md",
+                )
+            )
+        )
+
+        duplicated_source = self.source_bytes + self.source_bytes
+        ambiguous = valid_ir(duplicated_source)
+        self.assertTrue(
+            any(
+                "ambiguous" in error
+                for error in argument_ir.validate_argument_ir(
+                    ambiguous,
+                    source_bytes=duplicated_source,
                     source_name="article.md",
                 )
             )
@@ -187,6 +209,17 @@ class ArgumentIRTests(unittest.TestCase):
         }
         self.assertTrue(
             any("duplicates" in error for error in argument_ir.validate_argument_ir(duplicate))
+        )
+
+        cycle = valid_ir(self.source_bytes)
+        cycle["relations"].append(
+            {"id": "R5", "type": "supports", "from": "C1", "to": "C2"}
+        )
+        self.assertTrue(
+            any(
+                "must be acyclic" in error
+                for error in argument_ir.validate_argument_ir(cycle)
+            )
         )
 
         empty = valid_ir(self.source_bytes)
@@ -241,14 +274,17 @@ class ArgumentIRTests(unittest.TestCase):
         )
         self.assertNotIn("quantitative.estimand", causal)
         self.assertNotIn("historical.comparability", causal)
-        causal_context = next(
-            task["context"]["incoming"]
-            for task in first["tasks"]
-            if task["claim_id"] == "C1"
+        self.assertEqual(first["argument_ir"], valid_ir(self.source_bytes))
+        self.assertTrue(all(set(task) == {"id", "claim_id", "check_id"} for task in first["tasks"]))
+        self.assertEqual(
+            len(first["checks"]), len({task["check_id"] for task in first["tasks"]})
         )
-        citation = next(item for item in causal_context if item["node_id"] == "Z1")
-        self.assertEqual(citation["target_id"], "E1")
-        self.assertEqual(citation["details"], {"locator": ""})
+        serialized = json.dumps(first, ensure_ascii=False)
+        self.assertEqual(serialized.count("人格化是把公共争议归结为个人品格"), 2)
+        repeated_argument_cost = len(
+            json.dumps(first["argument_ir"], ensure_ascii=False)
+        ) * len(first["tasks"])
+        self.assertLess(len(serialized), repeated_argument_cost)
 
         full = self._plan("full")
         full_causal = {
@@ -261,11 +297,34 @@ class ArgumentIRTests(unittest.TestCase):
         self.assertGreater(len(full["tasks"]), len(first["tasks"]))
 
         tampered = copy.deepcopy(first)
-        tampered["tasks"][0]["context"]["incoming"][0]["target_id"] = "C2"
+        tampered["tasks"][0]["check_id"] = "causal.not-in-plan"
         self.assertTrue(
             any(
-                "target_id" in error
+                "not in checks" in error
                 for error in argument_ir.validate_check_plan(tampered)
+            )
+        )
+
+        method_tamper = copy.deepcopy(first)
+        method_tamper["checks"][0]["question"] = "被替换但结构仍合法的问题"
+        self.assertEqual(argument_ir.validate_check_plan(method_tamper), [])
+        self.assertTrue(
+            any(
+                "not the deterministic output" in error
+                for error in argument_ir.validate_check_plan_against_library(
+                    method_tamper,
+                    self.library,
+                    library_sha256=digest(self.library_bytes),
+                )
+            )
+        )
+
+        argument_tamper = copy.deepcopy(first)
+        argument_tamper["argument_ir"]["claims"][0]["text"] = "被篡改的主张"
+        self.assertTrue(
+            any(
+                "argument_sha256" in error
+                for error in argument_ir.validate_check_plan(argument_tamper)
             )
         )
 
@@ -291,7 +350,7 @@ class ArgumentIRTests(unittest.TestCase):
                     "task_id": task["id"],
                     "verdict": "pass",
                     "reason": "上下文未触发该失败条件。",
-                    "evidence": [task["context"]["claim"]["source_quote"]],
+                    "evidence_refs": [task["claim_id"]],
                     "consequence": "",
                 }
                 for task in plan["tasks"]
@@ -308,10 +367,10 @@ class ArgumentIRTests(unittest.TestCase):
         )
 
         forged = copy.deepcopy(results)
-        forged["results"][0]["evidence"] = ["计划上下文之外的证据"]
+        forged["results"][0]["evidence_refs"] = ["E99"]
         self.assertTrue(
             any(
-                "not present" in error
+                "outside the claim context" in error
                 for error in argument_ir.validate_check_results(
                     forged, plan, plan_sha256=plan_hash
                 )
@@ -336,6 +395,67 @@ class ArgumentIRTests(unittest.TestCase):
                 "does not match" in error
                 for error in argument_ir.validate_check_results(
                     wrong_hash, plan, plan_sha256=plan_hash
+                )
+            )
+        )
+
+        empty_evidence = copy.deepcopy(results)
+        empty_evidence["results"][0]["evidence_refs"] = []
+        self.assertTrue(
+            any(
+                "is required for pass" in error
+                for error in argument_ir.validate_check_results(
+                    empty_evidence, plan, plan_sha256=plan_hash
+                )
+            )
+        )
+
+        escaped = copy.deepcopy(results)
+        escaped["results"][0]["verdict"] = "not_applicable"
+        self.assertTrue(
+            any(
+                "verdict" in error
+                for error in argument_ir.validate_check_results(
+                    escaped, plan, plan_sha256=plan_hash
+                )
+            )
+        )
+
+        unrelated = copy.deepcopy(results)
+        c2_result = next(
+            item
+            for item in unrelated["results"]
+            if next(
+                task for task in plan["tasks"] if task["id"] == item["task_id"]
+            )["claim_id"]
+            == "C2"
+        )
+        c2_result["evidence_refs"] = ["E1"]
+        self.assertTrue(
+            any(
+                "outside the claim context" in error
+                for error in argument_ir.validate_check_results(
+                    unrelated, plan, plan_sha256=plan_hash
+                )
+            )
+        )
+
+        partial = copy.deepcopy(results)
+        partial["status"] = "partial"
+        partial["unverified"] = ["T3 之后因上下文窗口中断"]
+        partial["results"] = partial["results"][:2]
+        self.assertEqual(
+            argument_ir.validate_check_results(
+                partial, plan, plan_sha256=plan_hash
+            ),
+            [],
+        )
+        partial["results"].reverse()
+        self.assertTrue(
+            any(
+                "task order" in error
+                for error in argument_ir.validate_check_results(
+                    partial, plan, plan_sha256=plan_hash
                 )
             )
         )
@@ -365,6 +485,11 @@ class ArgumentIRTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in findings["findings"]], ["F1", "F2"])
         self.assertEqual(
             {item["verdict"] for item in findings["findings"]}, {"fail", "uncertain"}
+        )
+        self.assertEqual(findings["findings"][0]["evidence_refs"], ["C1"])
+        self.assertEqual(
+            findings["findings"][0]["evidence"][0]["source_quote"],
+            "算法导致公共议题人格化",
         )
         self.assertEqual(argument_ir.validate_argument_findings(findings), [])
 
@@ -471,9 +596,14 @@ class ArgumentIRTests(unittest.TestCase):
             findings = json.loads(findings_path.read_text(encoding="utf-8"))
             self.assertEqual(len(findings["findings"]), 1)
 
-            plan["tasks"][0]["question"] = "被篡改的问题"
+            plan["checks"][0]["question"] = "被篡改的问题"
             plan_path.write_text(
                 json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
+            results["source"]["plan_sha256"] = digest(plan_path.read_bytes())
+            results_path.write_text(
+                json.dumps(results, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
             )
             with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
                 self.assertEqual(

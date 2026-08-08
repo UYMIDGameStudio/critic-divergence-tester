@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -53,7 +54,7 @@ EVIDENCE_KINDS = (
 RELATION_TYPES = ("supports", "contradicts", "qualifies", "assumes", "cites")
 CHECK_TIERS = ("core", "extended")
 CHECK_DEPTHS = ("core", "full")
-RESULT_VERDICTS = ("pass", "fail", "uncertain", "not_applicable")
+RESULT_VERDICTS = ("pass", "fail", "uncertain")
 RESULT_STATUSES = ("complete", "partial")
 REQUIRED_CONTEXT_VALUES = (
     "claim",
@@ -108,30 +109,15 @@ CHECK_KEYS = {
     "failure_condition",
     "required_context",
 }
-TASK_KEYS = {
-    "id",
-    "claim_id",
-    "check_id",
-    "category",
-    "tier",
-    "question",
-    "failure_condition",
-    "required_context",
-    "context",
-}
-TASK_CONTEXT_KEYS = {"claim", "incoming"}
-INCOMING_KEYS = {
-    "relation_id",
-    "relation_type",
+TASK_KEYS = {"id", "claim_id", "check_id"}
+RESULT_KEYS = {"task_id", "verdict", "reason", "evidence_refs", "consequence"}
+FINDING_EVIDENCE_KEYS = {
     "node_id",
     "node_kind",
-    "target_id",
     "text",
     "source_quote",
     "position",
-    "details",
 }
-RESULT_KEYS = {"task_id", "verdict", "reason", "evidence", "consequence"}
 FINDING_KEYS = {
     "id",
     "task_id",
@@ -142,6 +128,7 @@ FINDING_KEYS = {
     "position",
     "reason",
     "consequence",
+    "evidence_refs",
     "evidence",
 }
 
@@ -155,6 +142,17 @@ class ArgumentIRError(ValueError):
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _canonical_sha256(value: object) -> str:
+    return _sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
 
 
 def _nonempty_string(value: object) -> bool:
@@ -172,9 +170,26 @@ def _safe_basename(value: object) -> bool:
     )
 
 
+def _occurrence_offsets(text: str, fragment: str) -> list[int]:
+    if not fragment:
+        return []
+    offsets: list[int] = []
+    cursor = 0
+    while True:
+        offset = text.find(fragment, cursor)
+        if offset < 0:
+            return offsets
+        offsets.append(offset)
+        cursor = offset + 1
+
+
 def _validate_digest(value: object, label: str, errors: list[str]) -> None:
-    if not isinstance(value, str) or _SHA256_PATTERN.fullmatch(value) is None:
+    if not _is_digest(value):
         errors.append(f"{label} must be a lowercase SHA-256 digest")
+
+
+def _is_digest(value: object) -> bool:
+    return isinstance(value, str) and _SHA256_PATTERN.fullmatch(value) is not None
 
 
 def _validate_string_list(
@@ -233,8 +248,41 @@ def _validate_provenance_fields(
         if not _nonempty_string(item.get(key)):
             errors.append(f"{label}.{key} must be a non-empty string")
     quote = item.get("source_quote")
-    if manuscript_text is not None and isinstance(quote, str) and quote not in manuscript_text:
-        errors.append(f"{label}.source_quote is not an exact substring of the source manuscript")
+    if manuscript_text is not None and isinstance(quote, str):
+        occurrence_offsets = _occurrence_offsets(manuscript_text, quote)
+        if not occurrence_offsets:
+            errors.append(
+                f"{label}.source_quote is not an exact substring of the source manuscript"
+            )
+        elif len(occurrence_offsets) > 1:
+            errors.append(
+                f"{label}.source_quote is ambiguous ({len(occurrence_offsets)} exact occurrences); "
+                "use a longer unique quote"
+            )
+
+
+def _directed_cycle(adjacency: dict[str, list[str]]) -> list[str] | None:
+    indegree = {node: 0 for node in adjacency}
+    for targets in adjacency.values():
+        for target in targets:
+            if target in indegree:
+                indegree[target] += 1
+    ready = [node for node, degree in indegree.items() if degree == 0]
+    visited = 0
+    cursor = 0
+    while cursor < len(ready):
+        node = ready[cursor]
+        cursor += 1
+        visited += 1
+        for target in adjacency.get(node, []):
+            if target not in indegree:
+                continue
+            indegree[target] -= 1
+            if indegree[target] == 0:
+                ready.append(target)
+    if visited == len(indegree):
+        return None
+    return [node for node, degree in indegree.items() if degree > 0]
 
 
 def validate_argument_ir(
@@ -398,10 +446,66 @@ def validate_argument_ir(
             errors.append(f"{label} duplicates an existing relation")
         seen_relations.add(triple)
 
+    support_adjacency: dict[str, list[str]] = {
+        claim.get("id"): []
+        for claim in claims
+        if isinstance(claim.get("id"), str)
+    }
+    for relation in relations:
+        if relation.get("type") not in {"supports", "qualifies"}:
+            continue
+        source_id = relation.get("from")
+        target_id = relation.get("to")
+        if source_id in support_adjacency and target_id in support_adjacency:
+            support_adjacency[source_id].append(target_id)
+    cycle = _directed_cycle(support_adjacency)
+    if cycle is not None:
+        errors.append(
+            "claim support/qualification graph must be acyclic; cycle prevents ordering of: "
+            + ", ".join(cycle)
+        )
+
     _validate_string_list(
         value.get("unverified"), "unverified", errors, allow_empty=True
     )
     return errors
+
+
+def _canonical_position(manuscript: str, quote: str) -> str:
+    start = manuscript.index(quote)
+    end = start + len(quote)
+
+    def line_column(offset: int) -> tuple[int, int]:
+        line = manuscript.count("\n", 0, offset) + 1
+        previous_newline = manuscript.rfind("\n", 0, offset)
+        column = offset - previous_newline
+        return line, column
+
+    start_line, start_column = line_column(start)
+    end_line, end_column = line_column(end)
+    return f"L{start_line}:C{start_column}-L{end_line}:C{end_column}"
+
+
+def canonicalize_argument_ir(
+    value: object,
+    *,
+    source_bytes: bytes,
+    source_name: str,
+) -> dict[str, Any]:
+    errors = validate_argument_ir(
+        value,
+        source_bytes=source_bytes,
+        source_name=source_name,
+    )
+    if errors:
+        raise ArgumentIRError("; ".join(errors))
+    assert isinstance(value, dict)
+    manuscript = source_bytes.decode("utf-8-sig")
+    normalized = copy.deepcopy(value)
+    for field in ("claims", "evidence", "assumptions", "citations"):
+        for item in normalized[field]:
+            item["position"] = _canonical_position(manuscript, item["source_quote"])
+    return normalized
 
 
 def validate_check_library(value: object) -> list[str]:
@@ -494,8 +598,10 @@ def _validate_applicability_dimension(
         errors.append(f"{label} contains unknown values: {unknown}")
 
 
-def _applies(required: list[str], actual: list[str]) -> bool:
-    return required == ["*"] or bool(set(required) & set(actual))
+def _applies(required: list[object], actual: list[object]) -> bool:
+    return required == ["*"] or any(
+        isinstance(item, str) and item in actual for item in required
+    )
 
 
 def _node_registry(ir: dict[str, Any]) -> dict[str, tuple[str, dict[str, Any]]]:
@@ -511,21 +617,6 @@ def _node_registry(ir: dict[str, Any]) -> dict[str, tuple[str, dict[str, Any]]]:
     return nodes
 
 
-def _node_details(kind: str, node: dict[str, Any]) -> dict[str, Any]:
-    if kind == "claim":
-        return {
-            key: node[key]
-            for key in ("types", "methods", "role", "extraction", "uncertainty")
-        }
-    if kind == "evidence":
-        return {"kind": node["kind"]}
-    if kind == "assumption":
-        return {
-            key: node[key] for key in ("extraction", "uncertainty")
-        }
-    return {"locator": node["locator"]}
-
-
 def build_check_plan(
     ir: object,
     library: object,
@@ -538,44 +629,16 @@ def build_check_plan(
     errors.extend(validate_check_library(library))
     if depth not in CHECK_DEPTHS:
         errors.append("depth must be core or full")
-    if _SHA256_PATTERN.fullmatch(ir_sha256) is None:
+    if not _is_digest(ir_sha256):
         errors.append("ir_sha256 must be a lowercase SHA-256 digest")
-    if _SHA256_PATTERN.fullmatch(library_sha256) is None:
+    if not _is_digest(library_sha256):
         errors.append("library_sha256 must be a lowercase SHA-256 digest")
     if errors:
         raise ArgumentIRError("; ".join(errors))
     assert isinstance(ir, dict)
     assert isinstance(library, dict)
-    nodes = _node_registry(ir)
-    incoming_by_claim: dict[str, list[dict[str, Any]]] = {}
-    for claim in ir["claims"]:
-        claim_id = claim["id"]
-        direct = [relation for relation in ir["relations"] if relation["to"] == claim_id]
-        direct_node_ids = {relation["from"] for relation in direct}
-        citation_context = [
-            relation
-            for relation in ir["relations"]
-            if relation["type"] == "cites" and relation["to"] in direct_node_ids
-        ]
-        relevant = direct + citation_context
-        incoming_by_claim[claim_id] = []
-        for relation in relevant:
-            node_kind, node = nodes[relation["from"]]
-            incoming_by_claim[claim_id].append(
-                {
-                    "relation_id": relation["id"],
-                    "relation_type": relation["type"],
-                    "node_id": relation["from"],
-                    "node_kind": node_kind,
-                    "target_id": relation["to"],
-                    "text": node["text"],
-                    "source_quote": node["source_quote"],
-                    "position": node["position"],
-                    "details": _node_details(node_kind, node),
-                }
-            )
-
     tasks: list[dict[str, Any]] = []
+    selected_ids: set[str] = set()
     for claim in ir["claims"]:
         for check in library["checks"]:
             if depth == "core" and check["tier"] != "core":
@@ -585,20 +648,12 @@ def build_check_plan(
                 continue
             if not _applies(applicability["methods"], claim["methods"]):
                 continue
+            selected_ids.add(check["id"])
             tasks.append(
                 {
                     "id": f"T{len(tasks) + 1}",
                     "claim_id": claim["id"],
                     "check_id": check["id"],
-                    "category": check["category"],
-                    "tier": check["tier"],
-                    "question": check["question"],
-                    "failure_condition": check["failure_condition"],
-                    "required_context": list(check["required_context"]),
-                    "context": {
-                        "claim": dict(claim),
-                        "incoming": list(incoming_by_claim[claim["id"]]),
-                    },
                 }
             )
     return {
@@ -607,9 +662,16 @@ def build_check_plan(
         "depth": depth,
         "source": {
             "ir_sha256": ir_sha256,
+            "argument_sha256": _canonical_sha256(ir),
             "library_sha256": library_sha256,
             "scope": ir["scope"],
         },
+        "argument_ir": copy.deepcopy(ir),
+        "checks": [
+            copy.deepcopy(check)
+            for check in library["checks"]
+            if check["id"] in selected_ids
+        ],
         "tasks": tasks,
     }
 
@@ -618,7 +680,15 @@ def validate_check_plan(value: object) -> list[str]:
     errors: list[str] = []
     if not isinstance(value, dict):
         return ["check plan must be a JSON object"]
-    if set(value) != {"schema_version", "artifact", "depth", "source", "tasks"}:
+    if set(value) != {
+        "schema_version",
+        "artifact",
+        "depth",
+        "source",
+        "argument_ir",
+        "checks",
+        "tasks",
+    }:
         errors.append("check plan must contain exactly the v1 fields")
     if value.get("schema_version") != CHECK_PLAN_SCHEMA_VERSION:
         errors.append("check plan schema_version must be 1")
@@ -629,225 +699,164 @@ def validate_check_plan(value: object) -> list[str]:
     source = value.get("source")
     if not isinstance(source, dict) or set(source) != {
         "ir_sha256",
+        "argument_sha256",
         "library_sha256",
         "scope",
     }:
-        errors.append("check plan source must contain IR hash, library hash, and scope")
+        errors.append(
+            "check plan source must contain raw IR hash, semantic argument hash, "
+            "library hash, and scope"
+        )
     else:
         _validate_digest(source.get("ir_sha256"), "source.ir_sha256", errors)
+        _validate_digest(
+            source.get("argument_sha256"), "source.argument_sha256", errors
+        )
         _validate_digest(source.get("library_sha256"), "source.library_sha256", errors)
         if source.get("scope") != "social-science":
             errors.append("check plan source.scope must be social-science")
+
+    argument = value.get("argument_ir")
+    argument_errors = validate_argument_ir(argument)
+    errors.extend(f"argument_ir: {error}" for error in argument_errors)
+    claims = (
+        argument.get("claims")
+        if isinstance(argument, dict) and isinstance(argument.get("claims"), list)
+        else []
+    )
+    claim_by_id = {
+        claim["id"]: claim
+        for claim in claims
+        if isinstance(claim, dict) and isinstance(claim.get("id"), str)
+    }
+    if (
+        isinstance(source, dict)
+        and isinstance(argument, dict)
+        and source.get("scope") != argument.get("scope")
+    ):
+        errors.append("source.scope must match argument_ir.scope")
+    if (
+        isinstance(source, dict)
+        and isinstance(argument, dict)
+        and not argument_errors
+        and source.get("argument_sha256") != _canonical_sha256(argument)
+    ):
+        errors.append("source.argument_sha256 does not match argument_ir semantics")
+
+    selected_checks = value.get("checks")
+    selected_library = {
+        "schema_version": CHECK_LIBRARY_SCHEMA_VERSION,
+        "artifact": "argument-check-library",
+        "scope": "social-science",
+        "claim_types": list(CLAIM_TYPES),
+        "method_types": list(METHOD_TYPES),
+        "checks": selected_checks,
+    }
+    check_errors = validate_check_library(selected_library)
+    errors.extend(f"checks: {error}" for error in check_errors)
+    checks = selected_checks if isinstance(selected_checks, list) else []
+    check_by_id = {
+        check["id"]: check
+        for check in checks
+        if isinstance(check, dict) and isinstance(check.get("id"), str)
+    }
+
     tasks = _validate_continuous_ids(value.get("tasks"), "tasks", "T", errors)
     seen_pairs: set[tuple[object, object]] = set()
+    actual_pairs: list[tuple[object, object]] = []
     for index, task in enumerate(tasks):
         label = f"tasks[{index}]"
         if set(task) != TASK_KEYS:
             errors.append(f"{label} must contain exactly the task fields")
-        if not isinstance(task.get("claim_id"), str) or not re.fullmatch(
-            r"C[1-9][0-9]*", task["claim_id"]
+        claim_id = task.get("claim_id")
+        check_id = task.get("check_id")
+        if not isinstance(claim_id, str) or not re.fullmatch(
+            r"C[1-9][0-9]*", str(claim_id)
         ):
             errors.append(f"{label}.claim_id must be C1..Cn")
-        if not isinstance(task.get("check_id"), str) or _CHECK_ID_PATTERN.fullmatch(
-            task["check_id"]
+        elif claim_id not in claim_by_id:
+            errors.append(f"{label}.claim_id is not in argument_ir")
+        if not isinstance(check_id, str) or _CHECK_ID_PATTERN.fullmatch(
+            str(check_id)
         ) is None:
             errors.append(f"{label}.check_id is invalid")
-        for key in ("category", "question", "failure_condition"):
-            if not _nonempty_string(task.get(key)):
-                errors.append(f"{label}.{key} must be a non-empty string")
-        if task.get("tier") not in CHECK_TIERS:
-            errors.append(f"{label}.tier must be core or extended")
-        _validate_string_list(
-            task.get("required_context"),
-            label + ".required_context",
-            errors,
-            allowed=REQUIRED_CONTEXT_VALUES,
-            allow_empty=False,
-        )
-        context = task.get("context")
-        if not isinstance(context, dict) or set(context) != TASK_CONTEXT_KEYS:
-            errors.append(f"{label}.context must contain claim and incoming")
-        else:
-            claim = context.get("claim")
-            if not isinstance(claim, dict) or set(claim) != CLAIM_KEYS:
-                errors.append(f"{label}.context.claim is invalid")
-            else:
-                if claim.get("id") != task.get("claim_id"):
-                    errors.append(f"{label}.context.claim.id does not match claim_id")
-                _validate_provenance_fields(claim, label + ".context.claim", errors, None)
-                _validate_string_list(
-                    claim.get("types"),
-                    label + ".context.claim.types",
-                    errors,
-                    allowed=CLAIM_TYPES,
-                    allow_empty=False,
-                )
-                methods = _validate_string_list(
-                    claim.get("methods"),
-                    label + ".context.claim.methods",
-                    errors,
-                    allowed=METHOD_TYPES,
-                    allow_empty=False,
-                )
-                if len(methods) > 1 and ({"unspecified", "other"} & set(methods)):
-                    errors.append(
-                        f"{label}.context.claim.methods must use unspecified or other alone"
-                    )
-                if claim.get("role") not in CLAIM_ROLES:
-                    errors.append(f"{label}.context.claim.role is invalid")
-                if claim.get("extraction") not in EXTRACTION_MODES:
-                    errors.append(f"{label}.context.claim.extraction is invalid")
-                if not isinstance(claim.get("uncertainty"), str):
-                    errors.append(f"{label}.context.claim.uncertainty must be a string")
-            incoming = context.get("incoming")
-            if not isinstance(incoming, list):
-                errors.append(f"{label}.context.incoming must be an array")
-            else:
-                valid_incoming: list[dict[str, Any]] = []
-                for incoming_index, item in enumerate(incoming):
-                    incoming_label = f"{label}.context.incoming[{incoming_index}]"
-                    if not isinstance(item, dict) or set(item) != INCOMING_KEYS:
-                        errors.append(f"{incoming_label} has invalid fields")
-                    elif any(
-                        not _nonempty_string(item.get(key))
-                        for key in INCOMING_KEYS - {"details"}
-                    ):
-                        errors.append(f"{incoming_label} fields must be non-empty strings")
-                    else:
-                        valid_incoming.append(item)
-                        if item.get("relation_type") not in RELATION_TYPES:
-                            errors.append(f"{incoming_label}.relation_type is invalid")
-                        node_kind = item.get("node_kind")
-                        if node_kind not in {
-                            "claim",
-                            "evidence",
-                            "assumption",
-                            "citation",
-                        }:
-                            errors.append(f"{incoming_label}.node_kind is invalid")
-                        expected_prefix = {
-                            "claim": "C",
-                            "evidence": "E",
-                            "assumption": "A",
-                            "citation": "Z",
-                        }.get(str(node_kind))
-                        if expected_prefix is not None and re.fullmatch(
-                            rf"{expected_prefix}[1-9][0-9]*", str(item.get("node_id"))
-                        ) is None:
-                            errors.append(
-                                f"{incoming_label}.node_id does not match node_kind"
-                            )
-                        if re.fullmatch(
-                            r"[CE][1-9][0-9]*", str(item.get("target_id"))
-                        ) is None:
-                            errors.append(f"{incoming_label}.target_id is invalid")
-                        details = item.get("details")
-                        expected_detail_keys = {
-                            "claim": {
-                                "types",
-                                "methods",
-                                "role",
-                                "extraction",
-                                "uncertainty",
-                            },
-                            "evidence": {"kind"},
-                            "assumption": {"extraction", "uncertainty"},
-                            "citation": {"locator"},
-                        }.get(str(node_kind))
-                        if (
-                            not isinstance(details, dict)
-                            or expected_detail_keys is None
-                            or set(details) != expected_detail_keys
-                        ):
-                            errors.append(
-                                f"{incoming_label}.details does not match node_kind"
-                            )
-                        elif node_kind == "claim":
-                            _validate_string_list(
-                                details.get("types"),
-                                incoming_label + ".details.types",
-                                errors,
-                                allowed=CLAIM_TYPES,
-                                allow_empty=False,
-                            )
-                            _validate_string_list(
-                                details.get("methods"),
-                                incoming_label + ".details.methods",
-                                errors,
-                                allowed=METHOD_TYPES,
-                                allow_empty=False,
-                            )
-                            if details.get("role") not in CLAIM_ROLES:
-                                errors.append(f"{incoming_label}.details.role is invalid")
-                            if details.get("extraction") not in EXTRACTION_MODES:
-                                errors.append(
-                                    f"{incoming_label}.details.extraction is invalid"
-                                )
-                            if not isinstance(details.get("uncertainty"), str):
-                                errors.append(
-                                    f"{incoming_label}.details.uncertainty must be a string"
-                                )
-                        elif node_kind == "evidence":
-                            if details.get("kind") not in EVIDENCE_KINDS:
-                                errors.append(f"{incoming_label}.details.kind is invalid")
-                        elif node_kind == "assumption":
-                            if details.get("extraction") not in EXTRACTION_MODES:
-                                errors.append(
-                                    f"{incoming_label}.details.extraction is invalid"
-                                )
-                            if not isinstance(details.get("uncertainty"), str):
-                                errors.append(
-                                    f"{incoming_label}.details.uncertainty must be a string"
-                                )
-                        elif node_kind == "citation" and not isinstance(
-                            details.get("locator"), str
-                        ):
-                            errors.append(
-                                f"{incoming_label}.details.locator must be a string"
-                            )
-                direct_node_ids = {
-                    item["node_id"]
-                    for item in valid_incoming
-                    if item["relation_type"] != "cites"
-                    and item["target_id"] == task.get("claim_id")
-                }
-                allowed_source_kinds = {
-                    "supports": {"claim", "evidence"},
-                    "contradicts": {"claim", "evidence"},
-                    "qualifies": {"claim", "evidence"},
-                    "assumes": {"assumption"},
-                    "cites": {"citation"},
-                }
-                for incoming_index, item in enumerate(valid_incoming):
-                    incoming_label = f"{label}.context.incoming[{incoming_index}]"
-                    relation_type = item["relation_type"]
-                    allowed_kinds = allowed_source_kinds.get(relation_type, set())
-                    if item["node_kind"] not in allowed_kinds:
-                        errors.append(
-                            f"{incoming_label}.node_kind is invalid for {relation_type}"
-                        )
-                    if relation_type == "cites":
-                        if item["target_id"] not in {
-                            task.get("claim_id"),
-                            *direct_node_ids,
-                        }:
-                            errors.append(
-                                f"{incoming_label}.target_id is outside the claim context"
-                            )
-                    elif item["target_id"] != task.get("claim_id"):
-                        errors.append(
-                            f"{incoming_label}.target_id must equal the task claim_id"
-                        )
+        elif check_id not in check_by_id:
+            errors.append(f"{label}.check_id is not in checks")
         pair = (task.get("claim_id"), task.get("check_id"))
         if pair in seen_pairs:
             errors.append(f"{label} duplicates a claim/check pair")
         seen_pairs.add(pair)
+        actual_pairs.append(pair)
+
+    depth = value.get("depth")
+    expected_pairs: list[tuple[str, str]] = []
+    for claim in claims:
+        if not isinstance(claim, dict):
+            continue
+        claim_types = claim.get("types") if isinstance(claim.get("types"), list) else []
+        methods = claim.get("methods") if isinstance(claim.get("methods"), list) else []
+        for check in checks:
+            if not isinstance(check, dict):
+                continue
+            if depth == "core" and check.get("tier") != "core":
+                errors.append("core plans must not contain extended checks")
+                continue
+            applicability = check.get("applies_to")
+            if not isinstance(applicability, dict):
+                continue
+            required_types = applicability.get("claim_types")
+            required_methods = applicability.get("methods")
+            if not isinstance(required_types, list) or not isinstance(required_methods, list):
+                continue
+            if _applies(required_types, claim_types) and _applies(
+                required_methods, methods
+            ):
+                expected_pairs.append((str(claim.get("id")), str(check.get("id"))))
+    if actual_pairs != expected_pairs:
+        errors.append(
+            "tasks must equal every applicable claim/check pair exactly once and in order"
+        )
+    referenced_checks = {str(pair[1]) for pair in actual_pairs}
+    if referenced_checks != set(check_by_id):
+        errors.append("checks must contain exactly the check definitions used by tasks")
+    return errors
+
+
+def validate_check_plan_against_library(
+    plan: object,
+    library: object,
+    *,
+    library_sha256: str,
+) -> list[str]:
+    errors = validate_check_plan(plan)
+    errors.extend(validate_check_library(library))
+    if not _is_digest(library_sha256):
+        errors.append("library_sha256 must be a lowercase SHA-256 digest")
+    if errors:
+        return errors
+    assert isinstance(plan, dict)
+    assert isinstance(library, dict)
+    source = plan["source"]
+    if source["library_sha256"] != library_sha256:
+        errors.append("source.library_sha256 does not match the supplied check library")
+        return errors
+    expected = build_check_plan(
+        plan["argument_ir"],
+        library,
+        ir_sha256=source["ir_sha256"],
+        library_sha256=library_sha256,
+        depth=plan["depth"],
+    )
+    if plan != expected:
+        errors.append(
+            "check plan is not the deterministic output of its Argument IR and library"
+        )
     return errors
 
 
 def render_check_prompt(plan: object, *, plan_sha256: str) -> str:
     errors = validate_check_plan(plan)
-    if _SHA256_PATTERN.fullmatch(plan_sha256) is None:
+    if not _is_digest(plan_sha256):
         errors.append("plan_sha256 must be a lowercase SHA-256 digest")
     if errors:
         raise ArgumentIRError("; ".join(errors))
@@ -856,22 +865,38 @@ def render_check_prompt(plan: object, *, plan_sha256: str) -> str:
     return (
         "# Argument IR 定向审查\n\n"
         "你不是自由发挥的通用 critic。下面的 check plan 已由程序根据主张类型和方法确定。"
-        "逐项回答，不增加、删除、合并或重排任务，不改写 Claim 或检查标准。\n\n"
-        "只使用 task.context 中的材料。缺少判断所需材料时写 uncertain，不得凭外部记忆补全。"
-        "pass 表示没有触发 failure_condition；fail 表示已触发；not_applicable 只能用于 IR 分类明显错误。\n\n"
-        "evidence 只能原样复制 context.claim.source_quote 或 context.incoming[*].source_quote 的完整值。"
+        "逐项回答，不增加、删除、合并或重排任务，不改写 Claim 或检查标准。"
+        "每个 task 只保存 claim_id/check_id：到 argument_ir.claims 和 checks 中按 ID 取定义，"
+        "再沿 argument_ir.relations 反向追踪与该 Claim 相连的证据、假设、引用和前置主张。\n\n"
+        "只使用 argument_ir 中的材料。缺少判断所需材料时写 uncertain，不得凭外部记忆补全。"
+        "pass 表示没有触发 failure_condition；fail 表示已触发。若你认为 IR 分类错误，也必须写 uncertain"
+        "并解释应如何重新抽取，不能跳过任务。\n\n"
+        "pass/fail 的 evidence_refs 至少列出一个与该 Claim 处于同一反向关系链的节点 ID；"
+        "uncertain 可在确实没有材料时留空。不要复制引文文本，程序会从节点 ID 确定性解析原文。"
         "正常情况下覆盖全部任务并写 status=complete；如果执行被中断，只按原顺序返回已完成任务，"
         "写 status=partial，并在 unverified 逐条说明未完成部分。\n\n"
         "只输出一个 JSON 对象，不要 Markdown 围栏。格式：\n\n"
         '{"schema_version":1,"artifact":"argument-check-results",'
         f'"source":{{"plan_sha256":"{plan_sha256}"}},'
         '"status":"complete","unverified":[],"results":['
-        '{"task_id":"T1","verdict":"pass|fail|uncertain|not_applicable",'
-        '"reason":"...","evidence":["必须逐字来自 task context 的引文"],'
+        '{"task_id":"T1","verdict":"pass|fail|uncertain",'
+        '"reason":"...","evidence_refs":["C1"],'
         '"consequence":"fail/uncertain 时说明对论证的影响，否则留空"}]}\n\n'
         "# Check plan\n\n"
         f"{plan_json}\n"
     )
+
+
+def _context_node_ids(ir: dict[str, Any], claim_id: str) -> set[str]:
+    reachable = {claim_id}
+    changed = True
+    while changed:
+        changed = False
+        for relation in ir["relations"]:
+            if relation["to"] in reachable and relation["from"] not in reachable:
+                reachable.add(relation["from"])
+                changed = True
+    return reachable
 
 
 def validate_check_results(
@@ -883,6 +908,8 @@ def validate_check_results(
     errors = validate_check_plan(plan)
     if errors:
         return errors
+    if not _is_digest(plan_sha256):
+        return ["plan_sha256 must be a lowercase SHA-256 digest"]
     if not isinstance(value, dict):
         return ["check results must be a JSON object"]
     if set(value) != {
@@ -926,6 +953,12 @@ def validate_check_results(
         for task in tasks
         if isinstance(task, dict) and isinstance(task.get("id"), str)
     }
+    argument = plan["argument_ir"]
+    nodes = _node_registry(argument)
+    allowed_refs_by_claim = {
+        claim["id"]: _context_node_ids(argument, claim["id"])
+        for claim in argument["claims"]
+    }
     expected_ids = list(task_by_id)
     actual_ids: list[object] = []
     for index, result in enumerate(results):
@@ -945,25 +978,32 @@ def validate_check_results(
             errors.append(f"{label}.verdict must be one of {RESULT_VERDICTS}")
         if not _nonempty_string(result.get("reason")):
             errors.append(f"{label}.reason must be a non-empty string")
-        evidence = _validate_string_list(
-            result.get("evidence"), label + ".evidence", errors, allow_empty=True
+        evidence_refs = _validate_string_list(
+            result.get("evidence_refs"),
+            label + ".evidence_refs",
+            errors,
+            allow_empty=True,
         )
+        if verdict in {"pass", "fail"} and not evidence_refs:
+            errors.append(f"{label}.evidence_refs is required for {verdict}")
         consequence = result.get("consequence")
         if not isinstance(consequence, str):
             errors.append(f"{label}.consequence must be a string")
         elif verdict in {"fail", "uncertain"} and not consequence.strip():
             errors.append(f"{label}.consequence is required for {verdict}")
-        elif verdict in {"pass", "not_applicable"} and consequence.strip():
+        elif verdict == "pass" and consequence.strip():
             errors.append(f"{label}.consequence must be empty for {verdict}")
         if task is not None:
-            allowed_quotes = {task["context"]["claim"]["source_quote"]}
-            allowed_quotes.update(
-                item["source_quote"] for item in task["context"]["incoming"]
-            )
-            unknown_quotes = [quote for quote in evidence if quote not in allowed_quotes]
-            if unknown_quotes:
+            allowed_refs = allowed_refs_by_claim.get(task["claim_id"], set())
+            unknown_refs = [
+                reference
+                for reference in evidence_refs
+                if reference not in nodes or reference not in allowed_refs
+            ]
+            if unknown_refs:
                 errors.append(
-                    f"{label}.evidence contains text not present in task context"
+                    f"{label}.evidence_refs contains nodes outside the claim context: "
+                    f"{unknown_refs}"
                 )
     if len(actual_ids) != len(set(actual_ids)):
         errors.append("results must not repeat task IDs")
@@ -984,19 +1024,34 @@ def build_argument_findings(
     results_sha256: str,
 ) -> dict[str, Any]:
     errors = validate_check_results(results, plan, plan_sha256=plan_sha256)
-    if _SHA256_PATTERN.fullmatch(results_sha256) is None:
+    if not _is_digest(results_sha256):
         errors.append("results_sha256 must be a lowercase SHA-256 digest")
     if errors:
         raise ArgumentIRError("; ".join(errors))
     assert isinstance(plan, dict)
     assert isinstance(results, dict)
     task_by_id = {task["id"]: task for task in plan["tasks"]}
+    argument = plan["argument_ir"]
+    claim_by_id = {claim["id"]: claim for claim in argument["claims"]}
+    nodes = _node_registry(argument)
     findings: list[dict[str, Any]] = []
     for result in results["results"]:
         if result["verdict"] not in {"fail", "uncertain"}:
             continue
         task = task_by_id[result["task_id"]]
-        claim = task["context"]["claim"]
+        claim = claim_by_id[task["claim_id"]]
+        resolved_evidence = []
+        for reference in result["evidence_refs"]:
+            node_kind, node = nodes[reference]
+            resolved_evidence.append(
+                {
+                    "node_id": reference,
+                    "node_kind": node_kind,
+                    "text": node["text"],
+                    "source_quote": node["source_quote"],
+                    "position": node["position"],
+                }
+            )
         findings.append(
             {
                 "id": f"F{len(findings) + 1}",
@@ -1008,7 +1063,8 @@ def build_argument_findings(
                 "position": claim["position"],
                 "reason": result["reason"],
                 "consequence": result["consequence"],
-                "evidence": list(result["evidence"]),
+                "evidence_refs": list(result["evidence_refs"]),
+                "evidence": resolved_evidence,
             }
         )
     return {
@@ -1061,9 +1117,35 @@ def validate_argument_findings(value: object) -> list[str]:
                 errors.append(f"{label}.{key} must be a non-empty string")
         if finding.get("verdict") not in {"fail", "uncertain"}:
             errors.append(f"{label}.verdict must be fail or uncertain")
-        _validate_string_list(
-            finding.get("evidence"), label + ".evidence", errors, allow_empty=True
+        evidence_refs = _validate_string_list(
+            finding.get("evidence_refs"),
+            label + ".evidence_refs",
+            errors,
+            allow_empty=True,
         )
+        evidence = finding.get("evidence")
+        if not isinstance(evidence, list):
+            errors.append(f"{label}.evidence must be an array")
+            continue
+        evidence_ids: list[object] = []
+        for evidence_index, item in enumerate(evidence):
+            evidence_label = f"{label}.evidence[{evidence_index}]"
+            if not isinstance(item, dict) or set(item) != FINDING_EVIDENCE_KEYS:
+                errors.append(f"{evidence_label} has invalid fields")
+                continue
+            evidence_ids.append(item.get("node_id"))
+            if item.get("node_kind") not in {
+                "claim",
+                "evidence",
+                "assumption",
+                "citation",
+            }:
+                errors.append(f"{evidence_label}.node_kind is invalid")
+            for key in ("node_id", "text", "source_quote", "position"):
+                if not _nonempty_string(item.get(key)):
+                    errors.append(f"{evidence_label}.{key} must be a non-empty string")
+        if evidence_ids != evidence_refs:
+            errors.append(f"{label}.evidence must resolve evidence_refs in order")
     return errors
 
 
@@ -1077,12 +1159,14 @@ def build_ir_extraction_prompt(
         raise ArgumentIRError("manuscript must not be empty")
     if not _safe_basename(source_name):
         raise ArgumentIRError("source_name must be a safe basename")
-    if _SHA256_PATTERN.fullmatch(source_sha256) is None:
+    if not _is_digest(source_sha256):
         raise ArgumentIRError("source_sha256 must be a lowercase SHA-256 digest")
     return (
         "# Argument IR extraction\n\n"
         "把下面稿件转换成 JSON Argument IR。你只做结构抽取，不评价主张质量，不运行 critic。"
         "承担推理功能的复合句要拆成可独立判断的 Claim；每个节点必须保留稿件中的逐字 source_quote 和位置。"
+        "source_quote 必须足够长，使它在整篇稿件中只出现一次；position 先写人可读提示，"
+        "程序随后会按唯一引文确定性改写为行列区间。"
         "不得补充稿件外事实。隐含 Claim/Assumption 标为 inferred，并在 uncertainty 解释推断依据；"
         "不要输出数值 confidence。\n\n"
         f"Claim types: {', '.join(CLAIM_TYPES)}\n"

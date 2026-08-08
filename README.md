@@ -238,9 +238,11 @@ flowchart LR
     G -. "下一阶段接入" .-> H["人工裁决与 benchmark"]
 ```
 
-IR 明确分开 `Claim`、`Evidence`、`Assumption`、`Citation` 及其关系。每个节点都保留原稿逐字引文和位置；程序会核对原稿文件名、精确字节 SHA-256、引文是否真的存在、ID 是否连续，以及关系端点是否合法。它不使用看似精确但无法校准的数字 `confidence`；隐含主张和假设必须写明 `uncertainty`。
+IR 明确分开 `Claim`、`Evidence`、`Assumption`、`Citation` 及其关系。每个节点都保留原稿逐字引文；引文必须在整篇原稿中唯一可定位，生成 plan 时程序会把模型写的位置提示改成确定性的 `L行:C列-L行:C列` 区间。程序还会核对原稿文件名、精确字节 SHA-256、ID 是否连续、关系端点是否合法，以及支持／限定关系是否形成循环。它不使用看似精确但无法校准的数字 `confidence`；隐含主张和假设必须写明 `uncertainty`。
 
 社科方法矩阵现在位于 [`ir/social-science-checks.json`](ir/social-science-checks.json)。每条规则都声明适用的主张类型、研究方法、检查问题、失败条件和所需上下文。因果主张的时间顺序、混杂、反向因果、选择偏差、机制和替代解释因此成为六个确定任务，而不是模型自由发挥的写作要求。`core` 是较短的必要检查，`full` 会加入识别假设、溢出、稳健性等扩展检查。
+
+check plan 使用规范化引用结构：完整 Argument IR 只保存一次，选中的检查定义也只保存一次，每个 task 只有 `id`、`claim_id`、`check_id`。模型结果不再复制一遍可能歧义的引文，而是用 `evidence_refs` 引用 IR 节点；程序再确定性解析原文与位置。`pass` / `fail` 必须给出与该 Claim 处于同一论证链的证据节点，分类有疑问时必须显式返回 `uncertain`，不存在可以让任务静默消失的 `not_applicable` 出口。
 
 ### 最简单的使用方法
 
@@ -268,7 +270,7 @@ python critic_runner.py ir validate-results argument-check-plan.json argument-ch
 python critic_runner.py ir findings argument-check-plan.json argument-check-results.json
 ```
 
-最后得到 `argument-findings.json`。check plan 和结果互相用精确文件哈希绑定；模型不能悄悄增删、合并或重排任务，也不能把上下文外的话伪装成证据。命令重复运行时，只会复用完全相同的输出；若目标文件内容不同，工具会拒绝覆盖。
+最后得到 `argument-findings.json`。check plan 和结果互相用精确文件哈希绑定；模型不能悄悄增删、合并或重排任务，也不能引用当前 Claim 论证链之外的节点充当证据。命令重复运行时，只会复用完全相同的输出；若目标文件内容不同，工具会拒绝覆盖。
 
 这条 IR 流程目前标为 **experimental**：它已经完成“原稿 → IR → 规则 → findings”的最小闭环，但尚未取代现有人工 adjudication，也不能证明某条规则本身正确。下一阶段应使用 10–20 篇真实修订稿建立 benchmark，测量问题召回率、误报率、人工接受率、实际修改率、重跑稳定性和跨模型稳定性；在此之前不会继续横向增加学科 critic。
 

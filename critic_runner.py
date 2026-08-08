@@ -28,11 +28,13 @@ from argument_ir import (
     build_argument_findings,
     build_check_plan,
     build_ir_extraction_prompt,
+    canonicalize_argument_ir,
     render_check_prompt,
     validate_argument_findings,
     validate_argument_ir,
     validate_check_library,
     validate_check_plan,
+    validate_check_plan_against_library,
     validate_check_results,
 )
 from critic_execution import ExecutorResult, execute_with_limits
@@ -2917,8 +2919,13 @@ def ir_plan_command(args: argparse.Namespace) -> int:
     errors.extend(validate_check_library(library_value))
     if errors:
         return _ir_print_validation("argument-ir-plan-inputs", errors)
-    plan = build_check_plan(
+    normalized_ir = canonicalize_argument_ir(
         ir_value,
+        source_bytes=source_bytes,
+        source_name=source_path.name,
+    )
+    plan = build_check_plan(
+        normalized_ir,
         library_value,
         ir_sha256=sha256_bytes(ir_bytes),
         library_sha256=sha256_bytes(library_bytes),
@@ -2954,6 +2961,14 @@ def ir_plan_command(args: argparse.Namespace) -> int:
 def ir_validate_results_command(args: argparse.Namespace) -> int:
     _, plan, plan_bytes = _ir_read_json(Path(args.check_plan), "check plan")
     _, results, _ = _ir_read_json(Path(args.results), "check results")
+    _, library, library_bytes = _ir_read_json(Path(args.rules), "check library")
+    plan_errors = validate_check_plan_against_library(
+        plan,
+        library,
+        library_sha256=sha256_bytes(library_bytes),
+    )
+    if plan_errors:
+        return _ir_print_validation("argument-check-plan", plan_errors)
     errors = validate_check_results(
         results,
         plan,
@@ -2967,6 +2982,14 @@ def ir_findings_command(args: argparse.Namespace) -> int:
     results_path, results, results_bytes = _ir_read_json(
         Path(args.results), "check results"
     )
+    _, library, library_bytes = _ir_read_json(Path(args.rules), "check library")
+    plan_errors = validate_check_plan_against_library(
+        plan,
+        library,
+        library_sha256=sha256_bytes(library_bytes),
+    )
+    if plan_errors:
+        return _ir_print_validation("argument-check-plan", plan_errors)
     plan_sha256 = sha256_bytes(plan_bytes)
     errors = validate_check_results(results, plan, plan_sha256=plan_sha256)
     if errors:
@@ -3778,6 +3801,11 @@ def parser() -> argparse.ArgumentParser:
     )
     ir_results_parser.add_argument("check_plan", help="check-plan JSON path")
     ir_results_parser.add_argument("results", help="check-results JSON path")
+    ir_results_parser.add_argument(
+        "--rules",
+        default=str(IR_SOCIAL_SCIENCE_RULES),
+        help="check-library JSON path used to reproduce the plan (default: bundled rules)",
+    )
     ir_results_parser.set_defaults(func=ir_validate_results_command)
 
     ir_findings_parser = ir_sub.add_parser(
@@ -3786,6 +3814,11 @@ def parser() -> argparse.ArgumentParser:
     )
     ir_findings_parser.add_argument("check_plan", help="check-plan JSON path")
     ir_findings_parser.add_argument("results", help="validated check-results JSON path")
+    ir_findings_parser.add_argument(
+        "--rules",
+        default=str(IR_SOCIAL_SCIENCE_RULES),
+        help="check-library JSON path used to reproduce the plan (default: bundled rules)",
+    )
     ir_findings_parser.add_argument(
         "--output", help="findings JSON path (default: beside results)"
     )
