@@ -1,0 +1,401 @@
+{
+  "schema_version": 1,
+  "artifact": "argument-check-library",
+  "scope": "social-science",
+  "claim_types": [
+    "normative",
+    "conceptual",
+    "interpretive",
+    "descriptive",
+    "causal",
+    "predictive",
+    "evaluative"
+  ],
+  "method_types": [
+    "conceptual-analysis",
+    "interpretive-analysis",
+    "descriptive-empirical",
+    "causal-observational",
+    "causal-experimental",
+    "quantitative",
+    "qualitative",
+    "comparative-historical",
+    "predictive-modeling",
+    "normative-reasoning",
+    "evaluative-analysis",
+    "unspecified",
+    "other"
+  ],
+  "checks": [
+    {
+      "id": "general.support",
+      "label": "支持链",
+      "category": "general",
+      "tier": "core",
+      "applies_to": {"claim_types": ["*"], "methods": ["*"]},
+      "question": "现有支持关系是否足以承担该主张，而不是只与它同题或相容？",
+      "failure_condition": "支持材料与主张之间缺少可说明的推理连接，或支持强度明显低于结论强度。",
+      "required_context": ["claim", "source_quote", "incoming_support"]
+    },
+    {
+      "id": "general.scope",
+      "label": "范围相称",
+      "category": "general",
+      "tier": "core",
+      "applies_to": {"claim_types": ["*"], "methods": ["*"]},
+      "question": "主张中的对象、时间、地点和总体范围是否没有超出材料可支持的边界？",
+      "failure_condition": "局部、个案或特定时期的材料被外推为更广泛结论，却没有额外论证。",
+      "required_context": ["claim", "source_quote", "incoming_support"]
+    },
+    {
+      "id": "concept.boundary",
+      "label": "概念边界",
+      "category": "conceptual",
+      "tier": "core",
+      "applies_to": {"claim_types": ["conceptual"], "methods": ["*"]},
+      "question": "核心概念是否给出了可区分纳入与排除对象的边界？",
+      "failure_condition": "概念定义无法处理明显边界例，或会把相互冲突的对象同时纳入。",
+      "required_context": ["claim", "source_quote"]
+    },
+    {
+      "id": "concept.level",
+      "label": "分析层次",
+      "category": "conceptual",
+      "tier": "core",
+      "applies_to": {"claim_types": ["conceptual"], "methods": ["*"]},
+      "question": "个人、组织、制度与社会等分析层次是否被清楚区分？",
+      "failure_condition": "不同层次的属性被无桥接地互相归属，导致层次谬误。",
+      "required_context": ["claim", "source_quote"]
+    },
+    {
+      "id": "concept.tautology",
+      "label": "非循环性",
+      "category": "conceptual",
+      "tier": "extended",
+      "applies_to": {"claim_types": ["conceptual"], "methods": ["*"]},
+      "question": "概念定义和解释是否提供了独立于待解释现象的判准？",
+      "failure_condition": "概念仅用结论本身重新命名原因或证据，形成循环论证。",
+      "required_context": ["claim", "source_quote", "incoming_support"]
+    },
+    {
+      "id": "interpret.context",
+      "label": "语境约束",
+      "category": "interpretive",
+      "tier": "core",
+      "applies_to": {"claim_types": ["interpretive"], "methods": ["*"]},
+      "question": "解释是否受文本、制度或历史语境中的实际材料约束？",
+      "failure_condition": "解释脱离关键语境，或把语境外含义投射给材料。",
+      "required_context": ["claim", "source_quote", "incoming_support", "citations"]
+    },
+    {
+      "id": "interpret.rival-reading",
+      "label": "竞争解释",
+      "category": "interpretive",
+      "tier": "core",
+      "applies_to": {"claim_types": ["interpretive"], "methods": ["*"]},
+      "question": "现有证据是否能够区分作者的解释与至少一种合理竞争解释？",
+      "failure_condition": "同一材料同样支持明显不同的解释，而作者没有给出区分依据。",
+      "required_context": ["claim", "source_quote", "incoming_support"]
+    },
+    {
+      "id": "interpret.counterpassage",
+      "label": "反例材料",
+      "category": "interpretive",
+      "tier": "extended",
+      "applies_to": {"claim_types": ["interpretive"], "methods": ["*"]},
+      "question": "解释是否处理了语料中可能抵触它的反例、反段落或不一致？",
+      "failure_condition": "作者只选择相符材料，未处理同一语料中的实质性反证。",
+      "required_context": ["claim", "source_quote", "incoming_support"]
+    },
+    {
+      "id": "descriptive.operationalization",
+      "label": "操作化",
+      "category": "descriptive",
+      "tier": "core",
+      "applies_to": {"claim_types": ["descriptive"], "methods": ["*"]},
+      "question": "理论概念如何映射到可观察指标是否明确且可检验？",
+      "failure_condition": "指标与概念之间缺少映射理由，或指标只捕捉概念的无关部分。",
+      "required_context": ["claim", "source_quote", "incoming_support"]
+    },
+    {
+      "id": "descriptive.sampling",
+      "label": "抽样与总体",
+      "category": "descriptive",
+      "tier": "core",
+      "applies_to": {"claim_types": ["descriptive"], "methods": ["*"]},
+      "question": "观察单位、样本来源和目标总体是否足以支持描述性外推？",
+      "failure_condition": "样本选择机制与目标总体不匹配，且没有限制外推范围。",
+      "required_context": ["claim", "source_quote", "incoming_support"]
+    },
+    {
+      "id": "descriptive.denominator",
+      "label": "分母与基线",
+      "category": "descriptive",
+      "tier": "core",
+      "applies_to": {"claim_types": ["descriptive"], "methods": ["*"]},
+      "question": "比例、频率、增长或比较是否明确了正确分母、基线和不确定性？",
+      "failure_condition": "缺少分母或比较基线使数值大小无法解释，或不确定性被确定性语言掩盖。",
+      "required_context": ["claim", "source_quote", "incoming_support"]
+    },
+    {
+      "id": "descriptive.measurement",
+      "label": "测量质量",
+      "category": "descriptive",
+      "tier": "extended",
+      "applies_to": {"claim_types": ["descriptive"], "methods": ["*"]},
+      "question": "测量的效度、信度、分类误差与缺失机制是否会改变描述结论？",
+      "failure_condition": "可预见的测量误差或缺失机制足以改变结论，但没有被识别或界定。",
+      "required_context": ["claim", "source_quote", "incoming_support"]
+    },
+    {
+      "id": "causal.temporal-order",
+      "label": "时间顺序",
+      "category": "causal",
+      "tier": "core",
+      "applies_to": {"claim_types": ["causal"], "methods": ["*"]},
+      "question": "所称原因是否在结果之前发生，并且观察窗口足以体现作用过程？",
+      "failure_condition": "时间顺序不明、同时测量或结果先于原因，使因果方向不能成立。",
+      "required_context": ["claim", "source_quote", "incoming_support"]
+    },
+    {
+      "id": "causal.confounding",
+      "label": "混杂",
+      "category": "causal",
+      "tier": "core",
+      "applies_to": {"claim_types": ["causal"], "methods": ["*"]},
+      "question": "是否存在同时影响原因与结果、足以解释关联的共同原因？",
+      "failure_condition": "关键共同原因未被设计、测量、控制或敏感性分析处理。",
+      "required_context": ["claim", "source_quote", "incoming_support", "assumptions"]
+    },
+    {
+      "id": "causal.reverse-causality",
+      "label": "反向因果",
+      "category": "causal",
+      "tier": "core",
+      "applies_to": {"claim_types": ["causal"], "methods": ["*"]},
+      "question": "结果反过来导致所称原因，是否同样能解释观察到的关系？",
+      "failure_condition": "反向路径具有实质合理性，现有设计却不能区分两个方向。",
+      "required_context": ["claim", "source_quote", "incoming_support"]
+    },
+    {
+      "id": "causal.selection-bias",
+      "label": "选择偏差",
+      "category": "causal",
+      "tier": "core",
+      "applies_to": {"claim_types": ["causal"], "methods": ["*"]},
+      "question": "进入样本、接受处理或被观察的选择过程是否会制造所见关系？",
+      "failure_condition": "选择过程依赖于原因、结果或其共同原因，且没有被识别策略处理。",
+      "required_context": ["claim", "source_quote", "incoming_support", "assumptions"]
+    },
+    {
+      "id": "causal.mechanism",
+      "label": "作用机制",
+      "category": "causal",
+      "tier": "core",
+      "applies_to": {"claim_types": ["causal"], "methods": ["*"]},
+      "question": "原因通过何种中间过程改变结果，是否被明确并得到相称材料支持？",
+      "failure_condition": "只报告相关或先后关系，却没有可检验的作用路径。",
+      "required_context": ["claim", "source_quote", "incoming_support"]
+    },
+    {
+      "id": "causal.alternative-explanation",
+      "label": "替代解释",
+      "category": "causal",
+      "tier": "core",
+      "applies_to": {"claim_types": ["causal"], "methods": ["*"]},
+      "question": "现有设计是否能区分该因果解释与至少一种能够产生同样观察的替代解释？",
+      "failure_condition": "同样证据兼容关键替代解释，且作者没有给出判别证据。",
+      "required_context": ["claim", "source_quote", "incoming_support"]
+    },
+    {
+      "id": "causal.identification",
+      "label": "识别假设",
+      "category": "causal",
+      "tier": "extended",
+      "applies_to": {"claim_types": ["causal"], "methods": ["causal-observational", "causal-experimental"]},
+      "question": "从观察分布到因果效应所依赖的识别假设是否明确，并说明失效后还能支持什么？",
+      "failure_condition": "因果结论依赖未陈述或不可辩护的识别假设。",
+      "required_context": ["claim", "source_quote", "incoming_support", "assumptions"]
+    },
+    {
+      "id": "causal.spillover",
+      "label": "干扰与溢出",
+      "category": "causal",
+      "tier": "extended",
+      "applies_to": {"claim_types": ["causal"], "methods": ["causal-observational", "causal-experimental"]},
+      "question": "单位之间的干扰、溢出或同时事件是否会破坏处理与结果的解释？",
+      "failure_condition": "一个单位的处理影响其他单位，或共同事件与处理重合，却仍按独立处理解释。",
+      "required_context": ["claim", "source_quote", "incoming_support", "assumptions"]
+    },
+    {
+      "id": "predictive.target",
+      "label": "预测目标",
+      "category": "predictive",
+      "tier": "core",
+      "applies_to": {"claim_types": ["predictive"], "methods": ["*"]},
+      "question": "预测对象、时间范围、使用场景和成功指标是否明确？",
+      "failure_condition": "预测目标或评价尺度含混，使预测主张不可证伪或不可比较。",
+      "required_context": ["claim", "source_quote"]
+    },
+    {
+      "id": "predictive.validation",
+      "label": "样本外验证",
+      "category": "predictive",
+      "tier": "core",
+      "applies_to": {"claim_types": ["predictive"], "methods": ["*"]},
+      "question": "预测能力是否在与开发数据分离、贴近目标场景的数据上验证？",
+      "failure_condition": "只报告训练内拟合、事后解释或数据泄漏下的表现。",
+      "required_context": ["claim", "source_quote", "incoming_support"]
+    },
+    {
+      "id": "predictive.shift",
+      "label": "分布漂移",
+      "category": "predictive",
+      "tier": "extended",
+      "applies_to": {"claim_types": ["predictive"], "methods": ["predictive-modeling"]},
+      "question": "训练环境与部署环境之间的时间、群体或制度变化是否被检验？",
+      "failure_condition": "模型被外推到分布已变化的场景，却没有漂移检验或适用边界。",
+      "required_context": ["claim", "source_quote", "incoming_support"]
+    },
+    {
+      "id": "normative.is-ought",
+      "label": "事实—规范桥接",
+      "category": "normative",
+      "tier": "core",
+      "applies_to": {"claim_types": ["normative"], "methods": ["*"]},
+      "question": "从事实判断到应然结论之间所需的价值前提是否明确？",
+      "failure_condition": "规范结论只由描述事实推出，缺少可讨论的规范桥接前提。",
+      "required_context": ["claim", "source_quote", "assumptions"]
+    },
+    {
+      "id": "normative.value-conflict",
+      "label": "价值冲突",
+      "category": "normative",
+      "tier": "core",
+      "applies_to": {"claim_types": ["normative"], "methods": ["*"]},
+      "question": "相互竞争的价值、权利、责任或受影响主体是否被识别并比较？",
+      "failure_condition": "结论把单一价值当作无争议最高准则，忽略会改变判断的实质冲突。",
+      "required_context": ["claim", "source_quote", "assumptions"]
+    },
+    {
+      "id": "normative.feasibility",
+      "label": "可行性与行动者",
+      "category": "normative",
+      "tier": "extended",
+      "applies_to": {"claim_types": ["normative"], "methods": ["normative-reasoning"]},
+      "question": "建议由谁执行、在何种约束下执行，以及执行失败会否改变规范结论？",
+      "failure_condition": "建议没有可识别行动者或忽略决定性制度约束。",
+      "required_context": ["claim", "source_quote", "assumptions"]
+    },
+    {
+      "id": "evaluation.baseline",
+      "label": "评价基线",
+      "category": "evaluative",
+      "tier": "core",
+      "applies_to": {"claim_types": ["evaluative"], "methods": ["*"]},
+      "question": "好坏、成败或改善所相对于的基线、反事实与评价维度是否明确？",
+      "failure_condition": "评价缺少比较对象或混合不可通约维度，因而结论无法判定。",
+      "required_context": ["claim", "source_quote", "assumptions"]
+    },
+    {
+      "id": "evaluation.distribution",
+      "label": "分配后果",
+      "category": "evaluative",
+      "tier": "extended",
+      "applies_to": {"claim_types": ["evaluative"], "methods": ["evaluative-analysis"]},
+      "question": "总体平均评价是否掩盖不同群体之间的收益、成本或风险分配？",
+      "failure_condition": "总体改善与关键群体受损并存，却被单一平均指标概括。",
+      "required_context": ["claim", "source_quote", "incoming_support"]
+    },
+    {
+      "id": "quantitative.estimand",
+      "label": "估计目标",
+      "category": "quantitative",
+      "tier": "core",
+      "applies_to": {"claim_types": ["*"], "methods": ["quantitative"]},
+      "question": "统计量、模型参数或效应是否对应主张实际要回答的估计目标？",
+      "failure_condition": "报告的数值与论证目标不是同一个量，或目标总体、单位、处理、结果不清。",
+      "required_context": ["claim", "source_quote", "incoming_support"]
+    },
+    {
+      "id": "quantitative.uncertainty",
+      "label": "效应与不确定性",
+      "category": "quantitative",
+      "tier": "core",
+      "applies_to": {"claim_types": ["*"], "methods": ["quantitative"]},
+      "question": "是否同时报告实质效应大小、不确定性区间和与结论相关的尺度？",
+      "failure_condition": "仅以显著性、有无星号或点估计替代效应大小与不确定性。",
+      "required_context": ["claim", "source_quote", "incoming_support"]
+    },
+    {
+      "id": "quantitative.robustness",
+      "label": "分析稳健性",
+      "category": "quantitative",
+      "tier": "extended",
+      "applies_to": {"claim_types": ["*"], "methods": ["quantitative"]},
+      "question": "合理的模型设定、多重比较和研究者自由度是否会改变结论？",
+      "failure_condition": "结论只在未经说明的单一分析路径成立，且合理替代设定可能推翻它。",
+      "required_context": ["claim", "source_quote", "incoming_support", "assumptions"]
+    },
+    {
+      "id": "qualitative.case-selection",
+      "label": "案例选择",
+      "category": "qualitative",
+      "tier": "core",
+      "applies_to": {"claim_types": ["*"], "methods": ["qualitative"]},
+      "question": "案例为何能回答研究问题，选择机制是否会预先保证预期结论？",
+      "failure_condition": "案例只因符合论点而被选入，且没有负案例或范围限定。",
+      "required_context": ["claim", "source_quote", "incoming_support"]
+    },
+    {
+      "id": "qualitative.triangulation",
+      "label": "三角验证",
+      "category": "qualitative",
+      "tier": "core",
+      "applies_to": {"claim_types": ["*"], "methods": ["qualitative"]},
+      "question": "关键推断是否由来源独立、偏差不同的材料相互校验？",
+      "failure_condition": "多份材料实为同一来源或同一偏差的重复，不能构成独立佐证。",
+      "required_context": ["claim", "source_quote", "incoming_support", "citations"]
+    },
+    {
+      "id": "qualitative.negative-case",
+      "label": "负案例与反身性",
+      "category": "qualitative",
+      "tier": "extended",
+      "applies_to": {"claim_types": ["*"], "methods": ["qualitative"]},
+      "question": "分析是否主动寻找反例，并说明研究者位置、访问条件或编码决定的影响？",
+      "failure_condition": "反例与研究者介入可能改变结论，却没有被记录和处理。",
+      "required_context": ["claim", "source_quote", "incoming_support", "assumptions"]
+    },
+    {
+      "id": "historical.comparability",
+      "label": "比较可比性",
+      "category": "comparative-historical",
+      "tier": "core",
+      "applies_to": {"claim_types": ["*"], "methods": ["comparative-historical"]},
+      "question": "比较单位、时期划分和概念含义是否在案例间具有可比性？",
+      "failure_condition": "表面相同的类别在不同时期或案例中含义不同，却被直接比较。",
+      "required_context": ["claim", "source_quote", "incoming_support"]
+    },
+    {
+      "id": "historical.source-silence",
+      "label": "史料与沉默",
+      "category": "comparative-historical",
+      "tier": "core",
+      "applies_to": {"claim_types": ["*"], "methods": ["comparative-historical"]},
+      "question": "史料的保存、生产与沉默机制是否会系统性偏向现有叙述？",
+      "failure_condition": "把档案缺失当作事件不存在，或把幸存材料当作总体代表。",
+      "required_context": ["claim", "source_quote", "incoming_support", "citations"]
+    },
+    {
+      "id": "historical.known-at-time",
+      "label": "避免后见之明",
+      "category": "comparative-historical",
+      "tier": "extended",
+      "applies_to": {"claim_types": ["*"], "methods": ["comparative-historical"]},
+      "question": "解释是否只使用当时行动者可知的信息，而没有把后来结果当作当时必然？",
+      "failure_condition": "后见信息被投射为行动者当时的知识或事件的必然方向。",
+      "required_context": ["claim", "source_quote", "incoming_support", "citations"]
+    }
+  ]
+}

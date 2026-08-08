@@ -23,6 +23,20 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
+from argument_ir import (
+    ArgumentIRError,
+    build_argument_findings,
+    build_check_plan,
+    build_ir_extraction_prompt,
+    canonicalize_argument_ir,
+    render_check_prompt,
+    validate_argument_findings,
+    validate_argument_ir,
+    validate_check_library,
+    validate_check_plan,
+    validate_check_plan_against_library,
+    validate_check_results,
+)
 from critic_execution import ExecutorResult, execute_with_limits
 from critic_scoring import (
     ALL_COMPARISONS,
@@ -48,6 +62,7 @@ from critic_workflow import (
 
 
 ROOT = Path(__file__).resolve().parent
+IR_SOCIAL_SCIENCE_RULES = ROOT / "ir" / "social-science-checks.json"
 
 PROTOCOLS = {
     "critic-social-science": ROOT / "critic-social-science.md",
@@ -2781,6 +2796,227 @@ def revision_plan_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _ir_json_bytes(value: object) -> bytes:
+    return (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
+def _ir_read_json(raw_path: Path, label: str) -> tuple[Path, object, bytes]:
+    if raw_path.is_symlink():
+        raise ArgumentIRError(f"{label} must not be a symlink")
+    path = raw_path.resolve()
+    text, data = read_utf8(path)
+    try:
+        return path, parse_json(text), data
+    except (json.JSONDecodeError, DuplicateJsonKeyError) as exc:
+        raise ArgumentIRError(f"{label} is not strict JSON: {exc}") from exc
+
+
+def _ir_preflight_output(path: Path, data: bytes, inputs: tuple[Path, ...]) -> bool:
+    """Refuse ambiguous replacement; return True when an exact artifact already exists."""
+    if path.is_symlink():
+        raise ArgumentIRError(f"output must not be a symlink: {path}")
+    resolved = path.resolve()
+    if resolved in {item.resolve() for item in inputs}:
+        raise ArgumentIRError(f"output must not overwrite an input artifact: {path}")
+    if resolved.exists():
+        if not resolved.is_file():
+            raise ArgumentIRError(f"output is not a regular file: {path}")
+        if resolved.read_bytes() != data:
+            raise ArgumentIRError(
+                f"output already exists with different content; choose another path: {path}"
+            )
+        return True
+    if resolved.parent.exists() and not resolved.parent.is_dir():
+        raise ArgumentIRError(f"output parent is not a directory: {resolved.parent}")
+    return False
+
+
+def _ir_write_outputs(
+    artifacts: tuple[tuple[Path, bytes], ...],
+    *,
+    inputs: tuple[Path, ...],
+) -> None:
+    resolved_outputs = [path.resolve() for path, _ in artifacts]
+    if len(resolved_outputs) != len(set(resolved_outputs)):
+        raise ArgumentIRError("derived artifacts must use distinct output paths")
+    existing = [
+        _ir_preflight_output(path, data, inputs) for path, data in artifacts
+    ]
+    for (path, data), already_present in zip(artifacts, existing, strict=True):
+        resolved = path.resolve()
+        if already_present:
+            continue
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_bytes(resolved, data)
+
+
+def _ir_print_validation(kind: str, errors: list[str]) -> int:
+    print(
+        json.dumps(
+            {"artifact": kind, "valid": not errors, "errors": errors},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0 if not errors else EXIT_INVALID_WORKFLOW
+
+
+def ir_prepare_command(args: argparse.Namespace) -> int:
+    raw_source = Path(args.manuscript)
+    if raw_source.is_symlink():
+        raise ArgumentIRError("manuscript must not be a symlink")
+    source_path = raw_source.resolve()
+    manuscript, source_bytes = read_utf8(source_path)
+    prompt = build_ir_extraction_prompt(
+        manuscript,
+        source_name=source_path.name,
+        source_sha256=sha256_bytes(source_bytes),
+    )
+    output = (
+        Path(args.output)
+        if args.output
+        else source_path.with_name(source_path.stem + ".argument-ir-prompt.md")
+    )
+    prompt_bytes = prompt.encode("utf-8")
+    _ir_write_outputs(((output, prompt_bytes),), inputs=(source_path,))
+    print(f"Argument IR extraction prompt: {output.resolve()}")
+    print(f"Source SHA-256: {sha256_bytes(source_bytes)}")
+    return 0
+
+
+def ir_validate_command(args: argparse.Namespace) -> int:
+    raw_source = Path(args.manuscript)
+    if raw_source.is_symlink():
+        raise ArgumentIRError("manuscript must not be a symlink")
+    source_path = raw_source.resolve()
+    _, source_bytes = read_utf8(source_path)
+    _, value, _ = _ir_read_json(Path(args.argument_ir), "argument IR")
+    errors = validate_argument_ir(
+        value,
+        source_bytes=source_bytes,
+        source_name=source_path.name,
+    )
+    return _ir_print_validation("argument-ir", errors)
+
+
+def ir_plan_command(args: argparse.Namespace) -> int:
+    raw_source = Path(args.manuscript)
+    if raw_source.is_symlink():
+        raise ArgumentIRError("manuscript must not be a symlink")
+    source_path = raw_source.resolve()
+    _, source_bytes = read_utf8(source_path)
+    ir_path, ir_value, ir_bytes = _ir_read_json(
+        Path(args.argument_ir), "argument IR"
+    )
+    library_path, library_value, library_bytes = _ir_read_json(
+        Path(args.rules), "check library"
+    )
+    errors = validate_argument_ir(
+        ir_value,
+        source_bytes=source_bytes,
+        source_name=source_path.name,
+    )
+    errors.extend(validate_check_library(library_value))
+    if errors:
+        return _ir_print_validation("argument-ir-plan-inputs", errors)
+    normalized_ir = canonicalize_argument_ir(
+        ir_value,
+        source_bytes=source_bytes,
+        source_name=source_path.name,
+    )
+    plan = build_check_plan(
+        normalized_ir,
+        library_value,
+        ir_sha256=sha256_bytes(ir_bytes),
+        library_sha256=sha256_bytes(library_bytes),
+        depth=args.depth,
+    )
+    plan_errors = validate_check_plan(plan)
+    if plan_errors:
+        return _ir_print_validation("argument-check-plan", plan_errors)
+    plan_bytes = _ir_json_bytes(plan)
+    plan_sha256 = sha256_bytes(plan_bytes)
+    prompt_bytes = render_check_prompt(plan, plan_sha256=plan_sha256).encode("utf-8")
+    output = (
+        Path(args.output)
+        if args.output
+        else ir_path.with_name("argument-check-plan.json")
+    )
+    prompt_output = (
+        Path(args.prompt_output)
+        if args.prompt_output
+        else ir_path.with_name("argument-check-prompt.md")
+    )
+    _ir_write_outputs(
+        ((output, plan_bytes), (prompt_output, prompt_bytes)),
+        inputs=(source_path, ir_path, library_path),
+    )
+    print(f"Check plan: {output.resolve()}")
+    print(f"Execution prompt: {prompt_output.resolve()}")
+    print(f"Plan SHA-256: {plan_sha256}")
+    print(f"Tasks: {len(plan['tasks'])}")
+    return 0
+
+
+def ir_validate_results_command(args: argparse.Namespace) -> int:
+    _, plan, plan_bytes = _ir_read_json(Path(args.check_plan), "check plan")
+    _, results, _ = _ir_read_json(Path(args.results), "check results")
+    _, library, library_bytes = _ir_read_json(Path(args.rules), "check library")
+    plan_errors = validate_check_plan_against_library(
+        plan,
+        library,
+        library_sha256=sha256_bytes(library_bytes),
+    )
+    if plan_errors:
+        return _ir_print_validation("argument-check-plan", plan_errors)
+    errors = validate_check_results(
+        results,
+        plan,
+        plan_sha256=sha256_bytes(plan_bytes),
+    )
+    return _ir_print_validation("argument-check-results", errors)
+
+
+def ir_findings_command(args: argparse.Namespace) -> int:
+    plan_path, plan, plan_bytes = _ir_read_json(Path(args.check_plan), "check plan")
+    results_path, results, results_bytes = _ir_read_json(
+        Path(args.results), "check results"
+    )
+    _, library, library_bytes = _ir_read_json(Path(args.rules), "check library")
+    plan_errors = validate_check_plan_against_library(
+        plan,
+        library,
+        library_sha256=sha256_bytes(library_bytes),
+    )
+    if plan_errors:
+        return _ir_print_validation("argument-check-plan", plan_errors)
+    plan_sha256 = sha256_bytes(plan_bytes)
+    errors = validate_check_results(results, plan, plan_sha256=plan_sha256)
+    if errors:
+        return _ir_print_validation("argument-check-results", errors)
+    findings = build_argument_findings(
+        plan,
+        results,
+        plan_sha256=plan_sha256,
+        results_sha256=sha256_bytes(results_bytes),
+    )
+    findings_errors = validate_argument_findings(findings)
+    if findings_errors:
+        return _ir_print_validation("argument-findings", findings_errors)
+    findings_bytes = _ir_json_bytes(findings)
+    output = (
+        Path(args.output)
+        if args.output
+        else results_path.with_name("argument-findings.json")
+    )
+    _ir_write_outputs(
+        ((output, findings_bytes),), inputs=(plan_path, results_path)
+    )
+    print(f"Findings: {output.resolve()}")
+    print(f"Actionable findings: {len(findings['findings'])}")
+    return 0
+
+
 def validate_command(args: argparse.Namespace) -> int:
     report_path = Path(args.report).resolve()
     report, _ = read_utf8(report_path)
@@ -3288,6 +3524,22 @@ def doctor(args: argparse.Namespace) -> int:
     else:
         checks.append(f"{len(ACADEMIC_TRACKS)} academic tracks resolve correctly")
 
+    try:
+        rules_text, _ = read_utf8(IR_SOCIAL_SCIENCE_RULES)
+        rules_value = parse_json(rules_text)
+        rule_errors = validate_check_library(rules_value)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, DuplicateJsonKeyError) as exc:
+        errors.append(f"Argument IR check library cannot be loaded: {exc}")
+    else:
+        if rule_errors:
+            errors.extend(
+                f"Argument IR check library: {error}" for error in rule_errors
+            )
+        else:
+            checks.append(
+                f"Argument IR check library is valid ({len(rules_value['checks'])} checks)"
+            )
+
     directory = Path(args.directory).resolve()
     if not directory.is_dir():
         errors.append(f"working directory does not exist: {directory}")
@@ -3492,6 +3744,85 @@ def parser() -> argparse.ArgumentParser:
         help="directory to test for archive write access (default: current directory)",
     )
     doctor_parser.set_defaults(func=doctor)
+
+    ir_parser = sub.add_parser(
+        "ir",
+        help="build and validate the experimental social-science Argument IR pipeline",
+    )
+    ir_sub = ir_parser.add_subparsers(dest="ir_command", required=True)
+
+    ir_prepare_parser = ir_sub.add_parser(
+        "prepare",
+        help="create a source-bound prompt for extracting Argument IR",
+    )
+    ir_prepare_parser.add_argument("manuscript", help="UTF-8 manuscript path")
+    ir_prepare_parser.add_argument(
+        "--output", help="output prompt path (default: beside manuscript)"
+    )
+    ir_prepare_parser.set_defaults(func=ir_prepare_command)
+
+    ir_validate_parser = ir_sub.add_parser(
+        "validate",
+        help="validate an Argument IR against the exact manuscript bytes",
+    )
+    ir_validate_parser.add_argument("manuscript", help="UTF-8 manuscript path")
+    ir_validate_parser.add_argument("argument_ir", help="Argument IR JSON path")
+    ir_validate_parser.set_defaults(func=ir_validate_command)
+
+    ir_plan_parser = ir_sub.add_parser(
+        "plan",
+        help="select method-conditional checks and create an execution prompt",
+    )
+    ir_plan_parser.add_argument("manuscript", help="UTF-8 manuscript path")
+    ir_plan_parser.add_argument("argument_ir", help="validated Argument IR JSON path")
+    ir_plan_parser.add_argument(
+        "--rules",
+        default=str(IR_SOCIAL_SCIENCE_RULES),
+        help="check-library JSON path (default: bundled social-science rules)",
+    )
+    ir_plan_parser.add_argument(
+        "--depth",
+        choices=("core", "full"),
+        default="core",
+        help="core checks only, or core plus extended checks (default: core)",
+    )
+    ir_plan_parser.add_argument(
+        "--output", help="check-plan JSON path (default: beside Argument IR)"
+    )
+    ir_plan_parser.add_argument(
+        "--prompt-output",
+        help="execution prompt path (default: beside Argument IR)",
+    )
+    ir_plan_parser.set_defaults(func=ir_plan_command)
+
+    ir_results_parser = ir_sub.add_parser(
+        "validate-results",
+        help="validate model results against the exact check-plan bytes",
+    )
+    ir_results_parser.add_argument("check_plan", help="check-plan JSON path")
+    ir_results_parser.add_argument("results", help="check-results JSON path")
+    ir_results_parser.add_argument(
+        "--rules",
+        default=str(IR_SOCIAL_SCIENCE_RULES),
+        help="check-library JSON path used to reproduce the plan (default: bundled rules)",
+    )
+    ir_results_parser.set_defaults(func=ir_validate_results_command)
+
+    ir_findings_parser = ir_sub.add_parser(
+        "findings",
+        help="derive deterministic fail/uncertain findings from validated results",
+    )
+    ir_findings_parser.add_argument("check_plan", help="check-plan JSON path")
+    ir_findings_parser.add_argument("results", help="validated check-results JSON path")
+    ir_findings_parser.add_argument(
+        "--rules",
+        default=str(IR_SOCIAL_SCIENCE_RULES),
+        help="check-library JSON path used to reproduce the plan (default: bundled rules)",
+    )
+    ir_findings_parser.add_argument(
+        "--output", help="findings JSON path (default: beside results)"
+    )
+    ir_findings_parser.set_defaults(func=ir_findings_command)
 
     quickstart_parser = sub.add_parser(
         "quickstart", help="中文交互引导：选择文章和学术线并生成 prompt"
