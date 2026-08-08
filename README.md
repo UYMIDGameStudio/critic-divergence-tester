@@ -2,7 +2,7 @@
 
 [![Tests](https://github.com/UYMIDGameStudio/critic-divergence-tester/actions/workflows/tests.yml/badge.svg)](https://github.com/UYMIDGameStudio/critic-divergence-tester/actions/workflows/tests.yml)
 
-一个**模型无关、零第三方依赖**的论证审查工作流。提示词只是入口，不是最终产品。
+一个**模型无关、零第三方依赖**的论证审查框架。提示词只是入口，不是最终产品；项目正在从 Critic Divergence Tester 演进为更完整的 Argument Review Framework，divergence 只是其中一个评估子系统。
 
 它最初以 Claude Code subagent 的形式出现，但核心从来不需要 Claude Code。现在仓库把“学术线”“具体审查协议”和“模型执行器”分开：学术线决定证据观，协议决定攻击入口，Claude Code、其他 CLI、本地模型、网页聊天都只是可替换的执行器。
 
@@ -222,6 +222,55 @@ git pull
 ```
 
 如果使用 Download ZIP，请重新下载并解压最新版。
+
+## Argument IR v1：把方法论从提示词变成可执行对象
+
+`critic-social-science.md` 仍是稳定工作流使用的兼容基线。新的实验性纵向切片不再要求模型“理解一大篇审查提示词”，而是把任务拆成五种可验证产物：
+
+```mermaid
+flowchart LR
+    A["原稿"] --> B["Argument IR"]
+    B --> C["机器可读规则库"]
+    C --> D["确定性 Check Plan"]
+    D --> E["模型逐项回答"]
+    E --> F["结构与来源校验"]
+    F --> G["Findings"]
+    G -. "下一阶段接入" .-> H["人工裁决与 benchmark"]
+```
+
+IR 明确分开 `Claim`、`Evidence`、`Assumption`、`Citation` 及其关系。每个节点都保留原稿逐字引文和位置；程序会核对原稿文件名、精确字节 SHA-256、引文是否真的存在、ID 是否连续，以及关系端点是否合法。它不使用看似精确但无法校准的数字 `confidence`；隐含主张和假设必须写明 `uncertainty`。
+
+社科方法矩阵现在位于 [`ir/social-science-checks.json`](ir/social-science-checks.json)。每条规则都声明适用的主张类型、研究方法、检查问题、失败条件和所需上下文。因果主张的时间顺序、混杂、反向因果、选择偏差、机制和替代解释因此成为六个确定任务，而不是模型自由发挥的写作要求。`core` 是较短的必要检查，`full` 会加入识别假设、溢出、稳健性等扩展检查。
+
+### 最简单的使用方法
+
+先让工具为原稿生成一份**抽取提示词**：
+
+以下命令只需要 Python 3.10 或更高版本；Windows 如果没有 `python` 命令，就把它替换成 `py -3`。
+
+```bash
+python critic_runner.py ir prepare path/to/draft.md
+```
+
+把生成的 `draft.argument-ir-prompt.md` 全部交给任意 AI。把 AI 返回的**纯 JSON**保存为 `argument-ir.json`，然后逐步运行：
+
+```bash
+# 1. 确认 IR 没有伪造引文、错绑原稿或破坏图结构
+python critic_runner.py ir validate path/to/draft.md argument-ir.json
+
+# 2. 由程序选择适用检查，并生成给 AI 的短执行提示词
+python critic_runner.py ir plan path/to/draft.md argument-ir.json --depth core
+
+# 3. 把 argument-check-prompt.md 交给 AI；将纯 JSON 回答保存为 argument-check-results.json
+python critic_runner.py ir validate-results argument-check-plan.json argument-check-results.json
+
+# 4. 只把 fail / uncertain 确定性转换为发现
+python critic_runner.py ir findings argument-check-plan.json argument-check-results.json
+```
+
+最后得到 `argument-findings.json`。check plan 和结果互相用精确文件哈希绑定；模型不能悄悄增删、合并或重排任务，也不能把上下文外的话伪装成证据。命令重复运行时，只会复用完全相同的输出；若目标文件内容不同，工具会拒绝覆盖。
+
+这条 IR 流程目前标为 **experimental**：它已经完成“原稿 → IR → 规则 → findings”的最小闭环，但尚未取代现有人工 adjudication，也不能证明某条规则本身正确。下一阶段应使用 10–20 篇真实修订稿建立 benchmark，测量问题召回率、误报率、人工接受率、实际修改率、重跑稳定性和跨模型稳定性；在此之前不会继续横向增加学科 critic。
 
 ## 三条学术线
 
@@ -482,6 +531,8 @@ UNVERIFIED: <逐条列出没有确认的内容；没有则写 none>
 
 `divergence-test.md` 回答一个很窄的问题：`critic-individualist` 与 `critic-contrastivist` 的差异，是否明显大于同一 critic 重跑产生的采样噪声。
 
+在新的项目结构里，它概念上属于 `evaluation/divergence`：W/B 只能说明 critic 是否产生不同输出，不能说明输出是否正确或有用。质量判断必须由真实问题标签、人工裁决和实际修订结果组成的 benchmark 提供。
+
 它是 **否决-only** 的：高分歧不能证明意见正确，更不能证明值得每篇都花 token。第二级控制件在 `test/critic-generic.md`，故意不参与普通审稿；runner 要求显式传 `--allow-test-artifact` 才允许执行它。所有非引证 critic 的六节骨架、原子化要求、逐条跟进量和强制判断项相同，generic 只缺少专用框架承诺。
 
 正式测试时仍然跑 I₁、I₂、C₁、C₂，并人工按“同处同因 / 同处异因 / 独有”拆原子指控。不要让模型自己给自己的分歧打分；`campaign` 和 `score` 只负责隔离运行、留档和复算。完整公式和判据见 `divergence-test.md`。
@@ -494,4 +545,4 @@ python -m unittest discover -s test -p 'test_*.py'
 
 CI 在 Ubuntu 与 Windows 上分别覆盖 Python 3.10 和 3.14；外部 action 固定到已核对的发布提交 SHA，工作流权限只读。
 
-项目目前刻意只用 Python 标准库。工具边界仍然明确：**组装协议、受限串行执行、完整留档、确定性结构校验、可复算计分**。联网检索和语义配对属于人的判断层，不偷偷塞进 runner。
+项目目前刻意只用 Python 标准库。工具边界仍然明确：**组装协议、构建 Argument IR、选择机器可读检查、受限串行执行、完整留档、确定性结构校验、可复算计分**。联网检索和语义配对属于人的判断层，不偷偷塞进 runner。
