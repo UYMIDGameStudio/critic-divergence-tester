@@ -229,6 +229,59 @@ def read_utf8(path: Path) -> tuple[str, bytes]:
     return raw.decode("utf-8-sig"), raw
 
 
+MANUSCRIPT_PATH_PLACEHOLDERS = {
+    "path/to/draft.md",
+    "path/to/article.md",
+    "path/to/manuscript.md",
+}
+
+
+def resolve_manuscript_path(value: object) -> Path:
+    raw = str(value).strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {'"', "'"}:
+        raw = raw[1:-1].strip()
+    if not raw:
+        raise ValueError("稿件路径不能为空")
+    normalized = raw.replace("\\", "/").lower()
+    while normalized.startswith("./") or normalized.startswith("/"):
+        normalized = normalized.removeprefix("./").removeprefix("/")
+    if normalized in MANUSCRIPT_PATH_PLACEHOLDERS:
+        raise ValueError(
+            f"你输入的是 README 示例占位路径 {raw!r}，它不是仓库自带文件。\n"
+            "请替换成真实文章路径。PowerShell 示例：\n"
+            '  py -3 critic_runner.py ir prepare "C:\\Users\\你的用户名\\Downloads\\文章.md"'
+        )
+    raw_path = Path(raw).expanduser()
+    if raw_path.is_symlink():
+        raise ValueError(f"稿件不能是符号链接: {raw_path}")
+    path = raw_path.resolve()
+    if not path.exists():
+        raise ValueError(
+            f"找不到稿件文件: {path}\n"
+            f"当前工作目录: {Path.cwd()}\n"
+            "请检查文件名和扩展名；PowerShell 中含空格的路径要放在双引号内。"
+        )
+    if not path.is_file():
+        raise ValueError(f"稿件路径不是普通文件: {path}")
+    return path
+
+
+def read_manuscript_utf8(path: Path) -> tuple[str, bytes]:
+    try:
+        text, raw = read_utf8(path)
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            f"稿件不是 UTF-8 编码: {path}\n"
+            "请用记事本的“另存为”功能选择 UTF-8 后重试。"
+        ) from exc
+    if not text.strip():
+        raise ValueError(
+            f"稿件文件是空的，无法抽取或审查: {path}\n"
+            "请先用记事本粘贴正文并保存为 UTF-8，然后重新运行命令。"
+        )
+    return text, raw
+
+
 def atomic_write_bytes(path: Path, data: bytes) -> None:
     """Replace a file atomically using a temporary file in the same directory."""
     temporary = path.with_name(
@@ -1301,8 +1354,8 @@ def write_run(
 
 
 def _prepare_bundle(args: argparse.Namespace) -> Path:
-    source_path = Path(args.manuscript).resolve()
-    source_text, source_raw = read_utf8(source_path)
+    source_path = resolve_manuscript_path(args.manuscript)
+    source_text, source_raw = read_manuscript_utf8(source_path)
     protocol, protocol_raw = load_protocol(args.protocol, args.allow_test_artifact)
     prompt = build_prompt(protocol, source_text, source_path.name)
     timestamp = utc_now()
@@ -1361,8 +1414,8 @@ def run(args: argparse.Namespace) -> int:
         raise ValueError("max output bytes must be a positive integer") from exc
     if max_output_bytes <= 0:
         raise ValueError("max output bytes must be a positive integer")
-    source_path = Path(args.manuscript).resolve()
-    source_text, source_raw = read_utf8(source_path)
+    source_path = resolve_manuscript_path(args.manuscript)
+    source_text, source_raw = read_manuscript_utf8(source_path)
     protocol, protocol_raw = load_protocol(args.protocol, args.allow_test_artifact)
     prompt = build_prompt(protocol, source_text, source_path.name)
     started_at = utc_now()
@@ -1552,8 +1605,8 @@ def campaign(args: argparse.Namespace) -> int:
     for protocol_name in protocols:
         load_protocol(protocol_name, args.allow_test_artifact)
 
-    source_path = Path(args.manuscript).resolve()
-    _, source_raw = read_utf8(source_path)
+    source_path = resolve_manuscript_path(args.manuscript)
+    _, source_raw = read_manuscript_utf8(source_path)
     campaign_started_at = utc_now()
     campaign_dir = new_run_dir(Path(args.campaigns_dir), "campaign")
     runs_dir = campaign_dir / "runs"
@@ -2862,11 +2915,8 @@ def _ir_print_validation(kind: str, errors: list[str]) -> int:
 
 
 def ir_prepare_command(args: argparse.Namespace) -> int:
-    raw_source = Path(args.manuscript)
-    if raw_source.is_symlink():
-        raise ArgumentIRError("manuscript must not be a symlink")
-    source_path = raw_source.resolve()
-    manuscript, source_bytes = read_utf8(source_path)
+    source_path = resolve_manuscript_path(args.manuscript)
+    manuscript, source_bytes = read_manuscript_utf8(source_path)
     prompt = build_ir_extraction_prompt(
         manuscript,
         source_name=source_path.name,
@@ -2885,11 +2935,8 @@ def ir_prepare_command(args: argparse.Namespace) -> int:
 
 
 def ir_validate_command(args: argparse.Namespace) -> int:
-    raw_source = Path(args.manuscript)
-    if raw_source.is_symlink():
-        raise ArgumentIRError("manuscript must not be a symlink")
-    source_path = raw_source.resolve()
-    _, source_bytes = read_utf8(source_path)
+    source_path = resolve_manuscript_path(args.manuscript)
+    _, source_bytes = read_manuscript_utf8(source_path)
     _, value, _ = _ir_read_json(Path(args.argument_ir), "argument IR")
     errors = validate_argument_ir(
         value,
@@ -2900,11 +2947,8 @@ def ir_validate_command(args: argparse.Namespace) -> int:
 
 
 def ir_plan_command(args: argparse.Namespace) -> int:
-    raw_source = Path(args.manuscript)
-    if raw_source.is_symlink():
-        raise ArgumentIRError("manuscript must not be a symlink")
-    source_path = raw_source.resolve()
-    _, source_bytes = read_utf8(source_path)
+    source_path = resolve_manuscript_path(args.manuscript)
+    _, source_bytes = read_manuscript_utf8(source_path)
     ir_path, ir_value, ir_bytes = _ir_read_json(
         Path(args.argument_ir), "argument IR"
     )
