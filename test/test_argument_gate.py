@@ -109,6 +109,44 @@ class ArgumentGateTests(unittest.TestCase):
                     [second.root, third.root, open_project.root],
                 )
 
+    def test_readiness_reports_incomplete_projects_without_creating_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first = self.completed_project(root, 1)
+            second = self.completed_project(root, 2)
+            third = self.completed_project(root, 3, open_finding=True)
+            projects = [first.root, second.root, third.root]
+            readiness = gate.gate_readiness(projects)
+            self.assertEqual(readiness["summary"]["projects"], 3)
+            self.assertEqual(readiness["summary"]["ready_for_capture"], 2)
+            self.assertEqual(readiness["summary"]["open_findings"], 1)
+            self.assertFalse(readiness["summary"]["duplicate_sources"])
+            self.assertFalse(readiness["summary"]["can_capture_corpus"])
+            blocked = readiness["projects"][2]
+            self.assertEqual(blocked["model_findings"], {"fail": 1, "uncertain": 0})
+            self.assertEqual(
+                blocked["human_decisions"],
+                {"accept": 0, "reject": 0, "defer": 0, "open": 1},
+            )
+            self.assertIn("--summary-only", blocked["next_command"])
+            rendered = gate.render_gate_readiness(readiness)
+            self.assertIn("2/3 projects ready; 1 open Findings", rendered)
+            self.assertIn("Can capture immutable corpus: no", rendered)
+            self.assertIn("does not create an assessment", rendered)
+
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(
+                    critic_runner.main(
+                        ["ir", "gate-a", "readiness", *map(str, projects)]
+                    ),
+                    0,
+                )
+            self.assertIn("Product Gate A readiness (read-only)", stdout.getvalue())
+            self.assertFalse(any(root.glob("*.product-gate-a")))
+            for project in projects:
+                self.assertEqual(workbench.verify_workspace(project), [])
+
     def test_private_corpus_assessments_and_human_decision_are_traceable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -248,6 +248,70 @@ class ArgumentAdjudicationTests(unittest.TestCase):
             self.assertEqual(complete["summary"]["defer"], 1)
             self.assertEqual(workbench.verify_workspace(workspace), [])
 
+    def test_filtered_adjudication_keeps_each_decision_human_and_individual(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace, _ = self.make_reviewed_project(Path(temporary))
+            findings = adjudication.current_finding_entries(workspace.root)
+            fail = next(entry for entry in findings if entry.value["verdict"] == "fail")
+            uncertain = next(
+                entry for entry in findings if entry.value["verdict"] == "uncertain"
+            )
+            self.assertEqual(
+                adjudication.filter_finding_entries(findings, verdict="fail"),
+                [fail],
+            )
+            self.assertEqual(
+                adjudication.filter_finding_entries(findings, claim="C3"),
+                [uncertain],
+            )
+            self.assertEqual(
+                adjudication.filter_finding_entries(
+                    findings, check_id="descriptive.denominator"
+                ),
+                [fail],
+            )
+
+            view: list[str] = []
+            self.assertEqual(
+                adjudication.run_adjudicator(
+                    workspace.root,
+                    review_id=None,
+                    review_all=False,
+                    view_only=True,
+                    verdict="fail",
+                    input_fn=lambda _: "",
+                    output_fn=view.append,
+                ),
+                0,
+            )
+            rendered = "\n".join(view)
+            self.assertIn(str(fail.value["finding_id"]), rendered)
+            self.assertNotIn(str(uncertain.value["finding_id"]), rendered)
+            self.assertEqual(adjudication.list_adjudications(adjudication.human_review_paths(workspace.root)), [])
+
+            answers = iter(["r", "The denominator rule does not fit this wording."])
+            self.assertEqual(
+                adjudication.run_adjudicator(
+                    workspace.root,
+                    review_id=None,
+                    review_all=False,
+                    view_only=False,
+                    verdict="fail",
+                    input_fn=lambda _: next(answers),
+                    output_fn=view.append,
+                ),
+                0,
+            )
+            paths = adjudication.human_review_paths(workspace.root)
+            decisions = adjudication.list_adjudications(paths)
+            self.assertEqual(len(decisions), 1)
+            self.assertEqual(decisions[0][1]["finding_id"], fail.value["finding_id"])
+            self.assertEqual(decisions[0][1]["decision"], "reject")
+            plan = json.loads(paths.plan_record.read_text(encoding="utf-8"))
+            self.assertEqual(plan["summary"]["reject"], 1)
+            self.assertEqual(plan["summary"]["open"], 1)
+            self.assertEqual(workbench.verify_workspace(workspace), [])
+
     def test_revision_plan_tamper_is_detected_and_rebuildable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace, _ = self.make_reviewed_project(Path(temporary))
@@ -279,7 +343,18 @@ class ArgumentAdjudicationTests(unittest.TestCase):
             with redirect_stdout(stdout), redirect_stderr(stderr):
                 self.assertEqual(
                     critic_runner.main(
-                        ["ir", "adjudicate", str(workspace.root), "--view-only"]
+                        [
+                            "ir",
+                            "adjudicate",
+                            str(workspace.root),
+                            "--view-only",
+                            "--verdict",
+                            "fail",
+                            "--claim",
+                            "C1",
+                            "--check",
+                            "descriptive.denominator",
+                        ]
                     ),
                     0,
                 )
@@ -301,6 +376,32 @@ class ArgumentAdjudicationTests(unittest.TestCase):
             self.assertTrue(
                 adjudication.human_review_paths(workspace.root).plan_markdown.is_file()
             )
+
+    def test_summary_only_groups_open_queue_without_requiring_a_tty(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace, _ = self.make_reviewed_project(Path(temporary))
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                self.assertEqual(
+                    critic_runner.main(
+                        ["ir", "adjudicate", str(workspace.root), "--summary-only"]
+                    ),
+                    0,
+                )
+            rendered = stdout.getvalue()
+            self.assertEqual(stderr.getvalue(), "")
+            self.assertIn("Model verdicts in scope: 1 FAIL, 1 UNCERTAIN", rendered)
+            self.assertIn("Open queue by check", rendered)
+            self.assertIn("descriptive.denominator: 1 / 0", rendered)
+            self.assertIn("interpret.rival-reading: 0 / 1", rendered)
+            self.assertIn("V1:C1: 1 / 0", rendered)
+            self.assertIn("V1:C3: 0 / 1", rendered)
+            self.assertNotIn("F0001 -", rendered)
+            paths = adjudication.human_review_paths(workspace.root)
+            self.assertEqual(adjudication.list_adjudications(paths), [])
+            self.assertFalse(paths.plan_dir.exists())
+            self.assertEqual(workbench.verify_workspace(workspace), [])
 
 
 if __name__ == "__main__":

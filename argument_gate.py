@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from argument_adjudication import (
+    current_finding_entries,
     human_review_paths,
     latest_adjudications,
     list_adjudications,
@@ -144,6 +145,175 @@ def _project_snapshot(project_dir: Path | str) -> dict[str, Any]:
         "corrections": corrections,
         "summary": {key: int(summary.get(key, 0)) for key in ("accept", "reject", "defer", "open")},
     }
+
+
+def gate_readiness(project_dirs: list[Path | str]) -> dict[str, Any]:
+    if not 3 <= len(project_dirs) <= 5:
+        raise WorkbenchError("Product Gate A readiness requires 3 to 5 projects")
+    workspaces = [workspace_paths(project) for project in project_dirs]
+    roots = [str(workspace.root) for workspace in workspaces]
+    if len(roots) != len(set(roots)):
+        raise WorkbenchError("Gate A readiness project paths must be unique")
+
+    projects: list[dict[str, Any]] = []
+    source_hashes: list[str] = []
+    for index, workspace in enumerate(workspaces, 1):
+        errors = verify_workspace(workspace)
+        title = workspace.root.name
+        claims = 0
+        source_sha256 = ""
+        if workspace.project.is_file() and not workspace.project.is_symlink():
+            try:
+                project, _ = _read_json(workspace.project)
+                title = str(project.get("title") or title)
+            except (OSError, WorkbenchError) as exc:
+                errors.append(f"project: {exc}")
+        if workspace.version.is_file() and not workspace.version.is_symlink():
+            try:
+                version, _ = _read_json(workspace.version)
+                source_sha256 = str(version.get("source", {}).get("sha256") or "")
+            except (OSError, WorkbenchError) as exc:
+                errors.append(f"document-version: {exc}")
+        if source_sha256:
+            source_hashes.append(source_sha256)
+        if workspace.reviewed_payload.is_file() and not workspace.reviewed_payload.is_symlink():
+            try:
+                reviewed, _ = _read_json(workspace.reviewed_payload)
+                claims = len(reviewed.get("claims", []))
+            except (OSError, WorkbenchError) as exc:
+                errors.append(f"reviewed-ir: {exc}")
+        workspace_invalid = bool(errors)
+
+        corrections = (
+            len(
+                list(
+                    workspace.corrections_dir.glob(
+                        "IC[0-9][0-9][0-9][0-9].json"
+                    )
+                )
+            )
+            if workspace.corrections_dir.is_dir()
+            and not workspace.corrections_dir.is_symlink()
+            else 0
+        )
+        findings_available = True
+        try:
+            findings = current_finding_entries(workspace.root)
+        except WorkbenchError as exc:
+            findings_available = False
+            findings = []
+            errors.append(f"current-review: {exc}")
+        current_ids = {str(entry.value.get("finding_id")) for entry in findings}
+        model_counts = {"fail": 0, "uncertain": 0}
+        for finding in findings:
+            model_counts[str(finding.value["verdict"])] += 1
+        human = human_review_paths(workspace.root)
+        try:
+            latest = latest_adjudications(list_adjudications(human))
+        except (OSError, WorkbenchError) as exc:
+            latest = {}
+            errors.append(f"adjudications: {exc}")
+            workspace_invalid = True
+        decision_counts = {"accept": 0, "reject": 0, "defer": 0, "open": 0}
+        for finding_id in current_ids:
+            adjudication = latest.get(finding_id)
+            decision = (
+                str(adjudication[1]["decision"])
+                if adjudication is not None
+                else "open"
+            )
+            decision_counts[decision] += 1
+        plan_ready = (
+            human.plan_record.is_file()
+            and not human.plan_record.is_symlink()
+            and human.plan_markdown.is_file()
+            and not human.plan_markdown.is_symlink()
+        )
+        ready = (
+            not errors
+            and findings_available
+            and decision_counts["open"] == 0
+            and plan_ready
+        )
+        if workspace_invalid:
+            next_command = f'python critic_runner.py ir verify-project "{workspace.root}"'
+        elif not findings_available:
+            next_command = f'python critic_runner.py ir review prepare "{workspace.root}"'
+        elif decision_counts["open"]:
+            next_command = (
+                f'python critic_runner.py ir adjudicate "{workspace.root}" '
+                "--summary-only"
+            )
+        elif not plan_ready:
+            next_command = f'python critic_runner.py ir revision-plan "{workspace.root}"'
+        else:
+            next_command = "ready for immutable Gate A corpus capture"
+        projects.append(
+            {
+                "alias": f"P{index}",
+                "workspace": str(workspace.root),
+                "title": title,
+                "source_sha256": source_sha256,
+                "claims": claims,
+                "corrections": corrections,
+                "review_available": findings_available,
+                "model_findings": model_counts,
+                "human_decisions": decision_counts,
+                "revision_plan": plan_ready,
+                "ready_for_capture": ready,
+                "errors": errors,
+                "next_command": next_command,
+            }
+        )
+    duplicate_sources = len(source_hashes) != len(set(source_hashes))
+    ready_count = sum(1 for project in projects if project["ready_for_capture"])
+    return {
+        "projects": projects,
+        "summary": {
+            "projects": len(projects),
+            "ready_for_capture": ready_count,
+            "open_findings": sum(
+                project["human_decisions"]["open"] for project in projects
+            ),
+            "duplicate_sources": duplicate_sources,
+            "can_capture_corpus": ready_count == len(projects)
+            and not duplicate_sources,
+        },
+    }
+
+
+def render_gate_readiness(readiness: dict[str, Any]) -> str:
+    lines = ["Product Gate A readiness (read-only)", ""]
+    for project in readiness["projects"]:
+        model = project["model_findings"]
+        human = project["human_decisions"]
+        lines.extend(
+            [
+                f"{project['alias']} - {project['title']}",
+                f"  Workspace: {project['workspace']}",
+                f"  Claims: {project['claims']} · Corrections: {project['corrections']}",
+                f"  Model Findings: {model['fail']} FAIL · {model['uncertain']} UNCERTAIN",
+                f"  Human decisions: {human['accept']} accept · {human['reject']} reject · "
+                f"{human['defer']} defer · {human['open']} open",
+                f"  Revision plan: {'ready' if project['revision_plan'] else 'missing'}",
+                f"  Gate capture: {'ready' if project['ready_for_capture'] else 'not ready'}",
+            ]
+        )
+        for error in project["errors"]:
+            lines.append(f"  Error: {error}")
+        lines.extend([f"  Next: {project['next_command']}", ""])
+    summary = readiness["summary"]
+    lines.extend(
+        [
+            f"Summary: {summary['ready_for_capture']}/{summary['projects']} projects ready; "
+            f"{summary['open_findings']} open Findings",
+            f"Duplicate source bytes: {'yes' if summary['duplicate_sources'] else 'no'}",
+            f"Can capture immutable corpus: {'yes' if summary['can_capture_corpus'] else 'no'}",
+            "This command does not create an assessment or make a Gate decision.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def initialize_gate(
