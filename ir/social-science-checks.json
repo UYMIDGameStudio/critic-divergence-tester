@@ -152,7 +152,7 @@
       "label": "时间顺序",
       "category": "causal",
       "tier": "core",
-      "applies_to": {"claim_types": ["causal"], "methods": ["*"]},
+      "applies_to": {"claim_types": ["causal"], "methods": ["causal-observational", "causal-experimental"]},
       "question": "所称原因是否在结果之前发生，并且观察窗口足以体现作用过程？",
       "failure_condition": "时间顺序不明、同时测量或结果先于原因，使因果方向不能成立。",
       "required_context": ["claim", "source_quote", "incoming_support"]
@@ -162,7 +162,7 @@
       "label": "混杂",
       "category": "causal",
       "tier": "core",
-      "applies_to": {"claim_types": ["causal"], "methods": ["*"]},
+      "applies_to": {"claim_types": ["causal"], "methods": ["causal-observational", "causal-experimental"]},
       "question": "是否存在同时影响原因与结果、足以解释关联的共同原因？",
       "failure_condition": "关键共同原因未被设计、测量、控制或敏感性分析处理。",
       "required_context": ["claim", "source_quote", "incoming_support", "assumptions"]
@@ -172,7 +172,7 @@
       "label": "反向因果",
       "category": "causal",
       "tier": "core",
-      "applies_to": {"claim_types": ["causal"], "methods": ["*"]},
+      "applies_to": {"claim_types": ["causal"], "methods": ["causal-observational", "causal-experimental"]},
       "question": "结果反过来导致所称原因，是否同样能解释观察到的关系？",
       "failure_condition": "反向路径具有实质合理性，现有设计却不能区分两个方向。",
       "required_context": ["claim", "source_quote", "incoming_support"]
@@ -182,7 +182,7 @@
       "label": "选择偏差",
       "category": "causal",
       "tier": "core",
-      "applies_to": {"claim_types": ["causal"], "methods": ["*"]},
+      "applies_to": {"claim_types": ["causal"], "methods": ["causal-observational", "causal-experimental"]},
       "question": "进入样本、接受处理或被观察的选择过程是否会制造所见关系？",
       "failure_condition": "选择过程依赖于原因、结果或其共同原因，且没有被识别策略处理。",
       "required_context": ["claim", "source_quote", "incoming_support", "assumptions"]
