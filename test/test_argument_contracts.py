@@ -236,6 +236,210 @@ class ArgumentContractTests(unittest.TestCase):
             [],
         )
 
+    def test_rule_review_contracts_separate_model_outcomes_from_derived_index(self) -> None:
+        review = {
+            **base(
+                "rule-review-run",
+                "RV1",
+                "immutable",
+                "deterministic",
+                parents=[
+                    {
+                        "role": "reviewed-ir",
+                        "artifact": "reviewed-argument-ir",
+                        "sha256": "1" * 64,
+                    },
+                    {
+                        "role": "target-ir",
+                        "artifact": "argument-ir",
+                        "sha256": "2" * 64,
+                    },
+                    {
+                        "role": "check-library",
+                        "artifact": "argument-check-library",
+                        "sha256": "3" * 64,
+                    },
+                ],
+            ),
+            "review_id": "RV1",
+            "project_id": "P1",
+            "document_id": "D1",
+            "version_id": "V1",
+            "lens": {
+                "kind": "rule",
+                "id": "social-science",
+                "library_sha256": "3" * 64,
+            },
+            "depth": "core",
+            "reviewed_ir_record": {
+                "relative_path": "reviewed-ir-record.json",
+                "sha256": "1" * 64,
+            },
+            "target_ir": {
+                "relative_path": "target-argument-ir.json",
+                "sha256": "2" * 64,
+            },
+            "check_library": {
+                "relative_path": "check-library.json",
+                "sha256": "3" * 64,
+            },
+            "plan": {"relative_path": "check-plan.json", "sha256": "4" * 64},
+            "prompt": {"relative_path": "review-prompt.md", "sha256": "5" * 64},
+        }
+        self.assertEqual(contracts.validate_rule_review_run(review), [])
+        escaped = copy.deepcopy(review)
+        escaped["plan"]["relative_path"] = "../plan.json"
+        self.assertTrue(
+            any("inside" in error for error in contracts.validate_rule_review_run(escaped))
+        )
+
+        attempt = {
+            **base(
+                "review-result-attempt",
+                "RV1-attempt-0001",
+                "immutable",
+                "model-derived",
+                parents=[parent("review-run", "rule-review-run", review)],
+            ),
+            "review_id": "RV1",
+            "attempt_id": "attempt-0001",
+            "collection": {
+                "method": "file",
+                "source_name": "results.json",
+                "producer_label": "test-model",
+            },
+            "response": {"relative_path": "response.json", "sha256": "6" * 64},
+            "validation": {"status": "valid", "errors": []},
+        }
+        self.assertEqual(contracts.validate_review_result_attempt(attempt), [])
+        forged_attempt = copy.deepcopy(attempt)
+        forged_attempt["validation"]["errors"] = ["ignored model error"]
+        self.assertTrue(
+            any(
+                "empty" in error
+                for error in contracts.validate_review_result_attempt(forged_attempt)
+            )
+        )
+
+        finding = {
+            **base(
+                "argument-finding",
+                "V1-RV1-attempt-0001-F0001",
+                "immutable",
+                "model-derived",
+                parents=[
+                    {
+                        "role": "target-ir",
+                        "artifact": "argument-ir",
+                        "sha256": "2" * 64,
+                    },
+                    {
+                        "role": "lens-result",
+                        "artifact": "argument-check-results",
+                        "sha256": "6" * 64,
+                    },
+                ],
+            ),
+            "finding_id": "V1-RV1-attempt-0001-F0001",
+            "target_claim": "V1:C1",
+            "lens": {
+                "kind": "rule",
+                "id": "social-science",
+                "check_id": "descriptive.denominator",
+            },
+            "verdict": "fail",
+            "reason": "No comparison denominator.",
+            "evidence_refs": ["V1:C1"],
+            "status": "open",
+        }
+        index = {
+            **base(
+                "claim-review-index",
+                "RV1-attempt-0001-claim-review",
+                "derived-replaceable",
+                "deterministic",
+                parents=[
+                    parent("review-run", "rule-review-run", review),
+                    parent("result-attempt", "review-result-attempt", attempt),
+                    {
+                        "role": "lens-result",
+                        "artifact": "argument-check-results",
+                        "sha256": "6" * 64,
+                    },
+                    parent("finding-0001", "argument-finding", finding),
+                ],
+            ),
+            "review_id": "RV1",
+            "attempt_id": "attempt-0001",
+            "version_id": "V1",
+            "lens": review["lens"],
+            "summary": {"pass": 1, "fail": 1, "uncertain": 0},
+            "outcomes": [
+                {
+                    "task_id": "T1",
+                    "target_claim": "V1:C1",
+                    "check_id": "descriptive.denominator",
+                    "verdict": "fail",
+                    "reason": "No comparison denominator.",
+                    "consequence": "The scope must be narrowed.",
+                    "evidence_refs": ["V1:C1"],
+                    "finding_id": finding["finding_id"],
+                },
+                {
+                    "task_id": "T2",
+                    "target_claim": "V1:C1",
+                    "check_id": "descriptive.measurement-validity",
+                    "verdict": "pass",
+                    "reason": "The measure is defined.",
+                    "consequence": "",
+                    "evidence_refs": ["V1:C1"],
+                    "finding_id": None,
+                },
+            ],
+            "view": {"relative_path": "claim-review.md", "sha256": "7" * 64},
+            "field_provenance": {
+                "outcomes.task_id": {"origin": "deterministic", "source": "plan"},
+                "outcomes.target_claim": {"origin": "deterministic", "source": "plan"},
+                "outcomes.check_id": {"origin": "deterministic", "source": "plan"},
+                "outcomes.verdict": {"origin": "model-derived", "source": "result"},
+                "outcomes.reason": {"origin": "model-derived", "source": "result"},
+                "outcomes.consequence": {"origin": "model-derived", "source": "result"},
+                "outcomes.evidence_refs": {"origin": "model-derived", "source": "result"},
+                "outcomes.finding_id": {"origin": "deterministic", "source": "review"},
+                "summary": {"origin": "deterministic", "source": "review"},
+                "view": {"origin": "deterministic", "source": "review"},
+            },
+        }
+        self.assertEqual(contracts.validate_claim_review_index(index), [])
+        false_summary = copy.deepcopy(index)
+        false_summary["summary"]["pass"] = 2
+        self.assertTrue(
+            any(
+                "equal outcomes" in error
+                for error in contracts.validate_claim_review_index(false_summary)
+            )
+        )
+        fake_pass_finding = copy.deepcopy(index)
+        fake_pass_finding["outcomes"][1]["finding_id"] = "F-for-pass"
+        self.assertTrue(
+            any(
+                "null for pass" in error
+                for error in contracts.validate_claim_review_index(fake_pass_finding)
+            )
+        )
+        fake_deterministic_verdict = copy.deepcopy(index)
+        fake_deterministic_verdict["field_provenance"]["outcomes.verdict"][
+            "origin"
+        ] = "deterministic"
+        self.assertTrue(
+            any(
+                "must remain model-derived" in error
+                for error in contracts.validate_claim_review_index(
+                    fake_deterministic_verdict
+                )
+            )
+        )
+
     def test_all_validators_tolerate_malformed_shapes(self) -> None:
         for value in (None, 1, "x", [], {}, {"artifact": "unknown"}):
             with self.subTest(value=value):

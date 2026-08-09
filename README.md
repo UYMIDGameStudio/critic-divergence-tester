@@ -291,9 +291,51 @@ py -3 critic_runner.py ir collect .\demo.argument-workbench --file .\test\fixtur
 py -3 critic_runner.py ir inspect .\demo.argument-workbench
 ```
 
-这个 fixture 包含“总会”式过强主张、漏 Claim、错 Evidence 绑定、显式 Assumption 和 Citation，可用于体验校正。Phase 1 当前只支持单 Project / D1 / V1；Claim-centered Finding、正式 adjudication、跨版本 lineage、resolution、citation verification 和 GUI 尚未实现，真实文章 Gate A 也尚未执行。
+这个 fixture 包含“总会”式过强主张、漏 Claim、错 Evidence 绑定、显式 Assumption 和 Citation，可用于体验校正。Workbench 当前只支持单 Project / D1 / V1；正式 adjudication、跨版本 lineage、resolution、citation verification 和 GUI 尚未实现，真实文章 Gate A 也尚未执行。
 
 完整 artifact lifecycle、parent hash 和 field provenance 约定见 [`docs/artifact-contracts.md`](docs/artifact-contracts.md)。
+
+### Phase 2：从 Claim 进入 Review Findings
+
+完成 IR 校正后，可以直接在同一个本地项目里运行现有 social-science Rule Lens。程序仍不调用或绑定任何模型 SDK：它只确定性选择适用于 Reviewed IR 的 checks，并生成一份 source/hash-bound prompt。
+
+```powershell
+# 1. 根据 Reviewed IR 和 bundled social-science rule library 创建 Rule Review
+py -3 critic_runner.py ir review prepare $project --depth core
+
+# 2. 把打印出的 review-prompt.md 交给任意模型，并收集纯 JSON 结果
+py -3 critic_runner.py ir review collect $project --file .\argument-check-results.json --producer-label "模型标签"
+
+# 也可以像收集 Raw IR 一样直接粘贴，使用 ::END:: 结束
+py -3 critic_runner.py ir review collect $project --paste --producer-label "模型标签"
+
+# 3. 从某条 Claim 查看全部适用检查和 open Findings；也可省略 --claim 查看全文
+py -3 critic_runner.py ir review show $project --claim C1
+
+# 4. 验证 review snapshot、模型原始返回、Finding envelopes 和 Markdown view
+py -3 critic_runner.py ir verify-project $project
+```
+
+若要离线演示，可以在未修改 bundled demo IR 的新项目上直接收集 `test/fixtures/workbench-demo/review-results.json`。它包含 C1 的 denominator FAIL 和 C3 的 rival-reading UNCERTAIN，并由测试固定到确定生成的 plan hash；一旦先修改 IR，必须为新 plan 取得新的模型结果，旧 fixture 会被正确拒绝。
+
+每个 `RVn` 会精确保存当时的 Reviewed IR record/payload 和 check library snapshot，因此之后继续校正 IR 不会让旧 review provenance 断链。每次模型结果都进入新的 `results/attempt-nnnn/`；无效结果同样保留，但不会生成 Finding。有效结果确定性生成：
+
+```text
+reviews/RV1/
+├── review-run.json
+├── reviewed-ir-record.json
+├── target-argument-ir.json
+├── check-library.json
+├── check-plan.json
+├── review-prompt.md
+├── results/attempt-0001/{response.json,record.json}
+└── derived/attempt-0001/
+    ├── claim-review-index.json
+    ├── claim-review.md
+    └── findings/F0001.json ...
+```
+
+`claim-review.md` 按 Claim 显示 PASS / FAIL / UNCERTAIN，不生成论文总分。FAIL 与 UNCERTAIN 同时产生独立 `argument-finding` artifact，绑定 `V1:Cn`、Rule Lens、check、reason、evidence refs、原始模型结果和 target IR，初始状态只能是 `open`。模型 verdict/reason 始终标记为 `model-derived`；用户尚未 accept/reject/defer。该人工裁决与 revision action 属于 Phase 3。
 
 ### 兼容的低层 Argument IR 流程
 
@@ -326,7 +368,7 @@ macOS / Linux 可把 `py -3` 换成 `python3`，并直接把 `$article` 换成�
 
 最后得到 `argument-findings.json`。check plan 和结果互相用精确文件哈希绑定；模型不能悄悄增删、合并或重排任务，也不能引用当前 Claim 论证链之外的节点充当证据。命令重复运行时，只会复用完全相同的输出；若目标文件内容不同，工具会拒绝覆盖。
 
-这条低层 IR 流程继续作为兼容接口；Argument Workbench 已提供 Raw / Corrections / Reviewed 的正式生命周期，但尚未把 claim-centered findings 接入人工 adjudication，也不能证明某条规则本身正确。下一步应先用 3–5 篇真实文章完成 Product Gate A，测量问题召回、误报、人工接受、实际修改、重跑稳定性和校正成本；Gate A 通过前不继续横向增加学科 critic。
+这条低层 IR 流程继续作为兼容接口；Argument Workbench 已把相同的 IR-native checks 接成 Claim-centered Findings，但尚未接入人工 adjudication，也不能证明某条规则本身正确。完成 Phase 3 后应先用 3–5 篇真实文章执行 Product Gate A，测量问题召回、误报、人工接受、实际修改、重跑稳定性和校正成本；Gate A 通过前不继续横向增加学科 critic。
 
 ## 三条学术线
 

@@ -30,6 +30,9 @@ Parent hashes always cover the exact file bytes on disk. Artifact objects do not
 | `raw-ir-attempt` | immutable | One exact model response, collection method, prompt hash, and validation outcome |
 | `ir-correction` | append-only | One human correction or explicit revert event |
 | `reviewed-argument-ir` | derived-replaceable | Binding from Raw IR and ordered corrections to a compatible Argument IR v1 payload |
+| `rule-review-run` | immutable | One Reviewed IR snapshot, Rule Lens library, deterministic check plan, and execution prompt |
+| `review-result-attempt` | immutable | One exact model response to a Rule Review plan and its reproducible validation outcome |
+| `claim-review-index` | derived-replaceable | Claim-grouped PASS/FAIL/UNCERTAIN outcomes plus exact links to actionable Finding artifacts |
 | `argument-finding` | immutable | One lens/check verdict attached to a version-qualified Claim; initial status is only `open` |
 | `finding-adjudication` | immutable | Human `accept`, `reject`, or `defer`; later changes use `supersedes` |
 | `revision-action` | immutable | Structured action attached to an accepted adjudication |
@@ -49,6 +52,14 @@ An accepted adjudication is incomplete unless the same validated bundle contains
 Raw fields begin as `model-derived`. Corrected or added fields cite the `ICnnnn` event that made them `human-confirmed`. Source name/hash, node positions, and compact display IDs are `deterministic`. Exact-quote validation proves only that a quote occurs at the stated source location; choosing that quote remains a model or human semantic act.
 
 Deleting a node deterministically removes its incident relations from the reviewed projection. The removal itself remains traceable to its correction event. Undo appends `revert_correction`; it never deletes history.
+
+## Rule Review provenance
+
+`rule-review-run` is self-contained. It snapshots the exact Reviewed IR record, compatible Argument IR v1 payload, and check-library bytes used to generate its plan. The run binds all three as parents and records exact hashes for the plan and prompt. Later IR corrections create a new review run rather than mutating or disconnecting the old one.
+
+Every collected model response is an immutable `review-result-attempt`, including invalid JSON and results that fail the existing plan-bound validator. Only a valid attempt can produce derived review artifacts. The original response remains the semantic source; no application code silently changes verdicts, reasons, or evidence references.
+
+For valid results, each FAIL or UNCERTAIN outcome becomes an immutable `argument-finding` with a version-qualified `target_claim`, Rule Lens/check identity, `status=open`, and exact parents for the target IR and model result. PASS remains visible in `claim-review-index` and `claim-review.md` but does not create an actionable Finding. The deterministic index groups outcomes by Claim and binds every Finding hash. Its required `field_provenance` map keeps verdict, reason, consequence, and evidence references explicitly `model-derived`, while task/Claim/check mapping, Finding IDs, counts, and view rendering are deterministic. Deterministic packaging never turns model judgments into deterministic facts.
 
 ## Legacy workflow boundary
 
