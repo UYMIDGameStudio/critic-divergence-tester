@@ -3169,7 +3169,7 @@ def ir_review_show_command(args: argparse.Namespace) -> int:
 
 
 def ir_adjudicate_command(args: argparse.Namespace) -> int:
-    if not args.view_only:
+    if not args.view_only and not args.summary_only:
         isatty = getattr(sys.stdin, "isatty", None)
         if isatty is not None and not isatty():
             raise WorkbenchError(
@@ -3183,6 +3183,7 @@ def ir_adjudicate_command(args: argparse.Namespace) -> int:
         verdict=args.verdict,
         claim=args.claim,
         check_id=args.check_id,
+        summary_only=args.summary_only,
     )
 
 
@@ -4268,6 +4269,11 @@ def parser() -> argparse.ArgumentParser:
         "--view-only",
         action="store_true",
         help="show current human decisions without starting the prompt",
+    )
+    ir_adjudicate_parser.add_argument(
+        "--summary-only",
+        action="store_true",
+        help="show grouped open counts without listing or deciding Findings",
     )
     ir_adjudicate_parser.add_argument(
         "--verdict",

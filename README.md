@@ -350,6 +350,9 @@ py -3 critic_runner.py ir adjudicate $project
 # 只读查看当前状态，不进入交互
 py -3 critic_runner.py ir adjudicate $project --view-only
 
+# 大队列先看按 check 与 Claim 聚合的只读 open 摘要
+py -3 critic_runner.py ir adjudicate $project --summary-only
+
 # 大队列可先处理 FAIL，再按 Claim 或精确 check 缩小范围；仍然逐条人工确认
 py -3 critic_runner.py ir adjudicate $project --verdict fail
 py -3 critic_runner.py ir adjudicate $project --claim C4
@@ -362,7 +365,7 @@ py -3 critic_runner.py ir revision-plan $project --show
 py -3 critic_runner.py ir verify-project $project
 ```
 
-`--verdict fail|uncertain`、`--claim C4|V1:C4` 与 `--check CHECK_ID` 可以组合，只改变本次显示和交互队列，不改变 Finding、不批量写决定，也不把被过滤掉的条目视为 resolved。之后不带过滤器再次运行即可继续其余 open Findings。
+`--summary-only` 不要求交互终端，只给出范围内的 FAIL/UNCERTAIN、人工决定计数，以及 open queue 的 check/Claim 聚合，不创建 adjudication 或 revision-plan。`--verdict fail|uncertain`、`--claim C4|V1:C4` 与 `--check CHECK_ID` 可以组合，只改变本次显示和交互队列，不改变 Finding、不批量写决定，也不把被过滤掉的条目视为 resolved。之后不带过滤器再次运行即可继续其余 open Findings。
 
 Accept 必须至少指定一个结构化 action type（`narrow_claim`、`add_evidence`、`add_qualification`、`remove_claim`、`restructure_argument`、`clarify_concept`、`verify_citation` 或 `other`）和具体行动文本。Reject / Defer 必须记录理由。改变决定不会覆盖历史：新 `ADnnnn` 通过 `supersedes` 指向旧决定；旧 RevisionAction 也保留。
 

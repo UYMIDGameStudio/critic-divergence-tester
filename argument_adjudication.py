@@ -627,6 +627,7 @@ def adjudication_status(
     verdict: str | None = None,
     claim: str | None = None,
     check_id: str | None = None,
+    summary_only: bool = False,
 ) -> str:
     paths = human_review_paths(project_dir)
     findings = filter_finding_entries(
@@ -650,13 +651,31 @@ def adjudication_status(
         heading += " (" + ", ".join(filters) + ")"
     lines = [heading, ""]
     counts = {"accept": 0, "reject": 0, "defer": 0, "open": 0}
+    model_counts = {"fail": 0, "uncertain": 0}
+    open_by_check: dict[str, dict[str, int]] = {}
+    open_by_claim: dict[str, dict[str, int]] = {}
     for finding in findings:
         finding_id = str(finding.value["finding_id"])
+        model_verdict = str(finding.value["verdict"])
+        model_counts[model_verdict] += 1
         adjudication = latest.get(finding_id)
         decision = (
             str(adjudication[1]["decision"]) if adjudication is not None else "open"
         )
         counts[decision] += 1
+        if adjudication is None:
+            finding_check = str(
+                finding.value["lens"].get("check_id") or "perspective"
+            )
+            target_claim = str(finding.value["target_claim"])
+            for registry, key in (
+                (open_by_check, finding_check),
+                (open_by_claim, target_claim),
+            ):
+                bucket = registry.setdefault(key, {"fail": 0, "uncertain": 0})
+                bucket[model_verdict] += 1
+        if summary_only:
+            continue
         lines.extend(
             [
                 f"{finding_id} - {finding.value['target_claim']}",
@@ -667,6 +686,37 @@ def adjudication_status(
         )
         if adjudication is not None and adjudication[1]["reason"]:
             lines.append(f"  Human reason: {adjudication[1]['reason']}")
+        lines.append("")
+    if summary_only:
+        lines.extend(
+            [
+                f"Model verdicts in scope: {model_counts['fail']} FAIL, "
+                f"{model_counts['uncertain']} UNCERTAIN",
+                "",
+                "Open queue by check (FAIL / UNCERTAIN):",
+            ]
+        )
+        if open_by_check:
+            for finding_check, bucket in sorted(
+                open_by_check.items(),
+                key=lambda item: (
+                    -(item[1]["fail"] + item[1]["uncertain"]),
+                    item[0],
+                ),
+            ):
+                lines.append(
+                    f"  {finding_check}: {bucket['fail']} / {bucket['uncertain']}"
+                )
+        else:
+            lines.append("  —")
+        lines.extend(["", "Open queue by Claim (FAIL / UNCERTAIN):"])
+        if open_by_claim:
+            for target_claim, bucket in sorted(open_by_claim.items()):
+                lines.append(
+                    f"  {target_claim}: {bucket['fail']} / {bucket['uncertain']}"
+                )
+        else:
+            lines.append("  —")
         lines.append("")
     lines.extend(
         [
@@ -697,6 +747,7 @@ def run_adjudicator(
     verdict: str | None = None,
     claim: str | None = None,
     check_id: str | None = None,
+    summary_only: bool = False,
     input_fn: Callable[[str], str] = input,
     output_fn: Callable[[str], None] = print,
 ) -> int:
@@ -714,9 +765,10 @@ def run_adjudicator(
             verdict=verdict,
             claim=claim,
             check_id=check_id,
+            summary_only=summary_only,
         )
     )
-    if view_only:
+    if view_only or summary_only:
         return 0
     findings = filter_finding_entries(
         current_finding_entries(paths.workspace.root, review_id=review_id),

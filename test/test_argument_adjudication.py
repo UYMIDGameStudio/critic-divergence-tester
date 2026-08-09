@@ -377,6 +377,32 @@ class ArgumentAdjudicationTests(unittest.TestCase):
                 adjudication.human_review_paths(workspace.root).plan_markdown.is_file()
             )
 
+    def test_summary_only_groups_open_queue_without_requiring_a_tty(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace, _ = self.make_reviewed_project(Path(temporary))
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                self.assertEqual(
+                    critic_runner.main(
+                        ["ir", "adjudicate", str(workspace.root), "--summary-only"]
+                    ),
+                    0,
+                )
+            rendered = stdout.getvalue()
+            self.assertEqual(stderr.getvalue(), "")
+            self.assertIn("Model verdicts in scope: 1 FAIL, 1 UNCERTAIN", rendered)
+            self.assertIn("Open queue by check", rendered)
+            self.assertIn("descriptive.denominator: 1 / 0", rendered)
+            self.assertIn("interpret.rival-reading: 0 / 1", rendered)
+            self.assertIn("V1:C1: 1 / 0", rendered)
+            self.assertIn("V1:C3: 0 / 1", rendered)
+            self.assertNotIn("F0001 -", rendered)
+            paths = adjudication.human_review_paths(workspace.root)
+            self.assertEqual(adjudication.list_adjudications(paths), [])
+            self.assertFalse(paths.plan_dir.exists())
+            self.assertEqual(workbench.verify_workspace(workspace), [])
+
 
 if __name__ == "__main__":
     unittest.main()
