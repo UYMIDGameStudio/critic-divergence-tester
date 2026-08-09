@@ -27,6 +27,7 @@ from argument_ir import (
     EVIDENCE_KEYS,
     IR_KEYS,
     RELATION_KEYS,
+    SUPPORTED_IR_EXTRACTION_PROTOCOL_VERSIONS,
     ArgumentIRError,
     build_ir_extraction_prompt,
     canonicalize_argument_ir,
@@ -192,6 +193,25 @@ def _safe_source_name(name: str) -> bool:
         and "\\" not in name
         and not any(ord(character) < 32 or ord(character) == 127 for character in name)
     )
+
+
+def _matching_extraction_prompt_protocol(
+    prompt_bytes: bytes,
+    manuscript: str,
+    *,
+    source_name: str,
+    source_sha256: str,
+) -> int | None:
+    for protocol_version in SUPPORTED_IR_EXTRACTION_PROTOCOL_VERSIONS:
+        candidate = build_ir_extraction_prompt(
+            manuscript,
+            source_name=source_name,
+            source_sha256=source_sha256,
+            protocol_version=protocol_version,
+        ).encode("utf-8")
+        if prompt_bytes == candidate:
+            return protocol_version
+    return None
 
 
 def initialize_workspace(
@@ -1052,13 +1072,16 @@ def verify_workspace(
         errors.append("extraction-prompt.md is missing or is a symlink")
     else:
         try:
-            expected_prompt = build_ir_extraction_prompt(
+            prompt_protocol = _matching_extraction_prompt_protocol(
+                paths.prompt.read_bytes(),
                 source_bytes.decode("utf-8-sig"),
                 source_name=str(version["source"]["name"]),
                 source_sha256=str(version["source"]["sha256"]),
-            ).encode("utf-8")
-            if paths.prompt.read_bytes() != expected_prompt:
-                errors.append("extraction-prompt.md is not the deterministic source-bound prompt")
+            )
+            if prompt_protocol is None:
+                errors.append(
+                    "extraction-prompt.md is not a supported deterministic source-bound prompt"
+                )
         except (UnicodeDecodeError, ArgumentIRError) as exc:
             errors.append(f"cannot reproduce extraction prompt: {exc}")
 

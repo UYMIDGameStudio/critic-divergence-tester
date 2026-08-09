@@ -271,6 +271,8 @@ py -3 critic_runner.py ir verify-project $project
 
 macOS / Linux 把 `py -3` 换成 `python3`。如果模型回答已经保存为文件，第二步改用 `--file path/to/returned.json`。文件模式保留精确字节；终端粘贴模式记录为 `terminal-paste`，并保存终端实际收到的 UTF-8 文本。
 
+新建工作区使用 `argument-ir-extraction-v2`：每条 Claim 的 `types` 与 `methods` 默认各选一个主要值，method 只描述实际支撑该 Claim 的方法，而不是罗列整篇文章出现过的所有方法；结论和中间 Claim 还会被要求连接可追踪的支持关系。这样可避免一次过度多重分类在下游确定性膨胀成大量无关 checks。旧工作区的 v1 prompt 仍按原始字节重建验证，Raw attempt 保存的 `prompt_sha256` 不会因为工具升级而失效或被静默换成 v2。
+
 每次模型返回都写入新的 `raw-ir/attempt-nnnn/`，包括无效返回；旧 attempt 永远不会被覆盖。在尚未产生人工 correction 时，最近一次 `valid` 或 `correctable` attempt 会成为当前 Raw IR；第一条 correction 写入后就把 V1 固定到该 attempt，后续返回只能归档，不会偷换已经人工审查的基础。可定位但存在类型、引文或 relation 问题的结果标记为 `correctable`，可以直接进入 Inspector。无法解析、source hash 不符或没有可用节点身份的返回标记为 `unusable`，仍会归档，但需要重新收集一次。
 
 Inspector 使用普通行式菜单，Windows 和 Linux 行为一致。每个确认的改动立即写成独立 `ICnnnn.json`；Undo 追加一条 revert event，不删除历史。程序随后从 Raw IR 和完整 correction 序列确定性生成：
