@@ -63,8 +63,10 @@ from argument_gate import (
     METRIC_KEYS as GATE_A_METRIC_KEYS,
     append_assessment as append_gate_a_assessment,
     append_gate_decision,
+    gate_readiness,
     initialize_gate,
     rebuild_gate_report,
+    render_gate_readiness,
     verify_gate,
 )
 from argument_contracts import GATE_A_BURDENS, GATE_A_COMPARISONS, GATE_A_DECISIONS
@@ -3204,6 +3206,11 @@ def ir_gate_a_init_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def ir_gate_a_readiness_command(args: argparse.Namespace) -> int:
+    print(render_gate_readiness(gate_readiness(args.projects)), end="")
+    return 0
+
+
 def ir_gate_a_assess_command(args: argparse.Namespace) -> int:
     metrics = {key: getattr(args, key) for key in GATE_A_METRIC_KEYS}
     output = append_gate_a_assessment(
@@ -4312,6 +4319,15 @@ def parser() -> argparse.ArgumentParser:
     ir_gate_a_sub = ir_gate_a_parser.add_subparsers(
         dest="ir_gate_a_command", required=True
     )
+    ir_gate_a_readiness_parser = ir_gate_a_sub.add_parser(
+        "readiness",
+        help="show read-only progress and next commands for 3-5 Workbench projects",
+    )
+    ir_gate_a_readiness_parser.add_argument(
+        "projects", nargs="+", help="3-5 real-manuscript Workbench projects"
+    )
+    ir_gate_a_readiness_parser.set_defaults(func=ir_gate_a_readiness_command)
+
     ir_gate_a_init_parser = ir_gate_a_sub.add_parser(
         "init", help="capture exact hashes for 3-5 completed Workbench projects"
     )
