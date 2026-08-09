@@ -37,6 +37,17 @@ from argument_ir import (
     validate_check_plan_against_library,
     validate_check_results,
 )
+from argument_workbench import (
+    PASTE_END_MARKER as IR_PASTE_END_MARKER,
+    WorkbenchError,
+    collect_raw_attempt,
+    initialize_workspace,
+    rebuild_workspace,
+    run_inspector,
+    selected_attempt,
+    verify_workspace,
+    workspace_paths,
+)
 from critic_execution import ExecutorResult, execute_with_limits
 from critic_scoring import (
     ALL_COMPARISONS,
@@ -2914,6 +2925,122 @@ def _ir_print_validation(kind: str, errors: list[str]) -> int:
     return 0 if not errors else EXIT_INVALID_WORKFLOW
 
 
+def ir_init_command(args: argparse.Namespace) -> int:
+    source_path = resolve_manuscript_path(args.manuscript)
+    project_dir = (
+        Path(args.project_dir)
+        if args.project_dir
+        else source_path.with_name(source_path.stem + ".argument-workbench")
+    )
+    paths = initialize_workspace(
+        source_path,
+        project_dir,
+        title=args.title,
+    )
+    print(f"Argument Workbench project: {paths.root}")
+    print(f"Extraction prompt: {paths.prompt}")
+    return 0
+
+
+def _read_ir_paste_bytes() -> bytes:
+    print(
+        "Paste the model's pure Argument IR JSON. On a new line enter "
+        f"{IR_PASTE_END_MARKER} to finish."
+    )
+    lines: list[str] = []
+    total = 0
+    while True:
+        line = sys.stdin.readline()
+        if line == "":
+            raise WorkbenchError(
+                f"paste ended before {IR_PASTE_END_MARKER}; no artifact was collected"
+            )
+        normalized = line.rstrip("\r\n")
+        if normalized == IR_PASTE_END_MARKER:
+            break
+        total += len(line.encode("utf-8"))
+        if total > DEFAULT_MAX_OUTPUT_BYTES:
+            raise WorkbenchError(
+                f"pasted Raw IR exceeds {DEFAULT_MAX_OUTPUT_BYTES} bytes"
+            )
+        lines.append(normalized)
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def ir_collect_command(args: argparse.Namespace) -> int:
+    paths = workspace_paths(args.project)
+    if args.paste:
+        response_bytes = _read_ir_paste_bytes()
+        method = "terminal-paste"
+        source_name = "pasted-argument-ir.json"
+    else:
+        raw_file = Path(args.file)
+        if raw_file.is_symlink():
+            raise WorkbenchError("Raw IR input must not be a symbolic link")
+        response_path = raw_file.resolve()
+        if not response_path.is_file():
+            raise WorkbenchError(f"Raw IR input file does not exist: {response_path}")
+        response_bytes = response_path.read_bytes()
+        if len(response_bytes) > DEFAULT_MAX_OUTPUT_BYTES:
+            raise WorkbenchError(
+                f"Raw IR input exceeds {DEFAULT_MAX_OUTPUT_BYTES} bytes"
+            )
+        method = "file"
+        source_name = response_path.name
+    attempt_path, record = collect_raw_attempt(
+        paths.root,
+        response_bytes,
+        method=method,
+        source_name=source_name,
+        producer_label=args.producer_label,
+    )
+    status = record["validation"]["status"]
+    print(f"Raw IR attempt: {attempt_path}")
+    print(f"Validation status: {status}")
+    for error in record["validation"]["errors"]:
+        print(f"  - {error}")
+    active_attempt: Path | None = None
+    if status in {"valid", "correctable"}:
+        active_attempt, _, _ = selected_attempt(paths)
+        if active_attempt != attempt_path:
+            print(
+                "This attempt was archived but not selected because the project already has "
+                f"an inspectable Raw IR: {active_attempt}"
+            )
+            return 0
+    if status == "valid":
+        map_path, _ = rebuild_workspace(paths.root)
+        print(f"Reviewed IR initialized: {map_path}")
+        return 0
+    if status == "correctable":
+        print("The Raw IR is structurally inspectable; run `ir inspect` to correct it.")
+        return 0
+    print("The attempt was preserved but cannot be inspected; collect a new attempt.")
+    return EXIT_INVALID_WORKFLOW
+
+
+def ir_inspect_command(args: argparse.Namespace) -> int:
+    if not args.view_only:
+        isatty = getattr(sys.stdin, "isatty", None)
+        if isatty is not None and not isatty():
+            raise WorkbenchError(
+                "interactive inspection requires a terminal; use --view-only for non-interactive output"
+            )
+    return run_inspector(args.project, view_only=args.view_only)
+
+
+def ir_rebuild_command(args: argparse.Namespace) -> int:
+    map_path, changed = rebuild_workspace(args.project)
+    print(f"Argument map: {map_path}")
+    print("Derived artifacts rebuilt." if changed else "Derived artifacts already current.")
+    return 0
+
+
+def ir_verify_project_command(args: argparse.Namespace) -> int:
+    errors = verify_workspace(args.project)
+    return _ir_print_validation("argument-workbench-project", errors)
+
+
 def ir_prepare_command(args: argparse.Namespace) -> int:
     source_path = resolve_manuscript_path(args.manuscript)
     manuscript, source_bytes = read_manuscript_utf8(source_path)
@@ -3791,9 +3918,65 @@ def parser() -> argparse.ArgumentParser:
 
     ir_parser = sub.add_parser(
         "ir",
-        help="build and validate the experimental social-science Argument IR pipeline",
+        help="inspect, correct, and validate the Argument IR workflow",
     )
     ir_sub = ir_parser.add_subparsers(dest="ir_command", required=True)
+
+    ir_init_parser = ir_sub.add_parser(
+        "init",
+        help="import a manuscript into a local Argument Workbench V1 project",
+    )
+    ir_init_parser.add_argument("manuscript", help="UTF-8 manuscript path")
+    ir_init_parser.add_argument(
+        "--project-dir",
+        help="project directory (default: <manuscript>.argument-workbench beside source)",
+    )
+    ir_init_parser.add_argument("--title", help="project/document title (default: filename stem)")
+    ir_init_parser.set_defaults(func=ir_init_command)
+
+    ir_collect_parser = ir_sub.add_parser(
+        "collect",
+        help="immutably collect a model's Raw Argument IR response",
+    )
+    ir_collect_parser.add_argument("project", help="Argument Workbench project directory")
+    ir_collect_source = ir_collect_parser.add_mutually_exclusive_group(required=True)
+    ir_collect_source.add_argument(
+        "--paste", action="store_true", help=f"paste JSON until {IR_PASTE_END_MARKER}"
+    )
+    ir_collect_source.add_argument("--file", help="existing Raw IR response file")
+    ir_collect_parser.add_argument(
+        "--producer-label",
+        help="opaque model/executor label for provenance; no provider SDK is required",
+    )
+    ir_collect_parser.set_defaults(func=ir_collect_command)
+
+    ir_inspect_parser = ir_sub.add_parser(
+        "inspect",
+        help="view and interactively correct Raw IR without editing JSON",
+    )
+    ir_inspect_parser.add_argument("project", help="Argument Workbench project directory")
+    ir_inspect_parser.add_argument(
+        "--view-only",
+        action="store_true",
+        help="print the current structure without starting the correction menu",
+    )
+    ir_inspect_parser.set_defaults(func=ir_inspect_command)
+
+    ir_rebuild_parser = ir_sub.add_parser(
+        "rebuild",
+        help="deterministically rebuild Reviewed IR and argument-map.md",
+    )
+    ir_rebuild_parser.add_argument("project", help="Argument Workbench project directory")
+    ir_rebuild_parser.set_defaults(func=ir_rebuild_command)
+
+    ir_verify_project_parser = ir_sub.add_parser(
+        "verify-project",
+        help="verify every Workbench artifact, parent hash, and derived byte",
+    )
+    ir_verify_project_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    ir_verify_project_parser.set_defaults(func=ir_verify_project_command)
 
     ir_prepare_parser = ir_sub.add_parser(
         "prepare",

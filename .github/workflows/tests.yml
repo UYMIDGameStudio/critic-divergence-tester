@@ -35,15 +35,26 @@ jobs:
         run: >-
           python -m compileall -q
           critic_runner.py
+          argument_ir.py
+          argument_contracts.py
+          argument_workbench.py
           critic_execution.py
           critic_scoring.py
           critic_workflow.py
+          test/test_argument_ir.py
+          test/test_argument_contracts.py
+          test/test_argument_workbench.py
           test/test_critic_runner.py
 
       - name: Smoke-test CLI
         run: |
           python critic_runner.py doctor
           python critic_runner.py list
+          python critic_runner.py ir init --help
+          python critic_runner.py ir collect --help
+          python critic_runner.py ir inspect --help
+          python critic_runner.py ir rebuild --help
+          python critic_runner.py ir verify-project --help
           python critic_runner.py quickstart --help
           python critic_runner.py import-report --help
           python critic_runner.py adjudicate --help
