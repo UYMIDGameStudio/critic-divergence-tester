@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "artifact": "argument-ir",
+  "scope": "social-science",
+  "source": {
+    "name": "manuscript.md",
+    "sha256": "1acca00c9796e9f144c2ff7059a81152fd6aca7348887db278eb07f55e6df1ee"
+  },
+  "claims": [
+    {
+      "id": "C1",
+      "text": "结构性压力总会收敛成一个具体的人",
+      "source_quote": "本文主张，结构性的压力最后总会收敛成一个具体的人。",
+      "position": "正文第3段",
+      "types": [
+        "descriptive"
+      ],
+      "methods": [
+        "descriptive-empirical"
+      ],
+      "role": "conclusion",
+      "extraction": "explicit",
+      "uncertainty": ""
+    },
+    {
+      "id": "C2",
+      "text": "替身是承担制度责任归因的个人",
+      "source_quote": "这里的“替身”是指承担了原本针对制度之责任归因的个人。",
+      "position": "正文第6段",
+      "types": [
+        "conceptual"
+      ],
+      "methods": [
+        "conceptual-analysis"
+      ],
+      "role": "premise",
+      "extraction": "explicit",
+      "uncertainty": ""
+    },
+    {
+      "id": "C3",
+      "text": "只追问人物过错会遮蔽制度对责任的分配",
+      "source_quote": "因此，分析公共争议时，只追问具体人物是否有错，会遮蔽制度如何分配可见性与责任。",
+      "position": "结尾",
+      "types": [
+        "interpretive"
+      ],
+      "methods": [
+        "interpretive-analysis"
+      ],
+      "role": "conclusion",
+      "extraction": "explicit",
+      "uncertainty": ""
+    }
+  ],
+  "evidence": [
+    {
+      "id": "E1",
+      "text": "三个案例均先发生规则变化，后集中到可见行动者",
+      "source_quote": "三个公开案例都出现了同样的顺序：规则变化先发生，随后讨论集中到一名可见的行动者。",
+      "position": "正文第4段",
+      "kind": "case"
+    },
+    {
+      "id": "E2",
+      "text": "甲乙丙案例出现相似的焦点转移",
+      "source_quote": "在甲案例中，推荐规则调整一周后，主要批评从平台转向主播；乙案例和丙案例也出现了相似变化。",
+      "position": "正文第5段",
+      "kind": "observation"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "A1",
+      "text": "同期个人丑闻不是独立原因",
+      "source_quote": "这一解释假定，讨论焦点的转移不是由同期的个人丑闻独立造成的。",
+      "position": "正文第7段",
+      "extraction": "explicit",
+      "uncertainty": ""
+    }
+  ],
+  "citations": [
+    {
+      "id": "Z1",
+      "text": "Girard, 1986",
+      "source_quote": "吉拉尔关于替罪机制的讨论为这个概念提供了思想来源（Girard, 1986）。",
+      "position": "正文第8段",
+      "locator": ""
+    }
+  ],
+  "relations": [
+    {
+      "id": "R1",
+      "type": "supports",
+      "from": "E1",
+      "to": "C2"
+    },
+    {
+      "id": "R2",
+      "type": "supports",
+      "from": "E2",
+      "to": "C1"
+    },
+    {
+      "id": "R3",
+      "type": "qualifies",
+      "from": "C2",
+      "to": "C1"
+    },
+    {
+      "id": "R4",
+      "type": "assumes",
+      "from": "A1",
+      "to": "C1"
+    },
+    {
+      "id": "R5",
+      "type": "cites",
+      "from": "Z1",
+      "to": "C2"
+    },
+    {
+      "id": "R6",
+      "type": "supports",
+      "from": "C1",
+      "to": "C3"
+    }
+  ],
+  "unverified": [
+    "C1 的‘总会’可能混合描述性概括与因果机制主张"
+  ]
+}

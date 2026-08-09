@@ -1,4 +1,5 @@
 .critic-runs/
 .critic-campaigns/
+*.argument-workbench/
 __pycache__/
 *.py[cod]

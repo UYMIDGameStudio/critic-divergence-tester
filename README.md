@@ -246,7 +246,56 @@ IR 明确分开 `Claim`、`Evidence`、`Assumption`、`Citation` 及其关系。
 
 check plan 使用规范化引用结构：完整 Argument IR 只保存一次，选中的检查定义也只保存一次，每个 task 只有 `id`、`claim_id`、`check_id`。模型结果不再复制一遍可能歧义的引文，而是用 `evidence_refs` 引用 IR 节点；程序再确定性解析原文与位置。`pass` / `fail` 必须给出与该 Claim 处于同一论证链的证据节点，分类有疑问时必须显式返回 `uncertain`，不存在可以让任务静默消失的 `not_applicable` 出口。
 
-### 最简单的使用方法
+### Argument Workbench：不用打开 JSON 的正式流程
+
+Phase 1 把 Argument IR 从一份临时 JSON 变成稿件旁的本地项目。以下命令仍然只需要 Python 标准库，不安装模型 SDK，也不会自动上传文章。
+
+Windows PowerShell：
+
+```powershell
+$article = Read-Host "请输入文章的真实完整路径"
+$project = Join-Path (Split-Path $article) (([IO.Path]::GetFileNameWithoutExtension($article)) + ".argument-workbench")
+
+# 1. 精确归档 V1 source，并生成绑定 source hash 的抽取提示词
+py -3 critic_runner.py ir init $article --project-dir $project
+
+# 2. 把项目中打印出的 extraction-prompt.md 交给任意模型；直接粘贴返回的纯 JSON
+py -3 critic_runner.py ir collect $project --paste --producer-label "你使用的模型标签"
+
+# 3. 浏览并校正 Claim / Evidence / Assumption / Citation / relation
+py -3 critic_runner.py ir inspect $project
+
+# 4. 随时复核全部父哈希和确定性派生产物
+py -3 critic_runner.py ir verify-project $project
+```
+
+macOS / Linux 把 `py -3` 换成 `python3`。如果模型回答已经保存为文件，第二步改用 `--file path/to/returned.json`。文件模式保留精确字节；终端粘贴模式记录为 `terminal-paste`，并保存终端实际收到的 UTF-8 文本。
+
+每次模型返回都写入新的 `raw-ir/attempt-nnnn/`，包括无效返回；旧 attempt 永远不会被覆盖。在尚未产生人工 correction 时，最近一次 `valid` 或 `correctable` attempt 会成为当前 Raw IR；第一条 correction 写入后就把 V1 固定到该 attempt，后续返回只能归档，不会偷换已经人工审查的基础。可定位但存在类型、引文或 relation 问题的结果标记为 `correctable`，可以直接进入 Inspector。无法解析、source hash 不符或没有可用节点身份的返回标记为 `unusable`，仍会归档，但需要重新收集一次。
+
+Inspector 使用普通行式菜单，Windows 和 Linux 行为一致。每个确认的改动立即写成独立 `ICnnnn.json`；Undo 追加一条 revert event，不删除历史。程序随后从 Raw IR 和完整 correction 序列确定性生成：
+
+```text
+<project>/documents/D1/versions/V1/reviewed-ir/argument-ir.json
+<project>/documents/D1/versions/V1/reviewed-ir/record.json
+<project>/documents/D1/versions/V1/reviewed-ir/argument-map.md
+```
+
+`argument-map.md` 是日常阅读入口：按 Claim 展示原文位置、上下游支持、Evidence、Assumption、Citation、完整 relation list，以及 deterministic / model-derived / human-confirmed 来源。`argument-ir.json` 保持 v1 兼容，可继续交给已有 `ir validate` 和 `ir plan`。正式 provenance 位于绑定该 payload 的 `record.json`。
+
+仓库内置一个现实结构 demo，不声称它是《结构的替身》原文：
+
+```powershell
+py -3 critic_runner.py ir init .\test\fixtures\workbench-demo\manuscript.md --project-dir .\demo.argument-workbench
+py -3 critic_runner.py ir collect .\demo.argument-workbench --file .\test\fixtures\workbench-demo\raw-ir.json --producer-label fixture-model
+py -3 critic_runner.py ir inspect .\demo.argument-workbench
+```
+
+这个 fixture 包含“总会”式过强主张、漏 Claim、错 Evidence 绑定、显式 Assumption 和 Citation，可用于体验校正。Phase 1 当前只支持单 Project / D1 / V1；Claim-centered Finding、正式 adjudication、跨版本 lineage、resolution、citation verification 和 GUI 尚未实现，真实文章 Gate A 也尚未执行。
+
+完整 artifact lifecycle、parent hash 和 field provenance 约定见 [`docs/artifact-contracts.md`](docs/artifact-contracts.md)。
+
+### 兼容的低层 Argument IR 流程
 
 先让工具为原稿生成一份**抽取提示词**：
 
@@ -277,7 +326,7 @@ macOS / Linux 可把 `py -3` 换成 `python3`，并直接把 `$article` 换成�
 
 最后得到 `argument-findings.json`。check plan 和结果互相用精确文件哈希绑定；模型不能悄悄增删、合并或重排任务，也不能引用当前 Claim 论证链之外的节点充当证据。命令重复运行时，只会复用完全相同的输出；若目标文件内容不同，工具会拒绝覆盖。
 
-这条 IR 流程目前标为 **experimental**：它已经完成“原稿 → IR → 规则 → findings”的最小闭环，但尚未取代现有人工 adjudication，也不能证明某条规则本身正确。下一阶段应使用 10–20 篇真实修订稿建立 benchmark，测量问题召回率、误报率、人工接受率、实际修改率、重跑稳定性和跨模型稳定性；在此之前不会继续横向增加学科 critic。
+这条低层 IR 流程继续作为兼容接口；Argument Workbench 已提供 Raw / Corrections / Reviewed 的正式生命周期，但尚未把 claim-centered findings 接入人工 adjudication，也不能证明某条规则本身正确。下一步应先用 3–5 篇真实文章完成 Product Gate A，测量问题召回、误报、人工接受、实际修改、重跑稳定性和校正成本；Gate A 通过前不继续横向增加学科 critic。
 
 ## 三条学术线
 
