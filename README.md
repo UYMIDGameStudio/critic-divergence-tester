@@ -370,6 +370,37 @@ documents/D1/versions/V1/
 
 `revision-plan.md` 分列 accepted / deferred / rejected / open Finding，并保留模型 reason、人工 reason 和行动来源；它只显示状态计数，不产生论文总分。`record.json` 是 `derived-replaceable` cache，逐字绑定 Markdown，并可由 immutable Finding、Adjudication 和 RevisionAction 完整重建。已有顶层 `adjudicate` / `revision-plan` 命令继续服务 legacy report workflow，不被这套 `ir` 子命令替换。
 
+### Product Gate A：先用真实文章验证，再进入 Phase 4
+
+Phase 3 完成后不能直接增加 Perspective Lens。`ir gate-a` 把 3–5 篇真实稿件的 Phase 1–3 结果固定为一个私有、本地 evidence corpus。它只保存 workspace locator 与精确哈希，不复制稿件正文；建议输出目录使用 `*.product-gate-a/`，该模式默认不进 Git。
+
+```powershell
+# 三个变量分别指向已经完成 IR correction、Rule Review、人工裁决和 revision plan 的真实项目
+$gate = "D:\private-evaluation\workbench.product-gate-a"
+py -3 critic_runner.py ir gate-a init $gate $project1 $project2 $project3
+
+# 每篇稿件追加一次人工 assessment；--anchor 可重复，用于保存已知重要 Claim、抽取陷阱、Finding 或框架反转
+py -3 critic_runner.py ir gate-a assess $gate P1 `
+  --comparison clearer --burden acceptable `
+  --correction-minutes 18 --missed-claims 1 --wrong-claim-types 2 `
+  --wrong-relations 1 --rhetoric-as-claims 0 --reversed-attributions 0 `
+  --anchor "‘总会’的 denominator problem" `
+  --anchor "吉拉尔 attribution/citation issue" `
+  --actual-revision-notes "作者收窄了该 Claim，并补充比较范围" `
+  --notes "校正成本仍可接受"
+
+py -3 critic_runner.py ir gate-a report $gate --show
+py -3 critic_runner.py ir gate-a verify $gate
+```
+
+对 P2/P3（以及可选的 P4/P5）完成 assessment 后，报告才会显示 `Ready for human gate decision: yes`。程序永远不会自动通过 Gate；只有人类 evaluator 可以追加决定：
+
+```powershell
+py -3 critic_runner.py ir gate-a decide $gate pass --reason "真实语料上的控制性与校正成本达到进入 Phase 4 的要求"
+```
+
+`pass` 前强制要求 3–5 个互不相同的 source、每个 workspace 的全部 hash 仍与捕获时一致、所有 Finding 已 adjudicate、每篇都有人工 assessment 和至少一个 regression anchor。报告只给出 Claims、corrections、accepted/rejected/deferred/open Findings、抽取错误和人工成本等计数，不生成质量分数。详细协议见 [`docs/product-gate-a.md`](docs/product-gate-a.md)。仓库中的 synthetic/现实结构 fixture 只测试工具机制，不能充当 Gate A 的真实文章，也不能证明 Gate 已通过。
+
 ### 兼容的低层 Argument IR 流程
 
 先让工具为原稿生成一份**抽取提示词**：
@@ -401,7 +432,7 @@ macOS / Linux 可把 `py -3` 换成 `python3`，并直接把 `$article` 换成�
 
 最后得到 `argument-findings.json`。check plan 和结果互相用精确文件哈希绑定；模型不能悄悄增删、合并或重排任务，也不能引用当前 Claim 论证链之外的节点充当证据。命令重复运行时，只会复用完全相同的输出；若目标文件内容不同，工具会拒绝覆盖。
 
-这条低层 IR 流程继续作为兼容接口；Argument Workbench 已把相同的 IR-native checks 接成 Claim-centered Findings，但尚未接入人工 adjudication，也不能证明某条规则本身正确。完成 Phase 3 后应先用 3–5 篇真实文章执行 Product Gate A，测量问题召回、误报、人工接受、实际修改、重跑稳定性和校正成本；Gate A 通过前不继续横向增加学科 critic。
+这条低层 IR 流程继续作为兼容接口；Argument Workbench 已把相同的 IR-native checks 接成 Claim-centered Findings，并接入人类最终决定的 adjudication / RevisionAction。它仍不能证明某条规则本身正确。必须先用 3–5 篇真实文章执行 Product Gate A，测量问题召回、误报、人工接受、实际修改、重跑稳定性和校正成本；Gate A 通过前不继续横向增加学科 critic。
 
 ## 三条学术线
 

@@ -40,6 +40,7 @@ jobs:
           argument_workbench.py
           argument_review.py
           argument_adjudication.py
+          argument_gate.py
           critic_execution.py
           critic_scoring.py
           critic_workflow.py
@@ -48,6 +49,7 @@ jobs:
           test/test_argument_workbench.py
           test/test_argument_review.py
           test/test_argument_adjudication.py
+          test/test_argument_gate.py
           test/test_critic_runner.py
 
       - name: Smoke-test CLI
@@ -64,6 +66,11 @@ jobs:
           python critic_runner.py ir review show --help
           python critic_runner.py ir adjudicate --help
           python critic_runner.py ir revision-plan --help
+          python critic_runner.py ir gate-a init --help
+          python critic_runner.py ir gate-a assess --help
+          python critic_runner.py ir gate-a report --help
+          python critic_runner.py ir gate-a decide --help
+          python critic_runner.py ir gate-a verify --help
           python critic_runner.py quickstart --help
           python critic_runner.py import-report --help
           python critic_runner.py adjudicate --help
