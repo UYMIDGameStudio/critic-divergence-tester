@@ -48,6 +48,12 @@ from argument_workbench import (
     verify_workspace,
     workspace_paths,
 )
+from argument_review import (
+    collect_review_results,
+    prepare_rule_review,
+    rebuild_reviews,
+    show_claim_review,
+)
 from critic_execution import ExecutorResult, execute_with_limits
 from critic_scoring import (
     ALL_COMPARISONS,
@@ -3031,14 +3037,116 @@ def ir_inspect_command(args: argparse.Namespace) -> int:
 
 def ir_rebuild_command(args: argparse.Namespace) -> int:
     map_path, changed = rebuild_workspace(args.project)
+    review_outputs, reviews_changed = rebuild_reviews(args.project)
     print(f"Argument map: {map_path}")
-    print("Derived artifacts rebuilt." if changed else "Derived artifacts already current.")
+    for output in review_outputs:
+        print(f"Claim review: {output}")
+    print(
+        "Derived artifacts rebuilt."
+        if changed or reviews_changed
+        else "Derived artifacts already current."
+    )
     return 0
 
 
 def ir_verify_project_command(args: argparse.Namespace) -> int:
     errors = verify_workspace(args.project)
     return _ir_print_validation("argument-workbench-project", errors)
+
+
+def ir_review_prepare_command(args: argparse.Namespace) -> int:
+    paths, created = prepare_rule_review(
+        args.project,
+        args.rules,
+        depth=args.depth,
+    )
+    print(f"Rule Review: {paths.review_id}")
+    print(f"Review prompt: {paths.prompt}")
+    print(f"Check plan: {paths.plan}")
+    print("Review prepared." if created else "Matching review already exists; reused.")
+    return 0
+
+
+def _read_review_paste_bytes() -> bytes:
+    print(
+        "Paste the model's pure argument-check-results JSON. On a new line enter "
+        f"{IR_PASTE_END_MARKER} to finish."
+    )
+    lines: list[str] = []
+    total = 0
+    while True:
+        line = sys.stdin.readline()
+        if line == "":
+            raise WorkbenchError(
+                f"paste ended before {IR_PASTE_END_MARKER}; no review result was collected"
+            )
+        normalized = line.rstrip("\r\n")
+        if normalized == IR_PASTE_END_MARKER:
+            break
+        total += len(line.encode("utf-8"))
+        if total > DEFAULT_MAX_OUTPUT_BYTES:
+            raise WorkbenchError(
+                f"pasted review result exceeds {DEFAULT_MAX_OUTPUT_BYTES} bytes"
+            )
+        lines.append(normalized)
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def ir_review_collect_command(args: argparse.Namespace) -> int:
+    if args.paste:
+        response_bytes = _read_review_paste_bytes()
+        method = "terminal-paste"
+        source_name = "pasted-check-results.json"
+    else:
+        raw_file = Path(args.file)
+        if raw_file.is_symlink():
+            raise WorkbenchError("review result input must not be a symbolic link")
+        response_path = raw_file.resolve()
+        if not response_path.is_file():
+            raise WorkbenchError(f"review result file does not exist: {response_path}")
+        response_bytes = response_path.read_bytes()
+        if len(response_bytes) > DEFAULT_MAX_OUTPUT_BYTES:
+            raise WorkbenchError(
+                f"review result input exceeds {DEFAULT_MAX_OUTPUT_BYTES} bytes"
+            )
+        method = "file"
+        source_name = response_path.name
+    attempt_path, record = collect_review_results(
+        args.project,
+        response_bytes,
+        review_id=args.review_id,
+        method=method,
+        source_name=source_name,
+        producer_label=args.producer_label,
+    )
+    status = record["validation"]["status"]
+    print(f"Review result attempt: {attempt_path}")
+    print(f"Validation status: {status}")
+    for error in record["validation"]["errors"]:
+        print(f"  - {error}")
+    if status != "valid":
+        print("The attempt was preserved; collect a corrected complete/partial result.")
+        return EXIT_INVALID_WORKFLOW
+    review_text, view_path = show_claim_review(
+        args.project,
+        review_id=str(record["review_id"]),
+        claim_id=None,
+    )
+    actionable = review_text.count("### FAIL ") + review_text.count("### UNCERTAIN ")
+    print(f"Claim review: {view_path}")
+    print(f"Open Findings: {actionable}")
+    return 0
+
+
+def ir_review_show_command(args: argparse.Namespace) -> int:
+    rendered, view_path = show_claim_review(
+        args.project,
+        review_id=args.review_id,
+        claim_id=args.claim,
+    )
+    print(rendered, end="" if rendered.endswith("\n") else "\n")
+    print(f"Full claim review: {view_path}")
+    return 0
 
 
 def ir_prepare_command(args: argparse.Namespace) -> int:
@@ -3977,6 +4085,79 @@ def parser() -> argparse.ArgumentParser:
         "project", help="Argument Workbench project directory"
     )
     ir_verify_project_parser.set_defaults(func=ir_verify_project_command)
+
+    ir_review_parser = ir_sub.add_parser(
+        "review",
+        help="run claim-centered Review Lenses inside an Argument Workbench project",
+    )
+    ir_review_sub = ir_review_parser.add_subparsers(
+        dest="ir_review_command", required=True
+    )
+
+    ir_review_prepare_parser = ir_review_sub.add_parser(
+        "prepare",
+        help="prepare an IR-native Rule Lens plan against Reviewed IR",
+    )
+    ir_review_prepare_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    ir_review_prepare_parser.add_argument(
+        "--rules",
+        default=str(IR_SOCIAL_SCIENCE_RULES),
+        help="check-library JSON path (default: bundled social-science rules)",
+    )
+    ir_review_prepare_parser.add_argument(
+        "--depth",
+        choices=("core", "full"),
+        default="core",
+        help="core checks only, or core plus extended checks (default: core)",
+    )
+    ir_review_prepare_parser.set_defaults(func=ir_review_prepare_command)
+
+    ir_review_collect_parser = ir_review_sub.add_parser(
+        "collect",
+        help="immutably collect and validate a Rule Lens model result",
+    )
+    ir_review_collect_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    ir_review_collect_source = ir_review_collect_parser.add_mutually_exclusive_group(
+        required=True
+    )
+    ir_review_collect_source.add_argument(
+        "--paste",
+        action="store_true",
+        help=f"paste JSON until {IR_PASTE_END_MARKER}",
+    )
+    ir_review_collect_source.add_argument(
+        "--file", help="existing argument-check-results JSON file"
+    )
+    ir_review_collect_parser.add_argument(
+        "--review-id",
+        help="Rule Review ID (default: most recently prepared review)",
+    )
+    ir_review_collect_parser.add_argument(
+        "--producer-label",
+        help="opaque model/executor label for provenance",
+    )
+    ir_review_collect_parser.set_defaults(func=ir_review_collect_command)
+
+    ir_review_show_parser = ir_review_sub.add_parser(
+        "show",
+        help="show every check outcome and open Finding for a Claim",
+    )
+    ir_review_show_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    ir_review_show_parser.add_argument(
+        "--review-id",
+        help="Rule Review ID (default: most recent review with valid results)",
+    )
+    ir_review_show_parser.add_argument(
+        "--claim",
+        help="Claim ID such as C4 or V1:C4 (default: show all reviewed Claims)",
+    )
+    ir_review_show_parser.set_defaults(func=ir_review_show_command)
 
     ir_prepare_parser = ir_sub.add_parser(
         "prepare",

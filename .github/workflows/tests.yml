@@ -38,12 +38,14 @@ jobs:
           argument_ir.py
           argument_contracts.py
           argument_workbench.py
+          argument_review.py
           critic_execution.py
           critic_scoring.py
           critic_workflow.py
           test/test_argument_ir.py
           test/test_argument_contracts.py
           test/test_argument_workbench.py
+          test/test_argument_review.py
           test/test_critic_runner.py
 
       - name: Smoke-test CLI
@@ -55,6 +57,9 @@ jobs:
           python critic_runner.py ir inspect --help
           python critic_runner.py ir rebuild --help
           python critic_runner.py ir verify-project --help
+          python critic_runner.py ir review prepare --help
+          python critic_runner.py ir review collect --help
+          python critic_runner.py ir review show --help
           python critic_runner.py quickstart --help
           python critic_runner.py import-report --help
           python critic_runner.py adjudicate --help
