@@ -15,6 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 import argument_workbench as workbench  # noqa: E402
+import argument_ir  # noqa: E402
 import critic_runner  # noqa: E402
 
 
@@ -68,6 +69,48 @@ class ArgumentWorkbenchTests(unittest.TestCase):
             self.assertIn("## Core Claims", markdown)
             self.assertIn("[deterministic]", markdown)
             self.assertNotIn("Argument Score", markdown)
+
+    def test_new_workspace_uses_classification_focused_extraction_protocol(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_project(Path(temporary))
+            prompt = paths.prompt.read_text(encoding="utf-8")
+            self.assertIn("Protocol: argument-ir-extraction-v2", prompt)
+            self.assertIn("types 和 methods 默认各选择一个最主要值", prompt)
+            self.assertIn("methods 描述实际支撑该 Claim 的方法", prompt)
+            self.assertIn("不要用 Claim 自身的重复表述冒充 Evidence", prompt)
+            self.assertEqual(
+                workbench.verify_workspace(paths, allow_incomplete=True), []
+            )
+
+    def test_legacy_extraction_prompt_remains_byte_verifiable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_project(Path(temporary))
+            source_bytes = (FIXTURE / "manuscript.md").read_bytes()
+            legacy = argument_ir.build_ir_extraction_prompt(
+                source_bytes.decode("utf-8-sig"),
+                source_name="manuscript.md",
+                source_sha256=workbench.sha256_bytes(source_bytes),
+                protocol_version=1,
+            ).encode("utf-8")
+            self.assertEqual(
+                workbench.sha256_bytes(legacy),
+                "c190846f856b54d33e4bf90ba9dde2bc75eb4e4be278bbc487b26d8350683976",
+            )
+            paths.prompt.write_bytes(legacy)
+            self.assertEqual(
+                workbench.verify_workspace(paths, allow_incomplete=True), []
+            )
+            record = self.collect_fixture(paths)
+            self.assertEqual(record["prompt_sha256"], workbench.sha256_bytes(legacy))
+            workbench.rebuild_workspace(paths.root)
+            self.assertEqual(workbench.verify_workspace(paths), [])
+
+            paths.prompt.write_bytes(legacy + b"\n")
+            errors = workbench.verify_workspace(paths)
+            self.assertTrue(
+                any("supported deterministic source-bound prompt" in error for error in errors)
+            )
+            self.assertTrue(any("prompt SHA-256 mismatch" in error for error in errors))
 
     def test_init_preserves_utf8_bom_and_crlf_source_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -273,6 +316,91 @@ class ArgumentWorkbenchTests(unittest.TestCase):
             reviewed = json.loads(paths.reviewed_payload.read_text(encoding="utf-8"))
             self.assertEqual(reviewed["claims"][0]["types"], ["causal"])
             self.assertTrue(any("Correction saved" in line for line in output))
+
+    def test_classification_triage_writes_one_confirmed_event_and_rebuilds(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_project(Path(temporary))
+            self.collect_fixture(paths)
+            workbench.rebuild_workspace(paths.root)
+            answers = iter(
+                [
+                    "c",
+                    "e",
+                    "causal",
+                    "causal-observational",
+                    "y",
+                    "The wording asserts a directional empirical mechanism.",
+                    "q",
+                    "q",
+                ]
+            )
+            output: list[str] = []
+            self.assertEqual(
+                workbench.run_inspector(
+                    paths.root,
+                    view_only=False,
+                    input_fn=lambda _: next(answers),
+                    output_fn=output.append,
+                ),
+                0,
+            )
+            corrections = workbench.correction_entries(paths)
+            self.assertEqual(len(corrections), 1)
+            self.assertEqual(
+                corrections[0][1]["operation"]["changes"],
+                {
+                    "types": ["causal"],
+                    "methods": ["causal-observational"],
+                },
+            )
+            reviewed = json.loads(paths.reviewed_payload.read_text(encoding="utf-8"))
+            record = json.loads(paths.reviewed_record.read_text(encoding="utf-8"))
+            self.assertEqual(reviewed["claims"][0]["types"], ["causal"])
+            self.assertEqual(
+                reviewed["claims"][0]["methods"], ["causal-observational"]
+            )
+            self.assertEqual(
+                record["field_provenance"]["C1.types"],
+                {"origin": "human-confirmed", "source": "IC0001"},
+            )
+            self.assertEqual(
+                record["field_provenance"]["C1.methods"],
+                {"origin": "human-confirmed", "source": "IC0001"},
+            )
+            self.assertTrue(
+                any("Correction saved immediately: IC0001.json" in line for line in output)
+            )
+            self.assertEqual(workbench.verify_workspace(paths), [])
+
+    def test_classification_triage_cancellation_writes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_project(Path(temporary))
+            self.collect_fixture(paths)
+            workbench.rebuild_workspace(paths.root)
+            answers = iter(
+                [
+                    "c",
+                    "e",
+                    "causal",
+                    "causal-observational",
+                    "n",
+                    "q",
+                    "q",
+                ]
+            )
+            output: list[str] = []
+            self.assertEqual(
+                workbench.run_inspector(
+                    paths.root,
+                    view_only=False,
+                    input_fn=lambda _: next(answers),
+                    output_fn=output.append,
+                ),
+                0,
+            )
+            self.assertEqual(workbench.correction_entries(paths), [])
+            self.assertTrue(any("Cancelled; model-derived values kept." in line for line in output))
+            self.assertEqual(workbench.verify_workspace(paths), [])
 
     def test_workspace_rejects_tampered_source_and_derived_cache(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

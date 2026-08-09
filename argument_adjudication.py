@@ -166,6 +166,39 @@ def current_finding_entries(
     return entries
 
 
+def filter_finding_entries(
+    findings: list[FindingEntry],
+    *,
+    verdict: str | None = None,
+    claim: str | None = None,
+    check_id: str | None = None,
+) -> list[FindingEntry]:
+    if verdict is not None and verdict not in {"fail", "uncertain"}:
+        raise WorkbenchError("Finding verdict filter must be fail or uncertain")
+    normalized_claim: str | None = None
+    if claim is not None:
+        normalized_claim = claim.strip().upper()
+        if re.fullmatch(r"C[1-9][0-9]*", normalized_claim):
+            normalized_claim = f"V1:{normalized_claim}"
+        elif re.fullmatch(r"V[1-9][0-9]*:C[1-9][0-9]*", normalized_claim) is None:
+            raise WorkbenchError("Claim filter must be C1 or V1:C1")
+    normalized_check = check_id.strip() if check_id is not None else None
+    if normalized_check == "":
+        raise WorkbenchError("check filter must not be empty")
+    selected: list[FindingEntry] = []
+    for finding in findings:
+        value = finding.value
+        if verdict is not None and value.get("verdict") != verdict:
+            continue
+        if normalized_claim is not None and value.get("target_claim") != normalized_claim:
+            continue
+        finding_check = value.get("lens", {}).get("check_id")
+        if normalized_check is not None and finding_check != normalized_check:
+            continue
+        selected.append(finding)
+    return selected
+
+
 def list_adjudications(
     paths: HumanReviewPaths,
 ) -> list[tuple[Path, dict[str, Any], bytes]]:
@@ -588,20 +621,61 @@ def rebuild_adjudication_cache(project_dir: Path | str) -> tuple[list[Path], boo
 
 
 def adjudication_status(
-    project_dir: Path | str, *, review_id: str | None = None
+    project_dir: Path | str,
+    *,
+    review_id: str | None = None,
+    verdict: str | None = None,
+    claim: str | None = None,
+    check_id: str | None = None,
+    summary_only: bool = False,
 ) -> str:
     paths = human_review_paths(project_dir)
-    findings = current_finding_entries(paths.workspace.root, review_id=review_id)
+    findings = filter_finding_entries(
+        current_finding_entries(paths.workspace.root, review_id=review_id),
+        verdict=verdict,
+        claim=claim,
+        check_id=check_id,
+    )
     latest = latest_adjudications(list_adjudications(paths))
-    lines = ["Human Adjudication", ""]
+    filters = [
+        value
+        for value in (
+            f"verdict={verdict}" if verdict is not None else None,
+            f"claim={claim}" if claim is not None else None,
+            f"check={check_id}" if check_id is not None else None,
+        )
+        if value is not None
+    ]
+    heading = "Human Adjudication"
+    if filters:
+        heading += " (" + ", ".join(filters) + ")"
+    lines = [heading, ""]
     counts = {"accept": 0, "reject": 0, "defer": 0, "open": 0}
+    model_counts = {"fail": 0, "uncertain": 0}
+    open_by_check: dict[str, dict[str, int]] = {}
+    open_by_claim: dict[str, dict[str, int]] = {}
     for finding in findings:
         finding_id = str(finding.value["finding_id"])
+        model_verdict = str(finding.value["verdict"])
+        model_counts[model_verdict] += 1
         adjudication = latest.get(finding_id)
         decision = (
             str(adjudication[1]["decision"]) if adjudication is not None else "open"
         )
         counts[decision] += 1
+        if adjudication is None:
+            finding_check = str(
+                finding.value["lens"].get("check_id") or "perspective"
+            )
+            target_claim = str(finding.value["target_claim"])
+            for registry, key in (
+                (open_by_check, finding_check),
+                (open_by_claim, target_claim),
+            ):
+                bucket = registry.setdefault(key, {"fail": 0, "uncertain": 0})
+                bucket[model_verdict] += 1
+        if summary_only:
+            continue
         lines.extend(
             [
                 f"{finding_id} - {finding.value['target_claim']}",
@@ -612,6 +686,37 @@ def adjudication_status(
         )
         if adjudication is not None and adjudication[1]["reason"]:
             lines.append(f"  Human reason: {adjudication[1]['reason']}")
+        lines.append("")
+    if summary_only:
+        lines.extend(
+            [
+                f"Model verdicts in scope: {model_counts['fail']} FAIL, "
+                f"{model_counts['uncertain']} UNCERTAIN",
+                "",
+                "Open queue by check (FAIL / UNCERTAIN):",
+            ]
+        )
+        if open_by_check:
+            for finding_check, bucket in sorted(
+                open_by_check.items(),
+                key=lambda item: (
+                    -(item[1]["fail"] + item[1]["uncertain"]),
+                    item[0],
+                ),
+            ):
+                lines.append(
+                    f"  {finding_check}: {bucket['fail']} / {bucket['uncertain']}"
+                )
+        else:
+            lines.append("  —")
+        lines.extend(["", "Open queue by Claim (FAIL / UNCERTAIN):"])
+        if open_by_claim:
+            for target_claim, bucket in sorted(open_by_claim.items()):
+                lines.append(
+                    f"  {target_claim}: {bucket['fail']} / {bucket['uncertain']}"
+                )
+        else:
+            lines.append("  —")
         lines.append("")
     lines.extend(
         [
@@ -639,6 +744,10 @@ def run_adjudicator(
     review_id: str | None,
     review_all: bool,
     view_only: bool,
+    verdict: str | None = None,
+    claim: str | None = None,
+    check_id: str | None = None,
+    summary_only: bool = False,
     input_fn: Callable[[str], str] = input,
     output_fn: Callable[[str], None] = print,
 ) -> int:
@@ -649,10 +758,27 @@ def run_adjudicator(
             "Argument Workbench project is invalid: "
             + "; ".join(verification_errors)
         )
-    output_fn(adjudication_status(paths.workspace.root, review_id=review_id))
-    if view_only:
+    output_fn(
+        adjudication_status(
+            paths.workspace.root,
+            review_id=review_id,
+            verdict=verdict,
+            claim=claim,
+            check_id=check_id,
+            summary_only=summary_only,
+        )
+    )
+    if view_only or summary_only:
         return 0
-    findings = current_finding_entries(paths.workspace.root, review_id=review_id)
+    findings = filter_finding_entries(
+        current_finding_entries(paths.workspace.root, review_id=review_id),
+        verdict=verdict,
+        claim=claim,
+        check_id=check_id,
+    )
+    if not findings:
+        output_fn("No current Findings match the selected filters.")
+        return 0
     latest = latest_adjudications(list_adjudications(paths))
     output_fn(
         "Human judgment is final. Choose Accept, Reject, or Defer for each model Finding."

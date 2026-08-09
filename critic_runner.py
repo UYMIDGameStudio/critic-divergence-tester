@@ -63,8 +63,10 @@ from argument_gate import (
     METRIC_KEYS as GATE_A_METRIC_KEYS,
     append_assessment as append_gate_a_assessment,
     append_gate_decision,
+    gate_readiness,
     initialize_gate,
     rebuild_gate_report,
+    render_gate_readiness,
     verify_gate,
 )
 from argument_contracts import GATE_A_BURDENS, GATE_A_COMPARISONS, GATE_A_DECISIONS
@@ -3169,7 +3171,7 @@ def ir_review_show_command(args: argparse.Namespace) -> int:
 
 
 def ir_adjudicate_command(args: argparse.Namespace) -> int:
-    if not args.view_only:
+    if not args.view_only and not args.summary_only:
         isatty = getattr(sys.stdin, "isatty", None)
         if isatty is not None and not isatty():
             raise WorkbenchError(
@@ -3180,6 +3182,10 @@ def ir_adjudicate_command(args: argparse.Namespace) -> int:
         review_id=args.review_id,
         review_all=args.review_all,
         view_only=args.view_only,
+        verdict=args.verdict,
+        claim=args.claim,
+        check_id=args.check_id,
+        summary_only=args.summary_only,
     )
 
 
@@ -3197,6 +3203,11 @@ def ir_gate_a_init_command(args: argparse.Namespace) -> int:
     print(f"Product Gate A corpus: {paths.corpus}")
     print(f"Evidence report: {paths.report_markdown}")
     print("Only hashes and local workspace locators were stored; manuscript bytes were not copied.")
+    return 0
+
+
+def ir_gate_a_readiness_command(args: argparse.Namespace) -> int:
+    print(render_gate_readiness(gate_readiness(args.projects)), end="")
     return 0
 
 
@@ -4266,6 +4277,25 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="show current human decisions without starting the prompt",
     )
+    ir_adjudicate_parser.add_argument(
+        "--summary-only",
+        action="store_true",
+        help="show grouped open counts without listing or deciding Findings",
+    )
+    ir_adjudicate_parser.add_argument(
+        "--verdict",
+        choices=("fail", "uncertain"),
+        help="show or adjudicate only model FAIL or UNCERTAIN Findings",
+    )
+    ir_adjudicate_parser.add_argument(
+        "--claim",
+        help="show or adjudicate one target Claim such as C4 or V1:C4",
+    )
+    ir_adjudicate_parser.add_argument(
+        "--check",
+        dest="check_id",
+        help="show or adjudicate one exact Rule Lens check ID",
+    )
     ir_adjudicate_parser.set_defaults(func=ir_adjudicate_command)
 
     ir_revision_plan_parser = ir_sub.add_parser(
@@ -4289,6 +4319,15 @@ def parser() -> argparse.ArgumentParser:
     ir_gate_a_sub = ir_gate_a_parser.add_subparsers(
         dest="ir_gate_a_command", required=True
     )
+    ir_gate_a_readiness_parser = ir_gate_a_sub.add_parser(
+        "readiness",
+        help="show read-only progress and next commands for 3-5 Workbench projects",
+    )
+    ir_gate_a_readiness_parser.add_argument(
+        "projects", nargs="+", help="3-5 real-manuscript Workbench projects"
+    )
+    ir_gate_a_readiness_parser.set_defaults(func=ir_gate_a_readiness_command)
+
     ir_gate_a_init_parser = ir_gate_a_sub.add_parser(
         "init", help="capture exact hashes for 3-5 completed Workbench projects"
     )

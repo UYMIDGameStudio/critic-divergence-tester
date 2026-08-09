@@ -10,6 +10,8 @@ from typing import Any
 
 
 ARGUMENT_IR_SCHEMA_VERSION = 1
+IR_EXTRACTION_PROTOCOL_VERSION = 2
+SUPPORTED_IR_EXTRACTION_PROTOCOL_VERSIONS = (1, 2)
 CHECK_LIBRARY_SCHEMA_VERSION = 1
 CHECK_PLAN_SCHEMA_VERSION = 1
 CHECK_RESULTS_SCHEMA_VERSION = 1
@@ -1154,6 +1156,7 @@ def build_ir_extraction_prompt(
     *,
     source_name: str,
     source_sha256: str,
+    protocol_version: int = IR_EXTRACTION_PROTOCOL_VERSION,
 ) -> str:
     if not manuscript.strip():
         raise ArgumentIRError("manuscript must not be empty")
@@ -1161,10 +1164,34 @@ def build_ir_extraction_prompt(
         raise ArgumentIRError("source_name must be a safe basename")
     if not _is_digest(source_sha256):
         raise ArgumentIRError("source_sha256 must be a lowercase SHA-256 digest")
-    return (
-        "# Argument IR extraction\n\n"
+    if protocol_version not in SUPPORTED_IR_EXTRACTION_PROTOCOL_VERSIONS:
+        raise ArgumentIRError(
+            "protocol_version must identify a supported IR extraction protocol"
+        )
+    protocol_header = (
+        ""
+        if protocol_version == 1
+        else "Protocol: argument-ir-extraction-v2\n\n"
+    )
+    extraction_guidance = (
         "把下面稿件转换成 JSON Argument IR。你只做结构抽取，不评价主张质量，不运行 critic。"
         "承担推理功能的复合句要拆成可独立判断的 Claim；每个节点必须保留稿件中的逐字 source_quote 和位置。"
+        if protocol_version == 1
+        else (
+            "把下面稿件转换成 JSON Argument IR。你只做结构抽取，不评价主张质量，不运行 critic。"
+            "只抽取承担论证功能的重要 Claim，不要把标题、修辞、过渡句、研究过程叙述或作者明确反对的命题误当成作者主张。"
+            "承担多个独立推理功能的复合句要拆成可独立判断的 Claim；每个节点必须保留稿件中的逐字 source_quote 和位置。"
+            "每条 Claim 的 types 和 methods 默认各选择一个最主要值。只有同一个不可再拆的 Claim 确实独立承担多个功能时才使用多个值，"
+            "并在 uncertainty 说明为什么不能拆开。methods 描述实际支撑该 Claim 的方法，不是列出整篇文章使用过的所有方法。"
+            "不要仅因主张谈到一般趋势或未来后果就同时标为 predictive；predictive 应保留给具有明确预测对象和验证条件的主张。"
+            "每个 conclusion 或 intermediate Claim 应尽可能有可追踪的 supports/qualifies 入边；"
+            "不要用 Claim 自身的重复表述冒充 Evidence。若原稿确实没有可定位支持，把缺口写入 unverified，不要虚构节点。"
+        )
+    )
+    return (
+        "# Argument IR extraction\n\n"
+        f"{protocol_header}"
+        f"{extraction_guidance}"
         "source_quote 必须足够长，使它在整篇稿件中只出现一次；position 先写人可读提示，"
         "程序随后会按唯一引文确定性改写为行列区间。"
         "不得补充稿件外事实。隐含 Claim/Assumption 标为 inferred，并在 uncertainty 解释推断依据；"

@@ -14,7 +14,7 @@ Every manuscript must complete the same Phase 1–3 path:
 4. adjudicate every FAIL/UNCERTAIN Finding as accept, reject, or defer;
 5. create the revision plan and verify the whole Workbench project.
 
-`ir gate-a init` refuses fewer than three or more than five projects, duplicate source bytes, invalid workspaces, missing revision plans, and open Findings. The resulting corpus is immutable. If a bound workspace changes, create a new corpus rather than silently updating the evidence.
+Run `ir gate-a readiness PROJECT...` first. It is a read-only aggregate for three to five workspaces: it verifies each project, reports model Findings separately from human decisions, and gives the exact next command without creating an assessment, evidence artifact, or Gate decision. `ir gate-a init` then refuses fewer than three or more than five projects, duplicate source bytes, invalid workspaces, missing revision plans, and open Findings. The resulting corpus is immutable. If a bound workspace changes, create a new corpus rather than silently updating the evidence.
 
 ## Selected real-paper corpus
 
@@ -74,3 +74,5 @@ The first full Rule Review plan produced 704 tasks; the first core plan still pr
 | **Total** | **316** | **200** | **32** | **84** | **116** |
 
 These verdicts are model-derived proposals, not accepted criticism. No IR correction, Finding adjudication, revision action, usability assessment, or Gate decision has been attributed to a human. The reduction from 210 to 116 open Findings shows that extraction classification materially controls downstream review cost, while the remaining queue is still a human-cost warning. It is not permission to auto-reject uncertainty or auto-pass Gate A. Product Gate A remains incomplete, and Phase 4 remains blocked until a human completes the required correction, adjudication, and assessment work.
+
+The first Gate-driven UX iteration now gives new workspaces a byte-versioned `argument-ir-extraction-v2` prompt that asks for one primary type/method per Claim and stronger support-edge coverage. Existing v1 prompt bytes remain reproducible and every Raw attempt still binds the prompt it actually used. The Inspector also provides a `[C]lassify` queue that writes nothing when a user keeps a model value and appends one human-confirmed correction only after an explicit edit confirmation. Adjudication can be navigated by model verdict, target Claim, or exact check without batch-deciding or hiding the remaining Findings. A single read-only `ir gate-a readiness` command now aggregates all five projects and, for the current corpus, accurately stops capture at 116 open Findings. These tested product changes address observed cost; they are not themselves human Gate evidence, so the corpus must still be exercised by a human before a decision.

@@ -271,9 +271,11 @@ py -3 critic_runner.py ir verify-project $project
 
 macOS / Linux 把 `py -3` 换成 `python3`。如果模型回答已经保存为文件，第二步改用 `--file path/to/returned.json`。文件模式保留精确字节；终端粘贴模式记录为 `terminal-paste`，并保存终端实际收到的 UTF-8 文本。
 
+新建工作区使用 `argument-ir-extraction-v2`：每条 Claim 的 `types` 与 `methods` 默认各选一个主要值，method 只描述实际支撑该 Claim 的方法，而不是罗列整篇文章出现过的所有方法；结论和中间 Claim 还会被要求连接可追踪的支持关系。这样可避免一次过度多重分类在下游确定性膨胀成大量无关 checks。旧工作区的 v1 prompt 仍按原始字节重建验证，Raw attempt 保存的 `prompt_sha256` 不会因为工具升级而失效或被静默换成 v2。
+
 每次模型返回都写入新的 `raw-ir/attempt-nnnn/`，包括无效返回；旧 attempt 永远不会被覆盖。在尚未产生人工 correction 时，最近一次 `valid` 或 `correctable` attempt 会成为当前 Raw IR；第一条 correction 写入后就把 V1 固定到该 attempt，后续返回只能归档，不会偷换已经人工审查的基础。可定位但存在类型、引文或 relation 问题的结果标记为 `correctable`，可以直接进入 Inspector。无法解析、source hash 不符或没有可用节点身份的返回标记为 `unusable`，仍会归档，但需要重新收集一次。
 
-Inspector 使用普通行式菜单，Windows 和 Linux 行为一致。每个确认的改动立即写成独立 `ICnnnn.json`；Undo 追加一条 revert event，不删除历史。程序随后从 Raw IR 和完整 correction 序列确定性生成：
+Inspector 使用普通行式菜单，Windows 和 Linux 行为一致。`[C]lassify` 会按 Claim 依次显示原文、role、types 和 methods；直接回车保留模型值且不冒充人工确认，只有再次确认的修改才会立即写成独立 `ICnnnn.json` 并重建 Reviewed IR。其他编辑同样逐次落盘；Undo 追加一条 revert event，不删除历史。程序随后从 Raw IR 和完整 correction 序列确定性生成：
 
 ```text
 <project>/documents/D1/versions/V1/reviewed-ir/argument-ir.json
@@ -348,12 +350,22 @@ py -3 critic_runner.py ir adjudicate $project
 # 只读查看当前状态，不进入交互
 py -3 critic_runner.py ir adjudicate $project --view-only
 
+# 大队列先看按 check 与 Claim 聚合的只读 open 摘要
+py -3 critic_runner.py ir adjudicate $project --summary-only
+
+# 大队列可先处理 FAIL，再按 Claim 或精确 check 缩小范围；仍然逐条人工确认
+py -3 critic_runner.py ir adjudicate $project --verdict fail
+py -3 critic_runner.py ir adjudicate $project --claim C4
+py -3 critic_runner.py ir adjudicate $project --check causal.alternative-explanation
+
 # 随时确定性重建 revision plan；--show 同时输出到终端
 py -3 critic_runner.py ir revision-plan $project --show
 
 # 验证 Finding → Adjudication → RevisionAction 和所有精确父哈希
 py -3 critic_runner.py ir verify-project $project
 ```
+
+`--summary-only` 不要求交互终端，只给出范围内的 FAIL/UNCERTAIN、人工决定计数，以及 open queue 的 check/Claim 聚合，不创建 adjudication 或 revision-plan。`--verdict fail|uncertain`、`--claim C4|V1:C4` 与 `--check CHECK_ID` 可以组合，只改变本次显示和交互队列，不改变 Finding、不批量写决定，也不把被过滤掉的条目视为 resolved。之后不带过滤器再次运行即可继续其余 open Findings。
 
 Accept 必须至少指定一个结构化 action type（`narrow_claim`、`add_evidence`、`add_qualification`、`remove_claim`、`restructure_argument`、`clarify_concept`、`verify_citation` 或 `other`）和具体行动文本。Reject / Defer 必须记录理由。改变决定不会覆盖历史：新 `ADnnnn` 通过 `supersedes` 指向旧决定；旧 RevisionAction 也保留。
 
@@ -375,6 +387,9 @@ documents/D1/versions/V1/
 Phase 3 完成后不能直接增加 Perspective Lens。`ir gate-a` 把 3–5 篇真实稿件的 Phase 1–3 结果固定为一个私有、本地 evidence corpus。它只保存 workspace locator 与精确哈希，不复制稿件正文；建议输出目录使用 `*.product-gate-a/`，该模式默认不进 Git。
 
 ```powershell
+# 在捕获 Gate corpus 前只读汇总 3–5 个项目；未完成时逐篇给出下一条命令
+py -3 critic_runner.py ir gate-a readiness $project1 $project2 $project3
+
 # 三个变量分别指向已经完成 IR correction、Rule Review、人工裁决和 revision plan 的真实项目
 $gate = "D:\private-evaluation\workbench.product-gate-a"
 py -3 critic_runner.py ir gate-a init $gate $project1 $project2 $project3
@@ -392,6 +407,8 @@ py -3 critic_runner.py ir gate-a assess $gate P1 `
 py -3 critic_runner.py ir gate-a report $gate --show
 py -3 critic_runner.py ir gate-a verify $gate
 ```
+
+`ir gate-a readiness` 可以在人工裁决尚未完成时运行。它只读取并验证项目，汇总每篇稿件的 Claim、correction、模型 Findings、人工决定和 revision plan 状态，不创建 assessment、Gate evidence 或 Gate decision。只有全部项目没有 open Finding、revision plan 已生成且 source bytes 互不重复时，输出才会允许执行不可变 corpus capture。
 
 对 P2/P3（以及可选的 P4/P5）完成 assessment 后，报告才会显示 `Ready for human gate decision: yes`。程序永远不会自动通过 Gate；只有人类 evaluator 可以追加决定：
 
