@@ -3180,6 +3180,9 @@ def ir_adjudicate_command(args: argparse.Namespace) -> int:
         review_id=args.review_id,
         review_all=args.review_all,
         view_only=args.view_only,
+        verdict=args.verdict,
+        claim=args.claim,
+        check_id=args.check_id,
     )
 
 
@@ -4265,6 +4268,20 @@ def parser() -> argparse.ArgumentParser:
         "--view-only",
         action="store_true",
         help="show current human decisions without starting the prompt",
+    )
+    ir_adjudicate_parser.add_argument(
+        "--verdict",
+        choices=("fail", "uncertain"),
+        help="show or adjudicate only model FAIL or UNCERTAIN Findings",
+    )
+    ir_adjudicate_parser.add_argument(
+        "--claim",
+        help="show or adjudicate one target Claim such as C4 or V1:C4",
+    )
+    ir_adjudicate_parser.add_argument(
+        "--check",
+        dest="check_id",
+        help="show or adjudicate one exact Rule Lens check ID",
     )
     ir_adjudicate_parser.set_defaults(func=ir_adjudicate_command)
 
