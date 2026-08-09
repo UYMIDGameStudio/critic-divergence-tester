@@ -401,6 +401,41 @@ class ArgumentIRTests(unittest.TestCase):
             )
         )
 
+    def test_empirical_causal_checks_do_not_apply_to_conceptual_causal_claims(
+        self,
+    ) -> None:
+        value = valid_ir(self.source_bytes)
+        value["claims"][0]["methods"] = ["conceptual-analysis"]
+        ir_bytes = (
+            json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        plan = argument_ir.build_check_plan(
+            value,
+            self.library,
+            ir_sha256=digest(ir_bytes),
+            library_sha256=digest(self.library_bytes),
+            depth="core",
+        )
+        selected = {
+            task["check_id"]
+            for task in plan["tasks"]
+            if task["claim_id"] == "C1"
+        }
+        self.assertTrue(
+            {"causal.mechanism", "causal.alternative-explanation"}.issubset(
+                selected
+            )
+        )
+        self.assertTrue(
+            {
+                "causal.temporal-order",
+                "causal.confounding",
+                "causal.reverse-causality",
+                "causal.selection-bias",
+            }.isdisjoint(selected)
+        )
+        self.assertEqual(argument_ir.validate_check_plan(plan), [])
+
     def test_execution_prompt_contains_exact_plan_hash_and_only_selected_tasks(self) -> None:
         plan = self._plan()
         plan_bytes = (json.dumps(plan, ensure_ascii=False, indent=2) + "\n").encode("utf-8")

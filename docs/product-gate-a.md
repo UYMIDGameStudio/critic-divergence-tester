@@ -52,4 +52,25 @@ If correction burden is high, important Claims are routinely missed, attribution
 
 ## Current limitation
 
-The private source corpus and five V1 Workbench projects have been initialized and hash-verified, but Raw IR extraction, human correction, Rule Review, adjudication, revision planning, and human Gate assessment are not yet complete. Corpus selection and successful initialization are not evidence that Product Gate A has passed.
+The private source corpus and five V1 Workbench projects have been initialized and hash-verified. A model-derived Raw IR attempt has been collected for every paper, and each deterministic Reviewed IR cache and argument map rebuilds byte-for-byte without any human correction events. The current Reviewed IR contains 66 Claims in total:
+
+| Alias | Claims | Reviewed IR SHA-256 |
+|---|---:|---|
+| P01 | 15 | `0867aecfd03fbc77a1d6ab9697f562cb62a11b36dae5d654579166f2b83d7b6f` |
+| P02 | 13 | `c2f5567258321c3dd743d5a5741255b59f975d5a66d189a5e55b80293c97676d` |
+| P03 | 14 | `3278c5d2cc398e0a13090ce327a6317090817e5ab9e5525fb79135239d3e5ea4` |
+| P04 | 13 | `d4a139fc9b5357e00e5b327dd7d3ce9323bcbec514b10b349fcb87a6a2b8846e` |
+| P05 | 11 | `4e3f994aa481b67494f7faf16925c6f307b5f5d8e5e993d8278d18d5cac7201f` |
+
+The first full Rule Review plan produced 704 tasks; the first core plan still produced 582. That real-corpus result exposed an applicability defect: empirical temporal-order, confounding, reverse-causality, and selection-bias checks were also being assigned to conceptual and formal-model causal Claims. Restricting those four checks to observational and experimental methods reduced the current immutable core plans to 478 tasks while leaving the randomized field experiment P05 unchanged.
+
+| Alias | Current core tasks | PASS | FAIL | UNCERTAIN | Open Findings |
+|---|---:|---:|---:|---:|---:|
+| P01 | 112 | 67 | 6 | 39 | 45 |
+| P02 | 82 | 45 | 8 | 29 | 37 |
+| P03 | 87 | 40 | 7 | 40 | 47 |
+| P04 | 99 | 63 | 9 | 27 | 36 |
+| P05 | 98 | 53 | 6 | 39 | 45 |
+| **Total** | **478** | **268** | **36** | **174** | **210** |
+
+These verdicts are model-derived proposals, not accepted criticism. No IR correction, Finding adjudication, revision action, usability assessment, or Gate decision has been attributed to a human. The 210 open Findings are a preliminary human-cost warning and may justify another extraction/review UX iteration; they are not permission to auto-reject uncertainty or auto-pass Gate A. Product Gate A remains incomplete, and Phase 4 remains blocked until a human completes the required correction, adjudication, and assessment work.

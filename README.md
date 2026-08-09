@@ -242,7 +242,7 @@ flowchart LR
 
 IR 明确分开 `Claim`、`Evidence`、`Assumption`、`Citation` 及其关系。每个节点都保留原稿逐字引文；引文必须在整篇原稿中唯一可定位，生成 plan 时程序会把模型写的位置提示改成确定性的 `L行:C列-L行:C列` 区间。程序还会核对原稿文件名、精确字节 SHA-256、ID 是否连续、关系端点是否合法，以及支持／限定关系是否形成循环。它不使用看似精确但无法校准的数字 `confidence`；隐含主张和假设必须写明 `uncertainty`。
 
-社科方法矩阵现在位于 [`ir/social-science-checks.json`](ir/social-science-checks.json)。每条规则都声明适用的主张类型、研究方法、检查问题、失败条件和所需上下文。因果主张的时间顺序、混杂、反向因果、选择偏差、机制和替代解释因此成为六个确定任务，而不是模型自由发挥的写作要求。`core` 是较短的必要检查，`full` 会加入识别假设、溢出、稳健性等扩展检查。
+社科方法矩阵现在位于 [`ir/social-science-checks.json`](ir/social-science-checks.json)。每条规则都声明适用的主张类型、研究方法、检查问题、失败条件和所需上下文。因果机制与替代解释适用于所有因果 Claim；时间顺序、混杂、反向因果和选择偏差只适用于标明 `causal-observational` 或 `causal-experimental` 的经验识别 Claim，避免把观察窗口、样本选择等问题机械套到概念分析和形式模型。`core` 是较短的必要检查，`full` 会加入识别假设、溢出、稳健性等扩展检查。
 
 check plan 使用规范化引用结构：完整 Argument IR 只保存一次，选中的检查定义也只保存一次，每个 task 只有 `id`、`claim_id`、`check_id`。模型结果不再复制一遍可能歧义的引文，而是用 `evidence_refs` 引用 IR 节点；程序再确定性解析原文与位置。`pass` / `fail` 必须给出与该 Claim 处于同一论证链的证据节点，分类有疑问时必须显式返回 `uncertain`，不存在可以让任务静默消失的 `not_applicable` 出口。
 
