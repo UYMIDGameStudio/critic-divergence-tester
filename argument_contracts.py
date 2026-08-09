@@ -41,6 +41,8 @@ LINEAGE_RELATIONS = (
 LINEAGE_STATUSES = ("proposed", "human_confirmed", "rejected")
 FINDING_VERDICTS = ("pass", "fail", "uncertain")
 LENS_KINDS = ("rule", "perspective")
+REVIEW_DEPTHS = ("core", "full")
+REVIEW_RESULT_STATUSES = ("valid", "unusable")
 
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _TIMESTAMP = re.compile(
@@ -199,6 +201,23 @@ def _require_parent_roles(
     }
     if actual != roles:
         errors.append(f"parent roles must be exactly {sorted(roles)}")
+
+
+def _require_parent_artifacts(
+    value: dict[str, Any], expected: dict[str, str], errors: list[str]
+) -> None:
+    parents = value.get("parents")
+    if not isinstance(parents, list):
+        return
+    by_role = {
+        parent.get("role"): parent
+        for parent in parents
+        if isinstance(parent, dict) and isinstance(parent.get("role"), str)
+    }
+    for role, artifact in expected.items():
+        parent = by_role.get(role)
+        if isinstance(parent, dict) and parent.get("artifact") != artifact:
+            errors.append(f"parent {role!r} artifact must be {artifact}")
 
 
 def _require_origin(
@@ -545,6 +564,317 @@ def validate_reviewed_ir_record(value: object) -> list[str]:
     return errors
 
 
+def _validate_bound_file(
+    value: object, label: str, errors: list[str]
+) -> None:
+    if not isinstance(value, dict):
+        errors.append(f"{label} must be an object")
+        return
+    _strict_keys(value, {"relative_path", "sha256"}, label, errors)
+    if not _safe_relative_path(value.get("relative_path")):
+        errors.append(f"{label}.relative_path must stay inside its artifact directory")
+    if not _digest(value.get("sha256")):
+        errors.append(f"{label}.sha256 must be a lowercase SHA-256 digest")
+
+
+def _validate_rule_lens(value: object, label: str, errors: list[str]) -> None:
+    if not isinstance(value, dict):
+        errors.append(f"{label} must be an object")
+        return
+    _strict_keys(value, {"kind", "id", "library_sha256"}, label, errors)
+    if value.get("kind") != "rule":
+        errors.append(f"{label}.kind must be rule")
+    if not _nonempty(value.get("id")):
+        errors.append(f"{label}.id must be a non-empty string")
+    if not _digest(value.get("library_sha256")):
+        errors.append(f"{label}.library_sha256 must be a lowercase SHA-256 digest")
+
+
+def validate_rule_review_run(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="rule-review-run",
+        lifecycle="immutable",
+        extra_keys={
+            "review_id",
+            "project_id",
+            "document_id",
+            "version_id",
+            "lens",
+            "depth",
+            "reviewed_ir_record",
+            "target_ir",
+            "check_library",
+            "plan",
+            "prompt",
+        },
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"deterministic"}, "rule-review-run", errors)
+    _require_parent_roles(item, {"reviewed-ir", "target-ir", "check-library"}, errors)
+    _require_parent_artifacts(
+        item,
+        {
+            "reviewed-ir": "reviewed-argument-ir",
+            "target-ir": "argument-ir",
+            "check-library": "argument-check-library",
+        },
+        errors,
+    )
+    for key in ("review_id", "project_id", "document_id", "version_id"):
+        if not _nonempty(item.get(key)):
+            errors.append(f"{key} must be a non-empty string")
+    if not isinstance(item.get("review_id"), str) or re.fullmatch(
+        r"RV[1-9][0-9]*", str(item.get("review_id"))
+    ) is None:
+        errors.append("review_id must be RV1..RVn")
+    if not isinstance(item.get("version_id"), str) or re.fullmatch(
+        r"V[1-9][0-9]*", str(item.get("version_id"))
+    ) is None:
+        errors.append("version_id must be V1..Vn")
+    _validate_rule_lens(item.get("lens"), "lens", errors)
+    if item.get("depth") not in REVIEW_DEPTHS:
+        errors.append(f"depth must be one of {REVIEW_DEPTHS}")
+    for field in (
+        "reviewed_ir_record",
+        "target_ir",
+        "check_library",
+        "plan",
+        "prompt",
+    ):
+        _validate_bound_file(item.get(field), field, errors)
+    return errors
+
+
+def validate_review_result_attempt(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="review-result-attempt",
+        lifecycle="immutable",
+        extra_keys={
+            "review_id",
+            "attempt_id",
+            "collection",
+            "response",
+            "validation",
+        },
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"model-derived"}, "review-result-attempt", errors)
+    _require_parent_roles(item, {"review-run"}, errors)
+    _require_parent_artifacts(item, {"review-run": "rule-review-run"}, errors)
+    if not isinstance(item.get("review_id"), str) or re.fullmatch(
+        r"RV[1-9][0-9]*", str(item.get("review_id"))
+    ) is None:
+        errors.append("review_id must be RV1..RVn")
+    if not isinstance(item.get("attempt_id"), str) or re.fullmatch(
+        r"attempt-[0-9]{4}", str(item.get("attempt_id"))
+    ) is None:
+        errors.append("attempt_id must be attempt-NNNN")
+    collection = item.get("collection")
+    if not isinstance(collection, dict):
+        errors.append("collection must be an object")
+    else:
+        _strict_keys(
+            collection,
+            {"method", "source_name", "producer_label"},
+            "collection",
+            errors,
+        )
+        if collection.get("method") not in {"file", "terminal-paste"}:
+            errors.append("collection.method must be file or terminal-paste")
+        if not _safe_basename(collection.get("source_name")):
+            errors.append("collection.source_name must be a safe basename")
+        producer = collection.get("producer_label")
+        if producer is not None and not _nonempty(producer):
+            errors.append("collection.producer_label must be null or a non-empty string")
+    _validate_bound_file(item.get("response"), "response", errors)
+    validation = item.get("validation")
+    if not isinstance(validation, dict):
+        errors.append("validation must be an object")
+    else:
+        _strict_keys(validation, {"status", "errors"}, "validation", errors)
+        if validation.get("status") not in REVIEW_RESULT_STATUSES:
+            errors.append(f"validation.status must be one of {REVIEW_RESULT_STATUSES}")
+        validation_errors = _string_list(
+            validation.get("errors"), "validation.errors", errors
+        )
+        if validation.get("status") == "valid" and validation_errors:
+            errors.append("valid review results require an empty validation.errors array")
+        if validation.get("status") == "unusable" and not validation_errors:
+            errors.append("unusable review results require concrete validation errors")
+    return errors
+
+
+def validate_claim_review_index(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="claim-review-index",
+        lifecycle="derived-replaceable",
+        extra_keys={
+            "review_id",
+            "attempt_id",
+            "version_id",
+            "lens",
+            "summary",
+            "outcomes",
+            "view",
+            "field_provenance",
+        },
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"deterministic"}, "claim-review-index", errors)
+    parents = item.get("parents")
+    expected = {"review-run", "result-attempt", "lens-result"}
+    if isinstance(parents, list):
+        expected.update(
+            str(parent.get("role"))
+            for parent in parents
+            if isinstance(parent, dict)
+            and isinstance(parent.get("role"), str)
+            and str(parent.get("role")).startswith("finding-")
+        )
+    _require_parent_roles(item, expected, errors)
+    expected_parent_artifacts = {
+        "review-run": "rule-review-run",
+        "result-attempt": "review-result-attempt",
+        "lens-result": "argument-check-results",
+    }
+    expected_parent_artifacts.update(
+        {role: "argument-finding" for role in expected if role.startswith("finding-")}
+    )
+    _require_parent_artifacts(item, expected_parent_artifacts, errors)
+    if not isinstance(item.get("review_id"), str) or re.fullmatch(
+        r"RV[1-9][0-9]*", str(item.get("review_id"))
+    ) is None:
+        errors.append("review_id must be RV1..RVn")
+    if not isinstance(item.get("attempt_id"), str) or re.fullmatch(
+        r"attempt-[0-9]{4}", str(item.get("attempt_id"))
+    ) is None:
+        errors.append("attempt_id must be attempt-NNNN")
+    if not isinstance(item.get("version_id"), str) or re.fullmatch(
+        r"V[1-9][0-9]*", str(item.get("version_id"))
+    ) is None:
+        errors.append("version_id must be V1..Vn")
+    _validate_rule_lens(item.get("lens"), "lens", errors)
+    summary = item.get("summary")
+    if not isinstance(summary, dict):
+        errors.append("summary must be an object")
+    else:
+        _strict_keys(summary, {"pass", "fail", "uncertain"}, "summary", errors)
+        if any(
+            not isinstance(summary.get(verdict), int) or summary.get(verdict) < 0
+            for verdict in FINDING_VERDICTS
+        ):
+            errors.append("summary counts must be non-negative integers")
+    outcomes = item.get("outcomes")
+    if not isinstance(outcomes, list):
+        errors.append("outcomes must be an array")
+    else:
+        task_ids: list[object] = []
+        counted = {verdict: 0 for verdict in FINDING_VERDICTS}
+        finding_ids: list[str] = []
+        expected_keys = {
+            "task_id",
+            "target_claim",
+            "check_id",
+            "verdict",
+            "reason",
+            "consequence",
+            "evidence_refs",
+            "finding_id",
+        }
+        for index, outcome in enumerate(outcomes):
+            label = f"outcomes[{index}]"
+            if not isinstance(outcome, dict):
+                errors.append(f"{label} must be an object")
+                continue
+            _strict_keys(outcome, expected_keys, label, errors)
+            task_ids.append(outcome.get("task_id"))
+            for field in ("task_id", "check_id", "reason"):
+                if not _nonempty(outcome.get(field)):
+                    errors.append(f"{label}.{field} must be a non-empty string")
+            target_claim = outcome.get("target_claim")
+            if not isinstance(target_claim, str) or _VERSIONED_CLAIM.fullmatch(
+                target_claim
+            ) is None:
+                errors.append(f"{label}.target_claim must be version-qualified")
+            verdict = outcome.get("verdict")
+            if verdict not in FINDING_VERDICTS:
+                errors.append(f"{label}.verdict must be one of {FINDING_VERDICTS}")
+            else:
+                counted[str(verdict)] += 1
+            if not isinstance(outcome.get("consequence"), str):
+                errors.append(f"{label}.consequence must be a string")
+            _string_list(outcome.get("evidence_refs"), f"{label}.evidence_refs", errors)
+            finding_id = outcome.get("finding_id")
+            if verdict == "pass" and finding_id is not None:
+                errors.append(f"{label}.finding_id must be null for pass")
+            elif verdict in {"fail", "uncertain"}:
+                if not _nonempty(finding_id):
+                    errors.append(f"{label}.finding_id is required for {verdict}")
+                else:
+                    finding_ids.append(str(finding_id))
+        if len(task_ids) != len(set(task_ids)):
+            errors.append("outcomes must not repeat task IDs")
+        if len(finding_ids) != len(set(finding_ids)):
+            errors.append("outcomes must not repeat finding IDs")
+        if isinstance(summary, dict) and any(
+            summary.get(verdict) != counted[verdict] for verdict in FINDING_VERDICTS
+        ):
+            errors.append("summary counts must equal outcomes")
+    _validate_bound_file(item.get("view"), "view", errors)
+    field_provenance = item.get("field_provenance")
+    required_field_provenance = {
+        "outcomes.task_id",
+        "outcomes.target_claim",
+        "outcomes.check_id",
+        "outcomes.verdict",
+        "outcomes.reason",
+        "outcomes.consequence",
+        "outcomes.evidence_refs",
+        "outcomes.finding_id",
+        "summary",
+        "view",
+    }
+    if not isinstance(field_provenance, dict):
+        errors.append("field_provenance must be an object")
+    else:
+        _strict_keys(
+            field_provenance,
+            required_field_provenance,
+            "field_provenance",
+            errors,
+        )
+        for field, provenance in field_provenance.items():
+            if not isinstance(provenance, dict):
+                errors.append(f"field_provenance.{field} must be an object")
+                continue
+            _strict_keys(
+                provenance,
+                {"origin", "source"},
+                f"field_provenance.{field}",
+                errors,
+            )
+            if provenance.get("origin") not in ORIGINS:
+                errors.append(f"field_provenance.{field}.origin is invalid")
+            if not _nonempty(provenance.get("source")):
+                errors.append(f"field_provenance.{field}.source must be non-empty")
+        for semantic_field in (
+            "outcomes.verdict",
+            "outcomes.reason",
+            "outcomes.consequence",
+            "outcomes.evidence_refs",
+        ):
+            provenance = field_provenance.get(semantic_field)
+            if isinstance(provenance, dict) and provenance.get("origin") != "model-derived":
+                errors.append(f"{semantic_field} must remain model-derived")
+    return errors
+
+
 def validate_argument_finding(value: object) -> list[str]:
     errors, item = _validate_base(
         value,
@@ -566,6 +896,14 @@ def validate_argument_finding(value: object) -> list[str]:
         item, {"deterministic", "model-derived"}, "argument-finding", errors
     )
     _require_parent_roles(item, {"target-ir", "lens-result"}, errors)
+    _require_parent_artifacts(
+        item,
+        {
+            "target-ir": "argument-ir",
+            "lens-result": "argument-check-results",
+        },
+        errors,
+    )
     if not _nonempty(item.get("finding_id")):
         errors.append("finding_id must be a non-empty string")
     if not isinstance(item.get("target_claim"), str) or _VERSIONED_CLAIM.fullmatch(
@@ -626,6 +964,16 @@ def validate_finding_adjudication(value: object) -> list[str]:
         else {"finding", "previous-adjudication"},
         errors,
     )
+    _require_parent_artifacts(
+        item,
+        {"finding": "argument-finding"}
+        if supersedes is None
+        else {
+            "finding": "argument-finding",
+            "previous-adjudication": "finding-adjudication",
+        },
+        errors,
+    )
     if supersedes is not None:
         parents = item.get("parents")
         previous = next(
@@ -653,6 +1001,9 @@ def validate_revision_action(value: object) -> list[str]:
         return errors
     _require_origin(item, {"human-confirmed"}, "revision-action", errors)
     _require_parent_roles(item, {"adjudication"}, errors)
+    _require_parent_artifacts(
+        item, {"adjudication": "finding-adjudication"}, errors
+    )
     for key in ("action_id", "adjudication_id", "text"):
         if not _nonempty(item.get(key)):
             errors.append(f"{key} must be a non-empty string")
@@ -662,6 +1013,229 @@ def validate_revision_action(value: object) -> list[str]:
         errors.append("target_claim must be version-qualified")
     if item.get("action_type") not in REVISION_ACTION_TYPES:
         errors.append(f"action_type must be one of {REVISION_ACTION_TYPES}")
+    return errors
+
+
+def validate_revision_plan_record(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="revision-plan-record",
+        lifecycle="derived-replaceable",
+        extra_keys={
+            "project_id",
+            "document_id",
+            "version_id",
+            "payload",
+            "summary",
+            "items",
+            "field_provenance",
+        },
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"deterministic"}, "revision-plan-record", errors)
+    for key in ("project_id", "document_id"):
+        if not _nonempty(item.get(key)):
+            errors.append(f"{key} must be a non-empty string")
+    if not isinstance(item.get("version_id"), str) or re.fullmatch(
+        r"V[1-9][0-9]*", str(item.get("version_id"))
+    ) is None:
+        errors.append("version_id must be V1..Vn")
+    _validate_bound_file(item.get("payload"), "payload", errors)
+    summary = item.get("summary")
+    summary_keys = {"accept", "reject", "defer", "open"}
+    if not isinstance(summary, dict):
+        errors.append("summary must be an object")
+    else:
+        _strict_keys(summary, summary_keys, "summary", errors)
+        if any(
+            not isinstance(summary.get(key), int) or summary.get(key) < 0
+            for key in summary_keys
+        ):
+            errors.append("summary counts must be non-negative integers")
+    items = item.get("items")
+    counted = {key: 0 for key in summary_keys}
+    expected_parent_artifacts: dict[str, str] = {}
+    expected_parent_roles: set[str] = set()
+    finding_ids: list[str] = []
+    if not isinstance(items, list):
+        errors.append("items must be an array")
+        items = []
+    for index, plan_item in enumerate(items, 1):
+        label = f"items[{index - 1}]"
+        finding_role = f"finding-{index:04d}"
+        expected_parent_roles.add(finding_role)
+        expected_parent_artifacts[finding_role] = "argument-finding"
+        if not isinstance(plan_item, dict):
+            errors.append(f"{label} must be an object")
+            continue
+        _strict_keys(
+            plan_item,
+            {
+                "finding_id",
+                "target_claim",
+                "lens",
+                "verdict",
+                "model_reason",
+                "decision",
+                "human_reason",
+                "adjudication_id",
+                "actions",
+                "field_provenance",
+            },
+            label,
+            errors,
+        )
+        finding_id = plan_item.get("finding_id")
+        if not _nonempty(finding_id):
+            errors.append(f"{label}.finding_id must be a non-empty string")
+        else:
+            finding_ids.append(str(finding_id))
+        target_claim = plan_item.get("target_claim")
+        if not isinstance(target_claim, str) or _VERSIONED_CLAIM.fullmatch(
+            target_claim
+        ) is None:
+            errors.append(f"{label}.target_claim must be version-qualified")
+        lens = plan_item.get("lens")
+        if not isinstance(lens, dict):
+            errors.append(f"{label}.lens must be an object")
+        else:
+            _strict_keys(lens, {"kind", "id", "check_id"}, f"{label}.lens", errors)
+            if lens.get("kind") not in LENS_KINDS:
+                errors.append(f"{label}.lens.kind must be one of {LENS_KINDS}")
+            if not _nonempty(lens.get("id")):
+                errors.append(f"{label}.lens.id must be non-empty")
+            if lens.get("kind") == "rule" and not _nonempty(lens.get("check_id")):
+                errors.append(f"{label}.rule lens requires check_id")
+            if lens.get("kind") == "perspective" and lens.get("check_id") is not None:
+                errors.append(f"{label}.perspective lens requires check_id=null")
+        if plan_item.get("verdict") not in FINDING_VERDICTS:
+            errors.append(f"{label}.verdict must be one of {FINDING_VERDICTS}")
+        if not _nonempty(plan_item.get("model_reason")):
+            errors.append(f"{label}.model_reason must be non-empty")
+        decision = plan_item.get("decision")
+        if decision is not None and decision not in DECISIONS:
+            errors.append(f"{label}.decision must be accept/reject/defer/null")
+        if decision is None:
+            counted["open"] += 1
+        elif decision in DECISIONS:
+            counted[str(decision)] += 1
+        human_reason = plan_item.get("human_reason")
+        if not isinstance(human_reason, str):
+            errors.append(f"{label}.human_reason must be a string")
+        elif decision in {"reject", "defer"} and not human_reason.strip():
+            errors.append(f"{label}.{decision} requires human_reason")
+        adjudication_id = plan_item.get("adjudication_id")
+        if decision is None:
+            if adjudication_id is not None:
+                errors.append(f"{label}.open item requires adjudication_id=null")
+        elif not _nonempty(adjudication_id):
+            errors.append(f"{label}.decided item requires adjudication_id")
+        else:
+            adjudication_role = f"adjudication-{index:04d}"
+            expected_parent_roles.add(adjudication_role)
+            expected_parent_artifacts[adjudication_role] = "finding-adjudication"
+        actions = plan_item.get("actions")
+        if not isinstance(actions, list):
+            errors.append(f"{label}.actions must be an array")
+            actions = []
+        action_ids: list[str] = []
+        for action_index, action in enumerate(actions, 1):
+            action_label = f"{label}.actions[{action_index - 1}]"
+            action_role = f"action-{index:04d}-{action_index:04d}"
+            expected_parent_roles.add(action_role)
+            expected_parent_artifacts[action_role] = "revision-action"
+            if not isinstance(action, dict):
+                errors.append(f"{action_label} must be an object")
+                continue
+            _strict_keys(
+                action,
+                {"action_id", "action_type", "text", "sha256"},
+                action_label,
+                errors,
+            )
+            if not _nonempty(action.get("action_id")):
+                errors.append(f"{action_label}.action_id must be non-empty")
+            else:
+                action_ids.append(str(action["action_id"]))
+            if action.get("action_type") not in REVISION_ACTION_TYPES:
+                errors.append(f"{action_label}.action_type is invalid")
+            if not _nonempty(action.get("text")):
+                errors.append(f"{action_label}.text must be non-empty")
+            if not _digest(action.get("sha256")):
+                errors.append(f"{action_label}.sha256 must be a SHA-256 digest")
+        if len(action_ids) != len(set(action_ids)):
+            errors.append(f"{label}.actions must not repeat action IDs")
+        if decision == "accept" and not actions:
+            errors.append(f"{label}.accept requires at least one action")
+        if decision in {None, "reject", "defer"} and actions:
+            errors.append(f"{label}.{decision or 'open'} must not have active actions")
+        provenance = plan_item.get("field_provenance")
+        if not isinstance(provenance, dict):
+            errors.append(f"{label}.field_provenance must be an object")
+        else:
+            _strict_keys(
+                provenance,
+                {"model", "decision", "actions"},
+                f"{label}.field_provenance",
+                errors,
+            )
+            for field in ("model", "decision", "actions"):
+                field_value = provenance.get(field)
+                if not isinstance(field_value, dict):
+                    errors.append(f"{label}.field_provenance.{field} must be an object")
+                    continue
+                _strict_keys(
+                    field_value,
+                    {"origin", "source"},
+                    f"{label}.field_provenance.{field}",
+                    errors,
+                )
+                if field_value.get("origin") not in ORIGINS:
+                    errors.append(f"{label}.field_provenance.{field}.origin is invalid")
+                if not _nonempty(field_value.get("source")):
+                    errors.append(f"{label}.field_provenance.{field}.source must be non-empty")
+            model_provenance = provenance.get("model")
+            if isinstance(model_provenance, dict) and model_provenance.get("origin") != "model-derived":
+                errors.append(f"{label}.model fields must remain model-derived")
+            decision_provenance = provenance.get("decision")
+            expected_decision_origin = "deterministic" if decision is None else "human-confirmed"
+            if isinstance(decision_provenance, dict) and decision_provenance.get("origin") != expected_decision_origin:
+                errors.append(f"{label}.decision provenance must be {expected_decision_origin}")
+            action_provenance = provenance.get("actions")
+            expected_action_origin = "human-confirmed" if actions else "deterministic"
+            if isinstance(action_provenance, dict) and action_provenance.get("origin") != expected_action_origin:
+                errors.append(f"{label}.actions provenance must be {expected_action_origin}")
+    if len(finding_ids) != len(set(finding_ids)):
+        errors.append("items must not repeat finding IDs")
+    if isinstance(summary, dict) and any(
+        summary.get(key) != counted[key] for key in summary_keys
+    ):
+        errors.append("summary counts must equal items")
+    _require_parent_roles(item, expected_parent_roles, errors)
+    _require_parent_artifacts(item, expected_parent_artifacts, errors)
+    field_provenance = item.get("field_provenance")
+    if not isinstance(field_provenance, dict):
+        errors.append("field_provenance must be an object")
+    else:
+        _strict_keys(
+            field_provenance, {"summary", "payload"}, "field_provenance", errors
+        )
+        for field in ("summary", "payload"):
+            provenance = field_provenance.get(field)
+            if not isinstance(provenance, dict):
+                errors.append(f"field_provenance.{field} must be an object")
+                continue
+            _strict_keys(
+                provenance,
+                {"origin", "source"},
+                f"field_provenance.{field}",
+                errors,
+            )
+            if provenance.get("origin") != "deterministic":
+                errors.append(f"field_provenance.{field}.origin must be deterministic")
+            if not _nonempty(provenance.get("source")):
+                errors.append(f"field_provenance.{field}.source must be non-empty")
     return errors
 
 
@@ -760,9 +1334,13 @@ VALIDATORS: dict[str, Callable[[object], list[str]]] = {
     "raw-ir-attempt": validate_raw_ir_attempt,
     "ir-correction": validate_ir_correction,
     "reviewed-argument-ir": validate_reviewed_ir_record,
+    "rule-review-run": validate_rule_review_run,
+    "review-result-attempt": validate_review_result_attempt,
+    "claim-review-index": validate_claim_review_index,
     "argument-finding": validate_argument_finding,
     "finding-adjudication": validate_finding_adjudication,
     "revision-action": validate_revision_action,
+    "revision-plan-record": validate_revision_plan_record,
     "claim-lineage": validate_claim_lineage,
 }
 

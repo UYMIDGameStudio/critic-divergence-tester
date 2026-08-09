@@ -25,6 +25,38 @@ class WorkflowError(ValueError):
     """Raised when a workflow artifact is incomplete or internally inconsistent."""
 
 
+def decision_field_errors(
+    decision: object,
+    author_reason: object,
+    revision_action: object,
+    *,
+    require_complete: bool,
+) -> list[str]:
+    """Shared human-decision semantics for legacy reports and the Workbench.
+
+    The Workbench stores structured RevisionAction artifacts, while the legacy
+    report workflow stores one text field.  Both use the same accept/reject/
+    defer requirements through this adapter boundary.
+    """
+    errors: list[str] = []
+    if decision is not None and decision not in DECISIONS:
+        return [".decision must be accept, reject, defer, or null"]
+    if decision is None:
+        if require_complete:
+            errors.append(".decision is not filled")
+        return errors
+    if decision == "accept" and (
+        not isinstance(revision_action, str) or not revision_action.strip()
+    ):
+        errors.append(".revision_action is required when accepting")
+    if decision in {"reject", "defer"} and (
+        not isinstance(author_reason, str) or not author_reason.strip()
+    ):
+        verb = "rejecting" if decision == "reject" else "deferring"
+        errors.append(f".author_reason is required when {verb}")
+    return errors
+
+
 def adjudication_template(
     *,
     protocol: str,
@@ -124,23 +156,17 @@ def validate_adjudication(value: object, *, require_complete: bool) -> list[str]
                 errors.append(f"{label}.{key} must be a string")
 
         decision = finding.get("decision")
-        if decision is not None and decision not in DECISIONS:
-            errors.append(f"{label}.decision must be accept, reject, defer, or null")
-        if decision is None:
-            if require_complete:
-                errors.append(f"{label}.decision is not filled")
-            continue
         author_reason = finding.get("author_reason")
         revision_action = finding.get("revision_action")
-        if decision == "accept" and (
-            not isinstance(revision_action, str) or not revision_action.strip()
-        ):
-            errors.append(f"{label}.revision_action is required when accepting")
-        if decision in {"reject", "defer"} and (
-            not isinstance(author_reason, str) or not author_reason.strip()
-        ):
-            verb = "rejecting" if decision == "reject" else "deferring"
-            errors.append(f"{label}.author_reason is required when {verb}")
+        errors.extend(
+            label + suffix
+            for suffix in decision_field_errors(
+                decision,
+                author_reason,
+                revision_action,
+                require_complete=require_complete,
+            )
+        )
 
     if actual_ids != expected_ids:
         errors.append(

@@ -1,4 +1,4 @@
-# Workbench Phase 1 demo fixture
+# Workbench Phase 1-3 demo fixture
 
 This is a small realistic Chinese argument structure created for regression and UX demonstrations. It is not the text of 《结构的替身》 and is not treated as gold truth.
 
@@ -26,3 +26,24 @@ A demonstration correction session can:
 5. Undo any one correction and observe that a new revert event is appended.
 
 The resulting `argument-map.md` should make the model-derived and human-confirmed fields visible without requiring the user to open any JSON file.
+
+To demonstrate Phase 2 without editing the IR first, initialize a fresh project and continue with the bundled plan-bound result:
+
+```powershell
+py -3 critic_runner.py ir review prepare .\demo.argument-workbench --depth core
+py -3 critic_runner.py ir review collect .\demo.argument-workbench --file .\test\fixtures\workbench-demo\review-results.json --producer-label fixture-review-model
+py -3 critic_runner.py ir review show .\demo.argument-workbench --claim C1
+py -3 critic_runner.py ir verify-project .\demo.argument-workbench
+```
+
+The result deliberately produces a denominator Finding for C1's universal wording and an uncertain rival-reading Finding for C3. All other applicable checks remain visible as PASS. This fixture is a regression anchor, not a claim that either model judgment is human-confirmed.
+
+Continue into the Phase 3 human workflow:
+
+```powershell
+py -3 critic_runner.py ir adjudicate .\demo.argument-workbench
+py -3 critic_runner.py ir revision-plan .\demo.argument-workbench --show
+py -3 critic_runner.py ir verify-project .\demo.argument-workbench
+```
+
+One realistic session accepts C1's denominator Finding with `narrow_claim` or `add_evidence`, and defers C3's rival-reading Finding with a recorded reason. Those are demonstration choices, not bundled model decisions or gold adjudications. Each confirmation is append-only and can be reconsidered later without deleting its history.

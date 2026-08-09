@@ -2,3 +2,5 @@
 *.md text eol=lf
 *.py text eol=lf
 *.yml text eol=lf
+ir/*.json text eol=lf
+test/fixtures/workbench-demo/* text eol=lf
