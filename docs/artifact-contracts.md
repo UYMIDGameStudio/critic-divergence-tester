@@ -37,6 +37,10 @@ Parent hashes always cover the exact file bytes on disk. Artifact objects do not
 | `finding-adjudication` | immutable | Human `accept`, `reject`, or `defer`; later changes use `supersedes` |
 | `revision-action` | immutable | Structured action attached to an accepted adjudication |
 | `revision-plan-record` | derived-replaceable | Reproducible Markdown plan and current decision/action projection |
+| `product-gate-a-corpus` | immutable | Human-selected private references and exact bindings for 3–5 real Workbench projects |
+| `product-gate-a-assessment` | immutable | Per-manuscript human usability, extraction-quality, correction-cost, and regression-anchor observations |
+| `product-gate-a-decision` | immutable | Human pass/fail/defer gate decision; reconsideration uses `supersedes` |
+| `product-gate-a-report` | derived-replaceable | Reproducible gate evidence counts and Markdown, never an automatic score or decision |
 | `claim-lineage` | immutable | Proposed or human-confirmed many-to-many correspondence between version-qualified Claims |
 
 An accepted adjudication is incomplete unless the same validated bundle contains at least one RevisionAction linked to its exact hash. ClaimLineage uses arrays on both sides so split and merge are native rather than encoded as fake one-to-one identities. A model proposal is an immutable `status=proposed` artifact; a human confirmation or rejection is a second artifact that binds the exact proposal hash. Human-originated lineage may be confirmed directly but is still marked `proposed_by=human`.
@@ -69,6 +73,14 @@ Workbench decisions reuse the legacy workflow's `accept` / `reject` / `defer` fi
 Each `finding-adjudication` binds the exact Finding bytes. Reconsidering a Finding appends another adjudication with `supersedes` and the previous adjudication hash; it never edits or deletes the earlier decision. A `revision-action` binds the exact accepted adjudication and uses one of the documented action types plus unconstrained human text. Bundle validation rejects an accepted adjudication without at least one linked action.
 
 `revision-plan/record.json` and `revision-plan.md` are deterministic caches. The record binds every current Finding, latest adjudication, and applicable action by exact-byte SHA-256, records the Markdown payload hash, and separates model-derived Finding fields from human-confirmed decisions and actions. Rebuild replaces only these derived files. Open, deferred, rejected, and accepted counts are workflow state, not a manuscript quality score.
+
+## Product Gate A evidence
+
+Gate A is an Evaluation/Advanced lifecycle that blocks Phase 4 until real usage evidence exists. A corpus binds 3–5 distinct source hashes and the exact Project, DocumentVersion, Reviewed IR, and Revision Plan bytes for each local workspace. It stores local locators and hashes but never copies manuscript bytes. Gate directories are private evaluation data and are ignored by the repository's default patterns.
+
+Each assessment is `human-confirmed` and binds its corpus, Project, and Revision Plan. It records the comparison with direct full-text chat review, correction burden and minutes, extraction-error counts, at least one regression anchor, optional actual-revision notes, and free text. These observations are not model judgments and are never inferred from corrections automatically.
+
+The report is deterministic and replaceable. It exposes workflow completeness, open/accepted/rejected/deferred Finding counts, correction events, extraction traps, regression anchors, and human cost without reducing them to a score. The application refuses a human `pass` decision until all 3–5 bound workflows remain valid, no Finding is open, and every project has an assessment. Even then the program only establishes readiness: the gate decision and reason must be entered by a human. Later decisions append a new artifact with `supersedes`.
 
 ## Legacy workflow boundary
 

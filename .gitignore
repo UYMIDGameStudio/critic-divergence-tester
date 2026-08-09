@@ -1,5 +1,7 @@
 .critic-runs/
 .critic-campaigns/
 *.argument-workbench/
+*.product-gate-a/
+.argument-gates/
 __pycache__/
 *.py[cod]

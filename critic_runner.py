@@ -59,6 +59,15 @@ from argument_adjudication import (
     rebuild_revision_plan as rebuild_workbench_revision_plan,
     run_adjudicator as run_workbench_adjudicator,
 )
+from argument_gate import (
+    METRIC_KEYS as GATE_A_METRIC_KEYS,
+    append_assessment as append_gate_a_assessment,
+    append_gate_decision,
+    initialize_gate,
+    rebuild_gate_report,
+    verify_gate,
+)
+from argument_contracts import GATE_A_BURDENS, GATE_A_COMPARISONS, GATE_A_DECISIONS
 from critic_execution import ExecutorResult, execute_with_limits
 from critic_scoring import (
     ALL_COMPARISONS,
@@ -3183,6 +3192,49 @@ def ir_revision_plan_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def ir_gate_a_init_command(args: argparse.Namespace) -> int:
+    paths = initialize_gate(args.output, args.projects)
+    print(f"Product Gate A corpus: {paths.corpus}")
+    print(f"Evidence report: {paths.report_markdown}")
+    print("Only hashes and local workspace locators were stored; manuscript bytes were not copied.")
+    return 0
+
+
+def ir_gate_a_assess_command(args: argparse.Namespace) -> int:
+    metrics = {key: getattr(args, key) for key in GATE_A_METRIC_KEYS}
+    output = append_gate_a_assessment(
+        args.gate,
+        args.project,
+        comparison_to_direct_chat=args.comparison,
+        correction_burden=args.burden,
+        metrics=metrics,
+        regression_anchors=args.anchor,
+        actual_revision_notes=args.actual_revision_notes,
+        notes=args.notes,
+    )
+    print(f"Human Gate A assessment: {output}")
+    return 0
+
+
+def ir_gate_a_report_command(args: argparse.Namespace) -> int:
+    report, changed = rebuild_gate_report(args.gate)
+    print(f"Product Gate A report: {report}")
+    print("Report rebuilt." if changed else "Report already current.")
+    if args.show:
+        print(report.read_text(encoding="utf-8"), end="")
+    return 0
+
+
+def ir_gate_a_decide_command(args: argparse.Namespace) -> int:
+    output = append_gate_decision(args.gate, args.decision, args.reason)
+    print(f"Human Gate A decision: {output}")
+    return 0
+
+
+def ir_gate_a_verify_command(args: argparse.Namespace) -> int:
+    return _ir_print_validation("product-gate-a", verify_gate(args.gate))
+
+
 def ir_prepare_command(args: argparse.Namespace) -> int:
     source_path = resolve_manuscript_path(args.manuscript)
     manuscript, source_bytes = read_manuscript_utf8(source_path)
@@ -4229,6 +4281,74 @@ def parser() -> argparse.ArgumentParser:
         help="print revision-plan.md after rebuilding it",
     )
     ir_revision_plan_parser.set_defaults(func=ir_revision_plan_command)
+
+    ir_gate_a_parser = ir_sub.add_parser(
+        "gate-a",
+        help="evaluate Phase 1-3 on a private corpus of 3-5 real manuscripts",
+    )
+    ir_gate_a_sub = ir_gate_a_parser.add_subparsers(
+        dest="ir_gate_a_command", required=True
+    )
+    ir_gate_a_init_parser = ir_gate_a_sub.add_parser(
+        "init", help="capture exact hashes for 3-5 completed Workbench projects"
+    )
+    ir_gate_a_init_parser.add_argument("output", help="new local Gate A evidence directory")
+    ir_gate_a_init_parser.add_argument(
+        "projects", nargs="+", help="3-5 completed real-manuscript Workbench projects"
+    )
+    ir_gate_a_init_parser.set_defaults(func=ir_gate_a_init_command)
+
+    ir_gate_a_assess_parser = ir_gate_a_sub.add_parser(
+        "assess", help="append one human usability/IR-quality assessment"
+    )
+    ir_gate_a_assess_parser.add_argument("gate", help="Gate A evidence directory")
+    ir_gate_a_assess_parser.add_argument("project", help="corpus alias such as P1")
+    ir_gate_a_assess_parser.add_argument(
+        "--comparison", choices=GATE_A_COMPARISONS, required=True,
+        help="clarity/control compared with direct full-text chat review",
+    )
+    ir_gate_a_assess_parser.add_argument(
+        "--burden", choices=GATE_A_BURDENS, required=True,
+        help="human IR correction burden",
+    )
+    for metric in GATE_A_METRIC_KEYS:
+        ir_gate_a_assess_parser.add_argument(
+            "--" + metric.replace("_", "-"), type=int, required=True
+        )
+    ir_gate_a_assess_parser.add_argument(
+        "--anchor",
+        action="append",
+        required=True,
+        help="known important Claim, extraction trap, Finding, or framework reversal; repeatable",
+    )
+    ir_gate_a_assess_parser.add_argument(
+        "--actual-revision-notes",
+        default="",
+        help="what the author actually revised, if observed during Gate A",
+    )
+    ir_gate_a_assess_parser.add_argument("--notes", default="", help="free-form evaluator notes")
+    ir_gate_a_assess_parser.set_defaults(func=ir_gate_a_assess_command)
+
+    ir_gate_a_report_parser = ir_gate_a_sub.add_parser(
+        "report", help="rebuild the deterministic Gate A evidence report"
+    )
+    ir_gate_a_report_parser.add_argument("gate", help="Gate A evidence directory")
+    ir_gate_a_report_parser.add_argument("--show", action="store_true", help="print the report")
+    ir_gate_a_report_parser.set_defaults(func=ir_gate_a_report_command)
+
+    ir_gate_a_decide_parser = ir_gate_a_sub.add_parser(
+        "decide", help="append a human pass/fail/defer gate decision"
+    )
+    ir_gate_a_decide_parser.add_argument("gate", help="Gate A evidence directory")
+    ir_gate_a_decide_parser.add_argument("decision", choices=GATE_A_DECISIONS)
+    ir_gate_a_decide_parser.add_argument("--reason", required=True, help="human decision rationale")
+    ir_gate_a_decide_parser.set_defaults(func=ir_gate_a_decide_command)
+
+    ir_gate_a_verify_parser = ir_gate_a_sub.add_parser(
+        "verify", help="verify corpus bindings, assessments, decisions, and report bytes"
+    )
+    ir_gate_a_verify_parser.add_argument("gate", help="Gate A evidence directory")
+    ir_gate_a_verify_parser.set_defaults(func=ir_gate_a_verify_command)
 
     ir_prepare_parser = ir_sub.add_parser(
         "prepare",

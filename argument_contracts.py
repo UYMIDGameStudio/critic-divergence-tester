@@ -43,6 +43,9 @@ FINDING_VERDICTS = ("pass", "fail", "uncertain")
 LENS_KINDS = ("rule", "perspective")
 REVIEW_DEPTHS = ("core", "full")
 REVIEW_RESULT_STATUSES = ("valid", "unusable")
+GATE_A_COMPARISONS = ("clearer", "same", "worse", "uncertain")
+GATE_A_BURDENS = ("acceptable", "high", "uncertain")
+GATE_A_DECISIONS = ("pass", "fail", "defer")
 
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _TIMESTAMP = re.compile(
@@ -1239,6 +1242,311 @@ def validate_revision_plan_record(value: object) -> list[str]:
     return errors
 
 
+def _validate_gate_a_metrics(
+    value: object, label: str, errors: list[str]
+) -> None:
+    expected = {
+        "correction_minutes",
+        "missed_claims",
+        "wrong_claim_types",
+        "wrong_relations",
+        "rhetoric_as_claims",
+        "reversed_attributions",
+    }
+    if not isinstance(value, dict):
+        errors.append(f"{label} must be an object")
+        return
+    _strict_keys(value, expected, label, errors)
+    for key in expected:
+        item = value.get(key)
+        if not isinstance(item, int) or isinstance(item, bool) or item < 0:
+            errors.append(f"{label}.{key} must be a non-negative integer")
+
+
+def validate_gate_a_corpus(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="product-gate-a-corpus",
+        lifecycle="immutable",
+        extra_keys={"corpus_id", "entries"},
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"human-confirmed"}, "product-gate-a-corpus", errors)
+    if not _nonempty(item.get("corpus_id")):
+        errors.append("corpus_id must be a non-empty string")
+    entries = item.get("entries")
+    expected_roles: set[str] = set()
+    expected_artifacts: dict[str, str] = {}
+    aliases: list[str] = []
+    source_hashes: list[str] = []
+    if not isinstance(entries, list) or not 3 <= len(entries) <= 5:
+        errors.append("entries must contain 3 to 5 real manuscripts")
+        entries = []
+    for index, entry in enumerate(entries, 1):
+        label = f"entries[{index - 1}]"
+        role = f"project-{index:03d}"
+        expected_roles.add(role)
+        expected_artifacts[role] = "argument-project"
+        if not isinstance(entry, dict):
+            errors.append(f"{label} must be an object")
+            continue
+        _strict_keys(
+            entry,
+            {
+                "alias",
+                "workspace_locator",
+                "project_id",
+                "document_id",
+                "version_id",
+                "real_manuscript_confirmed",
+                "bindings",
+            },
+            label,
+            errors,
+        )
+        for key in ("alias", "workspace_locator", "project_id", "document_id"):
+            if not _nonempty(entry.get(key)):
+                errors.append(f"{label}.{key} must be a non-empty string")
+        aliases.append(str(entry.get("alias")))
+        if not isinstance(entry.get("version_id"), str) or re.fullmatch(
+            r"V[1-9][0-9]*", str(entry.get("version_id"))
+        ) is None:
+            errors.append(f"{label}.version_id must be V1..Vn")
+        if entry.get("real_manuscript_confirmed") is not True:
+            errors.append(f"{label}.real_manuscript_confirmed must be true")
+        bindings = entry.get("bindings")
+        binding_keys = {
+            "project",
+            "document_version",
+            "source",
+            "reviewed_ir_record",
+            "reviewed_ir_payload",
+            "revision_plan_record",
+            "revision_plan_markdown",
+        }
+        if not isinstance(bindings, dict):
+            errors.append(f"{label}.bindings must be an object")
+        else:
+            _strict_keys(bindings, binding_keys, f"{label}.bindings", errors)
+            for key in binding_keys:
+                if not _digest(bindings.get(key)):
+                    errors.append(f"{label}.bindings.{key} must be a SHA-256 digest")
+            source_hashes.append(str(bindings.get("source")))
+    if len(aliases) != len(set(aliases)):
+        errors.append("entry aliases must be unique")
+    if len(source_hashes) != len(set(source_hashes)):
+        errors.append("entry source hashes must be unique")
+    _require_parent_roles(item, expected_roles, errors)
+    _require_parent_artifacts(item, expected_artifacts, errors)
+    return errors
+
+
+def validate_gate_a_assessment(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="product-gate-a-assessment",
+        lifecycle="immutable",
+        extra_keys={
+            "corpus_id",
+            "project_alias",
+            "comparison_to_direct_chat",
+            "correction_burden",
+            "metrics",
+            "regression_anchors",
+            "actual_revision_notes",
+            "notes",
+        },
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"human-confirmed"}, "product-gate-a-assessment", errors)
+    _require_parent_roles(item, {"corpus", "project", "revision-plan"}, errors)
+    _require_parent_artifacts(
+        item,
+        {
+            "corpus": "product-gate-a-corpus",
+            "project": "argument-project",
+            "revision-plan": "revision-plan-record",
+        },
+        errors,
+    )
+    for key in ("corpus_id", "project_alias"):
+        if not _nonempty(item.get(key)):
+            errors.append(f"{key} must be a non-empty string")
+    if item.get("comparison_to_direct_chat") not in GATE_A_COMPARISONS:
+        errors.append(f"comparison_to_direct_chat must be one of {GATE_A_COMPARISONS}")
+    if item.get("correction_burden") not in GATE_A_BURDENS:
+        errors.append(f"correction_burden must be one of {GATE_A_BURDENS}")
+    _validate_gate_a_metrics(item.get("metrics"), "metrics", errors)
+    _string_list(
+        item.get("regression_anchors"),
+        "regression_anchors",
+        errors,
+        allow_empty=False,
+    )
+    if not isinstance(item.get("actual_revision_notes"), str):
+        errors.append("actual_revision_notes must be a string")
+    if not isinstance(item.get("notes"), str):
+        errors.append("notes must be a string")
+    return errors
+
+
+def validate_gate_a_decision(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="product-gate-a-decision",
+        lifecycle="immutable",
+        extra_keys={"corpus_id", "decision", "reason", "supersedes"},
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"human-confirmed"}, "product-gate-a-decision", errors)
+    if not _nonempty(item.get("corpus_id")):
+        errors.append("corpus_id must be a non-empty string")
+    if item.get("decision") not in GATE_A_DECISIONS:
+        errors.append(f"decision must be one of {GATE_A_DECISIONS}")
+    if not _nonempty(item.get("reason")):
+        errors.append("reason must be a non-empty string")
+    supersedes = item.get("supersedes")
+    if supersedes is not None and not _digest(supersedes):
+        errors.append("supersedes must be null or a SHA-256 digest")
+    parents = {"corpus": "product-gate-a-corpus"}
+    roles = {"corpus"}
+    if supersedes is not None:
+        parents["previous-decision"] = "product-gate-a-decision"
+        roles.add("previous-decision")
+    _require_parent_roles(item, roles, errors)
+    _require_parent_artifacts(item, parents, errors)
+    return errors
+
+
+def validate_gate_a_report(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="product-gate-a-report",
+        lifecycle="derived-replaceable",
+        extra_keys={
+            "corpus_id",
+            "readiness",
+            "workflow_totals",
+            "human_observations",
+            "projects",
+            "gate_decision",
+            "payload",
+        },
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"deterministic"}, "product-gate-a-report", errors)
+    if not _nonempty(item.get("corpus_id")):
+        errors.append("corpus_id must be a non-empty string")
+    readiness = item.get("readiness")
+    readiness_keys = {
+        "corpus_size",
+        "assessments_complete",
+        "workflows_complete",
+        "open_findings",
+        "ready_for_human_decision",
+    }
+    if not isinstance(readiness, dict):
+        errors.append("readiness must be an object")
+    else:
+        _strict_keys(readiness, readiness_keys, "readiness", errors)
+        for key in ("corpus_size", "assessments_complete", "workflows_complete", "open_findings"):
+            value = readiness.get(key)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                errors.append(f"readiness.{key} must be a non-negative integer")
+        if not isinstance(readiness.get("ready_for_human_decision"), bool):
+            errors.append("readiness.ready_for_human_decision must be boolean")
+    totals = item.get("workflow_totals")
+    total_keys = {"claims", "corrections", "findings", "accept", "reject", "defer", "open"}
+    if not isinstance(totals, dict):
+        errors.append("workflow_totals must be an object")
+    else:
+        _strict_keys(totals, total_keys, "workflow_totals", errors)
+        for key in total_keys:
+            value = totals.get(key)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                errors.append(f"workflow_totals.{key} must be a non-negative integer")
+    observations = item.get("human_observations")
+    observation_keys = {"clearer", "same", "worse", "uncertain", "acceptable_burden", "high_burden", "uncertain_burden", "regression_anchors", "actual_revisions_recorded", "metrics"}
+    if not isinstance(observations, dict):
+        errors.append("human_observations must be an object")
+    else:
+        _strict_keys(observations, observation_keys, "human_observations", errors)
+        for key in observation_keys - {"metrics"}:
+            value = observations.get(key)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                errors.append(f"human_observations.{key} must be a non-negative integer")
+        _validate_gate_a_metrics(observations.get("metrics"), "human_observations.metrics", errors)
+    projects = item.get("projects")
+    expected_parent_roles = {"corpus"}
+    expected_parent_artifacts = {"corpus": "product-gate-a-corpus"}
+    if not isinstance(projects, list) or not 3 <= len(projects) <= 5:
+        errors.append("projects must contain 3 to 5 entries")
+        projects = []
+    aliases: list[str] = []
+    for index, project in enumerate(projects, 1):
+        label = f"projects[{index - 1}]"
+        if not isinstance(project, dict):
+            errors.append(f"{label} must be an object")
+            continue
+        _strict_keys(
+            project,
+            {
+                "alias",
+                "bindings_match",
+                "workflow_complete",
+                "claims",
+                "corrections",
+                "findings",
+                "accept",
+                "reject",
+                "defer",
+                "open",
+                "assessment_id",
+                "regression_anchors",
+                "actual_revision_recorded",
+            },
+            label,
+            errors,
+        )
+        if not _nonempty(project.get("alias")):
+            errors.append(f"{label}.alias must be a non-empty string")
+        aliases.append(str(project.get("alias")))
+        for key in ("bindings_match", "workflow_complete", "actual_revision_recorded"):
+            if not isinstance(project.get(key), bool):
+                errors.append(f"{label}.{key} must be boolean")
+        for key in ("claims", "corrections", "findings", "accept", "reject", "defer", "open", "regression_anchors"):
+            value = project.get(key)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                errors.append(f"{label}.{key} must be a non-negative integer")
+        assessment_id = project.get("assessment_id")
+        if assessment_id is not None and not _nonempty(assessment_id):
+            errors.append(f"{label}.assessment_id must be null or non-empty")
+        if assessment_id is not None:
+            role = f"assessment-{index:03d}"
+            expected_parent_roles.add(role)
+            expected_parent_artifacts[role] = "product-gate-a-assessment"
+        if project.get("workflow_complete") is True and (
+            project.get("bindings_match") is not True or project.get("open") != 0
+        ):
+            errors.append(f"{label}.workflow_complete requires intact bindings and zero open Findings")
+    if len(aliases) != len(set(aliases)):
+        errors.append("project aliases must be unique")
+    decision = item.get("gate_decision")
+    if decision is not None and decision not in GATE_A_DECISIONS:
+        errors.append("gate_decision must be pass/fail/defer/null")
+    if decision is not None:
+        expected_parent_roles.add("gate-decision")
+        expected_parent_artifacts["gate-decision"] = "product-gate-a-decision"
+    _validate_bound_file(item.get("payload"), "payload", errors)
+    _require_parent_roles(item, expected_parent_roles, errors)
+    _require_parent_artifacts(item, expected_parent_artifacts, errors)
+    return errors
+
+
 def validate_claim_lineage(value: object) -> list[str]:
     errors, item = _validate_base(
         value,
@@ -1341,6 +1649,10 @@ VALIDATORS: dict[str, Callable[[object], list[str]]] = {
     "finding-adjudication": validate_finding_adjudication,
     "revision-action": validate_revision_action,
     "revision-plan-record": validate_revision_plan_record,
+    "product-gate-a-corpus": validate_gate_a_corpus,
+    "product-gate-a-assessment": validate_gate_a_assessment,
+    "product-gate-a-decision": validate_gate_a_decision,
+    "product-gate-a-report": validate_gate_a_report,
     "claim-lineage": validate_claim_lineage,
 }
 
