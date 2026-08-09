@@ -964,6 +964,16 @@ def validate_finding_adjudication(value: object) -> list[str]:
         else {"finding", "previous-adjudication"},
         errors,
     )
+    _require_parent_artifacts(
+        item,
+        {"finding": "argument-finding"}
+        if supersedes is None
+        else {
+            "finding": "argument-finding",
+            "previous-adjudication": "finding-adjudication",
+        },
+        errors,
+    )
     if supersedes is not None:
         parents = item.get("parents")
         previous = next(
@@ -991,6 +1001,9 @@ def validate_revision_action(value: object) -> list[str]:
         return errors
     _require_origin(item, {"human-confirmed"}, "revision-action", errors)
     _require_parent_roles(item, {"adjudication"}, errors)
+    _require_parent_artifacts(
+        item, {"adjudication": "finding-adjudication"}, errors
+    )
     for key in ("action_id", "adjudication_id", "text"):
         if not _nonempty(item.get(key)):
             errors.append(f"{key} must be a non-empty string")
@@ -1000,6 +1013,229 @@ def validate_revision_action(value: object) -> list[str]:
         errors.append("target_claim must be version-qualified")
     if item.get("action_type") not in REVISION_ACTION_TYPES:
         errors.append(f"action_type must be one of {REVISION_ACTION_TYPES}")
+    return errors
+
+
+def validate_revision_plan_record(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="revision-plan-record",
+        lifecycle="derived-replaceable",
+        extra_keys={
+            "project_id",
+            "document_id",
+            "version_id",
+            "payload",
+            "summary",
+            "items",
+            "field_provenance",
+        },
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"deterministic"}, "revision-plan-record", errors)
+    for key in ("project_id", "document_id"):
+        if not _nonempty(item.get(key)):
+            errors.append(f"{key} must be a non-empty string")
+    if not isinstance(item.get("version_id"), str) or re.fullmatch(
+        r"V[1-9][0-9]*", str(item.get("version_id"))
+    ) is None:
+        errors.append("version_id must be V1..Vn")
+    _validate_bound_file(item.get("payload"), "payload", errors)
+    summary = item.get("summary")
+    summary_keys = {"accept", "reject", "defer", "open"}
+    if not isinstance(summary, dict):
+        errors.append("summary must be an object")
+    else:
+        _strict_keys(summary, summary_keys, "summary", errors)
+        if any(
+            not isinstance(summary.get(key), int) or summary.get(key) < 0
+            for key in summary_keys
+        ):
+            errors.append("summary counts must be non-negative integers")
+    items = item.get("items")
+    counted = {key: 0 for key in summary_keys}
+    expected_parent_artifacts: dict[str, str] = {}
+    expected_parent_roles: set[str] = set()
+    finding_ids: list[str] = []
+    if not isinstance(items, list):
+        errors.append("items must be an array")
+        items = []
+    for index, plan_item in enumerate(items, 1):
+        label = f"items[{index - 1}]"
+        finding_role = f"finding-{index:04d}"
+        expected_parent_roles.add(finding_role)
+        expected_parent_artifacts[finding_role] = "argument-finding"
+        if not isinstance(plan_item, dict):
+            errors.append(f"{label} must be an object")
+            continue
+        _strict_keys(
+            plan_item,
+            {
+                "finding_id",
+                "target_claim",
+                "lens",
+                "verdict",
+                "model_reason",
+                "decision",
+                "human_reason",
+                "adjudication_id",
+                "actions",
+                "field_provenance",
+            },
+            label,
+            errors,
+        )
+        finding_id = plan_item.get("finding_id")
+        if not _nonempty(finding_id):
+            errors.append(f"{label}.finding_id must be a non-empty string")
+        else:
+            finding_ids.append(str(finding_id))
+        target_claim = plan_item.get("target_claim")
+        if not isinstance(target_claim, str) or _VERSIONED_CLAIM.fullmatch(
+            target_claim
+        ) is None:
+            errors.append(f"{label}.target_claim must be version-qualified")
+        lens = plan_item.get("lens")
+        if not isinstance(lens, dict):
+            errors.append(f"{label}.lens must be an object")
+        else:
+            _strict_keys(lens, {"kind", "id", "check_id"}, f"{label}.lens", errors)
+            if lens.get("kind") not in LENS_KINDS:
+                errors.append(f"{label}.lens.kind must be one of {LENS_KINDS}")
+            if not _nonempty(lens.get("id")):
+                errors.append(f"{label}.lens.id must be non-empty")
+            if lens.get("kind") == "rule" and not _nonempty(lens.get("check_id")):
+                errors.append(f"{label}.rule lens requires check_id")
+            if lens.get("kind") == "perspective" and lens.get("check_id") is not None:
+                errors.append(f"{label}.perspective lens requires check_id=null")
+        if plan_item.get("verdict") not in FINDING_VERDICTS:
+            errors.append(f"{label}.verdict must be one of {FINDING_VERDICTS}")
+        if not _nonempty(plan_item.get("model_reason")):
+            errors.append(f"{label}.model_reason must be non-empty")
+        decision = plan_item.get("decision")
+        if decision is not None and decision not in DECISIONS:
+            errors.append(f"{label}.decision must be accept/reject/defer/null")
+        if decision is None:
+            counted["open"] += 1
+        elif decision in DECISIONS:
+            counted[str(decision)] += 1
+        human_reason = plan_item.get("human_reason")
+        if not isinstance(human_reason, str):
+            errors.append(f"{label}.human_reason must be a string")
+        elif decision in {"reject", "defer"} and not human_reason.strip():
+            errors.append(f"{label}.{decision} requires human_reason")
+        adjudication_id = plan_item.get("adjudication_id")
+        if decision is None:
+            if adjudication_id is not None:
+                errors.append(f"{label}.open item requires adjudication_id=null")
+        elif not _nonempty(adjudication_id):
+            errors.append(f"{label}.decided item requires adjudication_id")
+        else:
+            adjudication_role = f"adjudication-{index:04d}"
+            expected_parent_roles.add(adjudication_role)
+            expected_parent_artifacts[adjudication_role] = "finding-adjudication"
+        actions = plan_item.get("actions")
+        if not isinstance(actions, list):
+            errors.append(f"{label}.actions must be an array")
+            actions = []
+        action_ids: list[str] = []
+        for action_index, action in enumerate(actions, 1):
+            action_label = f"{label}.actions[{action_index - 1}]"
+            action_role = f"action-{index:04d}-{action_index:04d}"
+            expected_parent_roles.add(action_role)
+            expected_parent_artifacts[action_role] = "revision-action"
+            if not isinstance(action, dict):
+                errors.append(f"{action_label} must be an object")
+                continue
+            _strict_keys(
+                action,
+                {"action_id", "action_type", "text", "sha256"},
+                action_label,
+                errors,
+            )
+            if not _nonempty(action.get("action_id")):
+                errors.append(f"{action_label}.action_id must be non-empty")
+            else:
+                action_ids.append(str(action["action_id"]))
+            if action.get("action_type") not in REVISION_ACTION_TYPES:
+                errors.append(f"{action_label}.action_type is invalid")
+            if not _nonempty(action.get("text")):
+                errors.append(f"{action_label}.text must be non-empty")
+            if not _digest(action.get("sha256")):
+                errors.append(f"{action_label}.sha256 must be a SHA-256 digest")
+        if len(action_ids) != len(set(action_ids)):
+            errors.append(f"{label}.actions must not repeat action IDs")
+        if decision == "accept" and not actions:
+            errors.append(f"{label}.accept requires at least one action")
+        if decision in {None, "reject", "defer"} and actions:
+            errors.append(f"{label}.{decision or 'open'} must not have active actions")
+        provenance = plan_item.get("field_provenance")
+        if not isinstance(provenance, dict):
+            errors.append(f"{label}.field_provenance must be an object")
+        else:
+            _strict_keys(
+                provenance,
+                {"model", "decision", "actions"},
+                f"{label}.field_provenance",
+                errors,
+            )
+            for field in ("model", "decision", "actions"):
+                field_value = provenance.get(field)
+                if not isinstance(field_value, dict):
+                    errors.append(f"{label}.field_provenance.{field} must be an object")
+                    continue
+                _strict_keys(
+                    field_value,
+                    {"origin", "source"},
+                    f"{label}.field_provenance.{field}",
+                    errors,
+                )
+                if field_value.get("origin") not in ORIGINS:
+                    errors.append(f"{label}.field_provenance.{field}.origin is invalid")
+                if not _nonempty(field_value.get("source")):
+                    errors.append(f"{label}.field_provenance.{field}.source must be non-empty")
+            model_provenance = provenance.get("model")
+            if isinstance(model_provenance, dict) and model_provenance.get("origin") != "model-derived":
+                errors.append(f"{label}.model fields must remain model-derived")
+            decision_provenance = provenance.get("decision")
+            expected_decision_origin = "deterministic" if decision is None else "human-confirmed"
+            if isinstance(decision_provenance, dict) and decision_provenance.get("origin") != expected_decision_origin:
+                errors.append(f"{label}.decision provenance must be {expected_decision_origin}")
+            action_provenance = provenance.get("actions")
+            expected_action_origin = "human-confirmed" if actions else "deterministic"
+            if isinstance(action_provenance, dict) and action_provenance.get("origin") != expected_action_origin:
+                errors.append(f"{label}.actions provenance must be {expected_action_origin}")
+    if len(finding_ids) != len(set(finding_ids)):
+        errors.append("items must not repeat finding IDs")
+    if isinstance(summary, dict) and any(
+        summary.get(key) != counted[key] for key in summary_keys
+    ):
+        errors.append("summary counts must equal items")
+    _require_parent_roles(item, expected_parent_roles, errors)
+    _require_parent_artifacts(item, expected_parent_artifacts, errors)
+    field_provenance = item.get("field_provenance")
+    if not isinstance(field_provenance, dict):
+        errors.append("field_provenance must be an object")
+    else:
+        _strict_keys(
+            field_provenance, {"summary", "payload"}, "field_provenance", errors
+        )
+        for field in ("summary", "payload"):
+            provenance = field_provenance.get(field)
+            if not isinstance(provenance, dict):
+                errors.append(f"field_provenance.{field} must be an object")
+                continue
+            _strict_keys(
+                provenance,
+                {"origin", "source"},
+                f"field_provenance.{field}",
+                errors,
+            )
+            if provenance.get("origin") != "deterministic":
+                errors.append(f"field_provenance.{field}.origin must be deterministic")
+            if not _nonempty(provenance.get("source")):
+                errors.append(f"field_provenance.{field}.source must be non-empty")
     return errors
 
 
@@ -1104,6 +1340,7 @@ VALIDATORS: dict[str, Callable[[object], list[str]]] = {
     "argument-finding": validate_argument_finding,
     "finding-adjudication": validate_finding_adjudication,
     "revision-action": validate_revision_action,
+    "revision-plan-record": validate_revision_plan_record,
     "claim-lineage": validate_claim_lineage,
 }
 

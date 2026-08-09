@@ -291,7 +291,7 @@ py -3 critic_runner.py ir collect .\demo.argument-workbench --file .\test\fixtur
 py -3 critic_runner.py ir inspect .\demo.argument-workbench
 ```
 
-这个 fixture 包含“总会”式过强主张、漏 Claim、错 Evidence 绑定、显式 Assumption 和 Citation，可用于体验校正。Workbench 当前只支持单 Project / D1 / V1；正式 adjudication、跨版本 lineage、resolution、citation verification 和 GUI 尚未实现，真实文章 Gate A 也尚未执行。
+这个 fixture 包含“总会”式过强主张、漏 Claim、错 Evidence 绑定、显式 Assumption 和 Citation，可用于体验校正。Workbench 当前只支持单 Project / D1 / V1；跨版本 lineage、resolution、citation verification 和 GUI 尚未实现，真实文章 Gate A 也尚未执行。
 
 完整 artifact lifecycle、parent hash 和 field provenance 约定见 [`docs/artifact-contracts.md`](docs/artifact-contracts.md)。
 
@@ -335,7 +335,40 @@ reviews/RV1/
     └── findings/F0001.json ...
 ```
 
-`claim-review.md` 按 Claim 显示 PASS / FAIL / UNCERTAIN，不生成论文总分。FAIL 与 UNCERTAIN 同时产生独立 `argument-finding` artifact，绑定 `V1:Cn`、Rule Lens、check、reason、evidence refs、原始模型结果和 target IR，初始状态只能是 `open`。模型 verdict/reason 始终标记为 `model-derived`；用户尚未 accept/reject/defer。该人工裁决与 revision action 属于 Phase 3。
+`claim-review.md` 按 Claim 显示 PASS / FAIL / UNCERTAIN，不生成论文总分。FAIL 与 UNCERTAIN 同时产生独立 `argument-finding` artifact，绑定 `V1:Cn`、Rule Lens、check、reason、evidence refs、原始模型结果和 target IR，初始状态只能是 `open`。模型 verdict/reason 始终标记为 `model-derived`。
+
+### Phase 3：人工裁决与 Revision Plan
+
+每条 open Finding 都由作者最终决定；模型不能自动 accept。Workbench 使用与旧 report workflow 相同的 decision 语义，但把每个决定和修改动作保存成独立、不可变、Claim-centered artifact：
+
+```powershell
+# 逐条查看 Finding，并选择 Accept / Reject / Defer；每次确认立即落盘
+py -3 critic_runner.py ir adjudicate $project
+
+# 只读查看当前状态，不进入交互
+py -3 critic_runner.py ir adjudicate $project --view-only
+
+# 随时确定性重建 revision plan；--show 同时输出到终端
+py -3 critic_runner.py ir revision-plan $project --show
+
+# 验证 Finding → Adjudication → RevisionAction 和所有精确父哈希
+py -3 critic_runner.py ir verify-project $project
+```
+
+Accept 必须至少指定一个结构化 action type（`narrow_claim`、`add_evidence`、`add_qualification`、`remove_claim`、`restructure_argument`、`clarify_concept`、`verify_citation` 或 `other`）和具体行动文本。Reject / Defer 必须记录理由。改变决定不会覆盖历史：新 `ADnnnn` 通过 `supersedes` 指向旧决定；旧 RevisionAction 也保留。
+
+当前计划写入：
+
+```text
+documents/D1/versions/V1/
+├── adjudications/AD0001.json ...
+├── revision-actions/RA0001.json ...
+└── revision-plan/
+    ├── record.json
+    └── revision-plan.md
+```
+
+`revision-plan.md` 分列 accepted / deferred / rejected / open Finding，并保留模型 reason、人工 reason 和行动来源；它只显示状态计数，不产生论文总分。`record.json` 是 `derived-replaceable` cache，逐字绑定 Markdown，并可由 immutable Finding、Adjudication 和 RevisionAction 完整重建。已有顶层 `adjudicate` / `revision-plan` 命令继续服务 legacy report workflow，不被这套 `ir` 子命令替换。
 
 ### 兼容的低层 Argument IR 流程
 

@@ -36,6 +36,7 @@ Parent hashes always cover the exact file bytes on disk. Artifact objects do not
 | `argument-finding` | immutable | One lens/check verdict attached to a version-qualified Claim; initial status is only `open` |
 | `finding-adjudication` | immutable | Human `accept`, `reject`, or `defer`; later changes use `supersedes` |
 | `revision-action` | immutable | Structured action attached to an accepted adjudication |
+| `revision-plan-record` | derived-replaceable | Reproducible Markdown plan and current decision/action projection |
 | `claim-lineage` | immutable | Proposed or human-confirmed many-to-many correspondence between version-qualified Claims |
 
 An accepted adjudication is incomplete unless the same validated bundle contains at least one RevisionAction linked to its exact hash. ClaimLineage uses arrays on both sides so split and merge are native rather than encoded as fake one-to-one identities. A model proposal is an immutable `status=proposed` artifact; a human confirmation or rejection is a second artifact that binds the exact proposal hash. Human-originated lineage may be confirmed directly but is still marked `proposed_by=human`.
@@ -61,8 +62,16 @@ Every collected model response is an immutable `review-result-attempt`, includin
 
 For valid results, each FAIL or UNCERTAIN outcome becomes an immutable `argument-finding` with a version-qualified `target_claim`, Rule Lens/check identity, `status=open`, and exact parents for the target IR and model result. PASS remains visible in `claim-review-index` and `claim-review.md` but does not create an actionable Finding. The deterministic index groups outcomes by Claim and binds every Finding hash. Its required `field_provenance` map keeps verdict, reason, consequence, and evidence references explicitly `model-derived`, while task/Claim/check mapping, Finding IDs, counts, and view rendering are deterministic. Deterministic packaging never turns model judgments into deterministic facts.
 
+## Human adjudication and revision-plan provenance
+
+Workbench decisions reuse the legacy workflow's `accept` / `reject` / `defer` field rules through one adapter, while remaining separate Claim-centered artifacts. Accept requires at least one structured RevisionAction. Reject and defer require a human reason. The model result and immutable Finding remain untouched in every case.
+
+Each `finding-adjudication` binds the exact Finding bytes. Reconsidering a Finding appends another adjudication with `supersedes` and the previous adjudication hash; it never edits or deletes the earlier decision. A `revision-action` binds the exact accepted adjudication and uses one of the documented action types plus unconstrained human text. Bundle validation rejects an accepted adjudication without at least one linked action.
+
+`revision-plan/record.json` and `revision-plan.md` are deterministic caches. The record binds every current Finding, latest adjudication, and applicable action by exact-byte SHA-256, records the Markdown payload hash, and separates model-derived Finding fields from human-confirmed decisions and actions. Rebuild replaces only these derived files. Open, deferred, rejected, and accepted counts are workflow state, not a manuscript quality score.
+
 ## Legacy workflow boundary
 
-`critic-adjudication` v1 remains the compatible report-oriented workflow. It is not silently treated as a Claim-centered Workbench adjudication. Phase 3 must adapt its immutable report evidence into `argument-finding` plus `finding-adjudication` rather than create a second product decision system.
+`critic-adjudication` v1 remains the compatible report-oriented workflow. It is not silently treated as a Claim-centered Workbench adjudication. The Workbench shares its decision-field rules through an adapter, while `argument-finding`, `finding-adjudication`, and `revision-action` provide the product contract. A later migration can translate immutable legacy report evidence without changing either existing archive.
 
 Campaign, divergence, W/B, blind scorecards, and generic-critic controls remain Evaluation/Advanced artifacts. Their scores are not manuscript quality measures and do not appear in the Workbench project view.

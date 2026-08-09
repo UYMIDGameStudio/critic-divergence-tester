@@ -54,6 +54,11 @@ from argument_review import (
     rebuild_reviews,
     show_claim_review,
 )
+from argument_adjudication import (
+    rebuild_adjudication_cache,
+    rebuild_revision_plan as rebuild_workbench_revision_plan,
+    run_adjudicator as run_workbench_adjudicator,
+)
 from critic_execution import ExecutorResult, execute_with_limits
 from critic_scoring import (
     ALL_COMPARISONS,
@@ -3038,12 +3043,17 @@ def ir_inspect_command(args: argparse.Namespace) -> int:
 def ir_rebuild_command(args: argparse.Namespace) -> int:
     map_path, changed = rebuild_workspace(args.project)
     review_outputs, reviews_changed = rebuild_reviews(args.project)
+    adjudication_outputs, adjudications_changed = rebuild_adjudication_cache(
+        args.project
+    )
     print(f"Argument map: {map_path}")
     for output in review_outputs:
         print(f"Claim review: {output}")
+    for output in adjudication_outputs:
+        print(f"Revision plan: {output}")
     print(
         "Derived artifacts rebuilt."
-        if changed or reviews_changed
+        if changed or reviews_changed or adjudications_changed
         else "Derived artifacts already current."
     )
     return 0
@@ -3146,6 +3156,30 @@ def ir_review_show_command(args: argparse.Namespace) -> int:
     )
     print(rendered, end="" if rendered.endswith("\n") else "\n")
     print(f"Full claim review: {view_path}")
+    return 0
+
+
+def ir_adjudicate_command(args: argparse.Namespace) -> int:
+    if not args.view_only:
+        isatty = getattr(sys.stdin, "isatty", None)
+        if isatty is not None and not isatty():
+            raise WorkbenchError(
+                "interactive Workbench adjudication requires a terminal; use --view-only for non-interactive output"
+            )
+    return run_workbench_adjudicator(
+        args.project,
+        review_id=args.review_id,
+        review_all=args.review_all,
+        view_only=args.view_only,
+    )
+
+
+def ir_revision_plan_command(args: argparse.Namespace) -> int:
+    plan_path, changed = rebuild_workbench_revision_plan(args.project)
+    print(f"Revision plan: {plan_path}")
+    print("Revision plan rebuilt." if changed else "Revision plan already current.")
+    if args.show:
+        print(plan_path.read_text(encoding="utf-8"), end="")
     return 0
 
 
@@ -4158,6 +4192,43 @@ def parser() -> argparse.ArgumentParser:
         help="Claim ID such as C4 or V1:C4 (default: show all reviewed Claims)",
     )
     ir_review_show_parser.set_defaults(func=ir_review_show_command)
+
+    ir_adjudicate_parser = ir_sub.add_parser(
+        "adjudicate",
+        help="accept, reject, or defer Claim-level Workbench Findings",
+    )
+    ir_adjudicate_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    ir_adjudicate_parser.add_argument(
+        "--review-id",
+        help="limit decisions to one current Rule Review",
+    )
+    ir_adjudicate_parser.add_argument(
+        "--review-all",
+        action="store_true",
+        help="include Findings that already have a human decision",
+    )
+    ir_adjudicate_parser.add_argument(
+        "--view-only",
+        action="store_true",
+        help="show current human decisions without starting the prompt",
+    )
+    ir_adjudicate_parser.set_defaults(func=ir_adjudicate_command)
+
+    ir_revision_plan_parser = ir_sub.add_parser(
+        "revision-plan",
+        help="deterministically rebuild the Workbench revision plan",
+    )
+    ir_revision_plan_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    ir_revision_plan_parser.add_argument(
+        "--show",
+        action="store_true",
+        help="print revision-plan.md after rebuilding it",
+    )
+    ir_revision_plan_parser.set_defaults(func=ir_revision_plan_command)
 
     ir_prepare_parser = ir_sub.add_parser(
         "prepare",

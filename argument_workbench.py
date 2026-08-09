@@ -1184,6 +1184,15 @@ def verify_workspace(
         errors.extend(f"reviews: {error}" for error in verify_reviews(paths.root))
     except ImportError as exc:
         errors.append(f"reviews: cannot load review verifier: {exc}")
+    try:
+        from argument_adjudication import verify_adjudications
+
+        errors.extend(
+            f"adjudications: {error}"
+            for error in verify_adjudications(paths.root)
+        )
+    except ImportError as exc:
+        errors.append(f"adjudications: cannot load verifier: {exc}")
     return errors
 
 
