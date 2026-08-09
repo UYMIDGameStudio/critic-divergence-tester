@@ -317,6 +317,91 @@ class ArgumentWorkbenchTests(unittest.TestCase):
             self.assertEqual(reviewed["claims"][0]["types"], ["causal"])
             self.assertTrue(any("Correction saved" in line for line in output))
 
+    def test_classification_triage_writes_one_confirmed_event_and_rebuilds(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_project(Path(temporary))
+            self.collect_fixture(paths)
+            workbench.rebuild_workspace(paths.root)
+            answers = iter(
+                [
+                    "c",
+                    "e",
+                    "causal",
+                    "causal-observational",
+                    "y",
+                    "The wording asserts a directional empirical mechanism.",
+                    "q",
+                    "q",
+                ]
+            )
+            output: list[str] = []
+            self.assertEqual(
+                workbench.run_inspector(
+                    paths.root,
+                    view_only=False,
+                    input_fn=lambda _: next(answers),
+                    output_fn=output.append,
+                ),
+                0,
+            )
+            corrections = workbench.correction_entries(paths)
+            self.assertEqual(len(corrections), 1)
+            self.assertEqual(
+                corrections[0][1]["operation"]["changes"],
+                {
+                    "types": ["causal"],
+                    "methods": ["causal-observational"],
+                },
+            )
+            reviewed = json.loads(paths.reviewed_payload.read_text(encoding="utf-8"))
+            record = json.loads(paths.reviewed_record.read_text(encoding="utf-8"))
+            self.assertEqual(reviewed["claims"][0]["types"], ["causal"])
+            self.assertEqual(
+                reviewed["claims"][0]["methods"], ["causal-observational"]
+            )
+            self.assertEqual(
+                record["field_provenance"]["C1.types"],
+                {"origin": "human-confirmed", "source": "IC0001"},
+            )
+            self.assertEqual(
+                record["field_provenance"]["C1.methods"],
+                {"origin": "human-confirmed", "source": "IC0001"},
+            )
+            self.assertTrue(
+                any("Correction saved immediately: IC0001.json" in line for line in output)
+            )
+            self.assertEqual(workbench.verify_workspace(paths), [])
+
+    def test_classification_triage_cancellation_writes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_project(Path(temporary))
+            self.collect_fixture(paths)
+            workbench.rebuild_workspace(paths.root)
+            answers = iter(
+                [
+                    "c",
+                    "e",
+                    "causal",
+                    "causal-observational",
+                    "n",
+                    "q",
+                    "q",
+                ]
+            )
+            output: list[str] = []
+            self.assertEqual(
+                workbench.run_inspector(
+                    paths.root,
+                    view_only=False,
+                    input_fn=lambda _: next(answers),
+                    output_fn=output.append,
+                ),
+                0,
+            )
+            self.assertEqual(workbench.correction_entries(paths), [])
+            self.assertTrue(any("Cancelled; model-derived values kept." in line for line in output))
+            self.assertEqual(workbench.verify_workspace(paths), [])
+
     def test_workspace_rejects_tampered_source_and_derived_cache(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             paths = self.make_project(Path(temporary))

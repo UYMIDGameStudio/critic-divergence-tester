@@ -24,8 +24,10 @@ from argument_ir import (
     ASSUMPTION_KEYS,
     CITATION_KEYS,
     CLAIM_KEYS,
+    CLAIM_TYPES,
     EVIDENCE_KEYS,
     IR_KEYS,
+    METHOD_TYPES,
     RELATION_KEYS,
     SUPPORTED_IR_EXTRACTION_PROTOCOL_VERSIONS,
     ArgumentIRError,
@@ -1381,6 +1383,109 @@ def _node_payload(input_fn: Callable[[str], str], kind: str) -> dict[str, Any]:
     return {"text": text, "source_quote": quote, "locator": input_fn("Citation locator (optional): ").strip()}
 
 
+def _classification_values(
+    raw_value: str,
+    current: list[str],
+    *,
+    field: str,
+    allowed: tuple[str, ...],
+) -> list[str]:
+    if not raw_value.strip():
+        return list(current)
+    values = [item.strip() for item in raw_value.split(",") if item.strip()]
+    if not values:
+        raise WorkbenchError(f"{field} must contain at least one value")
+    if len(values) != len(set(values)):
+        raise WorkbenchError(f"{field} must not contain duplicate values")
+    unknown = [item for item in values if item not in allowed]
+    if unknown:
+        raise WorkbenchError(
+            f"unknown {field}: {', '.join(unknown)}; allowed: {', '.join(allowed)}"
+        )
+    if len(values) > 1 and ({"unspecified", "other"} & set(values)):
+        raise WorkbenchError(f"{field} must use unspecified or other alone")
+    return values
+
+
+def run_classification_triage(
+    paths: WorkspacePaths,
+    *,
+    input_fn: Callable[[str], str],
+    output_fn: Callable[[str], None],
+) -> int:
+    try:
+        reviewed, record, _ = materialize_reviewed(paths)
+        mapping = {
+            display: stable for stable, display in record["stable_ref_map"].items()
+        }
+    except WorkbenchError:
+        reviewed, mapping = _preview_projection(paths)
+    changed = 0
+    output_fn(
+        "Classification triage: Enter keeps model-derived values; E records a "
+        "human correction; Q returns to the main menu."
+    )
+    for claim in reviewed.get("claims", []):
+        if not isinstance(claim, dict) or not isinstance(claim.get("id"), str):
+            continue
+        claim_id = str(claim["id"])
+        stable = mapping.get(claim_id)
+        if stable is None:
+            raise WorkbenchError(f"cannot resolve stable reference for {claim_id}")
+        current_types = list(claim.get("types", []))
+        current_methods = list(claim.get("methods", []))
+        output_fn("")
+        output_fn(f"{claim_id} · {claim.get('role', '—')} · {claim.get('text', '—')}")
+        output_fn(f"  source: {claim.get('source_quote', '—')}")
+        output_fn(f"  types: {', '.join(current_types)}")
+        output_fn(f"  methods: {', '.join(current_methods)}")
+        action = input_fn("[Enter] keep  [E]dit  [Q] return: ").strip().casefold()
+        if action in {"q", "quit"}:
+            break
+        if not action:
+            continue
+        if action not in {"e", "edit"}:
+            output_fn("Unknown classification choice; value kept.")
+            continue
+        new_types = _classification_values(
+            input_fn(f"Types [{', '.join(current_types)}]: "),
+            current_types,
+            field="types",
+            allowed=CLAIM_TYPES,
+        )
+        new_methods = _classification_values(
+            input_fn(f"Methods [{', '.join(current_methods)}]: "),
+            current_methods,
+            field="methods",
+            allowed=METHOD_TYPES,
+        )
+        changes: dict[str, object] = {}
+        if new_types != current_types:
+            changes["types"] = new_types
+        if new_methods != current_methods:
+            changes["methods"] = new_methods
+        if not changes:
+            output_fn("No classification change; no correction event written.")
+            continue
+        output_fn(
+            f"  proposed: types={', '.join(new_types)}; methods={', '.join(new_methods)}"
+        )
+        if input_fn("Write human-confirmed correction? [y/N]: ").strip().casefold() != "y":
+            output_fn("Cancelled; model-derived values kept.")
+            continue
+        reason = input_fn("Reason (optional): ").strip() or f"Classification triage for {claim_id}."
+        correction_path, _ = append_correction(
+            paths.root,
+            {"kind": "update_node", "target": stable, "changes": changes},
+            reason=reason,
+        )
+        rebuild_workspace(paths.root)
+        changed += 1
+        output_fn(f"Correction saved immediately: {correction_path.name}")
+    output_fn(f"Classification triage complete; {changed} correction event(s) written.")
+    return changed
+
+
 def run_inspector(
     project_dir: Path | str,
     *,
@@ -1403,7 +1508,7 @@ def run_inspector(
         return 0
     menu = (
         "[V]iew  [E]dit node  [A]dd node  [D]elete node  "
-        "[R]elation  [B]ind/unbind  [U]ndo  [Q]uit"
+        "[R]elation  [B]ind/unbind  [C]lassify  [U]ndo  [Q]uit"
     )
     while True:
         output_fn(menu)
@@ -1420,6 +1525,11 @@ def run_inspector(
             continue
         mapping = _display_to_stable(paths)
         try:
+            if choice in {"c", "classify", "classification"}:
+                run_classification_triage(
+                    paths, input_fn=input_fn, output_fn=output_fn
+                )
+                continue
             if choice in {"e", "edit"}:
                 display = _ask_nonempty(input_fn, "Node ID: ").upper()
                 stable = mapping.get(display)
