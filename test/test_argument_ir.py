@@ -92,6 +92,7 @@ def valid_ir(source_bytes: bytes, source_name: str = "article.md") -> dict[str, 
             {"id": "R2", "type": "assumes", "from": "A1", "to": "C1"},
             {"id": "R3", "type": "cites", "from": "Z1", "to": "E1"},
             {"id": "R4", "type": "qualifies", "from": "C2", "to": "C1"},
+            {"id": "R5", "type": "supports", "from": "E1", "to": "C2"},
         ],
         "unverified": [],
     }
@@ -436,6 +437,50 @@ class ArgumentIRTests(unittest.TestCase):
         )
         self.assertEqual(argument_ir.validate_check_plan(plan), [])
 
+    def test_review_scope_is_orthogonal_to_depth_and_defaults_can_target_thesis_chain(
+        self,
+    ) -> None:
+        value = valid_ir(self.source_bytes)
+        value["relations"] = [
+            relation for relation in value["relations"] if relation["id"] != "R4"
+        ]
+        value["relations"][-1]["id"] = "R4"
+        ir_bytes = (
+            json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        common = {
+            "ir_sha256": digest(ir_bytes),
+            "library_sha256": digest(self.library_bytes),
+            "depth": "core",
+        }
+        thesis = argument_ir.build_check_plan(
+            value, self.library, review_scope="thesis-chain", **common
+        )
+        audit = argument_ir.build_check_plan(
+            value, self.library, review_scope="all", **common
+        )
+        single = argument_ir.build_check_plan(
+            value,
+            self.library,
+            review_scope="claim",
+            claim_ids=["C2"],
+            **common,
+        )
+        self.assertEqual(thesis["review_scope"]["selected_claim_ids"], ["C1"])
+        self.assertEqual(single["review_scope"]["selected_claim_ids"], ["C2"])
+        self.assertTrue(all(task["claim_id"] == "C1" for task in thesis["tasks"]))
+        self.assertTrue(all(task["claim_id"] == "C2" for task in single["tasks"]))
+        self.assertGreater(len(audit["tasks"]), len(thesis["tasks"]))
+        self.assertEqual(argument_ir.validate_check_plan(thesis), [])
+        with self.assertRaisesRegex(argument_ir.ArgumentIRError, "unknown Claim"):
+            argument_ir.build_check_plan(
+                value,
+                self.library,
+                review_scope="claim",
+                claim_ids=["C99"],
+                **common,
+            )
+
     def test_execution_prompt_contains_exact_plan_hash_and_only_selected_tasks(self) -> None:
         plan = self._plan()
         plan_bytes = (json.dumps(plan, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
@@ -446,23 +491,103 @@ class ArgumentIRTests(unittest.TestCase):
         self.assertNotIn("historical.known-at-time", prompt)
         self.assertNotIn("由调用方填写", prompt)
 
-    def _results(self, plan: dict[str, object], plan_hash: str) -> dict[str, object]:
-        return {
+    def test_legacy_v1_library_plan_and_results_remain_explicitly_verifiable(self) -> None:
+        legacy_library = copy.deepcopy(self.library)
+        legacy_library["schema_version"] = 1
+        for check in legacy_library["checks"]:
+            check.pop("evidence_policy")
+        legacy_bytes = (
+            json.dumps(legacy_library, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        value = valid_ir(self.source_bytes)
+        ir_bytes = (
+            json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        plan = argument_ir.build_check_plan(
+            value,
+            legacy_library,
+            ir_sha256=digest(ir_bytes),
+            library_sha256=digest(legacy_bytes),
+            depth="core",
+        )
+        self.assertEqual(plan["schema_version"], 1)
+        self.assertNotIn("review_scope", plan)
+        plan_bytes = (
+            json.dumps(plan, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        results = {
             "schema_version": 1,
             "artifact": "argument-check-results",
-            "source": {"plan_sha256": plan_hash},
+            "source": {"plan_sha256": digest(plan_bytes)},
             "status": "complete",
             "unverified": [],
             "results": [
                 {
                     "task_id": task["id"],
                     "verdict": "pass",
-                    "reason": "上下文未触发该失败条件。",
+                    "reason": "Legacy result retained for byte-compatible verification.",
                     "evidence_refs": [task["claim_id"]],
                     "consequence": "",
                 }
                 for task in plan["tasks"]
             ],
+        }
+        self.assertEqual(
+            argument_ir.validate_check_results(
+                results, plan, plan_sha256=digest(plan_bytes)
+            ),
+            [],
+        )
+
+    def _results(self, plan: dict[str, object], plan_hash: str) -> dict[str, object]:
+        check_by_id = {check["id"]: check for check in plan["checks"]}
+        argument = plan["argument_ir"]
+        node_kinds = {
+            item["id"]: kind
+            for kind, field in (
+                ("claim", "claims"),
+                ("evidence", "evidence"),
+                ("assumption", "assumptions"),
+                ("citation", "citations"),
+            )
+            for item in argument[field]
+        }
+        items = []
+        for task in plan["tasks"]:
+            claim_id = task["claim_id"]
+            policy = check_by_id[task["check_id"]]["evidence_policy"]
+            context = argument_ir._context_node_ids(argument, claim_id)
+            support_refs = []
+            if policy == "upstream-required":
+                support_refs = [
+                    next(ref for ref in sorted(context) if ref != claim_id)
+                ]
+            elif policy == "citation-required":
+                support_refs = [
+                    next(
+                        ref
+                        for ref in sorted(context)
+                        if node_kinds.get(ref) == "citation"
+                    )
+                ]
+            items.append(
+                {
+                    "task_id": task["id"],
+                    "execution_status": "evaluated",
+                    "verdict": "pass",
+                    "reason": "上下文未触发该失败条件。",
+                    "basis_refs": [claim_id, *support_refs],
+                    "support_refs": support_refs,
+                    "consequence": "",
+                }
+            )
+        return {
+            "schema_version": 2,
+            "artifact": "argument-check-results",
+            "source": {"plan_sha256": plan_hash},
+            "status": "complete",
+            "unverified": [],
+            "results": items,
         }
 
     def test_results_are_plan_bound_complete_and_provenance_limited(self) -> None:
@@ -475,7 +600,7 @@ class ArgumentIRTests(unittest.TestCase):
         )
 
         forged = copy.deepcopy(results)
-        forged["results"][0]["evidence_refs"] = ["E99"]
+        forged["results"][0]["basis_refs"] = ["E99"]
         self.assertTrue(
             any(
                 "outside the claim context" in error
@@ -508,12 +633,25 @@ class ArgumentIRTests(unittest.TestCase):
         )
 
         empty_evidence = copy.deepcopy(results)
-        empty_evidence["results"][0]["evidence_refs"] = []
+        empty_evidence["results"][0]["basis_refs"] = []
         self.assertTrue(
             any(
-                "is required for pass" in error
+                "must not be empty" in error
                 for error in argument_ir.validate_check_results(
                     empty_evidence, plan, plan_sha256=plan_hash
+                )
+            )
+        )
+
+        self_supported_pass = copy.deepcopy(results)
+        first = self_supported_pass["results"][0]
+        first["basis_refs"] = ["C1"]
+        first["support_refs"] = ["C1"]
+        self.assertTrue(
+            any(
+                "independent of the target Claim" in error
+                for error in argument_ir.validate_check_results(
+                    self_supported_pass, plan, plan_sha256=plan_hash
                 )
             )
         )
@@ -538,7 +676,7 @@ class ArgumentIRTests(unittest.TestCase):
             )["claim_id"]
             == "C2"
         )
-        c2_result["evidence_refs"] = ["E1"]
+        c2_result["basis_refs"] = ["A1"]
         self.assertTrue(
             any(
                 "outside the claim context" in error
@@ -576,12 +714,22 @@ class ArgumentIRTests(unittest.TestCase):
         results["results"][0].update(
             verdict="fail",
             reason="材料与结论之间缺少推理连接。",
+            support_refs=[],
             consequence="该主张当前只能降格为待检验假说。",
         )
         results["results"][1].update(
             verdict="uncertain",
             reason="上下文缺少范围信息。",
+            support_refs=[],
             consequence="不能判断外推边界。",
+        )
+        results["results"][2].update(
+            execution_status="routing_mismatch",
+            verdict=None,
+            reason="The Claim method classification routed an empirical check incorrectly.",
+            basis_refs=["C1"],
+            support_refs=[],
+            consequence="",
         )
         results_bytes = (json.dumps(results, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
         findings = argument_ir.build_argument_findings(
@@ -594,7 +742,7 @@ class ArgumentIRTests(unittest.TestCase):
         self.assertEqual(
             {item["verdict"] for item in findings["findings"]}, {"fail", "uncertain"}
         )
-        self.assertEqual(findings["findings"][0]["evidence_refs"], ["C1"])
+        self.assertIn("C1", findings["findings"][0]["evidence_refs"])
         self.assertEqual(
             findings["findings"][0]["evidence"][0]["source_quote"],
             "算法导致公共议题人格化",
@@ -673,6 +821,7 @@ class ArgumentIRTests(unittest.TestCase):
             results["results"][0].update(
                 verdict="fail",
                 reason="支持链不足。",
+                support_refs=[],
                 consequence="结论需要降格。",
             )
             results_path = root / "results.json"

@@ -12,6 +12,7 @@ import shutil
 import tempfile
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ from argument_adjudication import (
     latest_adjudications,
     list_adjudications,
 )
+from argument_baseline import latest_direct_review_baseline
 from argument_contracts import (
     GATE_A_BURDENS,
     GATE_A_COMPARISONS,
@@ -110,6 +112,34 @@ def _project_snapshot(project_dir: Path | str) -> dict[str, Any]:
         "revision_plan_markdown": human.plan_markdown,
     }
     data = {key: _regular_bytes(path, key) for key, path in required.items()}
+    _, baseline, baseline_bytes = latest_direct_review_baseline(workspace.root)
+    baseline_errors = validate_artifact(baseline)
+    if baseline_errors:
+        raise WorkbenchError(
+            "Gate A direct-review baseline is invalid: "
+            + "; ".join(baseline_errors)
+        )
+    from argument_review import list_result_attempts, list_rule_reviews
+
+    review_result_times = [
+        str(attempt["provenance"]["created_at"])
+        for review_paths in list_rule_reviews(workspace.root)
+        for _, attempt, _ in list_result_attempts(review_paths)
+        if attempt.get("validation", {}).get("status") == "valid"
+    ]
+    if review_result_times:
+        baseline_completed = datetime.fromisoformat(
+            str(baseline["timing"]["completed_at"]).replace("Z", "+00:00")
+        )
+        first_review = min(
+            datetime.fromisoformat(value.replace("Z", "+00:00"))
+            for value in review_result_times
+        )
+        if baseline_completed > first_review:
+            raise WorkbenchError(
+                "Gate A direct-review baseline was completed after a Workbench "
+                "Rule Review result and cannot serve as an uncontaminated comparison"
+            )
     project, _ = _read_json(workspace.project)
     version, _ = _read_json(workspace.version)
     reviewed, _ = _read_json(workspace.reviewed_payload)
@@ -132,6 +162,8 @@ def _project_snapshot(project_dir: Path | str) -> dict[str, Any]:
         "version": version,
         "project_bytes": data["project"],
         "plan_bytes": data["revision_plan_record"],
+        "baseline": baseline,
+        "baseline_bytes": baseline_bytes,
         "bindings": {
             "project": sha256_bytes(data["project"]),
             "document_version": sha256_bytes(data["document_version"]),
@@ -140,6 +172,7 @@ def _project_snapshot(project_dir: Path | str) -> dict[str, Any]:
             "reviewed_ir_payload": sha256_bytes(data["reviewed_ir_payload"]),
             "revision_plan_record": sha256_bytes(data["revision_plan_record"]),
             "revision_plan_markdown": sha256_bytes(data["revision_plan_markdown"]),
+            "direct_review_baseline": sha256_bytes(baseline_bytes),
         },
         "claims": len(reviewed.get("claims", [])),
         "corrections": corrections,
@@ -229,11 +262,17 @@ def gate_readiness(project_dirs: list[Path | str]) -> dict[str, Any]:
             and human.plan_markdown.is_file()
             and not human.plan_markdown.is_symlink()
         )
+        try:
+            _, baseline, _ = latest_direct_review_baseline(workspace.root)
+            baseline_available = not validate_artifact(baseline)
+        except (OSError, WorkbenchError):
+            baseline_available = False
         ready = (
             not errors
             and findings_available
             and decision_counts["open"] == 0
             and plan_ready
+            and baseline_available
         )
         if workspace_invalid:
             next_command = f'python critic_runner.py ir verify-project "{workspace.root}"'
@@ -246,6 +285,12 @@ def gate_readiness(project_dirs: list[Path | str]) -> dict[str, Any]:
             )
         elif not plan_ready:
             next_command = f'python critic_runner.py ir revision-plan "{workspace.root}"'
+        elif not baseline_available:
+            next_command = (
+                f'python critic_runner.py ir gate-a baseline "{workspace.root}" '
+                "--prompt-file PROMPT.md --response-file RESPONSE.md "
+                "--model-label MODEL --started-at ISO_TIME --completed-at ISO_TIME"
+            )
         else:
             next_command = "ready for immutable Gate A corpus capture"
         projects.append(
@@ -260,6 +305,7 @@ def gate_readiness(project_dirs: list[Path | str]) -> dict[str, Any]:
                 "model_findings": model_counts,
                 "human_decisions": decision_counts,
                 "revision_plan": plan_ready,
+                "direct_review_baseline": baseline_available,
                 "ready_for_capture": ready,
                 "errors": errors,
                 "next_command": next_command,
@@ -296,6 +342,8 @@ def render_gate_readiness(readiness: dict[str, Any]) -> str:
                 f"  Human decisions: {human['accept']} accept · {human['reject']} reject · "
                 f"{human['defer']} defer · {human['open']} open",
                 f"  Revision plan: {'ready' if project['revision_plan'] else 'missing'}",
+                "  Direct-review baseline: "
+                f"{'ready' if project['direct_review_baseline'] else 'missing'}",
                 f"  Gate capture: {'ready' if project['ready_for_capture'] else 'not ready'}",
             ]
         )
@@ -352,9 +400,16 @@ def initialize_gate(
         parents.append(
             _parent(f"project-{index:03d}", "argument-project", snapshot["project_bytes"])
         )
+        parents.append(
+            _parent(
+                f"baseline-{index:03d}",
+                "direct-review-baseline",
+                snapshot["baseline_bytes"],
+            )
+        )
     corpus_id = "GA-" + uuid.uuid4().hex[:12]
     corpus = {
-        "schema_version": 1,
+        "schema_version": 2,
         "artifact": "product-gate-a-corpus",
         "artifact_id": corpus_id,
         "lifecycle": "immutable",
@@ -464,7 +519,7 @@ def append_assessment(
         raise WorkbenchError(f"{project_alias} changed after corpus capture")
     assessment_id = f"AS{len(assessments) + 1:04d}"
     assessment = {
-        "schema_version": 1,
+        "schema_version": 2,
         "artifact": "product-gate-a-assessment",
         "artifact_id": assessment_id,
         "lifecycle": "immutable",
@@ -473,6 +528,11 @@ def append_assessment(
             _parent("corpus", "product-gate-a-corpus", corpus_bytes),
             _parent("project", "argument-project", snapshot["project_bytes"]),
             _parent("revision-plan", "revision-plan-record", snapshot["plan_bytes"]),
+            _parent(
+                "direct-review-baseline",
+                "direct-review-baseline",
+                snapshot["baseline_bytes"],
+            ),
         ],
         "corpus_id": corpus["corpus_id"],
         "project_alias": project_alias,
@@ -777,6 +837,14 @@ def verify_gate(gate_dir: Path | str, *, compare_report: bool = True) -> list[st
             expected_parent = _parent(f"project-{index:03d}", "argument-project", snapshot["project_bytes"])
             if expected_parent not in corpus["parents"]:
                 errors.append(f"{alias}: corpus project parent is disconnected")
+            if corpus.get("schema_version") == 2:
+                expected_baseline_parent = _parent(
+                    f"baseline-{index:03d}",
+                    "direct-review-baseline",
+                    snapshot["baseline_bytes"],
+                )
+                if expected_baseline_parent not in corpus["parents"]:
+                    errors.append(f"{alias}: corpus baseline parent is disconnected")
         except (OSError, WorkbenchError) as exc:
             errors.append(f"{alias}: {exc}")
     seen_aliases: set[str] = set()
@@ -802,6 +870,10 @@ def verify_gate(gate_dir: Path | str, *, compare_report: bool = True) -> list[st
                 errors.append(f"{path.name}: project parent hash is disconnected")
             if parents.get("revision-plan", {}).get("sha256") != snapshot["bindings"]["revision_plan_record"]:
                 errors.append(f"{path.name}: revision-plan parent hash is disconnected")
+            if assessment.get("schema_version") == 2 and parents.get(
+                "direct-review-baseline", {}
+            ).get("sha256") != snapshot["bindings"]["direct_review_baseline"]:
+                errors.append(f"{path.name}: direct baseline parent hash is disconnected")
         except (OSError, WorkbenchError) as exc:
             errors.append(f"{path.name}: {exc}")
     previous_hash: str | None = None

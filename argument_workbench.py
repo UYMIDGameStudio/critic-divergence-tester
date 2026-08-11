@@ -1218,6 +1218,15 @@ def verify_workspace(
         )
     except ImportError as exc:
         errors.append(f"adjudications: cannot load verifier: {exc}")
+    try:
+        from argument_baseline import verify_direct_review_baselines
+
+        errors.extend(
+            f"direct baselines: {error}"
+            for error in verify_direct_review_baselines(paths.root)
+        )
+    except ImportError as exc:
+        errors.append(f"direct baselines: cannot load verifier: {exc}")
     return errors
 
 

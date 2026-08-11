@@ -8,17 +8,18 @@ Use three to five real manuscripts. Include writing that has already received cl
 
 Every manuscript must complete the same Phase 1–3 path:
 
-1. import the exact source and collect a Raw IR model response;
-2. inspect and correct the IR without editing JSON;
-3. prepare and collect at least one current Rule Review;
-4. adjudicate every FAIL/UNCERTAIN Finding as accept, reject, or defer;
-5. create the revision plan and verify the whole Workbench project.
+1. preserve one direct full-text chat prompt, raw response, model label, and actual elapsed time before Workbench Findings influence the evaluator;
+2. import the exact source and collect a Raw IR model response;
+3. inspect and correct the IR without editing JSON;
+4. prepare a scoped v2 Rule Review and collect at least one current result;
+5. adjudicate every evaluated FAIL/substantive UNCERTAIN Finding as accept, reject, or defer;
+6. create the revision plan and verify the whole Workbench project.
 
-Run `ir gate-a readiness PROJECT...` first. It is a read-only aggregate for three to five workspaces: it verifies each project, reports model Findings separately from human decisions, and gives the exact next command without creating an assessment, evidence artifact, or Gate decision. `ir gate-a init` then refuses fewer than three or more than five projects, duplicate source bytes, invalid workspaces, missing revision plans, and open Findings. The resulting corpus is immutable. If a bound workspace changes, create a new corpus rather than silently updating the evidence.
+Collect each comparison with `ir gate-a baseline PROJECT --prompt-file ... --response-file ... --model-label ... --started-at ... --completed-at ...`. Then run `ir gate-a readiness PROJECT...`. Readiness reports model Findings separately from human decisions and checks baseline presence without creating an assessment or Gate decision. `ir gate-a init` refuses missing baselines, duplicate sources, invalid workspaces, missing revision plans, and open Findings. The resulting corpus is immutable.
 
-## Selected real-paper corpus
+## Engineering regression corpus
 
-The first private Gate A run uses five peer-reviewed, openly accessible papers with complementary argument forms. Full text and Workbench directories remain outside the repository. The public record contains only bibliographic metadata, licenses, and SHA-256 bindings for the deterministically derived UTF-8 manuscript inputs.
+The five peer-reviewed papers below are an engineering regression corpus, not a completed Product Gate. They exercise extraction, routing, research-design diversity, and task volume. Because the evaluator is not their author and will not produce authentic V2 revisions, they cannot establish that authors prefer the Workbench to direct chat.
 
 | Alias | Paper and argument form | License | Manuscript SHA-256 |
 |---|---|---|---|
@@ -73,6 +74,8 @@ The first full Rule Review plan produced 704 tasks; the first core plan still pr
 | P05 | 47 | 35 | 4 | 8 | 12 |
 | **Total** | **316** | **200** | **32** | **84** | **116** |
 
-These verdicts are model-derived proposals, not accepted criticism. No IR correction, Finding adjudication, revision action, usability assessment, or Gate decision has been attributed to a human. The reduction from 210 to 116 open Findings shows that extraction classification materially controls downstream review cost, while the remaining queue is still a human-cost warning. It is not permission to auto-reject uncertainty or auto-pass Gate A. Product Gate A remains incomplete, and Phase 4 remains blocked until a human completes the required correction, adjudication, and assessment work.
+These legacy v1 verdicts are model-derived proposals, not accepted criticism. Their 200 PASS outcomes predate `basis_refs`/`support_refs` and the explicit evidence policies, so they remain reproducible historical artifacts but cannot establish strong PASS evidence. No IR correction, Finding adjudication, revision action, direct baseline, usability assessment, or Gate decision has been attributed to a human. Product Gate A remains incomplete, and Phase 4 remains blocked.
 
-The first Gate-driven UX iteration now gives new workspaces a byte-versioned `argument-ir-extraction-v2` prompt that asks for one primary type/method per Claim and stronger support-edge coverage. Existing v1 prompt bytes remain reproducible and every Raw attempt still binds the prompt it actually used. The Inspector also provides a `[C]lassify` queue that writes nothing when a user keeps a model value and appends one human-confirmed correction only after an explicit edit confirmation. Adjudication can be navigated by model verdict, target Claim, or exact check without batch-deciding or hiding the remaining Findings. A single read-only `ir gate-a readiness` command now aggregates all five projects and, for the current corpus, accurately stops capture at 116 open Findings. These tested product changes address observed cost; they are not themselves human Gate evidence, so the corpus must still be exercised by a human before a decision.
+The convergence iteration addresses the observed cost directly: daily review now defaults to the thesis support chain rather than all Claims; PASS evidence follows per-check policy; execution/routing failures are separated from substantive uncertainty; and Gate comparisons bind an immutable direct-chat baseline. The five engineering projects should be rerun with v2 only as a regression smoke test. The actual Product Gate corpus must instead include three author-owned manuscripts that will receive real corrections, adjudications, RevisionActions, and later revisions.
+
+A read-only v2 plan dry-run on the existing model-refined IRs selected 61 of 66 Claims and 294 core tasks, versus 316 under `scope=all` (P01 75/81, P02 54/54, P03 59/59, P04 75/75, P05 31/47). This is only a modest reduction because the extractor labeled 37 of 66 Claims as `intermediate`, and most premises are connected to a conclusion chain. Scope is now controllable and P05 benefits materially, but the dry-run does not show that the default queue is yet affordable. Human role correction and explicit `claim/claims` scoping must be measured in the author-owned Gate corpus rather than hidden by another automatic heuristic.

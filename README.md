@@ -2,25 +2,61 @@
 
 [![Tests](https://github.com/UYMIDGameStudio/critic-divergence-tester/actions/workflows/tests.yml/badge.svg)](https://github.com/UYMIDGameStudio/critic-divergence-tester/actions/workflows/tests.yml)
 
-一个**模型无关、零第三方依赖**的论证审查框架。提示词只是入口，不是最终产品；项目正在从 Critic Divergence Tester 演进为更完整的 Argument Review Framework，divergence 只是其中一个评估子系统。
+一个 **local-first、模型无关、零第三方依赖的 Argument Workbench / Argument Version Control 研究原型**。它管理的核心不是聊天或 AI report，而是 Raw IR、人工校正、Reviewed IR、Claim Findings、人工裁决与 RevisionAction 的可审计历史。Divergence 和旧 critic runner 仍保留在 Evaluation / Advanced 中，不是默认写作入口。
 
-它最初以 Claude Code subagent 的形式出现，但核心从来不需要 Claude Code。现在仓库把“学术线”“具体审查协议”和“模型执行器”分开：学术线决定证据观，协议决定攻击入口，Claude Code、其他 CLI、本地模型、网页聊天都只是可替换的执行器。
+它不需要 Claude Code 或 API key。网页聊天、CLI、本地模型都只是可替换的提取／审查执行器；模型负责提出结构和 Finding，人负责校正、接受、拒绝或暂缓，确定性程序负责 provenance、hash binding 和可重建派生物。
 
 这个项目也不是“让多个 agent 投票得出正确答案”。它做的是 philosophical pressure-test：让不同前提的敌对读者分别攻击同一份稿件，然后由作者本人判断哪些攻击真的改变论证。
 
 ```mermaid
 flowchart LR
-    A["原稿"] --> B["学科适配协议"]
-    B --> C["自包含 prompt"]
-    C --> D["任意 AI 的报告"]
-    D --> E["结构校验与证据归档"]
-    E --> F["逐条人工裁决"]
-    F --> G["可执行修改计划"]
+    A["Manuscript"] --> B["Raw Argument IR"]
+    B --> C["Human Corrections"]
+    C --> D["Reviewed IR"]
+    D --> E["Scoped Rule Review"]
+    E --> F["Claim Findings"]
+    F --> G["Human Adjudication"]
+    G --> H["Revision Plan"]
 ```
 
-runner 会把每一步绑定到精确字节哈希：AI 负责提出批评，人负责接受、拒绝或暂缓，机器负责阻止漏项、伪完成、证据被改写和归档断链。
+所有模型语义都明确标为 model-derived；Raw response 不覆盖，人工 correction 追加保存，Reviewed IR / map / plan 可确定性重建。产品不生成论文总分，也不以 Agent 投票替代作者判断。
 
-## 5 分钟上手（第一次用就看这里）
+## Argument Workbench：第一次使用
+
+下面是默认产品流程。把 `draft.md` 换成你的 UTF-8 稿件路径：
+
+```powershell
+# 1. 创建本地工作区和绑定原稿的 IR extraction prompt
+py -3 critic_runner.py ir init .\draft.md
+
+# 2. 将工作区里的 extraction-prompt.md 交给任意模型，保存其纯 JSON 回答
+py -3 critic_runner.py ir collect .\draft.argument-workbench --file .\argument-ir-returned.json
+
+# 3. 在行式 Inspector 中浏览并校正 Claims / Evidence / Assumptions / relations
+py -3 critic_runner.py ir inspect .\draft.argument-workbench
+
+# 4. 默认只审核 conclusion/intermediate 及其上游承重链；--scope all 才是全面 audit
+py -3 critic_runner.py ir review prepare .\draft.argument-workbench --depth core
+
+# 5. 将 review-prompt.md 交给模型，再收集严格结果
+py -3 critic_runner.py ir review collect .\draft.argument-workbench --file .\review-results.json
+
+# 6. 从 Claim 查看结果，逐条作出人工决定并生成修改计划
+py -3 critic_runner.py ir review show .\draft.argument-workbench
+py -3 critic_runner.py ir adjudicate .\draft.argument-workbench
+py -3 critic_runner.py ir revision-plan .\draft.argument-workbench --show
+
+# 随时验证完整 hash/provenance 链
+py -3 critic_runner.py ir verify-project .\draft.argument-workbench
+```
+
+`review prepare` 的 `--scope thesis-chain` 是默认日常范围；可用 `--scope claim --claim C4`、`--scope claims --claim C4 --claim C7` 精确选择，或显式 `--scope all` 做全面审计。`--depth core|full` 只决定每个入选 Claim 使用 core checks 还是加上 extended checks，与 review scope 正交。
+
+新结果 contract 把检查执行状态与实质 verdict 分开：`routing_mismatch`、`not_applicable`、`blocked_missing_context` 保留在可审计索引，但不会伪装成文章缺陷进入 Revision Plan。PASS 同时记录判断依据 `basis_refs` 和真正支持通过的 `support_refs`；需要上游证据或 Citation 的规则不能再用目标 Claim 自证。
+
+更完整的文件布局、Inspector 操作和 Phase 1–3 示例见下方 Argument IR / Workbench 章节。
+
+## Legacy critic report workflow（兼容 / Advanced）
 
 最简单的用法**不需要 API key，不需要安装 Claude Code，也不需要配置模型命令**。工具会生成 prompt、回收 AI 报告、提取结构化发现、引导你逐条裁决，并生成修改计划。
 
@@ -242,9 +278,9 @@ flowchart LR
 
 IR 明确分开 `Claim`、`Evidence`、`Assumption`、`Citation` 及其关系。每个节点都保留原稿逐字引文；引文必须在整篇原稿中唯一可定位，生成 plan 时程序会把模型写的位置提示改成确定性的 `L行:C列-L行:C列` 区间。程序还会核对原稿文件名、精确字节 SHA-256、ID 是否连续、关系端点是否合法，以及支持／限定关系是否形成循环。它不使用看似精确但无法校准的数字 `confidence`；隐含主张和假设必须写明 `uncertainty`。
 
-社科方法矩阵现在位于 [`ir/social-science-checks.json`](ir/social-science-checks.json)。每条规则都声明适用的主张类型、研究方法、检查问题、失败条件和所需上下文。因果机制与替代解释适用于所有因果 Claim；时间顺序、混杂、反向因果和选择偏差只适用于标明 `causal-observational` 或 `causal-experimental` 的经验识别 Claim，避免把观察窗口、样本选择等问题机械套到概念分析和形式模型。`core` 是较短的必要检查，`full` 会加入识别假设、溢出、稳健性等扩展检查。
+社科方法矩阵现在位于 [`ir/social-science-checks.json`](ir/social-science-checks.json)。每条规则都声明适用的主张类型、研究方法、检查问题、失败条件、所需上下文和 PASS `evidence_policy`。因果机制与替代解释适用于所有因果 Claim；时间顺序、混杂、反向因果和选择偏差只适用于标明 `causal-observational` 或 `causal-experimental` 的经验识别 Claim。`core/full` 是 check depth；`thesis-chain/claim/claims/all` 是独立的 Claim scope。
 
-check plan 使用规范化引用结构：完整 Argument IR 只保存一次，选中的检查定义也只保存一次，每个 task 只有 `id`、`claim_id`、`check_id`。模型结果不再复制一遍可能歧义的引文，而是用 `evidence_refs` 引用 IR 节点；程序再确定性解析原文与位置。`pass` / `fail` 必须给出与该 Claim 处于同一论证链的证据节点，分类有疑问时必须显式返回 `uncertain`，不存在可以让任务静默消失的 `not_applicable` 出口。
+check plan 使用规范化引用结构：完整 Argument IR 只保存一次，选中的检查定义也只保存一次。v2 结果以 `basis_refs` 保存模型判断依据，以 `support_refs` 保存真正支持 PASS 的独立上游依据；`upstream-required` 不接受目标 Claim 自证，`citation-required` 必须引用同一论证链中的 Citation。`execution_status` 先区分 `evaluated`、缺上下文、routing mismatch 和实质不适用；后三者必须解释和留痕，但默认不生成文章缺陷 Finding。
 
 ### Argument Workbench：不用打开 JSON 的正式流程
 
@@ -293,7 +329,7 @@ py -3 critic_runner.py ir collect .\demo.argument-workbench --file .\test\fixtur
 py -3 critic_runner.py ir inspect .\demo.argument-workbench
 ```
 
-这个 fixture 包含“总会”式过强主张、漏 Claim、错 Evidence 绑定、显式 Assumption 和 Citation，可用于体验校正。Workbench 当前只支持单 Project / D1 / V1；跨版本 lineage、resolution、citation verification 和 GUI 尚未实现，真实文章 Gate A 也尚未执行。
+这个 fixture 包含“总会”式过强主张、漏 Claim、错 Evidence 绑定、显式 Assumption 和 Citation，可用于体验校正。Workbench 当前只支持单 Project / D1 / V1；跨版本 lineage、resolution、citation verification 和 GUI 尚未实现。五篇已发表论文已完成模型侧 engineering pre-run，但真正需要作者修改稿件的人工 Product Gate A 尚未完成。
 
 完整 artifact lifecycle、parent hash 和 field provenance 约定见 [`docs/artifact-contracts.md`](docs/artifact-contracts.md)。
 
@@ -302,7 +338,7 @@ py -3 critic_runner.py ir inspect .\demo.argument-workbench
 完成 IR 校正后，可以直接在同一个本地项目里运行现有 social-science Rule Lens。程序仍不调用或绑定任何模型 SDK：它只确定性选择适用于 Reviewed IR 的 checks，并生成一份 source/hash-bound prompt。
 
 ```powershell
-# 1. 根据 Reviewed IR 和 bundled social-science rule library 创建 Rule Review
+# 1. 默认只选择 conclusion/intermediate 及其上游承重 Claim；--scope all 才全面审计
 py -3 critic_runner.py ir review prepare $project --depth core
 
 # 2. 把打印出的 review-prompt.md 交给任意模型，并收集纯 JSON 结果
@@ -337,7 +373,7 @@ reviews/RV1/
     └── findings/F0001.json ...
 ```
 
-`claim-review.md` 按 Claim 显示 PASS / FAIL / UNCERTAIN，不生成论文总分。FAIL 与 UNCERTAIN 同时产生独立 `argument-finding` artifact，绑定 `V1:Cn`、Rule Lens、check、reason、evidence refs、原始模型结果和 target IR，初始状态只能是 `open`。模型 verdict/reason 始终标记为 `model-derived`。
+`claim-review.md` 按 Claim 显示 PASS / FAIL / UNCERTAIN，以及 BLOCKED_MISSING_CONTEXT / ROUTING_MISMATCH / NOT_APPLICABLE，不生成论文总分。只有 evaluated 的 FAIL 与实质 UNCERTAIN 产生独立 `argument-finding`；执行或路由状态保留在 index 中但不进入修改队列。模型 status/verdict/reason 始终标记为 `model-derived`。
 
 ### Phase 3：人工裁决与 Revision Plan
 
@@ -387,6 +423,13 @@ documents/D1/versions/V1/
 Phase 3 完成后不能直接增加 Perspective Lens。`ir gate-a` 把 3–5 篇真实稿件的 Phase 1–3 结果固定为一个私有、本地 evidence corpus。它只保存 workspace locator 与精确哈希，不复制稿件正文；建议输出目录使用 `*.product-gate-a/`，该模式默认不进 Git。
 
 ```powershell
+# 在使用 Workbench Findings 前保存一次完整稿件 direct-chat 对照；时间由两个时间戳确定性计算
+py -3 critic_runner.py ir gate-a baseline $project1 `
+  --prompt-file .\P1-direct-prompt.md --response-file .\P1-direct-response.md `
+  --model-label "模型与版本标签" `
+  --started-at "2026-08-10T10:00:00+08:00" `
+  --completed-at "2026-08-10T10:05:00+08:00"
+
 # 在捕获 Gate corpus 前只读汇总 3–5 个项目；未完成时逐篇给出下一条命令
 py -3 critic_runner.py ir gate-a readiness $project1 $project2 $project3
 
@@ -408,7 +451,7 @@ py -3 critic_runner.py ir gate-a report $gate --show
 py -3 critic_runner.py ir gate-a verify $gate
 ```
 
-`ir gate-a readiness` 可以在人工裁决尚未完成时运行。它只读取并验证项目，汇总每篇稿件的 Claim、correction、模型 Findings、人工决定和 revision plan 状态，不创建 assessment、Gate evidence 或 Gate decision。只有全部项目没有 open Finding、revision plan 已生成且 source bytes 互不重复时，输出才会允许执行不可变 corpus capture。
+`ir gate-a baseline` 原样保存 direct-chat prompt/response、模型标签、开始/完成时间并绑定稿件精确字节；它不填写比较结论。`ir gate-a readiness` 可以在人工裁决尚未完成时运行，只读汇总 Claim、correction、模型 Findings、人工决定、revision plan 和 baseline 状态。只有全部项目没有 open Finding、revision plan 与 baseline 已生成且 source bytes 互不重复时，才允许捕获不可变 corpus。
 
 对 P2/P3（以及可选的 P4/P5）完成 assessment 后，报告才会显示 `Ready for human gate decision: yes`。程序永远不会自动通过 Gate；只有人类 evaluator 可以追加决定：
 
@@ -470,9 +513,9 @@ python critic_runner.py tracks
 python critic_runner.py list
 ```
 
-## 你平时到底怎么用
+## Legacy critic report 什么时候用
 
-不要跑 I₁/I₂/C₁/C₂。那是验证 critic 是否真的不同的测试，不是日常工作流。
+正常写作优先使用页首的 Argument Workbench。下面这条整篇报告流程为旧用户和高级实验保持兼容；不要跑 I₁/I₂/C₁/C₂，那是验证 critic 是否真的不同的测试，不是日常工作流。
 
 写稿时只按需要叫一个：
 
