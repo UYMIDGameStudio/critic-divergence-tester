@@ -23,6 +23,7 @@ from argument_adjudication import (
     list_adjudications,
 )
 from argument_baseline import latest_direct_review_baseline
+from argument_triage import current_status_triage, current_triage_indexes
 from argument_contracts import (
     GATE_A_BURDENS,
     GATE_A_COMPARISONS,
@@ -95,7 +96,9 @@ def _regular_bytes(path: Path, label: str) -> bytes:
     return path.read_bytes()
 
 
-def _project_snapshot(project_dir: Path | str) -> dict[str, Any]:
+def _project_snapshot(
+    project_dir: Path | str, *, require_status_triage: bool = True
+) -> dict[str, Any]:
     workspace = workspace_paths(project_dir)
     errors = verify_workspace(workspace)
     if errors:
@@ -153,6 +156,23 @@ def _project_snapshot(project_dir: Path | str) -> dict[str, Any]:
         raise WorkbenchError("Gate A requires a valid Phase 3 revision plan")
     if int(summary.get("open", 0)) != 0:
         raise WorkbenchError("Gate A requires every current Finding to be adjudicated")
+    triage_items = current_status_triage(workspace.root)
+    open_triage = [item for item in triage_items if item.decision is None]
+    if require_status_triage and open_triage:
+        raise WorkbenchError(
+            f"Gate A requires human triage for {len(open_triage)} non-evaluated review statuses"
+        )
+    triage_indexes = (
+        current_triage_indexes(workspace.root) if not open_triage else []
+    )
+    triage_bindings = [
+        {
+            "review_id": representative.review_id,
+            "attempt_id": representative.attempt_id,
+            "sha256": sha256_bytes(index_bytes),
+        }
+        for representative, _, index_bytes in triage_indexes
+    ]
     corrections = 0
     if workspace.corrections_dir.exists():
         corrections = len(list(workspace.corrections_dir.glob("IC[0-9][0-9][0-9][0-9].json")))
@@ -173,11 +193,23 @@ def _project_snapshot(project_dir: Path | str) -> dict[str, Any]:
             "revision_plan_record": sha256_bytes(data["revision_plan_record"]),
             "revision_plan_markdown": sha256_bytes(data["revision_plan_markdown"]),
             "direct_review_baseline": sha256_bytes(baseline_bytes),
+            "status_triage": triage_bindings,
         },
+        "triage_items": triage_items,
+        "triage_indexes": triage_indexes,
         "claims": len(reviewed.get("claims", [])),
         "corrections": corrections,
         "summary": {key: int(summary.get(key, 0)) for key in ("accept", "reject", "defer", "open")},
     }
+
+
+def _snapshot_bindings_match(snapshot: dict[str, Any], entry: dict[str, Any]) -> bool:
+    """Compare exactly the binding fields declared by a corpus schema version."""
+    stored = entry.get("bindings")
+    current = snapshot.get("bindings")
+    if not isinstance(stored, dict) or not isinstance(current, dict):
+        return False
+    return {key: current.get(key) for key in stored} == stored
 
 
 def gate_readiness(project_dirs: list[Path | str]) -> dict[str, Any]:
@@ -240,6 +272,25 @@ def gate_readiness(project_dirs: list[Path | str]) -> dict[str, Any]:
         model_counts = {"fail": 0, "uncertain": 0}
         for finding in findings:
             model_counts[str(finding.value["verdict"])] += 1
+        try:
+            triage_items = current_status_triage(workspace.root)
+        except WorkbenchError as exc:
+            triage_items = []
+            if findings_available:
+                errors.append(f"status-triage: {exc}")
+        triage_counts = {
+            "blocked_missing_context": 0,
+            "routing_mismatch": 0,
+            "not_applicable": 0,
+            "acknowledge": 0,
+            "reject": 0,
+            "open": 0,
+        }
+        for item in triage_items:
+            triage_counts[item.model_status] += 1
+            triage_counts[
+                str(item.decision["decision"]) if item.decision is not None else "open"
+            ] += 1
         human = human_review_paths(workspace.root)
         try:
             latest = latest_adjudications(list_adjudications(human))
@@ -271,6 +322,7 @@ def gate_readiness(project_dirs: list[Path | str]) -> dict[str, Any]:
             not errors
             and findings_available
             and decision_counts["open"] == 0
+            and triage_counts["open"] == 0
             and plan_ready
             and baseline_available
         )
@@ -283,6 +335,8 @@ def gate_readiness(project_dirs: list[Path | str]) -> dict[str, Any]:
                 f'python critic_runner.py ir adjudicate "{workspace.root}" '
                 "--summary-only"
             )
+        elif triage_counts["open"]:
+            next_command = f'python critic_runner.py ir review triage "{workspace.root}"'
         elif not plan_ready:
             next_command = f'python critic_runner.py ir revision-plan "{workspace.root}"'
         elif not baseline_available:
@@ -304,6 +358,7 @@ def gate_readiness(project_dirs: list[Path | str]) -> dict[str, Any]:
                 "review_available": findings_available,
                 "model_findings": model_counts,
                 "human_decisions": decision_counts,
+                "status_triage": triage_counts,
                 "revision_plan": plan_ready,
                 "direct_review_baseline": baseline_available,
                 "ready_for_capture": ready,
@@ -321,6 +376,9 @@ def gate_readiness(project_dirs: list[Path | str]) -> dict[str, Any]:
             "open_findings": sum(
                 project["human_decisions"]["open"] for project in projects
             ),
+            "open_status_triage": sum(
+                project["status_triage"]["open"] for project in projects
+            ),
             "duplicate_sources": duplicate_sources,
             "can_capture_corpus": ready_count == len(projects)
             and not duplicate_sources,
@@ -333,6 +391,7 @@ def render_gate_readiness(readiness: dict[str, Any]) -> str:
     for project in readiness["projects"]:
         model = project["model_findings"]
         human = project["human_decisions"]
+        triage = project["status_triage"]
         lines.extend(
             [
                 f"{project['alias']} - {project['title']}",
@@ -341,6 +400,8 @@ def render_gate_readiness(readiness: dict[str, Any]) -> str:
                 f"  Model Findings: {model['fail']} FAIL · {model['uncertain']} UNCERTAIN",
                 f"  Human decisions: {human['accept']} accept · {human['reject']} reject · "
                 f"{human['defer']} defer · {human['open']} open",
+                f"  Status triage: {triage['acknowledge']} acknowledged / "
+                f"{triage['reject']} rejected / {triage['open']} open",
                 f"  Revision plan: {'ready' if project['revision_plan'] else 'missing'}",
                 "  Direct-review baseline: "
                 f"{'ready' if project['direct_review_baseline'] else 'missing'}",
@@ -354,7 +415,8 @@ def render_gate_readiness(readiness: dict[str, Any]) -> str:
     lines.extend(
         [
             f"Summary: {summary['ready_for_capture']}/{summary['projects']} projects ready; "
-            f"{summary['open_findings']} open Findings",
+            f"{summary['open_findings']} open Findings; "
+            f"{summary['open_status_triage']} open status triage items",
             f"Duplicate source bytes: {'yes' if summary['duplicate_sources'] else 'no'}",
             f"Can capture immutable corpus: {'yes' if summary['can_capture_corpus'] else 'no'}",
             "This command does not create an assessment or make a Gate decision.",
@@ -407,9 +469,19 @@ def initialize_gate(
                 snapshot["baseline_bytes"],
             )
         )
+        for triage_index, (_, _, index_bytes) in enumerate(
+            snapshot["triage_indexes"], 1
+        ):
+            parents.append(
+                _parent(
+                    f"status-triage-{index:03d}-{triage_index:03d}",
+                    "review-status-triage-index",
+                    index_bytes,
+                )
+            )
     corpus_id = "GA-" + uuid.uuid4().hex[:12]
     corpus = {
-        "schema_version": 2,
+        "schema_version": 3,
         "artifact": "product-gate-a-corpus",
         "artifact_id": corpus_id,
         "lifecycle": "immutable",
@@ -514,12 +586,15 @@ def append_assessment(
         raise WorkbenchError("at least one non-empty regression anchor is required")
     if len(regression_anchors) != len(set(regression_anchors)):
         raise WorkbenchError("regression anchors must not contain duplicates")
-    snapshot = _project_snapshot(entry["workspace_locator"])
-    if snapshot["bindings"] != entry["bindings"]:
+    snapshot = _project_snapshot(
+        entry["workspace_locator"],
+        require_status_triage=corpus.get("schema_version") == 3,
+    )
+    if not _snapshot_bindings_match(snapshot, entry):
         raise WorkbenchError(f"{project_alias} changed after corpus capture")
     assessment_id = f"AS{len(assessments) + 1:04d}"
     assessment = {
-        "schema_version": 2,
+        "schema_version": 3,
         "artifact": "product-gate-a-assessment",
         "artifact_id": assessment_id,
         "lifecycle": "immutable",
@@ -533,6 +608,16 @@ def append_assessment(
                 "direct-review-baseline",
                 snapshot["baseline_bytes"],
             ),
+            *[
+                _parent(
+                    f"status-triage-{index:03d}",
+                    "review-status-triage-index",
+                    index_bytes,
+                )
+                for index, (_, _, index_bytes) in enumerate(
+                    snapshot["triage_indexes"], 1
+                )
+            ],
         ],
         "corpus_id": corpus["corpus_id"],
         "project_alias": project_alias,
@@ -625,8 +710,11 @@ def _derive_report(
     for index, entry in enumerate(corpus["entries"], 1):
         alias = entry["alias"]
         try:
-            snapshot = _project_snapshot(entry["workspace_locator"])
-            bindings_match = snapshot["bindings"] == entry["bindings"]
+            snapshot = _project_snapshot(
+                entry["workspace_locator"],
+                require_status_triage=corpus.get("schema_version") == 3,
+            )
+            bindings_match = _snapshot_bindings_match(snapshot, entry)
         except (OSError, WorkbenchError) as exc:
             errors.append(f"{alias}: {exc}")
             bindings_match = False
@@ -825,8 +913,11 @@ def verify_gate(gate_dir: Path | str, *, compare_report: bool = True) -> list[st
         alias = entry["alias"]
         project_by_alias[alias] = entry
         try:
-            snapshot = _project_snapshot(entry["workspace_locator"])
-            if snapshot["bindings"] != entry["bindings"]:
+            snapshot = _project_snapshot(
+                entry["workspace_locator"],
+                require_status_triage=corpus.get("schema_version") == 3,
+            )
+            if not _snapshot_bindings_match(snapshot, entry):
                 errors.append(f"{alias}: bound workspace bytes changed")
             if snapshot["project"].get("project_id") != entry["project_id"]:
                 errors.append(f"{alias}: project_id does not match bound Project")
@@ -837,7 +928,7 @@ def verify_gate(gate_dir: Path | str, *, compare_report: bool = True) -> list[st
             expected_parent = _parent(f"project-{index:03d}", "argument-project", snapshot["project_bytes"])
             if expected_parent not in corpus["parents"]:
                 errors.append(f"{alias}: corpus project parent is disconnected")
-            if corpus.get("schema_version") == 2:
+            if corpus.get("schema_version") in {2, 3}:
                 expected_baseline_parent = _parent(
                     f"baseline-{index:03d}",
                     "direct-review-baseline",
@@ -845,6 +936,17 @@ def verify_gate(gate_dir: Path | str, *, compare_report: bool = True) -> list[st
                 )
                 if expected_baseline_parent not in corpus["parents"]:
                     errors.append(f"{alias}: corpus baseline parent is disconnected")
+            if corpus.get("schema_version") == 3:
+                for triage_index, (_, _, index_bytes) in enumerate(
+                    snapshot["triage_indexes"], 1
+                ):
+                    expected_triage_parent = _parent(
+                        f"status-triage-{index:03d}-{triage_index:03d}",
+                        "review-status-triage-index",
+                        index_bytes,
+                    )
+                    if expected_triage_parent not in corpus["parents"]:
+                        errors.append(f"{alias}: corpus status triage parent is disconnected")
         except (OSError, WorkbenchError) as exc:
             errors.append(f"{alias}: {exc}")
     seen_aliases: set[str] = set()
@@ -862,7 +964,10 @@ def verify_gate(gate_dir: Path | str, *, compare_report: bool = True) -> list[st
             errors.append(f"{path.name}: project alias is not in corpus")
             continue
         try:
-            snapshot = _project_snapshot(entry["workspace_locator"])
+            snapshot = _project_snapshot(
+                entry["workspace_locator"],
+                require_status_triage=corpus.get("schema_version") == 3,
+            )
             parents = {parent.get("role"): parent for parent in assessment.get("parents", []) if isinstance(parent, dict)}
             if parents.get("corpus", {}).get("sha256") != sha256_bytes(corpus_bytes):
                 errors.append(f"{path.name}: corpus parent hash is disconnected")
@@ -870,10 +975,19 @@ def verify_gate(gate_dir: Path | str, *, compare_report: bool = True) -> list[st
                 errors.append(f"{path.name}: project parent hash is disconnected")
             if parents.get("revision-plan", {}).get("sha256") != snapshot["bindings"]["revision_plan_record"]:
                 errors.append(f"{path.name}: revision-plan parent hash is disconnected")
-            if assessment.get("schema_version") == 2 and parents.get(
+            if assessment.get("schema_version") in {2, 3} and parents.get(
                 "direct-review-baseline", {}
             ).get("sha256") != snapshot["bindings"]["direct_review_baseline"]:
                 errors.append(f"{path.name}: direct baseline parent hash is disconnected")
+            if assessment.get("schema_version") == 3:
+                for triage_index, (_, _, index_bytes) in enumerate(
+                    snapshot["triage_indexes"], 1
+                ):
+                    role = f"status-triage-{triage_index:03d}"
+                    if parents.get(role, {}).get("sha256") != sha256_bytes(
+                        index_bytes
+                    ):
+                        errors.append(f"{path.name}: {role} parent hash is disconnected")
         except (OSError, WorkbenchError) as exc:
             errors.append(f"{path.name}: {exc}")
     previous_hash: str | None = None

@@ -11,11 +11,12 @@ Every manuscript must complete the same Phase 1–3 path:
 1. preserve one direct full-text chat prompt, raw response, model label, and actual elapsed time before Workbench Findings influence the evaluator;
 2. import the exact source and collect a Raw IR model response;
 3. inspect and correct the IR without editing JSON;
-4. prepare a scoped v2 Rule Review and collect at least one current result;
-5. adjudicate every evaluated FAIL/substantive UNCERTAIN Finding as accept, reject, or defer;
-6. create the revision plan and verify the whole Workbench project.
+4. prepare a scoped v3 Rule Review and collect at least one current result with relation-bound PASS support paths;
+5. acknowledge or reject every non-evaluated execution/routing status through the separate human triage queue;
+6. adjudicate every evaluated FAIL/substantive UNCERTAIN Finding as accept, reject, or defer;
+7. create the revision plan and verify the whole Workbench project.
 
-Collect each comparison with `ir gate-a baseline PROJECT --prompt-file ... --response-file ... --model-label ... --started-at ... --completed-at ...`. Then run `ir gate-a readiness PROJECT...`. Readiness reports model Findings separately from human decisions and checks baseline presence without creating an assessment or Gate decision. `ir gate-a init` refuses missing baselines, duplicate sources, invalid workspaces, missing revision plans, and open Findings. The resulting corpus is immutable.
+Collect each comparison with `ir gate-a baseline PROJECT --prompt-file ... --response-file ... --model-label ... --started-at ... --completed-at ...`. Then run `ir gate-a readiness PROJECT...`. Readiness reports model Findings, Finding adjudications, and execution-status triage separately, and checks baseline presence without creating an assessment or Gate decision. `ir gate-a init` refuses missing baselines, duplicate sources, invalid workspaces, missing revision plans, open Findings, or open triage items. The resulting corpus is immutable and binds the exact triage indexes.
 
 ## Engineering regression corpus
 
@@ -76,6 +77,6 @@ The first full Rule Review plan produced 704 tasks; the first core plan still pr
 
 These legacy v1 verdicts are model-derived proposals, not accepted criticism. Their 200 PASS outcomes predate `basis_refs`/`support_refs` and the explicit evidence policies, so they remain reproducible historical artifacts but cannot establish strong PASS evidence. No IR correction, Finding adjudication, revision action, direct baseline, usability assessment, or Gate decision has been attributed to a human. Product Gate A remains incomplete, and Phase 4 remains blocked.
 
-The convergence iteration addresses the observed cost directly: daily review now defaults to the thesis support chain rather than all Claims; PASS evidence follows per-check policy; execution/routing failures are separated from substantive uncertainty; and Gate comparisons bind an immutable direct-chat baseline. The five engineering projects should be rerun with v2 only as a regression smoke test. The actual Product Gate corpus must instead include three author-owned manuscripts that will receive real corrections, adjudications, RevisionActions, and later revisions.
+The convergence iterations address the observed cost and audit gaps directly: daily review defaults to the thesis support chain rather than all Claims; v3 PASS evidence binds an allowed directed relation path; execution/routing states enter a separate append-only human triage queue; and Gate comparisons bind an immutable direct-chat baseline plus the resulting triage indexes. The five engineering projects should be rerun with v3 only as a regression smoke test. The actual Product Gate corpus must instead include three author-owned manuscripts that will receive real corrections, triage decisions, adjudications, RevisionActions, and later revisions.
 
 A read-only v2 plan dry-run on the existing model-refined IRs selected 61 of 66 Claims and 294 core tasks, versus 316 under `scope=all` (P01 75/81, P02 54/54, P03 59/59, P04 75/75, P05 31/47). This is only a modest reduction because the extractor labeled 37 of 66 Claims as `intermediate`, and most premises are connected to a conclusion chain. Scope is now controllable and P05 benefits materially, but the dry-run does not show that the default queue is yet affordable. Human role correction and explicit `claim/claims` scoping must be measured in the author-owned Gate corpus rather than hidden by another automatic heuristic.

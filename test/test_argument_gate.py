@@ -19,6 +19,7 @@ import argument_contracts as contracts  # noqa: E402
 import argument_gate as gate  # noqa: E402
 import argument_ir  # noqa: E402
 import argument_review as review  # noqa: E402
+import argument_triage as triage  # noqa: E402
 import argument_workbench as workbench  # noqa: E402
 import critic_runner  # noqa: E402
 
@@ -35,6 +36,7 @@ class ArgumentGateTests(unittest.TestCase):
         *,
         open_finding: bool = False,
         with_baseline: bool = True,
+        routing_mismatch: bool = False,
     ) -> workbench.WorkspacePaths:
         source = root / f"真实稿件-{number}.md"
         source_bytes = (FIXTURE / "manuscript.md").read_bytes() + (
@@ -62,7 +64,7 @@ class ArgumentGateTests(unittest.TestCase):
         review_paths, _ = review.prepare_rule_review(workspace.root, RULES, depth="core")
         plan = json.loads(review_paths.plan.read_text(encoding="utf-8"))
         results = {
-            "schema_version": 2,
+            "schema_version": plan["schema_version"],
             "artifact": "argument-check-results",
             "source": {"plan_sha256": contracts.sha256_bytes(review_paths.plan.read_bytes())},
             "status": "complete",
@@ -82,21 +84,35 @@ class ArgumentGateTests(unittest.TestCase):
             for item in argument[field]
         }
         for index, task in enumerate(plan["tasks"]):
+            if routing_mismatch and index == 0:
+                results["results"].append(
+                    {
+                        "task_id": task["id"],
+                        "execution_status": "routing_mismatch",
+                        "verdict": None,
+                        "reason": "The extracted method routes this check incorrectly.",
+                        "basis_refs": [task["claim_id"]],
+                        "support_refs": [],
+                        "support_paths": [],
+                        "consequence": "",
+                    }
+                )
+                continue
             verdict = "fail" if open_finding and index == 0 else "pass"
             policy = check_by_id[task["check_id"]]["evidence_policy"]
-            context = argument_ir._context_node_ids(argument, task["claim_id"])
+            eligible_paths = argument_ir._eligible_pass_support_paths(
+                argument, task["claim_id"]
+            )
             support_refs = []
             if verdict == "pass" and policy == "upstream-required":
                 support_refs = [
-                    next(
-                        ref for ref in sorted(context) if ref != task["claim_id"]
-                    )
+                    next(iter(eligible_paths))
                 ]
             elif verdict == "pass" and policy == "citation-required":
                 support_refs = [
                     next(
                         ref
-                        for ref in sorted(context)
+                        for ref in eligible_paths
                         if node_kinds.get(ref) == "citation"
                     )
                 ]
@@ -108,6 +124,13 @@ class ArgumentGateTests(unittest.TestCase):
                     "reason": "The evaluator found a test outcome for this workflow.",
                     "basis_refs": [task["claim_id"], *support_refs],
                     "support_refs": support_refs,
+                    "support_paths": [
+                        {
+                            "support_ref": ref,
+                            "relation_ids": eligible_paths[ref],
+                        }
+                        for ref in support_refs
+                    ],
                     "consequence": "Revise this Claim." if verdict == "fail" else "",
                 }
             )
@@ -217,6 +240,37 @@ class ArgumentGateTests(unittest.TestCase):
             with self.assertRaisesRegex(workbench.WorkbenchError, "no direct-review"):
                 gate.initialize_gate(root / "missing.product-gate-a", projects)
 
+    def test_readiness_requires_human_triage_for_non_evaluated_statuses(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            projects = [
+                self.completed_project(root, 1).root,
+                self.completed_project(root, 2).root,
+                self.completed_project(root, 3, routing_mismatch=True).root,
+            ]
+            readiness = gate.gate_readiness(projects)
+            blocked = readiness["projects"][2]
+            self.assertEqual(blocked["status_triage"]["open"], 1)
+            self.assertIn("ir review triage", blocked["next_command"])
+            with self.assertRaisesRegex(workbench.WorkbenchError, "human triage"):
+                gate.initialize_gate(root / "untriaged.product-gate-a", projects)
+
+            _, _, items = triage.triage_items_for_review(projects[2])
+            triage.append_status_triage(
+                projects[2],
+                task_id=items[0].task_id,
+                decision="acknowledge",
+                action="correct_ir",
+                note="Record the routing issue for correction and rerun it before use.",
+            )
+            readiness = gate.gate_readiness(projects)
+            self.assertEqual(readiness["projects"][2]["status_triage"]["open"], 0)
+            self.assertEqual(readiness["summary"]["ready_for_capture"], 3)
+            paths = gate.initialize_gate(root / "triaged.product-gate-a", projects)
+            corpus = json.loads(paths.corpus.read_text(encoding="utf-8"))
+            self.assertEqual(len(corpus["entries"][2]["bindings"]["status_triage"]), 1)
+            self.assertEqual(gate.verify_gate(paths.root), [])
+
     def test_gate_rejects_a_baseline_captured_after_workbench_review(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -246,13 +300,16 @@ class ArgumentGateTests(unittest.TestCase):
             paths = gate.initialize_gate(root / "evidence.product-gate-a", projects)
             self.assertEqual(gate.verify_gate(paths.root), [])
             corpus = json.loads(paths.corpus.read_text(encoding="utf-8"))
-            self.assertEqual(corpus["schema_version"], 2)
+            self.assertEqual(corpus["schema_version"], 3)
             self.assertEqual(len(corpus["entries"]), 3)
             self.assertTrue(
                 all(
                     "direct_review_baseline" in entry["bindings"]
                     for entry in corpus["entries"]
                 )
+            )
+            self.assertTrue(
+                all("status_triage" in entry["bindings"] for entry in corpus["entries"])
             )
             self.assertEqual(
                 sum(
@@ -286,7 +343,7 @@ class ArgumentGateTests(unittest.TestCase):
                 )
                 self.assertEqual(output.name, f"AS{index:04d}.json")
                 assessment = json.loads(output.read_text(encoding="utf-8"))
-                self.assertEqual(assessment["schema_version"], 2)
+                self.assertEqual(assessment["schema_version"], 3)
                 self.assertIn(
                     "direct-review-baseline",
                     {parent["role"] for parent in assessment["parents"]},

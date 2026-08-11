@@ -1,8 +1,8 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "artifact": "argument-check-results",
   "source": {
-    "plan_sha256": "f849a39c7b15e3a40aa5d23f8468a218afb2079e8e0a40df2d6aeca779b4f4ae"
+    "plan_sha256": "37906f554304e32c7160c84a7304a9b2827b7e141ff4b3ba56d3af9036d29727"
   },
   "status": "complete",
   "unverified": [],
@@ -14,6 +14,7 @@
       "reason": "The manuscript supplies a concrete observation for the main descriptive Claim.",
       "basis_refs": ["C1", "E2"],
       "support_refs": ["E2"],
+      "support_paths": [{"support_ref": "E2", "relation_ids": ["R2"]}],
       "consequence": ""
     },
     {
@@ -23,6 +24,7 @@
       "reason": "The scope under review is identifiable from the stated public cases.",
       "basis_refs": ["C1", "E2"],
       "support_refs": ["E2"],
+      "support_paths": [{"support_ref": "E2", "relation_ids": ["R2"]}],
       "consequence": ""
     },
     {
@@ -32,6 +34,7 @@
       "reason": "The observed shift from rules to a visible actor is described concretely.",
       "basis_refs": ["C1", "E2"],
       "support_refs": ["E2"],
+      "support_paths": [{"support_ref": "E2", "relation_ids": ["R2"]}],
       "consequence": ""
     },
     {
@@ -41,6 +44,7 @@
       "reason": "The manuscript identifies the cases used for this local observation.",
       "basis_refs": ["C1", "E2"],
       "support_refs": ["E2"],
+      "support_paths": [{"support_ref": "E2", "relation_ids": ["R2"]}],
       "consequence": ""
     },
     {
@@ -50,6 +54,7 @@
       "reason": "All three cited cases are positive cases; there is no comparison denominator for the word 'always'.",
       "basis_refs": ["C1", "E1", "E2"],
       "support_refs": [],
+      "support_paths": [],
       "consequence": "The universal wording exceeds what the selected cases can establish and should be narrowed or compared against negative cases."
     },
     {
@@ -59,6 +64,7 @@
       "reason": "The conceptual definition is explicitly stated in the manuscript.",
       "basis_refs": ["C2", "E1"],
       "support_refs": ["E1"],
+      "support_paths": [{"support_ref": "E1", "relation_ids": ["R1"]}],
       "consequence": ""
     },
     {
@@ -68,6 +74,7 @@
       "reason": "The definition is presented for the argument's local use rather than as a universal taxonomy.",
       "basis_refs": ["C2", "E1"],
       "support_refs": ["E1"],
+      "support_paths": [{"support_ref": "E1", "relation_ids": ["R1"]}],
       "consequence": ""
     },
     {
@@ -77,6 +84,7 @@
       "reason": "The definition distinguishes an individual bearer of blame from the institutional allocation being displaced.",
       "basis_refs": ["C2"],
       "support_refs": [],
+      "support_paths": [],
       "consequence": ""
     },
     {
@@ -86,6 +94,7 @@
       "reason": "The Claim keeps the individual and institutional levels distinct in its wording.",
       "basis_refs": ["C2"],
       "support_refs": [],
+      "support_paths": [],
       "consequence": ""
     },
     {
@@ -95,6 +104,7 @@
       "reason": "The interpretive conclusion is connected to the preceding descriptive and conceptual Claims.",
       "basis_refs": ["C3", "C1"],
       "support_refs": ["C1"],
+      "support_paths": [{"support_ref": "C1", "relation_ids": ["R6"]}],
       "consequence": ""
     },
     {
@@ -104,6 +114,7 @@
       "reason": "The conclusion is framed as a risk in analyzing public controversy, not as a claim about every inquiry.",
       "basis_refs": ["C3", "C1"],
       "support_refs": ["C1"],
+      "support_paths": [{"support_ref": "C1", "relation_ids": ["R6"]}],
       "consequence": ""
     },
     {
@@ -113,6 +124,7 @@
       "reason": "The relevant context is the manuscript's account of public controversy and institutional responsibility.",
       "basis_refs": ["C3", "Z1"],
       "support_refs": ["Z1"],
+      "support_paths": [{"support_ref": "Z1", "relation_ids": ["R5", "R3", "R6"]}],
       "consequence": ""
     },
     {
@@ -122,6 +134,7 @@
       "reason": "The extracted IR does not contain enough material to distinguish the institutional-responsibility reading from a rival reading centered on ordinary personal accountability.",
       "basis_refs": ["C3", "C1"],
       "support_refs": [],
+      "support_paths": [],
       "consequence": "A competing interpretation remains open and should be addressed explicitly."
     }
   ]

@@ -60,6 +60,12 @@ from argument_adjudication import (
     run_adjudicator as run_workbench_adjudicator,
 )
 from argument_baseline import collect_direct_review_baseline
+from argument_triage import (
+    append_status_triage,
+    rebuild_status_triages,
+    render_status_triage,
+    triage_items_for_review,
+)
 from argument_gate import (
     METRIC_KEYS as GATE_A_METRIC_KEYS,
     append_assessment as append_gate_a_assessment,
@@ -3055,17 +3061,20 @@ def ir_inspect_command(args: argparse.Namespace) -> int:
 def ir_rebuild_command(args: argparse.Namespace) -> int:
     map_path, changed = rebuild_workspace(args.project)
     review_outputs, reviews_changed = rebuild_reviews(args.project)
+    triage_outputs, triage_changed = rebuild_status_triages(args.project)
     adjudication_outputs, adjudications_changed = rebuild_adjudication_cache(
         args.project
     )
     print(f"Argument map: {map_path}")
     for output in review_outputs:
         print(f"Claim review: {output}")
+    for output in triage_outputs:
+        print(f"Status triage: {output}")
     for output in adjudication_outputs:
         print(f"Revision plan: {output}")
     print(
         "Derived artifacts rebuilt."
-        if changed or reviews_changed or adjudications_changed
+        if changed or reviews_changed or triage_changed or adjudications_changed
         else "Derived artifacts already current."
     )
     return 0
@@ -3170,6 +3179,31 @@ def ir_review_show_command(args: argparse.Namespace) -> int:
     )
     print(rendered, end="" if rendered.endswith("\n") else "\n")
     print(f"Full claim review: {view_path}")
+    return 0
+
+
+def ir_review_triage_command(args: argparse.Namespace) -> int:
+    mutation_values = (args.task, args.decision, args.action, args.note)
+    if any(value is not None for value in mutation_values):
+        if not all(value is not None for value in mutation_values):
+            raise WorkbenchError(
+                "status triage mutation requires --task, --decision, --action, and --note"
+            )
+        output = append_status_triage(
+            args.project,
+            review_id=args.review_id,
+            task_id=args.task,
+            decision=args.decision,
+            action=args.action,
+            note=args.note,
+            producer=args.producer_label or "local-user",
+        )
+        print(f"Status triage event: {output}")
+    review, attempt_id, items = triage_items_for_review(
+        args.project, review_id=args.review_id
+    )
+    print(render_status_triage(items), end="")
+    print(f"Review status queue: {review.review_id}/{attempt_id}")
     return 0
 
 
@@ -4288,6 +4322,42 @@ def parser() -> argparse.ArgumentParser:
         help="Claim ID such as C4 or V1:C4 (default: show all reviewed Claims)",
     )
     ir_review_show_parser.set_defaults(func=ir_review_show_command)
+
+    ir_review_triage_parser = ir_review_sub.add_parser(
+        "triage",
+        help="acknowledge or reject non-substantive model execution statuses",
+    )
+    ir_review_triage_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    ir_review_triage_parser.add_argument(
+        "--review-id",
+        help="Rule Review ID (default: most recent review with valid results)",
+    )
+    ir_review_triage_parser.add_argument(
+        "--task", help="non-evaluated task ID such as T4"
+    )
+    ir_review_triage_parser.add_argument(
+        "--decision", choices=("acknowledge", "reject")
+    )
+    ir_review_triage_parser.add_argument(
+        "--action",
+        choices=(
+            "correct_ir",
+            "add_context",
+            "add_evidence",
+            "acknowledge_not_applicable",
+            "rerun_review",
+            "other",
+        ),
+    )
+    ir_review_triage_parser.add_argument(
+        "--note", help="required human explanation for a triage decision"
+    )
+    ir_review_triage_parser.add_argument(
+        "--producer-label", help="human evaluator label for provenance"
+    )
+    ir_review_triage_parser.set_defaults(func=ir_review_triage_command)
 
     ir_adjudicate_parser = ir_sub.add_parser(
         "adjudicate",

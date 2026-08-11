@@ -15,7 +15,7 @@ Every Workbench JSON artifact has `schema_version`, `artifact`, `artifact_id`, `
 Lifecycle values are:
 
 - `immutable`: never replaced; a later judgment is a new artifact.
-- `append-only`: correction history only grows through new events.
+- `append-only`: correction or human-triage history only grows through new events.
 - `derived-replaceable`: a cache that may be atomically replaced only by reproducing it from immutable parents.
 
 Parent hashes always cover the exact file bytes on disk. Artifact objects do not contain a self-hash. Workbench-owned parents must be present in a validated Workbench bundle; existing external contracts such as `argument-ir` and `argument-check-results` remain under their existing validators and are rechecked by the application command that consumes the bundle.
@@ -33,6 +33,8 @@ Parent hashes always cover the exact file bytes on disk. Artifact objects do not
 | `rule-review-run` | immutable | One Reviewed IR snapshot, Rule Lens library, deterministic check plan, and execution prompt |
 | `review-result-attempt` | immutable | One exact model response to a Rule Review plan and its reproducible validation outcome |
 | `claim-review-index` | derived-replaceable | Claim-grouped substantive verdicts and auditable execution/routing states plus exact links to actionable Findings |
+| `review-status-triage` | append-only | One human acknowledgement or rejection of a model-proposed non-evaluated status, with an explicit follow-up action |
+| `review-status-triage-index` | derived-replaceable | Reproducible open/acknowledged/rejected execution-status queue binding every triage event |
 | `direct-review-baseline` | immutable | Exact direct-chat prompt/response, manuscript binding, model label, and elapsed-time evidence for Gate A comparison |
 | `argument-finding` | immutable | One lens/check verdict attached to a version-qualified Claim; initial status is only `open` |
 | `finding-adjudication` | immutable | Human `accept`, `reject`, or `defer`; later changes use `supersedes` |
@@ -63,11 +65,13 @@ Deleting a node deterministically removes its incident relations from the review
 
 ## Rule Review provenance
 
-`rule-review-run` is self-contained. It snapshots the exact Reviewed IR record, compatible Argument IR v1 payload, and check-library bytes used to generate its plan. Plan v2 records a review scope independently of check depth: `thesis-chain` deterministically selects conclusion/intermediate Claims and their upstream support chain, `claim`/`claims` target explicit IDs, and `all` is a full audit. The run binds its inputs as parents and records exact hashes for the plan and prompt.
+`rule-review-run` is self-contained. It snapshots the exact Reviewed IR record, compatible Argument IR v1 payload, and check-library bytes used to generate its plan. Plan v2+ records a review scope independently of check depth: `thesis-chain` deterministically selects conclusion/intermediate Claims and their upstream support chain, `claim`/`claims` target explicit IDs, and `all` is a full audit. The run binds its inputs as parents and records exact hashes for the plan and prompt.
 
 Every collected model response is an immutable `review-result-attempt`, including invalid JSON and results that fail the existing plan-bound validator. Only a valid attempt can produce derived review artifacts. The original response remains the semantic source; no application code silently changes verdicts, reasons, or evidence references.
 
-Result v2 first records `execution_status`. Only `evaluated` tasks may carry `pass`, `fail`, or substantive `uncertain`; `blocked_missing_context`, `routing_mismatch`, and `not_applicable` require a reason and basis but no verdict. They remain visible in the index and do not become revision Findings. `basis_refs` records what the model inspected. `support_refs` has the narrower meaning of evidence supporting PASS: `upstream-required` rejects a target Claim citing only itself, while `citation-required` requires an upstream Citation. Legacy v1 plans/results remain byte-verifiable but do not gain these stronger semantics retroactively.
+Result v2 first records `execution_status`. Only `evaluated` tasks may carry `pass`, `fail`, or substantive `uncertain`; `blocked_missing_context`, `routing_mismatch`, and `not_applicable` require a reason and basis but no verdict. Result v3 additionally requires one `support_paths` entry for every PASS `support_ref`. Its relation IDs must form a directed path from that node to the target Claim and may use only `supports`, `qualifies`, and `cites`; `contradicts` and `assumes` are context, not PASS support. A citation-required path starts from a Citation through `cites`. Legacy v1/v2 plans and results remain byte-verifiable but do not gain stronger semantics retroactively.
+
+Non-evaluated statuses never become manuscript Findings, but they no longer disappear from human workflow. Each current status remains open until a `review-status-triage` event acknowledges or rejects it. Routing mismatches point to IR correction/rerun actions, missing context points to context/evidence actions, and not-applicable requires explicit acknowledgement or rejection. Reconsideration appends another event binding the prior event; the derived triage index binds the entire exact-byte history. Open triage blocks Gate capture.
 
 For valid evaluated results, each FAIL or substantive UNCERTAIN becomes an immutable `argument-finding` with a version-qualified `target_claim`, Rule Lens/check identity, `status=open`, and exact parents for the target IR and model result. PASS and non-evaluated statuses remain visible without creating actionable Findings. Deterministic packaging never turns model judgments into deterministic facts.
 
@@ -83,9 +87,9 @@ Each `finding-adjudication` binds the exact Finding bytes. Reconsidering a Findi
 
 Gate A is an Evaluation/Advanced lifecycle that blocks Phase 4 until real usage evidence exists. Before comparison, each project collects a `direct-review-baseline`: the exact full-text chat prompt and raw response bytes, human-supplied model label, source binding, and start/completion timestamps. Elapsed milliseconds are deterministic. Gate capture rejects a baseline completed after the first valid Workbench Rule Review result, because it would no longer be an uncontaminated comparison. The artifact makes no clearer/same/worse judgment.
 
-A v2 corpus binds 3–5 distinct source hashes and the exact Project, DocumentVersion, Reviewed IR, Revision Plan, and direct baseline bytes for each local workspace. It stores local locators and hashes but never copies manuscript bytes into the Gate directory. Legacy v1 Gate evidence remains verifiable.
+A v3 corpus binds 3–5 distinct source hashes and the exact Project, DocumentVersion, Reviewed IR, Revision Plan, direct baseline, and every current status-triage index for each local workspace. It stores local locators and hashes but never copies manuscript bytes into the Gate directory. Legacy v1/v2 Gate evidence remains verifiable.
 
-Each v2 assessment is `human-confirmed` and binds its corpus, Project, Revision Plan, and direct baseline. It records the human comparison, correction burden and minutes, extraction-error counts, at least one regression anchor, optional actual-revision notes, and free text. These observations are not inferred automatically.
+Each v3 assessment is `human-confirmed` and binds its corpus, Project, Revision Plan, direct baseline, and status-triage indexes. It records the human comparison, correction burden and minutes, extraction-error counts, at least one regression anchor, optional actual-revision notes, and free text. These observations are not inferred automatically.
 
 The report is deterministic and replaceable. It exposes workflow completeness, open/accepted/rejected/deferred Finding counts, correction events, extraction traps, regression anchors, and human cost without reducing them to a score. The application refuses a human `pass` decision until all 3–5 bound workflows remain valid, no Finding is open, and every project has an assessment. Even then the program only establishes readiness: the gate decision and reason must be entered by a human. Later decisions append a new artifact with `supersedes`.
 

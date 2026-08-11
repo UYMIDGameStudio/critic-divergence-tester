@@ -64,6 +64,7 @@ jobs:
           python critic_runner.py ir review prepare --help
           python critic_runner.py ir review collect --help
           python critic_runner.py ir review show --help
+          python critic_runner.py ir review triage --help
           python critic_runner.py ir adjudicate --help
           python critic_runner.py ir revision-plan --help
           python critic_runner.py ir gate-a init --help

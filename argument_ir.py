@@ -12,12 +12,12 @@ from typing import Any
 ARGUMENT_IR_SCHEMA_VERSION = 1
 IR_EXTRACTION_PROTOCOL_VERSION = 2
 SUPPORTED_IR_EXTRACTION_PROTOCOL_VERSIONS = (1, 2)
-CHECK_LIBRARY_SCHEMA_VERSION = 2
-SUPPORTED_CHECK_LIBRARY_SCHEMA_VERSIONS = (1, 2)
-CHECK_PLAN_SCHEMA_VERSION = 2
-SUPPORTED_CHECK_PLAN_SCHEMA_VERSIONS = (1, 2)
-CHECK_RESULTS_SCHEMA_VERSION = 2
-SUPPORTED_CHECK_RESULTS_SCHEMA_VERSIONS = (1, 2)
+CHECK_LIBRARY_SCHEMA_VERSION = 3
+SUPPORTED_CHECK_LIBRARY_SCHEMA_VERSIONS = (1, 2, 3)
+CHECK_PLAN_SCHEMA_VERSION = 3
+SUPPORTED_CHECK_PLAN_SCHEMA_VERSIONS = (1, 2, 3)
+CHECK_RESULTS_SCHEMA_VERSION = 3
+SUPPORTED_CHECK_RESULTS_SCHEMA_VERSIONS = (1, 2, 3)
 ARGUMENT_FINDINGS_SCHEMA_VERSION = 1
 
 CLAIM_TYPES = (
@@ -138,6 +138,9 @@ RESULT_KEYS = {
     "support_refs",
     "consequence",
 }
+RESULT_KEYS_V3 = RESULT_KEYS | {"support_paths"}
+SUPPORT_PATH_KEYS = {"support_ref", "relation_ids"}
+PASS_SUPPORT_RELATION_TYPES = {"supports", "qualifies", "cites"}
 FINDING_EVIDENCE_KEYS = {
     "node_id",
     "node_kind",
@@ -550,7 +553,7 @@ def validate_check_library(value: object) -> list[str]:
         errors.append("check library must contain exactly the v1 fields")
     schema_version = value.get("schema_version")
     if schema_version not in SUPPORTED_CHECK_LIBRARY_SCHEMA_VERSIONS:
-        errors.append("check library schema_version must be 1 or 2")
+        errors.append("check library schema_version must be 1, 2, or 3")
     if value.get("artifact") != "argument-check-library":
         errors.append("check library artifact must be argument-check-library")
     if value.get("scope") != "social-science":
@@ -569,7 +572,7 @@ def validate_check_library(value: object) -> list[str]:
         if not isinstance(check, dict):
             errors.append(f"{label} must be an object")
             continue
-        expected_check_keys = CHECK_KEYS if schema_version == 2 else CHECK_KEYS_V1
+        expected_check_keys = CHECK_KEYS if schema_version in {2, 3} else CHECK_KEYS_V1
         if set(check) != expected_check_keys:
             errors.append(
                 f"{label} must contain exactly the v{schema_version} check fields"
@@ -612,7 +615,7 @@ def validate_check_library(value: object) -> list[str]:
             allowed=REQUIRED_CONTEXT_VALUES,
             allow_empty=False,
         )
-        if schema_version == 2 and check.get("evidence_policy") not in EVIDENCE_POLICIES:
+        if schema_version in {2, 3} and check.get("evidence_policy") not in EVIDENCE_POLICIES:
             errors.append(
                 f"{label}.evidence_policy must be one of {EVIDENCE_POLICIES}"
             )
@@ -775,7 +778,7 @@ def build_check_plan(
         ],
         "tasks": tasks,
     }
-    if library_version == 2:
+    if library_version in {2, 3}:
         plan["review_scope"] = {
             "kind": review_scope,
             "claim_ids": requested_claim_ids,
@@ -798,12 +801,12 @@ def validate_check_plan(value: object) -> list[str]:
         "checks",
         "tasks",
     }
-    if schema_version == 2:
+    if schema_version in {2, 3}:
         expected_keys.add("review_scope")
     if set(value) != expected_keys:
         errors.append(f"check plan must contain exactly the v{schema_version} fields")
     if schema_version not in SUPPORTED_CHECK_PLAN_SCHEMA_VERSIONS:
-        errors.append("check plan schema_version must be 1 or 2")
+        errors.append("check plan schema_version must be 1, 2, or 3")
     if value.get("artifact") != "argument-check-plan":
         errors.append("check plan artifact must be argument-check-plan")
     if value.get("depth") not in CHECK_DEPTHS:
@@ -876,7 +879,7 @@ def validate_check_plan(value: object) -> list[str]:
     selected_claim_ids = [
         str(claim.get("id")) for claim in claims if isinstance(claim, dict)
     ]
-    if schema_version == 2:
+    if schema_version in {2, 3}:
         scope = value.get("review_scope")
         if not isinstance(scope, dict) or set(scope) != {
             "kind",
@@ -1011,12 +1014,12 @@ def validate_check_plan_against_library(
         depth=plan["depth"],
         review_scope=(
             str(plan["review_scope"]["kind"])
-            if plan.get("schema_version") == 2
+            if plan.get("schema_version") in {2, 3}
             else "all"
         ),
         claim_ids=(
             list(plan["review_scope"]["claim_ids"])
-            if plan.get("schema_version") == 2
+            if plan.get("schema_version") in {2, 3}
             else []
         ),
     )
@@ -1035,6 +1038,40 @@ def render_check_prompt(plan: object, *, plan_sha256: str) -> str:
         raise ArgumentIRError("; ".join(errors))
     assert isinstance(plan, dict)
     plan_json = json.dumps(plan, ensure_ascii=False, indent=2)
+    if plan["schema_version"] == 3:
+        return (
+            "# Argument IR directed review v3\n\n"
+            "Return exactly one result for every task, in task order. Do not add, "
+            "remove, merge, or reorder tasks. The program has already fixed the "
+            "review scope.\n\n"
+            "First choose execution_status. Use evaluated only when the check applies "
+            "and the supplied IR has enough context. Otherwise use "
+            "blocked_missing_context, routing_mismatch, or not_applicable, give a "
+            "specific reason and basis_refs, set verdict to null, and leave "
+            "support_refs/support_paths empty. These statuses are audited and require "
+            "human triage.\n\n"
+            "For evaluated tasks, verdict is pass, fail, or uncertain. basis_refs are "
+            "the IR nodes used to judge the task and may include the target Claim. "
+            "support_refs are independent nodes that actually support PASS. Every "
+            "support_ref must have one support_paths entry whose relation_ids form a "
+            "directed path from that node to the target Claim. Only supports, qualifies, "
+            "and cites relations may occur on a PASS support path; contradicts and "
+            "assumes never establish PASS support. citation-required checks need a "
+            "Citation support_ref whose path begins with cites. fail/uncertain must "
+            "leave support_refs/support_paths empty. Use only the supplied IR.\n\n"
+            "Use top-level status=complete only when every task is present; otherwise "
+            "use partial and explain omitted work in unverified. Output pure JSON:\n\n"
+            '{"schema_version":3,"artifact":"argument-check-results",'
+            f'"source":{{"plan_sha256":"{plan_sha256}"}},'
+            '"status":"complete","unverified":[],"results":['
+            '{"task_id":"T1","execution_status":"evaluated",'
+            '"verdict":"pass|fail|uncertain|null","reason":"...",'
+            '"basis_refs":["C1"],"support_refs":["E1"],'
+            '"support_paths":[{"support_ref":"E1","relation_ids":["R1"]}],'
+            '"consequence":"required for fail/uncertain; otherwise empty"}]}\n\n'
+            "# Check plan\n\n"
+            f"{plan_json}\n"
+        )
     if plan["schema_version"] == 2:
         return (
             "# Argument IR 定向审查 v2\n\n"
@@ -1098,6 +1135,30 @@ def _context_node_ids(ir: dict[str, Any], claim_id: str) -> set[str]:
     return reachable
 
 
+def _eligible_pass_support_paths(
+    ir: dict[str, Any], claim_id: str
+) -> dict[str, list[str]]:
+    """Return deterministic directed support paths keyed by upstream node ID."""
+    paths: dict[str, list[str]] = {claim_id: []}
+    frontier = [claim_id]
+    while frontier:
+        target = frontier.pop(0)
+        suffix = paths[target]
+        for relation in ir["relations"]:
+            if (
+                relation["type"] not in PASS_SUPPORT_RELATION_TYPES
+                or relation["to"] != target
+            ):
+                continue
+            source = str(relation["from"])
+            if source in paths:
+                continue
+            paths[source] = [str(relation["id"]), *suffix]
+            frontier.append(source)
+    paths.pop(claim_id, None)
+    return paths
+
+
 def validate_check_results(
     value: object,
     plan: object,
@@ -1122,7 +1183,7 @@ def validate_check_results(
     }:
         errors.append("check results must contain exactly the result envelope fields")
     if schema_version not in SUPPORTED_CHECK_RESULTS_SCHEMA_VERSIONS:
-        errors.append("check results schema_version must be 1 or 2")
+        errors.append("check results schema_version must be 1, 2, or 3")
     elif isinstance(plan, dict) and schema_version != plan.get("schema_version"):
         errors.append("check results schema_version must match the check plan")
     if value.get("artifact") != "argument-check-results":
@@ -1157,6 +1218,11 @@ def validate_check_results(
     }
     argument = plan["argument_ir"]
     nodes = _node_registry(argument)
+    relation_by_id = {
+        relation["id"]: relation
+        for relation in argument["relations"]
+        if isinstance(relation, dict) and isinstance(relation.get("id"), str)
+    }
     check_by_id = {check["id"]: check for check in plan["checks"]}
     allowed_refs_by_claim = {
         claim["id"]: _context_node_ids(argument, claim["id"])
@@ -1169,7 +1235,13 @@ def validate_check_results(
         if not isinstance(result, dict):
             errors.append(f"{label} must be an object")
             continue
-        expected_result_keys = RESULT_KEYS if schema_version == 2 else RESULT_KEYS_V1
+        expected_result_keys = (
+            RESULT_KEYS_V3
+            if schema_version == 3
+            else RESULT_KEYS
+            if schema_version == 2
+            else RESULT_KEYS_V1
+        )
         if set(result) != expected_result_keys:
             errors.append(
                 f"{label} must contain exactly the v{schema_version} result fields"
@@ -1232,6 +1304,21 @@ def validate_check_results(
                 errors.append(
                     f"{label}.support_refs is reserved for evidence supporting PASS"
                 )
+        support_paths: list[object] = []
+        if schema_version == 3:
+            raw_support_paths = result.get("support_paths")
+            if not isinstance(raw_support_paths, list):
+                errors.append(f"{label}.support_paths must be an array")
+            else:
+                support_paths = raw_support_paths
+            if execution_status != "evaluated" and support_paths:
+                errors.append(
+                    f"{label}.support_paths must be empty when the check is not evaluated"
+                )
+            if execution_status == "evaluated" and verdict != "pass" and support_paths:
+                errors.append(
+                    f"{label}.support_paths is reserved for evidence supporting PASS"
+                )
         if not isinstance(consequence, str):
             errors.append(f"{label}.consequence must be a string")
         elif execution_status == "evaluated" and verdict in {"fail", "uncertain"}:
@@ -1252,7 +1339,7 @@ def validate_check_results(
                 errors.append(
                     f"{label} contains nodes outside the claim context: {unknown_refs}"
                 )
-            if schema_version == 2 and execution_status == "evaluated" and verdict == "pass":
+            if schema_version in {2, 3} and execution_status == "evaluated" and verdict == "pass":
                 check = check_by_id.get(task["check_id"], {})
                 policy = check.get("evidence_policy")
                 if task["claim_id"] in support_refs:
@@ -1278,6 +1365,72 @@ def validate_check_results(
                     ):
                         errors.append(
                             f"{label}.support_refs requires a Citation for this check"
+                        )
+                if schema_version == 3:
+                    path_refs: list[object] = []
+                    for path_index, support_path in enumerate(support_paths):
+                        path_label = f"{label}.support_paths[{path_index}]"
+                        if not isinstance(support_path, dict):
+                            errors.append(f"{path_label} must be an object")
+                            continue
+                        if set(support_path) != SUPPORT_PATH_KEYS:
+                            errors.append(
+                                f"{path_label} must contain support_ref and relation_ids"
+                            )
+                        support_ref = support_path.get("support_ref")
+                        path_refs.append(support_ref)
+                        if not _nonempty_string(support_ref):
+                            errors.append(f"{path_label}.support_ref must be non-empty")
+                        relation_ids = _validate_string_list(
+                            support_path.get("relation_ids"),
+                            f"{path_label}.relation_ids",
+                            errors,
+                            allow_empty=False,
+                        )
+                        current = support_ref
+                        used: set[str] = set()
+                        first_relation_type: str | None = None
+                        for relation_id in relation_ids:
+                            relation = relation_by_id.get(relation_id)
+                            if relation is None:
+                                errors.append(
+                                    f"{path_label} references unknown relation: {relation_id!r}"
+                                )
+                                continue
+                            if relation_id in used:
+                                errors.append(
+                                    f"{path_label}.relation_ids must not repeat relations"
+                                )
+                            used.add(relation_id)
+                            relation_type = str(relation["type"])
+                            if first_relation_type is None:
+                                first_relation_type = relation_type
+                            if relation_type not in PASS_SUPPORT_RELATION_TYPES:
+                                errors.append(
+                                    f"{path_label} uses {relation_type}, which cannot support PASS"
+                                )
+                            if relation["from"] != current:
+                                errors.append(
+                                    f"{path_label} is not a directed path from {support_ref}"
+                                )
+                            current = relation["to"]
+                        if current != task["claim_id"]:
+                            errors.append(
+                                f"{path_label} must end at target Claim {task['claim_id']}"
+                            )
+                        if (
+                            policy == "citation-required"
+                            and isinstance(support_ref, str)
+                            and support_ref in nodes
+                            and nodes[support_ref][0] == "citation"
+                            and first_relation_type != "cites"
+                        ):
+                            errors.append(
+                                f"{path_label} for a Citation must begin with cites"
+                            )
+                    if path_refs != support_refs:
+                        errors.append(
+                            f"{label}.support_paths must map one-to-one, in order, to support_refs"
                         )
     if len(actual_ids) != len(set(actual_ids)):
         errors.append("results must not repeat task IDs")
@@ -1311,7 +1464,7 @@ def build_argument_findings(
     findings: list[dict[str, Any]] = []
     results_version = int(results["schema_version"])
     for result in results["results"]:
-        if results_version == 2 and result["execution_status"] != "evaluated":
+        if results_version in {2, 3} and result["execution_status"] != "evaluated":
             continue
         if result["verdict"] not in {"fail", "uncertain"}:
             continue
@@ -1320,7 +1473,7 @@ def build_argument_findings(
         resolved_evidence = []
         evidence_refs = (
             result["basis_refs"]
-            if results_version == 2
+            if results_version in {2, 3}
             else result["evidence_refs"]
         )
         for reference in evidence_refs:
