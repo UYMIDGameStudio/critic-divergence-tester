@@ -18,13 +18,15 @@ Every manuscript must complete the same Phase 1–3 path:
 
 1. in a fresh conversation with no prior context, preserve one direct full-text chat prompt, raw response, provider/model ID, full-manuscript delivery declaration, and actual elapsed time before Workbench Findings influence the evaluator;
 2. import the exact source and collect a Raw IR model response;
-3. inspect and correct the IR without editing JSON;
+3. start an `ir-inspection` work session, inspect and correct the IR without editing JSON, then finish that exact session so correction burden has system-timed evidence;
 4. prepare a scoped v3 Rule Review and collect at least one current result with relation-bound PASS support paths;
 5. acknowledge or reject every non-evaluated execution/routing status through the separate human triage queue;
 6. adjudicate every evaluated FAIL/substantive UNCERTAIN Finding as accept, reject, or defer;
 7. create the revision plan and verify the whole Workbench project.
 
 Generate the same versioned direct-review protocol for every project with `ir gate-a prepare-baseline PROJECT PROMPT.md`. It embeds the bound source bytes verbatim and refuses to overwrite an existing prompt. Run that exact prompt in a fresh model conversation, then collect it with `ir gate-a baseline PROJECT --prompt-file ... --response-file ... --model-label ... --model-provider ... --model-id ... --interaction-mode fresh-session --prior-context none --manuscript-delivery inline --full-manuscript-confirmed --started-at ... --completed-at ...`. Inline collection and later verification reject a prompt that does not actually contain the exact manuscript bytes. Then run `ir gate-a readiness PROJECT...`. Readiness reports model Findings, Finding adjudications, execution-status triage, and baseline control failures separately without creating an assessment or Gate decision. `ir gate-a init` refuses missing or uncontrolled baselines, duplicate sources, invalid workspaces, missing revision plans, open Findings, or open triage items. The resulting v4 corpus is immutable and binds the exact baseline and triage indexes.
+
+Wrap human activities with `ir gate-a session start PROJECT --activity ir-inspection` and `ir gate-a session finish PROJECT GS1`; use `session list` to inspect open and completed intervals. The session artifacts use actual system timestamps and enter project verification. Until a later Gate corpus schema binds those exact records, the v4 assessment's correction-minute observation remains explicitly separate rather than being retroactively rewritten.
 
 ## Engineering regression corpus
 

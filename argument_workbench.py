@@ -1228,6 +1228,15 @@ def verify_workspace(
     except ImportError as exc:
         errors.append(f"direct baselines: cannot load verifier: {exc}")
     try:
+        from argument_sessions import verify_work_sessions
+
+        errors.extend(
+            f"work sessions: {error}"
+            for error in verify_work_sessions(paths.root)
+        )
+    except ImportError as exc:
+        errors.append(f"work sessions: cannot load verifier: {exc}")
+    try:
         from argument_triage import verify_review_status_triage
 
         errors.extend(

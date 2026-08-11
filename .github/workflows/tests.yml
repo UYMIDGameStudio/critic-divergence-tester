@@ -70,6 +70,9 @@ jobs:
           python critic_runner.py ir gate-a init --help
           python critic_runner.py ir gate-a prepare-baseline --help
           python critic_runner.py ir gate-a baseline --help
+          python critic_runner.py ir gate-a session start --help
+          python critic_runner.py ir gate-a session finish --help
+          python critic_runner.py ir gate-a session list --help
           python critic_runner.py ir gate-a assess --help
           python critic_runner.py ir gate-a report --help
           python critic_runner.py ir gate-a decide --help

@@ -449,6 +449,13 @@ py -3 critic_runner.py ir gate-a baseline $project1 `
   --started-at "2026-08-10T10:00:00+08:00" `
   --completed-at "2026-08-10T10:05:00+08:00"
 
+# 实际检查 IR 前后分别调用；时间来自系统时钟，不再靠事后回忆
+py -3 critic_runner.py ir gate-a session start $project1 `
+  --activity ir-inspection --note "逐条对照原文检查 IR"
+py -3 critic_runner.py ir inspect $project1
+py -3 critic_runner.py ir gate-a session finish $project1 GS1
+py -3 critic_runner.py ir gate-a session list $project1
+
 # 在捕获 Gate corpus 前只读汇总 3–5 个项目；未完成时逐篇给出下一条命令
 py -3 critic_runner.py ir gate-a readiness $project1 $project2 $project3
 
@@ -471,6 +478,8 @@ py -3 critic_runner.py ir gate-a verify $gate
 ```
 
 `ir gate-a prepare-baseline` 使用版本化的 `direct-full-manuscript-review-v1` 协议，并把 DocumentVersion 的 source bytes 原样嵌入 prompt。`ir gate-a baseline` 原样保存 direct-chat prompt/response、provider/model ID、开始/完成时间、稿件交付方式和会话条件，并绑定稿件精确字节；inline 模式会再次验证 prompt 确实包含完整原稿。它不填写比较结论。新 Gate corpus 只接受 controlled v2 baseline：fresh session、没有既有对话上下文，而且模型确实收到完整稿件。旧 v1 baseline 继续可验证，但不能进入新的 Gate。`ir gate-a readiness` 可以在人工裁决尚未完成时运行，只读汇总 Claim、correction、模型 Findings、Finding 决定、status triage、revision plan 和 baseline 状态。只有全部项目没有 open Finding 或 open triage、revision plan 与 controlled baseline 已生成且 source bytes 互不重复时，才允许捕获不可变 corpus。
+
+`ir gate-a session start/finish/list` 记录实际人工作业时间。start 和完成 record 都不可变，完成时间与 elapsed milliseconds 由系统时钟确定；同一 workspace 同时只允许一个 open session。活动明确区分 IR inspection、Finding adjudication、status triage、revision planning、manuscript revision 和 other。当前 session 工件已进入 `verify-project`，但 v4 Gate assessment 的 `correction_minutes` 仍是人工观察字段；在 session timing 正式绑定到下一版 Gate corpus 前，两者不会被静默等同。
 
 对 P2/P3（以及可选的 P4/P5）完成 assessment 后，报告才会显示 `Ready for human gate decision: yes`。程序永远不会自动通过 Gate；只有人类 evaluator 可以追加决定：
 

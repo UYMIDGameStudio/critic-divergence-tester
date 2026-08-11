@@ -71,6 +71,14 @@ BASELINE_PRIOR_CONTEXTS = (
     "unknown",
 )
 BASELINE_MANUSCRIPT_DELIVERY = ("inline", "attachment", "other")
+GATE_A_WORK_ACTIVITIES = (
+    "ir-inspection",
+    "finding-adjudication",
+    "status-triage",
+    "revision-planning",
+    "manuscript-revision",
+    "other",
+)
 
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _TIMESTAMP = re.compile(
@@ -956,6 +964,159 @@ def validate_direct_review_baseline(value: object) -> list[str]:
                 errors.append(f"field_provenance.{field}.origin must be {origin}")
             if not _nonempty(provenance.get("source")):
                 errors.append(f"field_provenance.{field}.source must be non-empty")
+    return errors
+
+
+def _validate_gate_session_identity(
+    item: dict[str, Any], errors: list[str]
+) -> None:
+    if not isinstance(item.get("session_id"), str) or re.fullmatch(
+        r"GS[1-9][0-9]*", str(item.get("session_id"))
+    ) is None:
+        errors.append("session_id must be GS1..GSn")
+    for key in ("project_id", "document_id"):
+        if not _nonempty(item.get(key)):
+            errors.append(f"{key} must be a non-empty string")
+    if not isinstance(item.get("version_id"), str) or re.fullmatch(
+        r"V[1-9][0-9]*", str(item.get("version_id"))
+    ) is None:
+        errors.append("version_id must be V1..Vn")
+    if item.get("activity") not in GATE_A_WORK_ACTIVITIES:
+        errors.append(f"activity must be one of {GATE_A_WORK_ACTIVITIES}")
+    if not isinstance(item.get("note"), str):
+        errors.append("note must be a string")
+
+
+def _validate_gate_session_field_provenance(
+    value: object, *, completed: bool, errors: list[str]
+) -> None:
+    expected = {"activity", "note", "timing" if completed else "started_at"}
+    if not isinstance(value, dict):
+        errors.append("field_provenance must be an object")
+        return
+    _strict_keys(value, expected, "field_provenance", errors)
+    for field in expected:
+        provenance = value.get(field)
+        if not isinstance(provenance, dict):
+            errors.append(f"field_provenance.{field} must be an object")
+            continue
+        _strict_keys(
+            provenance,
+            {"origin", "source"},
+            f"field_provenance.{field}",
+            errors,
+        )
+        expected_origin = "deterministic" if field in {"started_at", "timing"} else "human-confirmed"
+        if provenance.get("origin") != expected_origin:
+            errors.append(
+                f"field_provenance.{field}.origin must be {expected_origin}"
+            )
+        if not _nonempty(provenance.get("source")):
+            errors.append(f"field_provenance.{field}.source must be non-empty")
+
+
+def validate_gate_a_session_start(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="gate-a-session-start",
+        lifecycle="immutable",
+        extra_keys={
+            "session_id",
+            "project_id",
+            "document_id",
+            "version_id",
+            "activity",
+            "note",
+            "started_at",
+            "field_provenance",
+        },
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"human-confirmed"}, "gate-a-session-start", errors)
+    _require_parent_roles(item, {"document-version"}, errors)
+    _require_parent_artifacts(
+        item, {"document-version": "document-version"}, errors
+    )
+    _validate_gate_session_identity(item, errors)
+    if not _timestamp(item.get("started_at")):
+        errors.append("started_at must be a timezone-aware ISO timestamp")
+    provenance = item.get("provenance")
+    if (
+        isinstance(provenance, dict)
+        and _timestamp(item.get("started_at"))
+        and provenance.get("created_at") != item.get("started_at")
+    ):
+        errors.append("provenance.created_at must equal started_at")
+    _validate_gate_session_field_provenance(
+        item.get("field_provenance"), completed=False, errors=errors
+    )
+    return errors
+
+
+def validate_gate_a_work_session(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="gate-a-work-session",
+        lifecycle="immutable",
+        extra_keys={
+            "session_id",
+            "project_id",
+            "document_id",
+            "version_id",
+            "activity",
+            "note",
+            "timing",
+            "field_provenance",
+        },
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"human-confirmed"}, "gate-a-work-session", errors)
+    _require_parent_roles(item, {"document-version", "session-start"}, errors)
+    _require_parent_artifacts(
+        item,
+        {
+            "document-version": "document-version",
+            "session-start": "gate-a-session-start",
+        },
+        errors,
+    )
+    _validate_gate_session_identity(item, errors)
+    timing = item.get("timing")
+    if not isinstance(timing, dict):
+        errors.append("timing must be an object")
+    else:
+        _strict_keys(
+            timing,
+            {"started_at", "completed_at", "elapsed_milliseconds"},
+            "timing",
+            errors,
+        )
+        for key in ("started_at", "completed_at"):
+            if not _timestamp(timing.get(key)):
+                errors.append(f"timing.{key} must be timezone-aware ISO time")
+        elapsed = timing.get("elapsed_milliseconds")
+        if not isinstance(elapsed, int) or isinstance(elapsed, bool) or elapsed < 0:
+            errors.append("timing.elapsed_milliseconds must be non-negative")
+        if all(_timestamp(timing.get(key)) for key in ("started_at", "completed_at")):
+            started = datetime.fromisoformat(str(timing["started_at"]).replace("Z", "+00:00"))
+            completed = datetime.fromisoformat(str(timing["completed_at"]).replace("Z", "+00:00"))
+            expected = round((completed - started).total_seconds() * 1000)
+            if expected < 0:
+                errors.append("timing.completed_at must not precede started_at")
+            elif elapsed != expected:
+                errors.append("timing.elapsed_milliseconds must be derived from timestamps")
+        provenance = item.get("provenance")
+        if (
+            isinstance(provenance, dict)
+            and _timestamp(timing.get("completed_at"))
+            and provenance.get("created_at") != timing.get("completed_at")
+        ):
+            errors.append("provenance.created_at must equal timing.completed_at")
+    _validate_gate_session_field_provenance(
+        item.get("field_provenance"), completed=True, errors=errors
+    )
     return errors
 
 
@@ -2323,6 +2484,8 @@ VALIDATORS: dict[str, Callable[[object], list[str]]] = {
     "rule-review-run": validate_rule_review_run,
     "review-result-attempt": validate_review_result_attempt,
     "direct-review-baseline": validate_direct_review_baseline,
+    "gate-a-session-start": validate_gate_a_session_start,
+    "gate-a-work-session": validate_gate_a_work_session,
     "claim-review-index": validate_claim_review_index,
     "review-status-triage": validate_review_status_triage,
     "review-status-triage-index": validate_review_status_triage_index,

@@ -36,6 +36,8 @@ Parent hashes always cover the exact file bytes on disk. Artifact objects do not
 | `review-status-triage` | append-only | One human acknowledgement or rejection of a model-proposed non-evaluated status, with an explicit follow-up action |
 | `review-status-triage-index` | derived-replaceable | Reproducible open/acknowledged/rejected execution-status queue binding every triage event |
 | `direct-review-baseline` | immutable | Exact direct-chat prompt/response, manuscript binding, provider/model identity, declared session conditions, and elapsed-time evidence for Gate A comparison |
+| `gate-a-session-start` | immutable | Human invocation of one timed Gate activity, with start time captured from the system clock |
+| `gate-a-work-session` | immutable | Completion of the exact start artifact with deterministic elapsed milliseconds; never edits the start |
 | `argument-finding` | immutable | One lens/check verdict attached to a version-qualified Claim; initial status is only `open` |
 | `finding-adjudication` | immutable | Human `accept`, `reject`, or `defer`; later changes use `supersedes` |
 | `revision-action` | immutable | Structured action attached to an accepted adjudication |
@@ -86,6 +88,8 @@ Each `finding-adjudication` binds the exact Finding bytes. Reconsidering a Findi
 ## Product Gate A evidence
 
 Gate A is an Evaluation/Advanced lifecycle that blocks Phase 4 until real usage evidence exists. `ir gate-a prepare-baseline` deterministically creates the versioned `direct-full-manuscript-review-v1` prompt and embeds the bound source bytes verbatim. Before comparison, each project collects a `direct-review-baseline`: the exact full-text chat prompt and raw response bytes, human-supplied provider/model identity, source binding, start/completion timestamps, manuscript delivery mode, and conversation conditions. Inline collection and verification prove byte inclusion; attachment delivery remains an explicit human declaration. In controlled v2 artifacts the supplied timestamps remain `human-confirmed`, while elapsed milliseconds are their deterministic difference. New Gate capture requires a fresh session, no prior conversational context, and human confirmation that the model received the complete manuscript. It also rejects a baseline completed after the first valid Workbench Rule Review result. Historical v1 baseline bytes remain valid but are insufficient for a new controlled corpus. The artifact makes no clearer/same/worse judgment.
+
+Human work timing is a separate append-only stream. `gate-a-session-start` captures the selected activity and system time immediately; `gate-a-work-session` later binds the exact start bytes and computes elapsed milliseconds from the two system timestamps. Neither artifact claims that the work was good, only that a human explicitly opened and completed a named activity interval. Open and completed sessions are verified as part of the Workbench. They are not yet silently substituted for the human `correction_minutes` field in v4 assessments; the next Gate schema must bind the exact session records before deriving that metric.
 
 A v4 corpus binds 3–5 distinct source hashes and the exact Project, DocumentVersion, Reviewed IR, Revision Plan, controlled direct baseline, and every current status-triage index for each local workspace. It stores local locators and hashes but never copies manuscript bytes into the Gate directory. Legacy v1–v3 Gate evidence remains verifiable under the contract in force when it was captured.
 

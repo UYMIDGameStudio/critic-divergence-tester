@@ -69,6 +69,12 @@ from argument_triage import (
     render_status_triage,
     triage_items_for_review,
 )
+from argument_sessions import (
+    finish_work_session,
+    list_work_sessions,
+    render_work_sessions,
+    start_work_session,
+)
 from argument_gate import (
     METRIC_KEYS as GATE_A_METRIC_KEYS,
     append_assessment as append_gate_a_assessment,
@@ -86,6 +92,7 @@ from argument_contracts import (
     GATE_A_BURDENS,
     GATE_A_COMPARISONS,
     GATE_A_DECISIONS,
+    GATE_A_WORK_ACTIVITIES,
 )
 from critic_execution import ExecutorResult, execute_with_limits
 from critic_scoring import (
@@ -3288,6 +3295,34 @@ def ir_gate_a_prepare_baseline_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def ir_gate_a_session_start_command(args: argparse.Namespace) -> int:
+    paths = start_work_session(
+        args.project,
+        activity=args.activity,
+        note=args.note,
+        producer=args.producer_label,
+    )
+    print(f"Gate A work session started: {paths.session_id}")
+    print(f"Start artifact: {paths.start}")
+    return 0
+
+
+def ir_gate_a_session_finish_command(args: argparse.Namespace) -> int:
+    paths = finish_work_session(
+        args.project,
+        args.session,
+        producer=args.producer_label,
+    )
+    print(f"Gate A work session completed: {paths.session_id}")
+    print(f"Session artifact: {paths.record}")
+    return 0
+
+
+def ir_gate_a_session_list_command(args: argparse.Namespace) -> int:
+    print(render_work_sessions(list_work_sessions(args.project)), end="")
+    return 0
+
+
 def ir_gate_a_assess_command(args: argparse.Namespace) -> int:
     metrics = {key: getattr(args, key) for key in GATE_A_METRIC_KEYS}
     output = append_gate_a_assessment(
@@ -4467,6 +4502,53 @@ def parser() -> argparse.ArgumentParser:
     )
     ir_gate_a_prepare_baseline_parser.set_defaults(
         func=ir_gate_a_prepare_baseline_command
+    )
+
+    ir_gate_a_session_parser = ir_gate_a_sub.add_parser(
+        "session", help="record actual human Gate A work time"
+    )
+    ir_gate_a_session_sub = ir_gate_a_session_parser.add_subparsers(
+        dest="ir_gate_a_session_command", required=True
+    )
+    ir_gate_a_session_start_parser = ir_gate_a_session_sub.add_parser(
+        "start", help="append a system-timed session start artifact"
+    )
+    ir_gate_a_session_start_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    ir_gate_a_session_start_parser.add_argument(
+        "--activity", choices=GATE_A_WORK_ACTIVITIES, required=True
+    )
+    ir_gate_a_session_start_parser.add_argument("--note", default="")
+    ir_gate_a_session_start_parser.add_argument(
+        "--producer-label", default="local-user"
+    )
+    ir_gate_a_session_start_parser.set_defaults(
+        func=ir_gate_a_session_start_command
+    )
+    ir_gate_a_session_finish_parser = ir_gate_a_session_sub.add_parser(
+        "finish", help="append completion and deterministic elapsed time"
+    )
+    ir_gate_a_session_finish_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    ir_gate_a_session_finish_parser.add_argument(
+        "session", help="session ID such as GS1"
+    )
+    ir_gate_a_session_finish_parser.add_argument(
+        "--producer-label", default="local-user"
+    )
+    ir_gate_a_session_finish_parser.set_defaults(
+        func=ir_gate_a_session_finish_command
+    )
+    ir_gate_a_session_list_parser = ir_gate_a_session_sub.add_parser(
+        "list", help="show completed and open human work sessions"
+    )
+    ir_gate_a_session_list_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    ir_gate_a_session_list_parser.set_defaults(
+        func=ir_gate_a_session_list_command
     )
 
     ir_gate_a_baseline_parser = ir_gate_a_sub.add_parser(
