@@ -3325,6 +3325,8 @@ def ir_gate_a_session_list_command(args: argparse.Namespace) -> int:
 
 def ir_gate_a_assess_command(args: argparse.Namespace) -> int:
     metrics = {key: getattr(args, key) for key in GATE_A_METRIC_KEYS}
+    if args.correction_minutes is not None:
+        metrics["correction_minutes"] = args.correction_minutes
     output = append_gate_a_assessment(
         args.gate,
         args.project,
@@ -4635,6 +4637,14 @@ def parser() -> argparse.ArgumentParser:
         ir_gate_a_assess_parser.add_argument(
             "--" + metric.replace("_", "-"), type=int, required=True
         )
+    ir_gate_a_assess_parser.add_argument(
+        "--correction-minutes",
+        type=int,
+        help=(
+            "legacy v1-v4 corpus only; v5 derives exact inspection time from "
+            "bound work-session artifacts"
+        ),
+    )
     ir_gate_a_assess_parser.add_argument(
         "--anchor",
         action="append",

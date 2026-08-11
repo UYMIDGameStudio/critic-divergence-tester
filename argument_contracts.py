@@ -2016,16 +2016,21 @@ def validate_revision_plan_record(value: object) -> list[str]:
 
 
 def _validate_gate_a_metrics(
-    value: object, label: str, errors: list[str]
+    value: object,
+    label: str,
+    errors: list[str],
+    *,
+    include_correction_minutes: bool = True,
 ) -> None:
     expected = {
-        "correction_minutes",
         "missed_claims",
         "wrong_claim_types",
         "wrong_relations",
         "rhetoric_as_claims",
         "reversed_attributions",
     }
+    if include_correction_minutes:
+        expected.add("correction_minutes")
     if not isinstance(value, dict):
         errors.append(f"{label} must be an object")
         return
@@ -2043,7 +2048,7 @@ def validate_gate_a_corpus(value: object) -> list[str]:
         artifact="product-gate-a-corpus",
         lifecycle="immutable",
         extra_keys={"corpus_id", "entries"},
-        schema_versions=(1, 2, 3, 4),
+        schema_versions=(1, 2, 3, 4, 5),
     )
     if item is None:
         return errors
@@ -2055,6 +2060,11 @@ def validate_gate_a_corpus(value: object) -> list[str]:
     expected_artifacts: dict[str, str] = {}
     aliases: list[str] = []
     source_hashes: list[str] = []
+    parent_hashes = {
+        parent.get("role"): parent.get("sha256")
+        for parent in item.get("parents", [])
+        if isinstance(parent, dict)
+    }
     if not isinstance(entries, list) or not 3 <= len(entries) <= 5:
         errors.append("entries must contain 3 to 5 real manuscripts")
         entries = []
@@ -2063,7 +2073,7 @@ def validate_gate_a_corpus(value: object) -> list[str]:
         role = f"project-{index:03d}"
         expected_roles.add(role)
         expected_artifacts[role] = "argument-project"
-        if schema_version in {2, 3, 4}:
+        if schema_version in {2, 3, 4, 5}:
             baseline_role = f"baseline-{index:03d}"
             expected_roles.add(baseline_role)
             expected_artifacts[baseline_role] = "direct-review-baseline"
@@ -2104,19 +2114,24 @@ def validate_gate_a_corpus(value: object) -> list[str]:
             "revision_plan_record",
             "revision_plan_markdown",
         }
-        if schema_version in {2, 3, 4}:
+        if schema_version in {2, 3, 4, 5}:
             binding_keys.add("direct_review_baseline")
-        if schema_version in {3, 4}:
+        if schema_version in {3, 4, 5}:
             binding_keys.add("status_triage")
+        if schema_version == 5:
+            binding_keys.add("ir_inspection_sessions")
         if not isinstance(bindings, dict):
             errors.append(f"{label}.bindings must be an object")
         else:
             _strict_keys(bindings, binding_keys, f"{label}.bindings", errors)
-            for key in binding_keys - {"status_triage"}:
+            for key in binding_keys - {
+                "status_triage",
+                "ir_inspection_sessions",
+            }:
                 if not _digest(bindings.get(key)):
                     errors.append(f"{label}.bindings.{key} must be a SHA-256 digest")
             source_hashes.append(str(bindings.get("source")))
-            if schema_version in {3, 4}:
+            if schema_version in {3, 4, 5}:
                 triage_bindings = bindings.get("status_triage")
                 if not isinstance(triage_bindings, list):
                     errors.append(f"{label}.bindings.status_triage must be an array")
@@ -2155,6 +2170,57 @@ def validate_gate_a_corpus(value: object) -> list[str]:
                         role = f"status-triage-{index:03d}-{triage_index:03d}"
                         expected_roles.add(role)
                         expected_artifacts[role] = "review-status-triage-index"
+            if schema_version == 5:
+                session_bindings = bindings.get("ir_inspection_sessions")
+                if not isinstance(session_bindings, list) or not session_bindings:
+                    errors.append(
+                        f"{label}.bindings.ir_inspection_sessions must be a non-empty array"
+                    )
+                else:
+                    session_ids: list[str] = []
+                    for session_index, session in enumerate(session_bindings, 1):
+                        session_label = (
+                            f"{label}.bindings.ir_inspection_sessions"
+                            f"[{session_index - 1}]"
+                        )
+                        if not isinstance(session, dict):
+                            errors.append(f"{session_label} must be an object")
+                            continue
+                        _strict_keys(
+                            session,
+                            {"session_id", "sha256", "elapsed_milliseconds"},
+                            session_label,
+                            errors,
+                        )
+                        if not isinstance(session.get("session_id"), str) or re.fullmatch(
+                            r"GS[1-9][0-9]*", str(session.get("session_id"))
+                        ) is None:
+                            errors.append(f"{session_label}.session_id is invalid")
+                        session_ids.append(str(session.get("session_id")))
+                        if not _digest(session.get("sha256")):
+                            errors.append(f"{session_label}.sha256 must be a digest")
+                        elapsed = session.get("elapsed_milliseconds")
+                        if (
+                            not isinstance(elapsed, int)
+                            or isinstance(elapsed, bool)
+                            or elapsed < 0
+                        ):
+                            errors.append(
+                                f"{session_label}.elapsed_milliseconds must be non-negative"
+                            )
+                        role = (
+                            f"ir-inspection-{index:03d}-{session_index:03d}"
+                        )
+                        expected_roles.add(role)
+                        expected_artifacts[role] = "gate-a-work-session"
+                        if parent_hashes.get(role) != session.get("sha256"):
+                            errors.append(
+                                f"{session_label}.sha256 must match parent {role}"
+                            )
+                    if len(session_ids) != len(set(session_ids)):
+                        errors.append(
+                            f"{label}.bindings.ir_inspection_sessions repeats a session"
+                        )
     if len(aliases) != len(set(aliases)):
         errors.append("entry aliases must be unique")
     if len(source_hashes) != len(set(source_hashes)):
@@ -2166,21 +2232,24 @@ def validate_gate_a_corpus(value: object) -> list[str]:
 
 def validate_gate_a_assessment(value: object) -> list[str]:
     schema_version = value.get("schema_version") if isinstance(value, dict) else None
+    extra_keys = {
+        "corpus_id",
+        "project_alias",
+        "comparison_to_direct_chat",
+        "correction_burden",
+        "metrics",
+        "regression_anchors",
+        "actual_revision_notes",
+        "notes",
+    }
+    if schema_version == 5:
+        extra_keys.update({"ir_inspection_timing", "field_provenance"})
     errors, item = _validate_base(
         value,
         artifact="product-gate-a-assessment",
         lifecycle="immutable",
-        extra_keys={
-            "corpus_id",
-            "project_alias",
-            "comparison_to_direct_chat",
-            "correction_burden",
-            "metrics",
-            "regression_anchors",
-            "actual_revision_notes",
-            "notes",
-        },
-        schema_versions=(1, 2, 3, 4),
+        extra_keys=extra_keys,
+        schema_versions=(1, 2, 3, 4, 5),
     )
     if item is None:
         return errors
@@ -2191,10 +2260,10 @@ def validate_gate_a_assessment(value: object) -> list[str]:
         "project": "argument-project",
         "revision-plan": "revision-plan-record",
     }
-    if schema_version in {2, 3, 4}:
+    if schema_version in {2, 3, 4, 5}:
         parent_roles.add("direct-review-baseline")
         parent_artifacts["direct-review-baseline"] = "direct-review-baseline"
-    if schema_version in {3, 4}:
+    if schema_version in {3, 4, 5}:
         for parent in item.get("parents", []):
             if isinstance(parent, dict) and str(parent.get("role", "")).startswith(
                 "status-triage-"
@@ -2204,6 +2273,96 @@ def validate_gate_a_assessment(value: object) -> list[str]:
                     errors.append(f"invalid status triage parent role: {role}")
                 parent_roles.add(role)
                 parent_artifacts[role] = "review-status-triage-index"
+    timing = item.get("ir_inspection_timing")
+    if schema_version == 5:
+        if not isinstance(timing, dict):
+            errors.append("ir_inspection_timing must be an object")
+        else:
+            _strict_keys(
+                timing,
+                {"elapsed_milliseconds", "sessions"},
+                "ir_inspection_timing",
+                errors,
+            )
+            elapsed = timing.get("elapsed_milliseconds")
+            if (
+                not isinstance(elapsed, int)
+                or isinstance(elapsed, bool)
+                or elapsed < 0
+            ):
+                errors.append(
+                    "ir_inspection_timing.elapsed_milliseconds must be non-negative"
+                )
+            sessions = timing.get("sessions")
+            if not isinstance(sessions, list) or not sessions:
+                errors.append(
+                    "ir_inspection_timing.sessions must be a non-empty array"
+                )
+            else:
+                session_ids: list[str] = []
+                parent_hashes = {
+                    parent.get("role"): parent.get("sha256")
+                    for parent in item.get("parents", [])
+                    if isinstance(parent, dict)
+                }
+                for index, session in enumerate(sessions, 1):
+                    label = f"ir_inspection_timing.sessions[{index - 1}]"
+                    role = f"ir-inspection-{index:03d}"
+                    parent_roles.add(role)
+                    parent_artifacts[role] = "gate-a-work-session"
+                    if not isinstance(session, dict):
+                        errors.append(f"{label} must be an object")
+                        continue
+                    _strict_keys(
+                        session,
+                        {"session_id", "sha256"},
+                        label,
+                        errors,
+                    )
+                    if not isinstance(session.get("session_id"), str) or re.fullmatch(
+                        r"GS[1-9][0-9]*", str(session.get("session_id"))
+                    ) is None:
+                        errors.append(f"{label}.session_id is invalid")
+                    session_ids.append(str(session.get("session_id")))
+                    if not _digest(session.get("sha256")):
+                        errors.append(f"{label}.sha256 must be a digest")
+                    if parent_hashes.get(role) != session.get("sha256"):
+                        errors.append(f"{label}.sha256 must match parent {role}")
+                if len(session_ids) != len(set(session_ids)):
+                    errors.append("ir_inspection_timing.sessions repeats a session")
+        field_provenance = item.get("field_provenance")
+        if not isinstance(field_provenance, dict):
+            errors.append("field_provenance must be an object")
+        else:
+            _strict_keys(
+                field_provenance,
+                {"human_observations", "ir_inspection_timing"},
+                "field_provenance",
+                errors,
+            )
+            expected_origins = {
+                "human_observations": "human-confirmed",
+                "ir_inspection_timing": "deterministic",
+            }
+            for field, origin in expected_origins.items():
+                provenance = field_provenance.get(field)
+                if not isinstance(provenance, dict):
+                    errors.append(f"field_provenance.{field} must be an object")
+                    continue
+                _strict_keys(
+                    provenance,
+                    {"origin", "source"},
+                    f"field_provenance.{field}",
+                    errors,
+                )
+                if provenance.get("origin") != origin:
+                    errors.append(
+                        f"field_provenance.{field}.origin must be {origin}"
+                    )
+                if not _nonempty(provenance.get("source")):
+                    errors.append(
+                        f"field_provenance.{field}.source must be non-empty"
+                    )
     _require_parent_roles(item, parent_roles, errors)
     _require_parent_artifacts(
         item,
@@ -2217,7 +2376,12 @@ def validate_gate_a_assessment(value: object) -> list[str]:
         errors.append(f"comparison_to_direct_chat must be one of {GATE_A_COMPARISONS}")
     if item.get("correction_burden") not in GATE_A_BURDENS:
         errors.append(f"correction_burden must be one of {GATE_A_BURDENS}")
-    _validate_gate_a_metrics(item.get("metrics"), "metrics", errors)
+    _validate_gate_a_metrics(
+        item.get("metrics"),
+        "metrics",
+        errors,
+        include_correction_minutes=schema_version != 5,
+    )
     _string_list(
         item.get("regression_anchors"),
         "regression_anchors",
@@ -2261,19 +2425,24 @@ def validate_gate_a_decision(value: object) -> list[str]:
 
 
 def validate_gate_a_report(value: object) -> list[str]:
+    schema_version = value.get("schema_version") if isinstance(value, dict) else None
+    extra_keys = {
+        "corpus_id",
+        "readiness",
+        "workflow_totals",
+        "human_observations",
+        "projects",
+        "gate_decision",
+        "payload",
+    }
+    if schema_version == 2:
+        extra_keys.add("work_timing")
     errors, item = _validate_base(
         value,
         artifact="product-gate-a-report",
         lifecycle="derived-replaceable",
-        extra_keys={
-            "corpus_id",
-            "readiness",
-            "workflow_totals",
-            "human_observations",
-            "projects",
-            "gate_decision",
-            "payload",
-        },
+        extra_keys=extra_keys,
+        schema_versions=(1, 2),
     )
     if item is None:
         return errors
@@ -2318,7 +2487,32 @@ def validate_gate_a_report(value: object) -> list[str]:
             value = observations.get(key)
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 errors.append(f"human_observations.{key} must be a non-negative integer")
-        _validate_gate_a_metrics(observations.get("metrics"), "human_observations.metrics", errors)
+        _validate_gate_a_metrics(
+            observations.get("metrics"),
+            "human_observations.metrics",
+            errors,
+            include_correction_minutes=schema_version == 1,
+        )
+    if schema_version == 2:
+        work_timing = item.get("work_timing")
+        if not isinstance(work_timing, dict):
+            errors.append("work_timing must be an object")
+        else:
+            _strict_keys(
+                work_timing,
+                {"ir_inspection_elapsed_milliseconds"},
+                "work_timing",
+                errors,
+            )
+            elapsed = work_timing.get("ir_inspection_elapsed_milliseconds")
+            if (
+                not isinstance(elapsed, int)
+                or isinstance(elapsed, bool)
+                or elapsed < 0
+            ):
+                errors.append(
+                    "work_timing.ir_inspection_elapsed_milliseconds must be non-negative"
+                )
     projects = item.get("projects")
     expected_parent_roles = {"corpus"}
     expected_parent_artifacts = {"corpus": "product-gate-a-corpus"}
@@ -2331,9 +2525,7 @@ def validate_gate_a_report(value: object) -> list[str]:
         if not isinstance(project, dict):
             errors.append(f"{label} must be an object")
             continue
-        _strict_keys(
-            project,
-            {
+        project_keys = {
                 "alias",
                 "bindings_match",
                 "workflow_complete",
@@ -2347,10 +2539,10 @@ def validate_gate_a_report(value: object) -> list[str]:
                 "assessment_id",
                 "regression_anchors",
                 "actual_revision_recorded",
-            },
-            label,
-            errors,
-        )
+            }
+        if schema_version == 2:
+            project_keys.add("ir_inspection_elapsed_milliseconds")
+        _strict_keys(project, project_keys, label, errors)
         if not _nonempty(project.get("alias")):
             errors.append(f"{label}.alias must be a non-empty string")
         aliases.append(str(project.get("alias")))
@@ -2361,6 +2553,16 @@ def validate_gate_a_report(value: object) -> list[str]:
             value = project.get(key)
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 errors.append(f"{label}.{key} must be a non-negative integer")
+        if schema_version == 2:
+            elapsed = project.get("ir_inspection_elapsed_milliseconds")
+            if (
+                not isinstance(elapsed, int)
+                or isinstance(elapsed, bool)
+                or elapsed < 0
+            ):
+                errors.append(
+                    f"{label}.ir_inspection_elapsed_milliseconds must be non-negative"
+                )
         assessment_id = project.get("assessment_id")
         if assessment_id is not None and not _nonempty(assessment_id):
             errors.append(f"{label}.assessment_id must be null or non-empty")
@@ -2374,6 +2576,22 @@ def validate_gate_a_report(value: object) -> list[str]:
             errors.append(f"{label}.workflow_complete requires intact bindings and zero open Findings")
     if len(aliases) != len(set(aliases)):
         errors.append("project aliases must be unique")
+    if schema_version == 2 and isinstance(item.get("work_timing"), dict):
+        expected_elapsed = sum(
+            int(project.get("ir_inspection_elapsed_milliseconds", 0))
+            for project in projects
+            if isinstance(project, dict)
+            and isinstance(project.get("ir_inspection_elapsed_milliseconds"), int)
+            and not isinstance(
+                project.get("ir_inspection_elapsed_milliseconds"), bool
+            )
+        )
+        if item["work_timing"].get(
+            "ir_inspection_elapsed_milliseconds"
+        ) != expected_elapsed:
+            errors.append(
+                "work_timing.ir_inspection_elapsed_milliseconds must equal project total"
+            )
     decision = item.get("gate_decision")
     if decision is not None and decision not in GATE_A_DECISIONS:
         errors.append("gate_decision must be pass/fail/defer/null")
