@@ -12,9 +12,12 @@ from typing import Any
 ARGUMENT_IR_SCHEMA_VERSION = 1
 IR_EXTRACTION_PROTOCOL_VERSION = 2
 SUPPORTED_IR_EXTRACTION_PROTOCOL_VERSIONS = (1, 2)
-CHECK_LIBRARY_SCHEMA_VERSION = 1
-CHECK_PLAN_SCHEMA_VERSION = 1
-CHECK_RESULTS_SCHEMA_VERSION = 1
+CHECK_LIBRARY_SCHEMA_VERSION = 2
+SUPPORTED_CHECK_LIBRARY_SCHEMA_VERSIONS = (1, 2)
+CHECK_PLAN_SCHEMA_VERSION = 2
+SUPPORTED_CHECK_PLAN_SCHEMA_VERSIONS = (1, 2)
+CHECK_RESULTS_SCHEMA_VERSION = 2
+SUPPORTED_CHECK_RESULTS_SCHEMA_VERSIONS = (1, 2)
 ARGUMENT_FINDINGS_SCHEMA_VERSION = 1
 
 CLAIM_TYPES = (
@@ -56,7 +59,19 @@ EVIDENCE_KINDS = (
 RELATION_TYPES = ("supports", "contradicts", "qualifies", "assumes", "cites")
 CHECK_TIERS = ("core", "extended")
 CHECK_DEPTHS = ("core", "full")
+REVIEW_SCOPES = ("thesis-chain", "claim", "claims", "all")
+EVIDENCE_POLICIES = (
+    "claim-text-sufficient",
+    "upstream-required",
+    "citation-required",
+)
 RESULT_VERDICTS = ("pass", "fail", "uncertain")
+RESULT_EXECUTION_STATUSES = (
+    "evaluated",
+    "blocked_missing_context",
+    "routing_mismatch",
+    "not_applicable",
+)
 RESULT_STATUSES = ("complete", "partial")
 REQUIRED_CONTEXT_VALUES = (
     "claim",
@@ -101,7 +116,7 @@ ASSUMPTION_KEYS = {
 }
 CITATION_KEYS = {"id", "text", "source_quote", "position", "locator"}
 RELATION_KEYS = {"id", "type", "from", "to"}
-CHECK_KEYS = {
+CHECK_KEYS_V1 = {
     "id",
     "label",
     "category",
@@ -111,8 +126,18 @@ CHECK_KEYS = {
     "failure_condition",
     "required_context",
 }
+CHECK_KEYS = CHECK_KEYS_V1 | {"evidence_policy"}
 TASK_KEYS = {"id", "claim_id", "check_id"}
-RESULT_KEYS = {"task_id", "verdict", "reason", "evidence_refs", "consequence"}
+RESULT_KEYS_V1 = {"task_id", "verdict", "reason", "evidence_refs", "consequence"}
+RESULT_KEYS = {
+    "task_id",
+    "execution_status",
+    "verdict",
+    "reason",
+    "basis_refs",
+    "support_refs",
+    "consequence",
+}
 FINDING_EVIDENCE_KEYS = {
     "node_id",
     "node_kind",
@@ -523,8 +548,9 @@ def validate_check_library(value: object) -> list[str]:
         "checks",
     }:
         errors.append("check library must contain exactly the v1 fields")
-    if value.get("schema_version") != CHECK_LIBRARY_SCHEMA_VERSION:
-        errors.append("check library schema_version must be 1")
+    schema_version = value.get("schema_version")
+    if schema_version not in SUPPORTED_CHECK_LIBRARY_SCHEMA_VERSIONS:
+        errors.append("check library schema_version must be 1 or 2")
     if value.get("artifact") != "argument-check-library":
         errors.append("check library artifact must be argument-check-library")
     if value.get("scope") != "social-science":
@@ -543,8 +569,11 @@ def validate_check_library(value: object) -> list[str]:
         if not isinstance(check, dict):
             errors.append(f"{label} must be an object")
             continue
-        if set(check) != CHECK_KEYS:
-            errors.append(f"{label} must contain exactly the check fields")
+        expected_check_keys = CHECK_KEYS if schema_version == 2 else CHECK_KEYS_V1
+        if set(check) != expected_check_keys:
+            errors.append(
+                f"{label} must contain exactly the v{schema_version} check fields"
+            )
         check_id = check.get("id")
         if not isinstance(check_id, str) or _CHECK_ID_PATTERN.fullmatch(check_id) is None:
             errors.append(f"{label}.id must be a dotted lowercase identifier")
@@ -583,6 +612,10 @@ def validate_check_library(value: object) -> list[str]:
             allowed=REQUIRED_CONTEXT_VALUES,
             allow_empty=False,
         )
+        if schema_version == 2 and check.get("evidence_policy") not in EVIDENCE_POLICIES:
+            errors.append(
+                f"{label}.evidence_policy must be one of {EVIDENCE_POLICIES}"
+            )
     return errors
 
 
@@ -619,6 +652,56 @@ def _node_registry(ir: dict[str, Any]) -> dict[str, tuple[str, dict[str, Any]]]:
     return nodes
 
 
+def _selected_review_claim_ids(
+    ir: dict[str, Any], review_scope: str, claim_ids: list[str]
+) -> list[str]:
+    known_ids = [str(claim["id"]) for claim in ir["claims"]]
+    known = set(known_ids)
+    if len(claim_ids) != len(set(claim_ids)):
+        raise ArgumentIRError("review scope claim IDs must not repeat")
+    unknown = [claim_id for claim_id in claim_ids if claim_id not in known]
+    if unknown:
+        raise ArgumentIRError(f"review scope contains unknown Claim IDs: {unknown}")
+    if review_scope == "all":
+        if claim_ids:
+            raise ArgumentIRError("all review scope does not accept explicit Claim IDs")
+        return known_ids
+    if review_scope == "claim":
+        if len(claim_ids) != 1:
+            raise ArgumentIRError("claim review scope requires exactly one Claim ID")
+        return claim_ids
+    if review_scope == "claims":
+        if not claim_ids:
+            raise ArgumentIRError("claims review scope requires at least one Claim ID")
+        selected = set(claim_ids)
+        return [claim_id for claim_id in known_ids if claim_id in selected]
+
+    seeds = {
+        str(claim["id"])
+        for claim in ir["claims"]
+        if claim["role"] in {"conclusion", "intermediate"}
+    }
+    seeds.update(claim_ids)
+    if not seeds:
+        raise ArgumentIRError(
+            "thesis-chain review scope requires a conclusion/intermediate Claim "
+            "or an explicitly pinned --claim"
+        )
+    reachable = set(seeds)
+    changed = True
+    while changed:
+        changed = False
+        for relation in ir["relations"]:
+            if (
+                relation["type"] in {"supports", "qualifies", "assumes", "cites"}
+                and relation["to"] in reachable
+                and relation["from"] not in reachable
+            ):
+                reachable.add(relation["from"])
+                changed = True
+    return [claim_id for claim_id in known_ids if claim_id in reachable]
+
+
 def build_check_plan(
     ir: object,
     library: object,
@@ -626,11 +709,15 @@ def build_check_plan(
     ir_sha256: str,
     library_sha256: str,
     depth: str,
+    review_scope: str = "all",
+    claim_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     errors = validate_argument_ir(ir)
     errors.extend(validate_check_library(library))
     if depth not in CHECK_DEPTHS:
         errors.append("depth must be core or full")
+    if review_scope not in REVIEW_SCOPES:
+        errors.append(f"review_scope must be one of {REVIEW_SCOPES}")
     if not _is_digest(ir_sha256):
         errors.append("ir_sha256 must be a lowercase SHA-256 digest")
     if not _is_digest(library_sha256):
@@ -639,9 +726,21 @@ def build_check_plan(
         raise ArgumentIRError("; ".join(errors))
     assert isinstance(ir, dict)
     assert isinstance(library, dict)
+    library_version = int(library["schema_version"])
+    requested_claim_ids = list(claim_ids or [])
+    if library_version == 1 and (
+        review_scope != "all" or requested_claim_ids
+    ):
+        raise ArgumentIRError("legacy v1 check libraries support only all-Claim scope")
+    selected_claim_ids = _selected_review_claim_ids(
+        ir, review_scope, requested_claim_ids
+    )
+    selected_claim_id_set = set(selected_claim_ids)
     tasks: list[dict[str, Any]] = []
     selected_ids: set[str] = set()
     for claim in ir["claims"]:
+        if claim["id"] not in selected_claim_id_set:
+            continue
         for check in library["checks"]:
             if depth == "core" and check["tier"] != "core":
                 continue
@@ -658,8 +757,8 @@ def build_check_plan(
                     "check_id": check["id"],
                 }
             )
-    return {
-        "schema_version": CHECK_PLAN_SCHEMA_VERSION,
+    plan = {
+        "schema_version": library_version,
         "artifact": "argument-check-plan",
         "depth": depth,
         "source": {
@@ -676,13 +775,21 @@ def build_check_plan(
         ],
         "tasks": tasks,
     }
+    if library_version == 2:
+        plan["review_scope"] = {
+            "kind": review_scope,
+            "claim_ids": requested_claim_ids,
+            "selected_claim_ids": selected_claim_ids,
+        }
+    return plan
 
 
 def validate_check_plan(value: object) -> list[str]:
     errors: list[str] = []
     if not isinstance(value, dict):
         return ["check plan must be a JSON object"]
-    if set(value) != {
+    schema_version = value.get("schema_version")
+    expected_keys = {
         "schema_version",
         "artifact",
         "depth",
@@ -690,10 +797,13 @@ def validate_check_plan(value: object) -> list[str]:
         "argument_ir",
         "checks",
         "tasks",
-    }:
-        errors.append("check plan must contain exactly the v1 fields")
-    if value.get("schema_version") != CHECK_PLAN_SCHEMA_VERSION:
-        errors.append("check plan schema_version must be 1")
+    }
+    if schema_version == 2:
+        expected_keys.add("review_scope")
+    if set(value) != expected_keys:
+        errors.append(f"check plan must contain exactly the v{schema_version} fields")
+    if schema_version not in SUPPORTED_CHECK_PLAN_SCHEMA_VERSIONS:
+        errors.append("check plan schema_version must be 1 or 2")
     if value.get("artifact") != "argument-check-plan":
         errors.append("check plan artifact must be argument-check-plan")
     if value.get("depth") not in CHECK_DEPTHS:
@@ -747,7 +857,7 @@ def validate_check_plan(value: object) -> list[str]:
 
     selected_checks = value.get("checks")
     selected_library = {
-        "schema_version": CHECK_LIBRARY_SCHEMA_VERSION,
+        "schema_version": schema_version,
         "artifact": "argument-check-library",
         "scope": "social-science",
         "claim_types": list(CLAIM_TYPES),
@@ -762,6 +872,55 @@ def validate_check_plan(value: object) -> list[str]:
         for check in checks
         if isinstance(check, dict) and isinstance(check.get("id"), str)
     }
+
+    selected_claim_ids = [
+        str(claim.get("id")) for claim in claims if isinstance(claim, dict)
+    ]
+    if schema_version == 2:
+        scope = value.get("review_scope")
+        if not isinstance(scope, dict) or set(scope) != {
+            "kind",
+            "claim_ids",
+            "selected_claim_ids",
+        }:
+            errors.append(
+                "review_scope must contain kind, claim_ids, and selected_claim_ids"
+            )
+            selected_claim_ids = []
+        else:
+            kind = scope.get("kind")
+            if kind not in REVIEW_SCOPES:
+                errors.append(f"review_scope.kind must be one of {REVIEW_SCOPES}")
+            requested = _validate_string_list(
+                scope.get("claim_ids"),
+                "review_scope.claim_ids",
+                errors,
+                allow_empty=True,
+            )
+            stored_selected = _validate_string_list(
+                scope.get("selected_claim_ids"),
+                "review_scope.selected_claim_ids",
+                errors,
+                allow_empty=False,
+            )
+            if (
+                isinstance(argument, dict)
+                and not argument_errors
+                and kind in REVIEW_SCOPES
+            ):
+                try:
+                    expected_selected = _selected_review_claim_ids(
+                        argument, str(kind), requested
+                    )
+                except ArgumentIRError as exc:
+                    errors.append(f"review_scope: {exc}")
+                    expected_selected = []
+                if stored_selected != expected_selected:
+                    errors.append(
+                        "review_scope.selected_claim_ids is not deterministically derived"
+                    )
+            selected_claim_ids = stored_selected
+    selected_claim_id_set = set(selected_claim_ids)
 
     tasks = _validate_continuous_ids(value.get("tasks"), "tasks", "T", errors)
     seen_pairs: set[tuple[object, object]] = set()
@@ -794,6 +953,8 @@ def validate_check_plan(value: object) -> list[str]:
     expected_pairs: list[tuple[str, str]] = []
     for claim in claims:
         if not isinstance(claim, dict):
+            continue
+        if claim.get("id") not in selected_claim_id_set:
             continue
         claim_types = claim.get("types") if isinstance(claim.get("types"), list) else []
         methods = claim.get("methods") if isinstance(claim.get("methods"), list) else []
@@ -848,6 +1009,16 @@ def validate_check_plan_against_library(
         ir_sha256=source["ir_sha256"],
         library_sha256=library_sha256,
         depth=plan["depth"],
+        review_scope=(
+            str(plan["review_scope"]["kind"])
+            if plan.get("schema_version") == 2
+            else "all"
+        ),
+        claim_ids=(
+            list(plan["review_scope"]["claim_ids"])
+            if plan.get("schema_version") == 2
+            else []
+        ),
     )
     if plan != expected:
         errors.append(
@@ -864,6 +1035,32 @@ def render_check_prompt(plan: object, *, plan_sha256: str) -> str:
         raise ArgumentIRError("; ".join(errors))
     assert isinstance(plan, dict)
     plan_json = json.dumps(plan, ensure_ascii=False, indent=2)
+    if plan["schema_version"] == 2:
+        return (
+            "# Argument IR 定向审查 v2\n\n"
+            "你不是自由发挥的通用 critic。逐项回答 check plan，不增加、删除、合并或重排任务。"
+            "review_scope 已由程序确定；不要审查范围外的 Claim。\n\n"
+            "先判断 execution_status：evaluated 表示检查适用且上下文足够；"
+            "blocked_missing_context 表示缺少明确材料；routing_mismatch 表示 IR 分类或路由错误；"
+            "not_applicable 表示该检查虽被路由到此处，但根据 Claim 实义确实不适用。"
+            "后三类必须给出具体 reason 和 basis_refs，verdict 必须为 null，不能用来静默跳过任务。\n\n"
+            "仅当 execution_status=evaluated 时填写 verdict=pass|fail|uncertain。"
+            "basis_refs 说明判断依据，可包含目标 Claim；support_refs 只表示足以支持 PASS 的独立上游依据。"
+            "每条 check 的 evidence_policy 决定 PASS 门槛：claim-text-sufficient 允许主张文本本身；"
+            "upstream-required 必须给出目标 Claim 之外的上游节点；citation-required 必须包含 Citation。"
+            "fail/uncertain 的 support_refs 必须为空。只使用 Argument IR 内材料，不凭外部记忆补全。\n\n"
+            "正常完成全部任务写顶层 status=complete；若执行中断，保留原顺序写 status=partial，"
+            "并在 unverified 说明未完成部分。只输出一个 JSON 对象，不要 Markdown 围栏。格式：\n\n"
+            '{"schema_version":2,"artifact":"argument-check-results",'
+            f'"source":{{"plan_sha256":"{plan_sha256}"}},'
+            '"status":"complete","unverified":[],"results":['
+            '{"task_id":"T1","execution_status":"evaluated",'
+            '"verdict":"pass|fail|uncertain|null","reason":"...",'
+            '"basis_refs":["C1"],"support_refs":["E1"],'
+            '"consequence":"fail/uncertain 时说明影响，否则留空"}]}\n\n'
+            "# Check plan\n\n"
+            f"{plan_json}\n"
+        )
     return (
         "# Argument IR 定向审查\n\n"
         "你不是自由发挥的通用 critic。下面的 check plan 已由程序根据主张类型和方法确定。"
@@ -914,6 +1111,7 @@ def validate_check_results(
         return ["plan_sha256 must be a lowercase SHA-256 digest"]
     if not isinstance(value, dict):
         return ["check results must be a JSON object"]
+    schema_version = value.get("schema_version")
     if set(value) != {
         "schema_version",
         "artifact",
@@ -922,9 +1120,11 @@ def validate_check_results(
         "unverified",
         "results",
     }:
-        errors.append("check results must contain exactly the v1 fields")
-    if value.get("schema_version") != CHECK_RESULTS_SCHEMA_VERSION:
-        errors.append("check results schema_version must be 1")
+        errors.append("check results must contain exactly the result envelope fields")
+    if schema_version not in SUPPORTED_CHECK_RESULTS_SCHEMA_VERSIONS:
+        errors.append("check results schema_version must be 1 or 2")
+    elif isinstance(plan, dict) and schema_version != plan.get("schema_version"):
+        errors.append("check results schema_version must match the check plan")
     if value.get("artifact") != "argument-check-results":
         errors.append("check results artifact must be argument-check-results")
     source = value.get("source")
@@ -957,6 +1157,7 @@ def validate_check_results(
     }
     argument = plan["argument_ir"]
     nodes = _node_registry(argument)
+    check_by_id = {check["id"]: check for check in plan["checks"]}
     allowed_refs_by_claim = {
         claim["id"]: _context_node_ids(argument, claim["id"])
         for claim in argument["claims"]
@@ -968,45 +1169,116 @@ def validate_check_results(
         if not isinstance(result, dict):
             errors.append(f"{label} must be an object")
             continue
-        if set(result) != RESULT_KEYS:
-            errors.append(f"{label} must contain exactly the result fields")
+        expected_result_keys = RESULT_KEYS if schema_version == 2 else RESULT_KEYS_V1
+        if set(result) != expected_result_keys:
+            errors.append(
+                f"{label} must contain exactly the v{schema_version} result fields"
+            )
         task_id = result.get("task_id")
         actual_ids.append(task_id)
         task = task_by_id.get(str(task_id))
         if task is None:
             errors.append(f"{label}.task_id is not in the check plan: {task_id!r}")
-        verdict = result.get("verdict")
-        if verdict not in RESULT_VERDICTS:
-            errors.append(f"{label}.verdict must be one of {RESULT_VERDICTS}")
         if not _nonempty_string(result.get("reason")):
             errors.append(f"{label}.reason must be a non-empty string")
-        evidence_refs = _validate_string_list(
-            result.get("evidence_refs"),
-            label + ".evidence_refs",
-            errors,
-            allow_empty=True,
-        )
-        if verdict in {"pass", "fail"} and not evidence_refs:
-            errors.append(f"{label}.evidence_refs is required for {verdict}")
+        verdict = result.get("verdict")
         consequence = result.get("consequence")
+        if schema_version == 1:
+            if verdict not in RESULT_VERDICTS:
+                errors.append(f"{label}.verdict must be one of {RESULT_VERDICTS}")
+            basis_refs = _validate_string_list(
+                result.get("evidence_refs"),
+                label + ".evidence_refs",
+                errors,
+                allow_empty=True,
+            )
+            support_refs: list[str] = []
+            execution_status = "evaluated"
+            if verdict in {"pass", "fail"} and not basis_refs:
+                errors.append(f"{label}.evidence_refs is required for {verdict}")
+        else:
+            execution_status = result.get("execution_status")
+            if execution_status not in RESULT_EXECUTION_STATUSES:
+                errors.append(
+                    f"{label}.execution_status must be one of "
+                    f"{RESULT_EXECUTION_STATUSES}"
+                )
+            if execution_status == "evaluated":
+                if verdict not in RESULT_VERDICTS:
+                    errors.append(
+                        f"{label}.verdict must be one of {RESULT_VERDICTS} when evaluated"
+                    )
+            elif verdict is not None:
+                errors.append(
+                    f"{label}.verdict must be null unless execution_status=evaluated"
+                )
+            basis_refs = _validate_string_list(
+                result.get("basis_refs"),
+                label + ".basis_refs",
+                errors,
+                allow_empty=False,
+            )
+            support_refs = _validate_string_list(
+                result.get("support_refs"),
+                label + ".support_refs",
+                errors,
+                allow_empty=True,
+            )
+            if execution_status != "evaluated" and support_refs:
+                errors.append(
+                    f"{label}.support_refs must be empty when the check is not evaluated"
+                )
+            if execution_status == "evaluated" and verdict != "pass" and support_refs:
+                errors.append(
+                    f"{label}.support_refs is reserved for evidence supporting PASS"
+                )
         if not isinstance(consequence, str):
             errors.append(f"{label}.consequence must be a string")
-        elif verdict in {"fail", "uncertain"} and not consequence.strip():
-            errors.append(f"{label}.consequence is required for {verdict}")
-        elif verdict == "pass" and consequence.strip():
-            errors.append(f"{label}.consequence must be empty for {verdict}")
+        elif execution_status == "evaluated" and verdict in {"fail", "uncertain"}:
+            if not consequence.strip():
+                errors.append(f"{label}.consequence is required for {verdict}")
+        elif consequence.strip():
+            errors.append(
+                f"{label}.consequence must be empty unless verdict is fail or uncertain"
+            )
         if task is not None:
             allowed_refs = allowed_refs_by_claim.get(task["claim_id"], set())
             unknown_refs = [
                 reference
-                for reference in evidence_refs
+                for reference in basis_refs + support_refs
                 if reference not in nodes or reference not in allowed_refs
             ]
             if unknown_refs:
                 errors.append(
-                    f"{label}.evidence_refs contains nodes outside the claim context: "
-                    f"{unknown_refs}"
+                    f"{label} contains nodes outside the claim context: {unknown_refs}"
                 )
+            if schema_version == 2 and execution_status == "evaluated" and verdict == "pass":
+                check = check_by_id.get(task["check_id"], {})
+                policy = check.get("evidence_policy")
+                if task["claim_id"] in support_refs:
+                    errors.append(
+                        f"{label}.support_refs must not contain the target Claim; "
+                        "use basis_refs for claim text"
+                    )
+                if policy == "upstream-required":
+                    independent = [
+                        reference
+                        for reference in support_refs
+                        if reference != task["claim_id"]
+                    ]
+                    if not independent:
+                        errors.append(
+                            f"{label}.support_refs requires an upstream node independent "
+                            "of the target Claim"
+                        )
+                elif policy == "citation-required":
+                    if not any(
+                        reference in nodes and nodes[reference][0] == "citation"
+                        for reference in support_refs
+                    ):
+                        errors.append(
+                            f"{label}.support_refs requires a Citation for this check"
+                        )
     if len(actual_ids) != len(set(actual_ids)):
         errors.append("results must not repeat task IDs")
     if status == "complete" and actual_ids != expected_ids:
@@ -1037,13 +1309,21 @@ def build_argument_findings(
     claim_by_id = {claim["id"]: claim for claim in argument["claims"]}
     nodes = _node_registry(argument)
     findings: list[dict[str, Any]] = []
+    results_version = int(results["schema_version"])
     for result in results["results"]:
+        if results_version == 2 and result["execution_status"] != "evaluated":
+            continue
         if result["verdict"] not in {"fail", "uncertain"}:
             continue
         task = task_by_id[result["task_id"]]
         claim = claim_by_id[task["claim_id"]]
         resolved_evidence = []
-        for reference in result["evidence_refs"]:
+        evidence_refs = (
+            result["basis_refs"]
+            if results_version == 2
+            else result["evidence_refs"]
+        )
+        for reference in evidence_refs:
             node_kind, node = nodes[reference]
             resolved_evidence.append(
                 {
@@ -1065,7 +1345,7 @@ def build_argument_findings(
                 "position": claim["position"],
                 "reason": result["reason"],
                 "consequence": result["consequence"],
-                "evidence_refs": list(result["evidence_refs"]),
+                "evidence_refs": list(evidence_refs),
                 "evidence": resolved_evidence,
             }
         )

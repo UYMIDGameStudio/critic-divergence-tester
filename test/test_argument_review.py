@@ -15,6 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 import argument_contracts as contracts  # noqa: E402
+import argument_ir  # noqa: E402
 import argument_review as review  # noqa: E402
 import argument_workbench as workbench  # noqa: E402
 import critic_runner  # noqa: E402
@@ -56,25 +57,54 @@ class ArgumentReviewTests(unittest.TestCase):
         second: str = "uncertain",
     ) -> dict[str, object]:
         plan = json.loads(paths.plan.read_text(encoding="utf-8"))
+        check_by_id = {check["id"]: check for check in plan["checks"]}
+        argument = plan["argument_ir"]
+        node_kinds = {
+            item["id"]: kind
+            for kind, field in (
+                ("claim", "claims"),
+                ("evidence", "evidence"),
+                ("assumption", "assumptions"),
+                ("citation", "citations"),
+            )
+            for item in argument[field]
+        }
         verdicts = [first, second]
         items: list[dict[str, object]] = []
         for index, task in enumerate(plan["tasks"]):
             verdict = verdicts[index] if index < len(verdicts) else "pass"
+            policy = check_by_id[task["check_id"]]["evidence_policy"]
+            context = argument_ir._context_node_ids(argument, task["claim_id"])
+            support_refs = []
+            if verdict == "pass" and policy == "upstream-required":
+                support_refs = [
+                    next(
+                        ref for ref in sorted(context) if ref != task["claim_id"]
+                    )
+                ]
+            elif verdict == "pass" and policy == "citation-required":
+                support_refs = [
+                    next(
+                        ref
+                        for ref in sorted(context)
+                        if node_kinds.get(ref) == "citation"
+                    )
+                ]
             items.append(
                 {
                     "task_id": task["id"],
+                    "execution_status": "evaluated",
                     "verdict": verdict,
                     "reason": f"Reason for {task['check_id']}",
-                    "evidence_refs": [task["claim_id"]]
-                    if verdict != "uncertain"
-                    else [],
+                    "basis_refs": [task["claim_id"], *support_refs],
+                    "support_refs": support_refs,
                     "consequence": "Revise or inspect this Claim."
                     if verdict in {"fail", "uncertain"}
                     else "",
                 }
             )
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "artifact": "argument-check-results",
             "source": {"plan_sha256": contracts.sha256_bytes(paths.plan.read_bytes())},
             "status": "complete",
@@ -191,6 +221,68 @@ class ArgumentReviewTests(unittest.TestCase):
             self.assertIn("no comparison denominator", markdown)
             self.assertIn("interpret.rival-reading", markdown)
             self.assertEqual(workbench.verify_workspace(workspace), [])
+
+    def test_non_evaluated_outcomes_remain_auditable_without_becoming_findings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self.make_project(Path(temporary))
+            paths = self.prepare(workspace)
+            results = self.results(paths)
+            results["results"][0].update(
+                execution_status="routing_mismatch",
+                verdict=None,
+                reason="The extracted method does not match this empirical check.",
+                basis_refs=["C1"],
+                support_refs=[],
+                consequence="",
+            )
+            _, attempt = review.collect_review_results(
+                workspace.root,
+                self.encoded(results),
+                review_id=paths.review_id,
+                method="file",
+                source_name="mixed-status-results.json",
+                producer_label="review-model",
+            )
+            self.assertEqual(attempt["validation"], {"status": "valid", "errors": []})
+            derived = paths.derived_attempt_dir("attempt-0001")
+            index = json.loads(
+                (derived / "claim-review-index.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(index["summary"]["routing_mismatch"], 1)
+            self.assertIsNone(index["outcomes"][0]["finding_id"])
+            self.assertEqual(index["outcomes"][0]["verdict"], None)
+            self.assertEqual(len(list((derived / "findings").glob("F*.json"))), 1)
+            markdown = (derived / "claim-review.md").read_text(encoding="utf-8")
+            self.assertIn("ROUTING_MISMATCH", markdown)
+            self.assertEqual(workbench.verify_workspace(workspace.root), [])
+
+    def test_cli_scope_targets_one_claim_without_changing_check_depth(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self.make_project(Path(temporary))
+            with redirect_stdout(StringIO()):
+                self.assertEqual(
+                    critic_runner.main(
+                        [
+                            "ir",
+                            "review",
+                            "prepare",
+                            str(workspace.root),
+                            "--scope",
+                            "claim",
+                            "--claim",
+                            "C2",
+                            "--depth",
+                            "core",
+                        ]
+                    ),
+                    0,
+                )
+            paths = review.list_rule_reviews(workspace.root)[0]
+            plan = json.loads(paths.plan.read_text(encoding="utf-8"))
+            self.assertEqual(plan["review_scope"]["kind"], "claim")
+            self.assertEqual(plan["review_scope"]["selected_claim_ids"], ["C2"])
+            self.assertTrue(all(task["claim_id"] == "C2" for task in plan["tasks"]))
+            self.assertTrue(all(check["tier"] == "core" for check in plan["checks"]))
 
     def test_review_snapshots_survive_later_ir_corrections(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

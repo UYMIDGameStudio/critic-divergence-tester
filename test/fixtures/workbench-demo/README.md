@@ -36,7 +36,7 @@ py -3 critic_runner.py ir review show .\demo.argument-workbench --claim C1
 py -3 critic_runner.py ir verify-project .\demo.argument-workbench
 ```
 
-The result deliberately produces a denominator Finding for C1's universal wording and an uncertain rival-reading Finding for C3. All other applicable checks remain visible as PASS. This fixture is a regression anchor, not a claim that either model judgment is human-confirmed.
+The v2 result deliberately produces a denominator Finding for C1's universal wording and a substantive uncertain rival-reading Finding for C3. Every PASS that requires upstream support names a node other than the target Claim in `support_refs`; the citation-policy check cites Z1. This fixture is a regression anchor, not a claim that either model judgment is human-confirmed.
 
 Continue into the Phase 3 human workflow:
 

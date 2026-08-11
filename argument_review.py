@@ -24,6 +24,7 @@ from argument_contracts import (
 )
 from argument_ir import (
     CHECK_DEPTHS,
+    REVIEW_SCOPES,
     ArgumentIRError,
     build_check_plan,
     render_check_prompt,
@@ -199,9 +200,13 @@ def prepare_rule_review(
     library_path: Path | str,
     *,
     depth: str,
+    review_scope: str = "all",
+    claim_ids: list[str] | None = None,
 ) -> tuple[ReviewPaths, bool]:
     if depth not in CHECK_DEPTHS:
         raise WorkbenchError("review depth must be core or full")
+    if review_scope not in REVIEW_SCOPES:
+        raise WorkbenchError(f"review scope must be one of {REVIEW_SCOPES}")
     workspace = workspace_paths(project_dir)
     workspace_errors = verify_workspace(workspace)
     if workspace_errors:
@@ -236,6 +241,8 @@ def prepare_rule_review(
         ir_sha256=sha256_bytes(reviewed_bytes),
         library_sha256=library_sha256,
         depth=depth,
+        review_scope=review_scope,
+        claim_ids=claim_ids,
     )
     plan_bytes = json_bytes(plan)
     prompt_bytes = render_check_prompt(
@@ -268,7 +275,7 @@ def prepare_rule_review(
     version_id = str(reviewed_record["version_id"])
     created_at = utc_now()
     record = {
-        "schema_version": 1,
+        "schema_version": int(plan["schema_version"]),
         "artifact": "rule-review-run",
         "artifact_id": review_id,
         "lifecycle": "immutable",
@@ -311,6 +318,8 @@ def prepare_rule_review(
             "sha256": sha256_bytes(prompt_bytes),
         },
     }
+    if plan["schema_version"] == 2:
+        record["review_scope"] = dict(plan["review_scope"])
     contract_errors = validate_artifact(record)
     if contract_errors:
         raise WorkbenchError(
@@ -486,10 +495,27 @@ def _derive_review_attempt(
     outcomes: list[dict[str, Any]] = []
     finding_values: list[tuple[str, dict[str, Any], bytes]] = []
     actionable_number = 0
+    result_schema_version = int(results["schema_version"])
     for result in results["results"]:
         task = task_by_id[result["task_id"]]
+        execution_status = (
+            str(result["execution_status"])
+            if result_schema_version == 2
+            else "evaluated"
+        )
+        verdict = result["verdict"]
+        basis_refs = (
+            list(result["basis_refs"])
+            if result_schema_version == 2
+            else list(result["evidence_refs"])
+        )
+        support_refs = (
+            list(result["support_refs"])
+            if result_schema_version == 2
+            else []
+        )
         finding_id: str | None = None
-        if result["verdict"] in {"fail", "uncertain"}:
+        if execution_status == "evaluated" and verdict in {"fail", "uncertain"}:
             actionable_number += 1
             finding_id = (
                 f"{version_id}-{paths.review_id}-{attempt_id}-F{actionable_number:04d}"
@@ -517,11 +543,11 @@ def _derive_review_attempt(
                     "id": review["lens"]["id"],
                     "check_id": task["check_id"],
                 },
-                "verdict": result["verdict"],
+                "verdict": verdict,
                 "reason": result["reason"],
                 "evidence_refs": [
                     _versioned(version_id, reference)
-                    for reference in result["evidence_refs"]
+                    for reference in basis_refs
                 ],
                 "status": "open",
             }
@@ -534,25 +560,53 @@ def _derive_review_attempt(
             finding_values.append(
                 (f"findings/F{actionable_number:04d}.json", finding, finding_bytes)
             )
-        outcomes.append(
+        outcome = {
+            "task_id": result["task_id"],
+            "target_claim": _versioned(version_id, task["claim_id"]),
+            "check_id": task["check_id"],
+            "verdict": verdict,
+            "reason": result["reason"],
+            "consequence": result["consequence"],
+        }
+        if result_schema_version == 2:
+            outcome["execution_status"] = execution_status
+            outcome["basis_refs"] = [
+                _versioned(version_id, reference) for reference in basis_refs
+            ]
+            outcome["support_refs"] = [
+                _versioned(version_id, reference) for reference in support_refs
+            ]
+            outcome["finding_id"] = finding_id
+        else:
+            outcome["evidence_refs"] = [
+                _versioned(version_id, reference) for reference in basis_refs
+            ]
+            outcome["finding_id"] = finding_id
+        outcomes.append(outcome)
+    summary = {
+        verdict_name: sum(
+            1
+            for outcome in outcomes
+            if outcome.get("execution_status", "evaluated") == "evaluated"
+            and outcome["verdict"] == verdict_name
+        )
+        for verdict_name in FINDING_VERDICTS
+    }
+    if result_schema_version == 2:
+        summary.update(
             {
-                "task_id": result["task_id"],
-                "target_claim": _versioned(version_id, task["claim_id"]),
-                "check_id": task["check_id"],
-                "verdict": result["verdict"],
-                "reason": result["reason"],
-                "consequence": result["consequence"],
-                "evidence_refs": [
-                    _versioned(version_id, reference)
-                    for reference in result["evidence_refs"]
-                ],
-                "finding_id": finding_id,
+                status_name: sum(
+                    1
+                    for outcome in outcomes
+                    if outcome["execution_status"] == status_name
+                )
+                for status_name in (
+                    "blocked_missing_context",
+                    "routing_mismatch",
+                    "not_applicable",
+                )
             }
         )
-    summary = {
-        verdict: sum(1 for outcome in outcomes if outcome["verdict"] == verdict)
-        for verdict in FINDING_VERDICTS
-    }
     markdown = render_claim_review(
         review,
         plan,
@@ -573,7 +627,7 @@ def _derive_review_attempt(
             _parent(f"finding-{index:04d}", "argument-finding", finding_bytes)
         )
     index = {
-        "schema_version": 1,
+        "schema_version": result_schema_version,
         "artifact": "claim-review-index",
         "artifact_id": f"{paths.review_id}-{attempt_id}-claim-review",
         "lifecycle": "derived-replaceable",
@@ -618,10 +672,6 @@ def _derive_review_attempt(
                 "origin": "model-derived",
                 "source": "review-result-attempt",
             },
-            "outcomes.evidence_refs": {
-                "origin": "model-derived",
-                "source": "review-result-attempt",
-            },
             "outcomes.finding_id": {
                 "origin": "deterministic",
                 "source": "workbench-rule-review-v1",
@@ -636,6 +686,35 @@ def _derive_review_attempt(
             },
         },
     }
+    if result_schema_version == 2:
+        for field in ("execution_status", "basis_refs", "support_refs"):
+            index["field_provenance"][f"outcomes.{field}"] = {
+                "origin": "model-derived",
+                "source": "review-result-attempt",
+            }
+    else:
+        legacy_provenance = index["field_provenance"]
+        index["field_provenance"] = {
+            key: legacy_provenance[key]
+            for key in (
+                "outcomes.task_id",
+                "outcomes.target_claim",
+                "outcomes.check_id",
+                "outcomes.verdict",
+                "outcomes.reason",
+                "outcomes.consequence",
+            )
+        }
+        index["field_provenance"]["outcomes.evidence_refs"] = {
+            "origin": "model-derived",
+            "source": "review-result-attempt",
+        }
+        for key in (
+            "outcomes.finding_id",
+            "summary",
+            "view",
+        ):
+            index["field_provenance"][key] = legacy_provenance[key]
     index_errors = validate_artifact(index)
     if index_errors:
         raise WorkbenchError(
@@ -744,10 +823,16 @@ def render_claim_review(
         grouped = {only_claim: grouped.get(only_claim, [])}
         selected_outcomes = grouped[only_claim]
         shown_summary = {
-            verdict: sum(
-                1 for outcome in selected_outcomes if outcome["verdict"] == verdict
+            key: sum(
+                1
+                for outcome in selected_outcomes
+                if (
+                    outcome.get("execution_status", "evaluated") == "evaluated"
+                    and outcome["verdict"] == key
+                )
+                or outcome.get("execution_status") == key
             )
-            for verdict in FINDING_VERDICTS
+            for key in summary
         }
     else:
         shown_summary = summary
@@ -758,10 +843,28 @@ def render_claim_review(
         f"- Version: `{review['version_id']}`",
         f"- Lens: `{review['lens']['id']}` (Rule Lens)",
         f"- Depth: `{review['depth']}`",
+        *(
+            [
+                f"- Scope: `{review['review_scope']['kind']}`; Claims: "
+                + ", ".join(review["review_scope"]["selected_claim_ids"])
+            ]
+            if "review_scope" in review
+            else []
+        ),
         f"- Result attempt: `{attempt_id}`",
         f"- Result SHA-256: `{result_sha256}`",
         "- Semantic verdicts and reasons are model-derived; Finding status remains open until human adjudication.",
         f"- Outcomes: {shown_summary['pass']} pass, {shown_summary['fail']} fail, {shown_summary['uncertain']} uncertain",
+        *(
+            [
+                "- Non-findings: "
+                f"{shown_summary['blocked_missing_context']} blocked missing context, "
+                f"{shown_summary['routing_mismatch']} routing mismatch, "
+                f"{shown_summary['not_applicable']} not applicable"
+            ]
+            if "blocked_missing_context" in shown_summary
+            else []
+        ),
         "",
     ]
     for claim_id, claim in claim_by_versioned.items():
@@ -784,11 +887,16 @@ def render_claim_review(
             lines.extend(["No applicable checks in this review.", ""])
             continue
         for outcome in claim_outcomes:
-            marker = {
-                "pass": "PASS",
-                "fail": "FAIL",
-                "uncertain": "UNCERTAIN",
-            }[str(outcome["verdict"])]
+            execution_status = outcome.get("execution_status", "evaluated")
+            marker = (
+                {
+                    "pass": "PASS",
+                    "fail": "FAIL",
+                    "uncertain": "UNCERTAIN",
+                }[str(outcome["verdict"])]
+                if execution_status == "evaluated"
+                else str(execution_status).upper()
+            )
             finding = (
                 f" `{outcome['finding_id']}`" if outcome["finding_id"] is not None else ""
             )
@@ -797,7 +905,16 @@ def render_claim_review(
                     f"### {marker}{finding} - `{outcome['check_id']}`",
                     "",
                     f"- Reason: {outcome['reason']} `[model-derived]`",
-                    f"- Evidence refs: {', '.join(outcome['evidence_refs']) or 'none'}",
+                    *(
+                        [
+                            f"- Basis refs: {', '.join(outcome['basis_refs']) or 'none'}",
+                            f"- PASS support refs: {', '.join(outcome['support_refs']) or 'none'}",
+                        ]
+                        if "basis_refs" in outcome
+                        else [
+                            f"- Evidence refs: {', '.join(outcome['evidence_refs']) or 'none'}"
+                        ]
+                    ),
                 ]
             )
             if outcome["consequence"]:
@@ -993,6 +1110,10 @@ def verify_reviews(project_dir: Path | str) -> list[str]:
             errors.append(f"{prefix}: Rule Lens identity is not bound to the library")
         if review.get("depth") != plan.get("depth"):
             errors.append(f"{prefix}: review depth does not match check plan")
+        if plan.get("schema_version") == 2 and review.get("review_scope") != plan.get(
+            "review_scope"
+        ):
+            errors.append(f"{prefix}: review scope does not match check plan")
         for field in ("project_id", "document_id", "version_id"):
             if review.get(field) != reviewed_record.get(field):
                 errors.append(

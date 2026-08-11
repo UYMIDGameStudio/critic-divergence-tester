@@ -59,6 +59,7 @@ from argument_adjudication import (
     rebuild_revision_plan as rebuild_workbench_revision_plan,
     run_adjudicator as run_workbench_adjudicator,
 )
+from argument_baseline import collect_direct_review_baseline
 from argument_gate import (
     METRIC_KEYS as GATE_A_METRIC_KEYS,
     append_assessment as append_gate_a_assessment,
@@ -3080,6 +3081,8 @@ def ir_review_prepare_command(args: argparse.Namespace) -> int:
         args.project,
         args.rules,
         depth=args.depth,
+        review_scope=args.scope,
+        claim_ids=args.claim,
     )
     print(f"Rule Review: {paths.review_id}")
     print(f"Review prompt: {paths.prompt}")
@@ -3211,6 +3214,22 @@ def ir_gate_a_readiness_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def ir_gate_a_baseline_command(args: argparse.Namespace) -> int:
+    paths = collect_direct_review_baseline(
+        args.project,
+        prompt_file=args.prompt_file,
+        response_file=args.response_file,
+        model_label=args.model_label,
+        started_at=args.started_at,
+        completed_at=args.completed_at,
+        producer_label=args.producer_label,
+    )
+    print(f"Direct-review baseline: {paths.record}")
+    print("Exact prompt/response bytes and elapsed time were preserved.")
+    print("No comparison or Gate decision was made.")
+    return 0
+
+
 def ir_gate_a_assess_command(args: argparse.Namespace) -> int:
     metrics = {key: getattr(args, key) for key in GATE_A_METRIC_KEYS}
     output = append_gate_a_assessment(
@@ -3306,6 +3325,8 @@ def ir_plan_command(args: argparse.Namespace) -> int:
         ir_sha256=sha256_bytes(ir_bytes),
         library_sha256=sha256_bytes(library_bytes),
         depth=args.depth,
+        review_scope=args.scope,
+        claim_ids=args.claim,
     )
     plan_errors = validate_check_plan(plan)
     if plan_errors:
@@ -4209,6 +4230,18 @@ def parser() -> argparse.ArgumentParser:
         default="core",
         help="core checks only, or core plus extended checks (default: core)",
     )
+    ir_review_prepare_parser.add_argument(
+        "--scope",
+        choices=("thesis-chain", "claim", "claims", "all"),
+        default="thesis-chain",
+        help="Claims to review (default: conclusion/intermediate support chain)",
+    )
+    ir_review_prepare_parser.add_argument(
+        "--claim",
+        action="append",
+        default=[],
+        help="Claim ID used by claim/claims scope, or pinned into thesis-chain",
+    )
     ir_review_prepare_parser.set_defaults(func=ir_review_prepare_command)
 
     ir_review_collect_parser = ir_review_sub.add_parser(
@@ -4328,6 +4361,35 @@ def parser() -> argparse.ArgumentParser:
     )
     ir_gate_a_readiness_parser.set_defaults(func=ir_gate_a_readiness_command)
 
+    ir_gate_a_baseline_parser = ir_gate_a_sub.add_parser(
+        "baseline",
+        help="immutably collect a direct full-text chat comparison",
+    )
+    ir_gate_a_baseline_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    ir_gate_a_baseline_parser.add_argument(
+        "--prompt-file", required=True, help="exact UTF-8 direct-chat prompt"
+    )
+    ir_gate_a_baseline_parser.add_argument(
+        "--response-file", required=True, help="exact UTF-8 model response"
+    )
+    ir_gate_a_baseline_parser.add_argument(
+        "--model-label", required=True, help="human-supplied model/version label"
+    )
+    ir_gate_a_baseline_parser.add_argument(
+        "--started-at", required=True, help="timezone-aware ISO start time"
+    )
+    ir_gate_a_baseline_parser.add_argument(
+        "--completed-at", required=True, help="timezone-aware ISO completion time"
+    )
+    ir_gate_a_baseline_parser.add_argument(
+        "--producer-label",
+        default="direct-chat-model",
+        help="provenance label for the response producer",
+    )
+    ir_gate_a_baseline_parser.set_defaults(func=ir_gate_a_baseline_command)
+
     ir_gate_a_init_parser = ir_gate_a_sub.add_parser(
         "init", help="capture exact hashes for 3-5 completed Workbench projects"
     )
@@ -4423,6 +4485,18 @@ def parser() -> argparse.ArgumentParser:
         choices=("core", "full"),
         default="core",
         help="core checks only, or core plus extended checks (default: core)",
+    )
+    ir_plan_parser.add_argument(
+        "--scope",
+        choices=("thesis-chain", "claim", "claims", "all"),
+        default="thesis-chain",
+        help="Claims to review (default: conclusion/intermediate support chain)",
+    )
+    ir_plan_parser.add_argument(
+        "--claim",
+        action="append",
+        default=[],
+        help="Claim ID used by claim/claims scope, or pinned into thesis-chain",
     )
     ir_plan_parser.add_argument(
         "--output", help="check-plan JSON path (default: beside Argument IR)"

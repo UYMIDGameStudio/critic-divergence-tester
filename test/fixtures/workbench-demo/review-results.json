@@ -1,101 +1,127 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "artifact": "argument-check-results",
   "source": {
-    "plan_sha256": "f1a812ba887b19d4c872687f8f63ff7605e3843fda2320a89c0f1b1a5176d783"
+    "plan_sha256": "f849a39c7b15e3a40aa5d23f8468a218afb2079e8e0a40df2d6aeca779b4f4ae"
   },
   "status": "complete",
   "unverified": [],
   "results": [
     {
       "task_id": "T1",
+      "execution_status": "evaluated",
       "verdict": "pass",
       "reason": "The manuscript supplies a concrete observation for the main descriptive Claim.",
-      "evidence_refs": ["C1"],
+      "basis_refs": ["C1", "E2"],
+      "support_refs": ["E2"],
       "consequence": ""
     },
     {
       "task_id": "T2",
+      "execution_status": "evaluated",
       "verdict": "pass",
       "reason": "The scope under review is identifiable from the stated public cases.",
-      "evidence_refs": ["C1"],
+      "basis_refs": ["C1", "E2"],
+      "support_refs": ["E2"],
       "consequence": ""
     },
     {
       "task_id": "T3",
+      "execution_status": "evaluated",
       "verdict": "pass",
       "reason": "The observed shift from rules to a visible actor is described concretely.",
-      "evidence_refs": ["C1"],
+      "basis_refs": ["C1", "E2"],
+      "support_refs": ["E2"],
       "consequence": ""
     },
     {
       "task_id": "T4",
+      "execution_status": "evaluated",
       "verdict": "pass",
       "reason": "The manuscript identifies the cases used for this local observation.",
-      "evidence_refs": ["C1"],
+      "basis_refs": ["C1", "E2"],
+      "support_refs": ["E2"],
       "consequence": ""
     },
     {
       "task_id": "T5",
+      "execution_status": "evaluated",
       "verdict": "fail",
       "reason": "All three cited cases are positive cases; there is no comparison denominator for the word 'always'.",
-      "evidence_refs": ["C1"],
+      "basis_refs": ["C1", "E1", "E2"],
+      "support_refs": [],
       "consequence": "The universal wording exceeds what the selected cases can establish and should be narrowed or compared against negative cases."
     },
     {
       "task_id": "T6",
+      "execution_status": "evaluated",
       "verdict": "pass",
       "reason": "The conceptual definition is explicitly stated in the manuscript.",
-      "evidence_refs": ["C2"],
+      "basis_refs": ["C2", "E1"],
+      "support_refs": ["E1"],
       "consequence": ""
     },
     {
       "task_id": "T7",
+      "execution_status": "evaluated",
       "verdict": "pass",
       "reason": "The definition is presented for the argument's local use rather than as a universal taxonomy.",
-      "evidence_refs": ["C2"],
+      "basis_refs": ["C2", "E1"],
+      "support_refs": ["E1"],
       "consequence": ""
     },
     {
       "task_id": "T8",
+      "execution_status": "evaluated",
       "verdict": "pass",
       "reason": "The definition distinguishes an individual bearer of blame from the institutional allocation being displaced.",
-      "evidence_refs": ["C2"],
+      "basis_refs": ["C2"],
+      "support_refs": [],
       "consequence": ""
     },
     {
       "task_id": "T9",
+      "execution_status": "evaluated",
       "verdict": "pass",
       "reason": "The Claim keeps the individual and institutional levels distinct in its wording.",
-      "evidence_refs": ["C2"],
+      "basis_refs": ["C2"],
+      "support_refs": [],
       "consequence": ""
     },
     {
       "task_id": "T10",
+      "execution_status": "evaluated",
       "verdict": "pass",
       "reason": "The interpretive conclusion is connected to the preceding descriptive and conceptual Claims.",
-      "evidence_refs": ["C3"],
+      "basis_refs": ["C3", "C1"],
+      "support_refs": ["C1"],
       "consequence": ""
     },
     {
       "task_id": "T11",
+      "execution_status": "evaluated",
       "verdict": "pass",
       "reason": "The conclusion is framed as a risk in analyzing public controversy, not as a claim about every inquiry.",
-      "evidence_refs": ["C3"],
+      "basis_refs": ["C3", "C1"],
+      "support_refs": ["C1"],
       "consequence": ""
     },
     {
       "task_id": "T12",
+      "execution_status": "evaluated",
       "verdict": "pass",
       "reason": "The relevant context is the manuscript's account of public controversy and institutional responsibility.",
-      "evidence_refs": ["C3"],
+      "basis_refs": ["C3", "Z1"],
+      "support_refs": ["Z1"],
       "consequence": ""
     },
     {
       "task_id": "T13",
+      "execution_status": "evaluated",
       "verdict": "uncertain",
       "reason": "The extracted IR does not contain enough material to distinguish the institutional-responsibility reading from a rival reading centered on ordinary personal accountability.",
-      "evidence_refs": [],
+      "basis_refs": ["C3", "C1"],
+      "support_refs": [],
       "consequence": "A competing interpretation remains open and should be addressed explicitly."
     }
   ]

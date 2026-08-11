@@ -14,8 +14,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 import argument_adjudication as adjudication  # noqa: E402
+import argument_baseline as baseline  # noqa: E402
 import argument_contracts as contracts  # noqa: E402
 import argument_gate as gate  # noqa: E402
+import argument_ir  # noqa: E402
 import argument_review as review  # noqa: E402
 import argument_workbench as workbench  # noqa: E402
 import critic_runner  # noqa: E402
@@ -27,7 +29,12 @@ RULES = REPO_ROOT / "ir" / "social-science-checks.json"
 
 class ArgumentGateTests(unittest.TestCase):
     def completed_project(
-        self, root: Path, number: int, *, open_finding: bool = False
+        self,
+        root: Path,
+        number: int,
+        *,
+        open_finding: bool = False,
+        with_baseline: bool = True,
     ) -> workbench.WorkspacePaths:
         source = root / f"真实稿件-{number}.md"
         source_bytes = (FIXTURE / "manuscript.md").read_bytes() + (
@@ -55,21 +62,52 @@ class ArgumentGateTests(unittest.TestCase):
         review_paths, _ = review.prepare_rule_review(workspace.root, RULES, depth="core")
         plan = json.loads(review_paths.plan.read_text(encoding="utf-8"))
         results = {
-            "schema_version": 1,
+            "schema_version": 2,
             "artifact": "argument-check-results",
             "source": {"plan_sha256": contracts.sha256_bytes(review_paths.plan.read_bytes())},
             "status": "complete",
             "unverified": [],
             "results": [],
         }
+        check_by_id = {check["id"]: check for check in plan["checks"]}
+        argument = plan["argument_ir"]
+        node_kinds = {
+            item["id"]: kind
+            for kind, field in (
+                ("claim", "claims"),
+                ("evidence", "evidence"),
+                ("assumption", "assumptions"),
+                ("citation", "citations"),
+            )
+            for item in argument[field]
+        }
         for index, task in enumerate(plan["tasks"]):
             verdict = "fail" if open_finding and index == 0 else "pass"
+            policy = check_by_id[task["check_id"]]["evidence_policy"]
+            context = argument_ir._context_node_ids(argument, task["claim_id"])
+            support_refs = []
+            if verdict == "pass" and policy == "upstream-required":
+                support_refs = [
+                    next(
+                        ref for ref in sorted(context) if ref != task["claim_id"]
+                    )
+                ]
+            elif verdict == "pass" and policy == "citation-required":
+                support_refs = [
+                    next(
+                        ref
+                        for ref in sorted(context)
+                        if node_kinds.get(ref) == "citation"
+                    )
+                ]
             results["results"].append(
                 {
                     "task_id": task["id"],
+                    "execution_status": "evaluated",
                     "verdict": verdict,
                     "reason": "The evaluator found a test outcome for this workflow.",
-                    "evidence_refs": [task["claim_id"]],
+                    "basis_refs": [task["claim_id"], *support_refs],
+                    "support_refs": support_refs,
                     "consequence": "Revise this Claim." if verdict == "fail" else "",
                 }
             )
@@ -82,6 +120,22 @@ class ArgumentGateTests(unittest.TestCase):
             producer_label="test-review-model",
         )
         adjudication.rebuild_revision_plan(workspace.root)
+        prompt = root / f"direct-prompt-{number}.md"
+        response = root / f"direct-response-{number}.md"
+        prompt.write_text("Review this complete manuscript directly.\n", encoding="utf-8")
+        response.write_text(
+            f"Direct review response for manuscript {number}.\n", encoding="utf-8"
+        )
+        if with_baseline:
+            baseline.collect_direct_review_baseline(
+                workspace.root,
+                prompt_file=prompt,
+                response_file=response,
+                model_label="test-model-v1",
+                started_at="2026-08-10T10:00:00+08:00",
+                completed_at="2026-08-10T10:02:00+08:00",
+                producer_label="test-direct-model",
+            )
         self.assertEqual(workbench.verify_workspace(workspace.root), [])
         return workspace
 
@@ -147,6 +201,44 @@ class ArgumentGateTests(unittest.TestCase):
             for project in projects:
                 self.assertEqual(workbench.verify_workspace(project), [])
 
+    def test_readiness_requires_a_bound_direct_review_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            projects = [
+                self.completed_project(root, 1).root,
+                self.completed_project(root, 2).root,
+                self.completed_project(root, 3, with_baseline=False).root,
+            ]
+            readiness = gate.gate_readiness(projects)
+            self.assertEqual(readiness["summary"]["ready_for_capture"], 2)
+            missing = readiness["projects"][2]
+            self.assertFalse(missing["direct_review_baseline"])
+            self.assertIn("ir gate-a baseline", missing["next_command"])
+            with self.assertRaisesRegex(workbench.WorkbenchError, "no direct-review"):
+                gate.initialize_gate(root / "missing.product-gate-a", projects)
+
+    def test_gate_rejects_a_baseline_captured_after_workbench_review(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            projects = [
+                self.completed_project(root, number).root for number in range(1, 4)
+            ]
+            baseline.collect_direct_review_baseline(
+                projects[2],
+                prompt_file=root / "direct-prompt-3.md",
+                response_file=root / "direct-response-3.md",
+                model_label="test-model-v1",
+                started_at="2030-08-10T10:00:00+08:00",
+                completed_at="2030-08-10T10:02:00+08:00",
+                producer_label="test-direct-model",
+            )
+            self.assertEqual(workbench.verify_workspace(projects[2]), [])
+            with self.assertRaisesRegex(
+                workbench.WorkbenchError,
+                "completed after a Workbench Rule Review result",
+            ):
+                gate.initialize_gate(root / "contaminated.product-gate-a", projects)
+
     def test_private_corpus_assessments_and_human_decision_are_traceable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -154,7 +246,22 @@ class ArgumentGateTests(unittest.TestCase):
             paths = gate.initialize_gate(root / "evidence.product-gate-a", projects)
             self.assertEqual(gate.verify_gate(paths.root), [])
             corpus = json.loads(paths.corpus.read_text(encoding="utf-8"))
+            self.assertEqual(corpus["schema_version"], 2)
             self.assertEqual(len(corpus["entries"]), 3)
+            self.assertTrue(
+                all(
+                    "direct_review_baseline" in entry["bindings"]
+                    for entry in corpus["entries"]
+                )
+            )
+            self.assertEqual(
+                sum(
+                    1
+                    for parent in corpus["parents"]
+                    if parent["artifact"] == "direct-review-baseline"
+                ),
+                3,
+            )
             corpus_text = paths.corpus.read_text(encoding="utf-8")
             self.assertNotIn("本文主张", corpus_text)
             report = json.loads(paths.report_record.read_text(encoding="utf-8"))
@@ -178,6 +285,12 @@ class ArgumentGateTests(unittest.TestCase):
                     notes=f"Human observation {index}",
                 )
                 self.assertEqual(output.name, f"AS{index:04d}.json")
+                assessment = json.loads(output.read_text(encoding="utf-8"))
+                self.assertEqual(assessment["schema_version"], 2)
+                self.assertIn(
+                    "direct-review-baseline",
+                    {parent["role"] for parent in assessment["parents"]},
+                )
             with self.assertRaisesRegex(workbench.WorkbenchError, "already exists"):
                 gate.append_assessment(
                     paths.root,
