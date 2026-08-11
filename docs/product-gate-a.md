@@ -14,6 +14,18 @@ Candidate discovery was pinned at source commit `0f78443`. Before starting a rea
 | `the-dynamic-dialectic-of-knowledge-systems-on-change-and-invariance-in-theoretical-identity.md` | `92cebd820b2c9487ccd3f250b9bc1c3903c3db276797df7332606ff7e6b53fd1` |
 | `diachronic-continuity-and-argumentative-responsibility-in-knowledge-migration.md` | `60dbb82c963b356166a02104a2ab986994f94c04b265ca806de87e8d36b31fb6` |
 
+### Author-run execution status
+
+The private author workspaces and model responses remain outside the repository. This table records only reproducibility metadata and does not count a manuscript as Gate-complete.
+
+| Candidate | Direct baseline | Model | Prompt SHA-256 | Response SHA-256 | Elapsed | Next uncompleted step |
+|---|---|---|---|---|---:|---|
+| `the-structural-stand-in.md` | controlled `DB1` | OpenAI `gpt-5.6-sol`, high reasoning | `61d8b971ae0d6bd9a6b67ad98d89a00b44bcfc8206543f791efcb374aa0459cd` | `891b438bde3246e0f91dbadb77c77a64eda120ae5da8830c0d8d523f2a335a90` | 293,097 ms | collect Raw IR |
+| `the-dynamic-dialectic-of-knowledge-systems-on-change-and-invariance-in-theoretical-identity.md` | prompt prepared; response pending | — | `8aab782a912a27b8259afda484865461a90e7b90144684cafa44bd47761466bc` | — | — | run fresh direct baseline |
+| `diachronic-continuity-and-argumentative-responsibility-in-knowledge-migration.md` | prompt prepared; response pending | — | `59b244e8cfcb191fd97aeec221a213d99aa1a89f406219218d5aebe4ed183745` | — | — | run fresh direct baseline |
+
+The P1 response is an immutable model-derived comparison artifact, not an accepted review and not evidence that its citations or factual assertions are correct. No P1 Workbench IR or Finding influenced that fresh-session response.
+
 Every manuscript must complete the same Phase 1–3 path:
 
 1. in a fresh conversation with no prior context, preserve one direct full-text chat prompt, raw response, provider/model ID, full-manuscript delivery declaration, and actual elapsed time before Workbench Findings influence the evaluator;
