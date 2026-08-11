@@ -32,11 +32,23 @@ Each candidate now has one immutable, source-bound `attempt-0001`. The Reviewed 
 
 | Candidate | Raw response SHA-256 | Raw record SHA-256 | Initial Reviewed IR SHA-256 | C / E / A / Z / R | Next uncompleted step |
 |---|---|---|---|---:|---|
-| `the-structural-stand-in.md` | `7583e1a72f4b83e331026adbaab88909a3c1e6d2e5bb8187f4d07da083b8a1cd` | `5b835416de7337da5fa803cd1906ca6da32395bf915a7fe7497bae981d76569d` | `003f4e0367e39a8748c0be5fc69a9a80307a1fdcd7418b5c7bb73ec88679830a` | 13 / 7 / 2 / 4 / 25 | timed human IR inspection |
+| `the-structural-stand-in.md` | `7583e1a72f4b83e331026adbaab88909a3c1e6d2e5bb8187f4d07da083b8a1cd` | `5b835416de7337da5fa803cd1906ca6da32395bf915a7fe7497bae981d76569d` | `003f4e0367e39a8748c0be5fc69a9a80307a1fdcd7418b5c7bb73ec88679830a` | 13 / 7 / 2 / 4 / 25 | prepare Rule Review |
 | `the-dynamic-dialectic-of-knowledge-systems-on-change-and-invariance-in-theoretical-identity.md` | `dacd887daaef667e1f3dd92afab5dc74c5279e0f49a045ff3a3fbba74a8e7557` | `312c749b5fba9aee5fea9832e49979aad5c07fd7150d8a80ad6e05a2085adbad` | `3e818b5f3fcf09ee6b49ff2ad9a507a4c1408b208d54f6cc84d8e1379f00d707` | 12 / 5 / 2 / 7 / 27 | timed human IR inspection |
 | `diachronic-continuity-and-argumentative-responsibility-in-knowledge-migration.md` | `9a00b13c3db957e2152196e4d2a6afc19888175fc9c885ab45df969c222994b8` | `cb519288d62b1a96081d4c80de4b8219bf5d6b94cc9c0ff59ba562d2465818d2` | `212024271d1fab7d8b04a5331be76e9581b2b8394e4a030d7fb33723ba5aabd0` | 13 / 6 / 2 / 6 / 27 | timed human IR inspection |
 
 The extraction producer label records OpenAI `gpt-5.6-sol` with high reasoning. It identifies model-derived output only; it does not human-confirm any node, relation, citation, or uncertainty entry.
+
+### Human IR inspection status
+
+The first author inspection was completed through the line-oriented Inspector without editing JSON. The measured duration includes initial UI confusion, the clarification of what IR deletion means, and the guided node-by-node review; it must not be interpreted as pure editing time.
+
+| Candidate | Session | Exact elapsed | Correction events | Net result | Reviewed IR SHA-256 | Reviewed record SHA-256 | Next uncompleted step |
+|---|---|---:|---:|---|---|---|---|
+| `the-structural-stand-in.md` | `GS1` (`bc75d31b714c6708f944aaf259eb949707294f79f7eb4a3135993202a694a12c`) | 5,899,678 ms | 5 | 13 → 10 Claims; three deletions, one deletion later reverted; all other nodes and 18 surviving relations retained; E2/E3/Z2 human-confirmed as intentionally unbound | `8d01bea49786f872216fdbcc215143c8aabad0b418c6c9a79b2ea69d26459ebb` | `a4d517a6dcecbc7b17f72113214e9c01dadfcf434a300c880a84e938cff7dafa` | prepare Rule Review |
+| `the-dynamic-dialectic-of-knowledge-systems-on-change-and-invariance-in-theoretical-identity.md` | pending | — | 0 | zero-correction model replay only | — | — | timed human IR inspection |
+| `diachronic-continuity-and-argumentative-responsibility-in-knowledge-migration.md` | pending | — | 0 | zero-correction model replay only | — | — | timed human IR inspection |
+
+The P1 correction chain consists of immutable `IC0001`–`IC0005`; `IC0005` reverts `IC0004` rather than erasing it. The final Reviewed record binds the ordered correction hashes. The session and final Reviewed artifacts both pass `ir verify-project`.
 
 Every manuscript must complete the same Phase 1–3 path:
 
