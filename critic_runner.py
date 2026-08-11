@@ -76,7 +76,14 @@ from argument_gate import (
     render_gate_readiness,
     verify_gate,
 )
-from argument_contracts import GATE_A_BURDENS, GATE_A_COMPARISONS, GATE_A_DECISIONS
+from argument_contracts import (
+    BASELINE_INTERACTION_MODES,
+    BASELINE_MANUSCRIPT_DELIVERY,
+    BASELINE_PRIOR_CONTEXTS,
+    GATE_A_BURDENS,
+    GATE_A_COMPARISONS,
+    GATE_A_DECISIONS,
+)
 from critic_execution import ExecutorResult, execute_with_limits
 from critic_scoring import (
     ALL_COMPARISONS,
@@ -3254,6 +3261,12 @@ def ir_gate_a_baseline_command(args: argparse.Namespace) -> int:
         prompt_file=args.prompt_file,
         response_file=args.response_file,
         model_label=args.model_label,
+        model_provider=args.model_provider,
+        model_id=args.model_id,
+        interaction_mode=args.interaction_mode,
+        prior_context=args.prior_context,
+        manuscript_delivery=args.manuscript_delivery,
+        full_manuscript_confirmed=args.full_manuscript_confirmed,
         started_at=args.started_at,
         completed_at=args.completed_at,
         producer_label=args.producer_label,
@@ -4446,6 +4459,35 @@ def parser() -> argparse.ArgumentParser:
     )
     ir_gate_a_baseline_parser.add_argument(
         "--model-label", required=True, help="human-supplied model/version label"
+    )
+    ir_gate_a_baseline_parser.add_argument(
+        "--model-provider", required=True, help="human-supplied provider name"
+    )
+    ir_gate_a_baseline_parser.add_argument(
+        "--model-id", required=True, help="provider model identifier"
+    )
+    ir_gate_a_baseline_parser.add_argument(
+        "--interaction-mode",
+        choices=BASELINE_INTERACTION_MODES,
+        required=True,
+        help="whether the comparison ran in a fresh conversation",
+    )
+    ir_gate_a_baseline_parser.add_argument(
+        "--prior-context",
+        choices=BASELINE_PRIOR_CONTEXTS,
+        required=True,
+        help="context present before the comparison prompt",
+    )
+    ir_gate_a_baseline_parser.add_argument(
+        "--manuscript-delivery",
+        choices=BASELINE_MANUSCRIPT_DELIVERY,
+        required=True,
+        help="how the complete manuscript was supplied to the model",
+    )
+    ir_gate_a_baseline_parser.add_argument(
+        "--full-manuscript-confirmed",
+        action="store_true",
+        help="human confirmation that the model received the complete manuscript",
     )
     ir_gate_a_baseline_parser.add_argument(
         "--started-at", required=True, help="timezone-aware ISO start time"

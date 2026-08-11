@@ -4,11 +4,19 @@ Product Gate A asks whether the Phase 1–3 Workbench is more understandable and
 
 ## Required corpus
 
-Use three to five real manuscripts. Include writing that has already received close human analysis when possible; the planned corpus should include 《结构的替身》 if its author can supply it. Do not count the bundled demo fixture as a real manuscript. Keep unpublished manuscript workspaces and Gate A evidence outside the repository.
+Use three to five real manuscripts. The author has identified `UYMIDGameStudio/billcharles-blog` as the source repository. The initial author-owned corpus candidates are `content/the-structural-stand-in.md`, `content/the-dynamic-dialectic-of-knowledge-systems-on-change-and-invariance-in-theoretical-identity.md`, and `content/diachronic-continuity-and-argumentative-responsibility-in-knowledge-migration.md`. Their repository presence establishes source ownership, not successful Gate evidence. Do not count the bundled demo fixture as a real manuscript. Keep manuscript workspaces and Gate A evidence outside either source repository.
+
+Candidate discovery was pinned at source commit `0f78443`. Before starting a real run, compare the current source bytes with these discovery hashes; if an article changed, use the new bytes as the manuscript version and let `DocumentVersion` record the new hash rather than silently substituting it.
+
+| Candidate | Discovery SHA-256 |
+|---|---|
+| `the-structural-stand-in.md` | `e8cec1b2186ed4f61053ed684673adbf28c734553b3cf06b46875f492d706abb` |
+| `the-dynamic-dialectic-of-knowledge-systems-on-change-and-invariance-in-theoretical-identity.md` | `92cebd820b2c9487ccd3f250b9bc1c3903c3db276797df7332606ff7e6b53fd1` |
+| `diachronic-continuity-and-argumentative-responsibility-in-knowledge-migration.md` | `60dbb82c963b356166a02104a2ab986994f94c04b265ca806de87e8d36b31fb6` |
 
 Every manuscript must complete the same Phase 1–3 path:
 
-1. preserve one direct full-text chat prompt, raw response, model label, and actual elapsed time before Workbench Findings influence the evaluator;
+1. in a fresh conversation with no prior context, preserve one direct full-text chat prompt, raw response, provider/model ID, full-manuscript delivery declaration, and actual elapsed time before Workbench Findings influence the evaluator;
 2. import the exact source and collect a Raw IR model response;
 3. inspect and correct the IR without editing JSON;
 4. prepare a scoped v3 Rule Review and collect at least one current result with relation-bound PASS support paths;
@@ -16,7 +24,7 @@ Every manuscript must complete the same Phase 1–3 path:
 6. adjudicate every evaluated FAIL/substantive UNCERTAIN Finding as accept, reject, or defer;
 7. create the revision plan and verify the whole Workbench project.
 
-Collect each comparison with `ir gate-a baseline PROJECT --prompt-file ... --response-file ... --model-label ... --started-at ... --completed-at ...`. Then run `ir gate-a readiness PROJECT...`. Readiness reports model Findings, Finding adjudications, and execution-status triage separately, and checks baseline presence without creating an assessment or Gate decision. `ir gate-a init` refuses missing baselines, duplicate sources, invalid workspaces, missing revision plans, open Findings, or open triage items. The resulting corpus is immutable and binds the exact triage indexes.
+Collect each comparison with `ir gate-a baseline PROJECT --prompt-file ... --response-file ... --model-label ... --model-provider ... --model-id ... --interaction-mode fresh-session --prior-context none --manuscript-delivery attachment --full-manuscript-confirmed --started-at ... --completed-at ...`. `inline` is also valid when the complete manuscript is in the exact prompt bytes. Then run `ir gate-a readiness PROJECT...`. Readiness reports model Findings, Finding adjudications, execution-status triage, and baseline control failures separately without creating an assessment or Gate decision. `ir gate-a init` refuses missing or uncontrolled baselines, duplicate sources, invalid workspaces, missing revision plans, open Findings, or open triage items. The resulting v4 corpus is immutable and binds the exact baseline and triage indexes.
 
 ## Engineering regression corpus
 
@@ -77,6 +85,6 @@ The first full Rule Review plan produced 704 tasks; the first core plan still pr
 
 These legacy v1 verdicts are model-derived proposals, not accepted criticism. Their 200 PASS outcomes predate `basis_refs`/`support_refs` and the explicit evidence policies, so they remain reproducible historical artifacts but cannot establish strong PASS evidence. No IR correction, Finding adjudication, revision action, direct baseline, usability assessment, or Gate decision has been attributed to a human. Product Gate A remains incomplete, and Phase 4 remains blocked.
 
-The convergence iterations address the observed cost and audit gaps directly: daily review defaults to the thesis support chain rather than all Claims; v3 PASS evidence binds an allowed directed relation path; execution/routing states enter a separate append-only human triage queue; and Gate comparisons bind an immutable direct-chat baseline plus the resulting triage indexes. The five engineering projects should be rerun with v3 only as a regression smoke test. The actual Product Gate corpus must instead include three author-owned manuscripts that will receive real corrections, triage decisions, adjudications, RevisionActions, and later revisions.
+The convergence iterations address the observed cost and audit gaps directly: daily review defaults to the thesis support chain rather than all Claims; v3 PASS evidence binds an allowed directed relation path; execution/routing states enter a separate append-only human triage queue; and Gate comparisons bind an immutable, controlled direct-chat baseline plus the resulting triage indexes. The five engineering projects should be rerun with v3 only as a regression smoke test. The three author-owned candidates above must still receive fresh baseline runs, real corrections, triage decisions, adjudications, RevisionActions, and later revisions before they count as a Product Gate corpus.
 
 A read-only v2 plan dry-run on the existing model-refined IRs selected 61 of 66 Claims and 294 core tasks, versus 316 under `scope=all` (P01 75/81, P02 54/54, P03 59/59, P04 75/75, P05 31/47). This is only a modest reduction because the extractor labeled 37 of 66 Claims as `intermediate`, and most premises are connected to a conclusion chain. Scope is now controllable and P05 benefits materially, but the dry-run does not show that the default queue is yet affordable. Human role correction and explicit `claim/claims` scoping must be measured in the author-owned Gate corpus rather than hidden by another automatic heuristic.

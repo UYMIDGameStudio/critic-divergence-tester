@@ -155,6 +155,12 @@ class ArgumentGateTests(unittest.TestCase):
                 prompt_file=prompt,
                 response_file=response,
                 model_label="test-model-v1",
+                model_provider="test-provider",
+                model_id="test-model-v1",
+                interaction_mode="fresh-session",
+                prior_context="none",
+                manuscript_delivery="attachment",
+                full_manuscript_confirmed=True,
                 started_at="2026-08-10T10:00:00+08:00",
                 completed_at="2026-08-10T10:02:00+08:00",
                 producer_label="test-direct-model",
@@ -282,6 +288,12 @@ class ArgumentGateTests(unittest.TestCase):
                 prompt_file=root / "direct-prompt-3.md",
                 response_file=root / "direct-response-3.md",
                 model_label="test-model-v1",
+                model_provider="test-provider",
+                model_id="test-model-v1",
+                interaction_mode="fresh-session",
+                prior_context="none",
+                manuscript_delivery="attachment",
+                full_manuscript_confirmed=True,
                 started_at="2030-08-10T10:00:00+08:00",
                 completed_at="2030-08-10T10:02:00+08:00",
                 producer_label="test-direct-model",
@@ -293,6 +305,38 @@ class ArgumentGateTests(unittest.TestCase):
             ):
                 gate.initialize_gate(root / "contaminated.product-gate-a", projects)
 
+    def test_new_gate_rejects_an_uncontrolled_latest_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            projects = [
+                self.completed_project(root, number).root for number in range(1, 4)
+            ]
+            baseline.collect_direct_review_baseline(
+                projects[2],
+                prompt_file=root / "direct-prompt-3.md",
+                response_file=root / "direct-response-3.md",
+                model_label="test-model-v1",
+                model_provider="test-provider",
+                model_id="test-model-v1",
+                interaction_mode="existing-session",
+                prior_context="workbench-exposed",
+                manuscript_delivery="attachment",
+                full_manuscript_confirmed=True,
+                started_at="2026-08-10T10:00:00+08:00",
+                completed_at="2026-08-10T10:02:00+08:00",
+                producer_label="test-direct-model",
+            )
+            readiness = gate.gate_readiness(projects)
+            entry = readiness["projects"][2]
+            self.assertTrue(entry["direct_review_baseline"])
+            self.assertFalse(entry["direct_review_baseline_controlled"])
+            self.assertTrue(entry["baseline_control_errors"])
+            self.assertIn("fresh session", entry["baseline_control_errors"][0])
+            with self.assertRaisesRegex(
+                workbench.WorkbenchError, "not a controlled comparison"
+            ):
+                gate.initialize_gate(root / "uncontrolled.product-gate-a", projects)
+
     def test_private_corpus_assessments_and_human_decision_are_traceable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -300,7 +344,7 @@ class ArgumentGateTests(unittest.TestCase):
             paths = gate.initialize_gate(root / "evidence.product-gate-a", projects)
             self.assertEqual(gate.verify_gate(paths.root), [])
             corpus = json.loads(paths.corpus.read_text(encoding="utf-8"))
-            self.assertEqual(corpus["schema_version"], 3)
+            self.assertEqual(corpus["schema_version"], 4)
             self.assertEqual(len(corpus["entries"]), 3)
             self.assertTrue(
                 all(
@@ -343,7 +387,7 @@ class ArgumentGateTests(unittest.TestCase):
                 )
                 self.assertEqual(output.name, f"AS{index:04d}.json")
                 assessment = json.loads(output.read_text(encoding="utf-8"))
-                self.assertEqual(assessment["schema_version"], 3)
+                self.assertEqual(assessment["schema_version"], 4)
                 self.assertIn(
                     "direct-review-baseline",
                     {parent["role"] for parent in assessment["parents"]},

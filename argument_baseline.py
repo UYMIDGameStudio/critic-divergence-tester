@@ -10,7 +10,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from argument_contracts import sha256_bytes, validate_artifact, validate_contract_bundle
+from argument_contracts import (
+    BASELINE_INTERACTION_MODES,
+    BASELINE_MANUSCRIPT_DELIVERY,
+    BASELINE_PRIOR_CONTEXTS,
+    sha256_bytes,
+    validate_artifact,
+    validate_contract_bundle,
+)
 from argument_workbench import (
     WorkbenchError,
     _parent,
@@ -111,20 +118,60 @@ def latest_direct_review_baseline(
     return entries[-1]
 
 
+def controlled_baseline_errors(record: dict[str, Any]) -> list[str]:
+    """Return experiment-control failures without invalidating historical v1 records."""
+    errors: list[str] = []
+    if record.get("schema_version") != 2:
+        return ["latest direct-review baseline must use controlled schema v2"]
+    conditions = record.get("conditions")
+    if not isinstance(conditions, dict):
+        return ["controlled baseline conditions are missing"]
+    if conditions.get("interaction_mode") != "fresh-session":
+        errors.append("direct review must use a fresh session")
+    if conditions.get("prior_context") != "none":
+        errors.append("direct review must declare no prior conversational context")
+    if conditions.get("full_manuscript_confirmed") is not True:
+        errors.append("direct review must include the full manuscript")
+    return errors
+
+
 def collect_direct_review_baseline(
     project_dir: Path | str,
     *,
     prompt_file: Path | str,
     response_file: Path | str,
     model_label: str,
+    model_provider: str,
+    model_id: str,
+    interaction_mode: str,
+    prior_context: str,
+    manuscript_delivery: str,
+    full_manuscript_confirmed: bool,
     started_at: str,
     completed_at: str,
     producer_label: str = "direct-chat-model",
 ) -> DirectBaselinePaths:
-    if not model_label.strip():
-        raise WorkbenchError("model label must not be empty")
+    for label, value in (
+        ("model label", model_label),
+        ("model provider", model_provider),
+        ("model ID", model_id),
+    ):
+        if not value.strip():
+            raise WorkbenchError(f"{label} must not be empty")
     if not producer_label.strip():
         raise WorkbenchError("producer label must not be empty")
+    if interaction_mode not in BASELINE_INTERACTION_MODES:
+        raise WorkbenchError(
+            f"interaction mode must be one of {BASELINE_INTERACTION_MODES}"
+        )
+    if prior_context not in BASELINE_PRIOR_CONTEXTS:
+        raise WorkbenchError(f"prior context must be one of {BASELINE_PRIOR_CONTEXTS}")
+    if manuscript_delivery not in BASELINE_MANUSCRIPT_DELIVERY:
+        raise WorkbenchError(
+            f"manuscript delivery must be one of {BASELINE_MANUSCRIPT_DELIVERY}"
+        )
+    if not isinstance(full_manuscript_confirmed, bool):
+        raise WorkbenchError("full manuscript confirmation must be boolean")
     started = _parse_time(started_at, "started_at")
     completed = _parse_time(completed_at, "completed_at")
     elapsed_milliseconds = round((completed - started).total_seconds() * 1000)
@@ -146,7 +193,7 @@ def collect_direct_review_baseline(
     baseline_id = f"DB{len(existing) + 1}"
     paths = DirectBaselinePaths(workspace.version_dir, baseline_id)
     record = {
-        "schema_version": 1,
+        "schema_version": 2,
         "artifact": "direct-review-baseline",
         "artifact_id": baseline_id,
         "lifecycle": "immutable",
@@ -162,7 +209,11 @@ def collect_direct_review_baseline(
         "project_id": project["project_id"],
         "document_id": version["document_id"],
         "version_id": version["version_id"],
-        "model": {"label": model_label.strip()},
+        "model": {
+            "label": model_label.strip(),
+            "provider": model_provider.strip(),
+            "model_id": model_id.strip(),
+        },
         "timing": {
             "started_at": started_at,
             "completed_at": completed_at,
@@ -185,12 +236,29 @@ def collect_direct_review_baseline(
             "prompt_source_name": prompt_path.name,
             "response_source_name": response_path.name,
         },
+        "conditions": {
+            "interaction_mode": interaction_mode,
+            "prior_context": prior_context,
+            "manuscript_delivery": manuscript_delivery,
+            "full_manuscript_confirmed": full_manuscript_confirmed,
+        },
         "field_provenance": {
             "source": {"origin": "deterministic", "source": "document-version"},
             "prompt": {"origin": "human-confirmed", "source": "supplied-file"},
             "response": {"origin": "model-derived", "source": "supplied-file"},
             "model": {"origin": "human-confirmed", "source": "CLI metadata"},
-            "timing": {"origin": "deterministic", "source": "supplied timestamps"},
+            "timestamps": {
+                "origin": "human-confirmed",
+                "source": "CLI metadata",
+            },
+            "elapsed_milliseconds": {
+                "origin": "deterministic",
+                "source": "completed_at minus started_at",
+            },
+            "conditions": {
+                "origin": "human-confirmed",
+                "source": "CLI declarations",
+            },
         },
     }
     errors = validate_artifact(record)

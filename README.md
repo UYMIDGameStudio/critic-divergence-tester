@@ -440,6 +440,9 @@ Phase 3 完成后不能直接增加 Perspective Lens。`ir gate-a` 把 3–5 篇
 py -3 critic_runner.py ir gate-a baseline $project1 `
   --prompt-file .\P1-direct-prompt.md --response-file .\P1-direct-response.md `
   --model-label "模型与版本标签" `
+  --model-provider "模型提供方" --model-id "提供方模型 ID" `
+  --interaction-mode fresh-session --prior-context none `
+  --manuscript-delivery attachment --full-manuscript-confirmed `
   --started-at "2026-08-10T10:00:00+08:00" `
   --completed-at "2026-08-10T10:05:00+08:00"
 
@@ -464,7 +467,7 @@ py -3 critic_runner.py ir gate-a report $gate --show
 py -3 critic_runner.py ir gate-a verify $gate
 ```
 
-`ir gate-a baseline` 原样保存 direct-chat prompt/response、模型标签、开始/完成时间并绑定稿件精确字节；它不填写比较结论。`ir gate-a readiness` 可以在人工裁决尚未完成时运行，只读汇总 Claim、correction、模型 Findings、Finding 决定、status triage、revision plan 和 baseline 状态。只有全部项目没有 open Finding 或 open triage、revision plan 与 baseline 已生成且 source bytes 互不重复时，才允许捕获不可变 corpus。
+`ir gate-a baseline` 原样保存 direct-chat prompt/response、provider/model ID、开始/完成时间、稿件交付方式和会话条件，并绑定稿件精确字节；它不填写比较结论。新 Gate corpus 只接受 controlled v2 baseline：fresh session、没有既有对话上下文，而且模型确实收到完整稿件。旧 v1 baseline 继续可验证，但不能进入新的 Gate。`ir gate-a readiness` 可以在人工裁决尚未完成时运行，只读汇总 Claim、correction、模型 Findings、Finding 决定、status triage、revision plan 和 baseline 状态。只有全部项目没有 open Finding 或 open triage、revision plan 与 controlled baseline 已生成且 source bytes 互不重复时，才允许捕获不可变 corpus。
 
 对 P2/P3（以及可选的 P4/P5）完成 assessment 后，报告才会显示 `Ready for human gate decision: yes`。程序永远不会自动通过 Gate；只有人类 evaluator 可以追加决定：
 

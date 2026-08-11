@@ -63,6 +63,14 @@ TRIAGE_ACTIONS = (
 GATE_A_COMPARISONS = ("clearer", "same", "worse", "uncertain")
 GATE_A_BURDENS = ("acceptable", "high", "uncertain")
 GATE_A_DECISIONS = ("pass", "fail", "defer")
+BASELINE_INTERACTION_MODES = ("fresh-session", "existing-session", "unknown")
+BASELINE_PRIOR_CONTEXTS = (
+    "none",
+    "non-workbench",
+    "workbench-exposed",
+    "unknown",
+)
+BASELINE_MANUSCRIPT_DELIVERY = ("inline", "attachment", "other")
 
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _TIMESTAMP = re.compile(
@@ -762,23 +770,28 @@ def validate_review_result_attempt(value: object) -> list[str]:
 
 
 def validate_direct_review_baseline(value: object) -> list[str]:
+    schema_version = value.get("schema_version") if isinstance(value, dict) else None
+    extra_keys = {
+        "baseline_id",
+        "project_id",
+        "document_id",
+        "version_id",
+        "model",
+        "timing",
+        "source",
+        "prompt",
+        "response",
+        "collection",
+        "field_provenance",
+    }
+    if schema_version == 2:
+        extra_keys.add("conditions")
     errors, item = _validate_base(
         value,
         artifact="direct-review-baseline",
         lifecycle="immutable",
-        extra_keys={
-            "baseline_id",
-            "project_id",
-            "document_id",
-            "version_id",
-            "model",
-            "timing",
-            "source",
-            "prompt",
-            "response",
-            "collection",
-            "field_provenance",
-        },
+        extra_keys=extra_keys,
+        schema_versions=(1, 2),
     )
     if item is None:
         return errors
@@ -802,9 +815,18 @@ def validate_direct_review_baseline(value: object) -> list[str]:
     if not isinstance(model, dict):
         errors.append("model must be an object")
     else:
-        _strict_keys(model, {"label"}, "model", errors)
+        model_keys = (
+            {"label"}
+            if schema_version == 1
+            else {"label", "provider", "model_id"}
+        )
+        _strict_keys(model, model_keys, "model", errors)
         if not _nonempty(model.get("label")):
             errors.append("model.label must be a non-empty human-supplied label")
+        if schema_version == 2:
+            for key in ("provider", "model_id"):
+                if not _nonempty(model.get(key)):
+                    errors.append(f"model.{key} must be a non-empty human-supplied value")
     timing = item.get("timing")
     if not isinstance(timing, dict):
         errors.append("timing must be an object")
@@ -846,21 +868,79 @@ def validate_direct_review_baseline(value: object) -> list[str]:
         for key in ("prompt_source_name", "response_source_name"):
             if not _nonempty(collection.get(key)):
                 errors.append(f"collection.{key} must be non-empty")
+    if schema_version == 2:
+        conditions = item.get("conditions")
+        if not isinstance(conditions, dict):
+            errors.append("conditions must be an object")
+        else:
+            _strict_keys(
+                conditions,
+                {
+                    "interaction_mode",
+                    "prior_context",
+                    "manuscript_delivery",
+                    "full_manuscript_confirmed",
+                },
+                "conditions",
+                errors,
+            )
+            if conditions.get("interaction_mode") not in BASELINE_INTERACTION_MODES:
+                errors.append(
+                    f"conditions.interaction_mode must be one of {BASELINE_INTERACTION_MODES}"
+                )
+            if conditions.get("prior_context") not in BASELINE_PRIOR_CONTEXTS:
+                errors.append(
+                    f"conditions.prior_context must be one of {BASELINE_PRIOR_CONTEXTS}"
+                )
+            if (
+                conditions.get("manuscript_delivery")
+                not in BASELINE_MANUSCRIPT_DELIVERY
+            ):
+                errors.append(
+                    "conditions.manuscript_delivery must be one of "
+                    f"{BASELINE_MANUSCRIPT_DELIVERY}"
+                )
+            if not isinstance(conditions.get("full_manuscript_confirmed"), bool):
+                errors.append("conditions.full_manuscript_confirmed must be boolean")
     field_provenance = item.get("field_provenance")
-    expected_fields = {"source", "prompt", "response", "model", "timing"}
+    expected_fields = (
+        {"source", "prompt", "response", "model", "timing"}
+        if schema_version == 1
+        else {
+            "source",
+            "prompt",
+            "response",
+            "model",
+            "timestamps",
+            "elapsed_milliseconds",
+            "conditions",
+        }
+    )
     if not isinstance(field_provenance, dict):
         errors.append("field_provenance must be an object")
     else:
         _strict_keys(
             field_provenance, expected_fields, "field_provenance", errors
         )
-        expected_origins = {
-            "source": "deterministic",
-            "prompt": "human-confirmed",
-            "response": "model-derived",
-            "model": "human-confirmed",
-            "timing": "deterministic",
-        }
+        expected_origins = (
+            {
+                "source": "deterministic",
+                "prompt": "human-confirmed",
+                "response": "model-derived",
+                "model": "human-confirmed",
+                "timing": "deterministic",
+            }
+            if schema_version == 1
+            else {
+                "source": "deterministic",
+                "prompt": "human-confirmed",
+                "response": "model-derived",
+                "model": "human-confirmed",
+                "timestamps": "human-confirmed",
+                "elapsed_milliseconds": "deterministic",
+                "conditions": "human-confirmed",
+            }
+        )
         for field, origin in expected_origins.items():
             provenance = field_provenance.get(field)
             if not isinstance(provenance, dict):
@@ -1802,7 +1882,7 @@ def validate_gate_a_corpus(value: object) -> list[str]:
         artifact="product-gate-a-corpus",
         lifecycle="immutable",
         extra_keys={"corpus_id", "entries"},
-        schema_versions=(1, 2, 3),
+        schema_versions=(1, 2, 3, 4),
     )
     if item is None:
         return errors
@@ -1822,7 +1902,7 @@ def validate_gate_a_corpus(value: object) -> list[str]:
         role = f"project-{index:03d}"
         expected_roles.add(role)
         expected_artifacts[role] = "argument-project"
-        if schema_version in {2, 3}:
+        if schema_version in {2, 3, 4}:
             baseline_role = f"baseline-{index:03d}"
             expected_roles.add(baseline_role)
             expected_artifacts[baseline_role] = "direct-review-baseline"
@@ -1863,9 +1943,9 @@ def validate_gate_a_corpus(value: object) -> list[str]:
             "revision_plan_record",
             "revision_plan_markdown",
         }
-        if schema_version in {2, 3}:
+        if schema_version in {2, 3, 4}:
             binding_keys.add("direct_review_baseline")
-        if schema_version == 3:
+        if schema_version in {3, 4}:
             binding_keys.add("status_triage")
         if not isinstance(bindings, dict):
             errors.append(f"{label}.bindings must be an object")
@@ -1875,7 +1955,7 @@ def validate_gate_a_corpus(value: object) -> list[str]:
                 if not _digest(bindings.get(key)):
                     errors.append(f"{label}.bindings.{key} must be a SHA-256 digest")
             source_hashes.append(str(bindings.get("source")))
-            if schema_version == 3:
+            if schema_version in {3, 4}:
                 triage_bindings = bindings.get("status_triage")
                 if not isinstance(triage_bindings, list):
                     errors.append(f"{label}.bindings.status_triage must be an array")
@@ -1939,7 +2019,7 @@ def validate_gate_a_assessment(value: object) -> list[str]:
             "actual_revision_notes",
             "notes",
         },
-        schema_versions=(1, 2, 3),
+        schema_versions=(1, 2, 3, 4),
     )
     if item is None:
         return errors
@@ -1950,10 +2030,10 @@ def validate_gate_a_assessment(value: object) -> list[str]:
         "project": "argument-project",
         "revision-plan": "revision-plan-record",
     }
-    if schema_version in {2, 3}:
+    if schema_version in {2, 3, 4}:
         parent_roles.add("direct-review-baseline")
         parent_artifacts["direct-review-baseline"] = "direct-review-baseline"
-    if schema_version == 3:
+    if schema_version in {3, 4}:
         for parent in item.get("parents", []):
             if isinstance(parent, dict) and str(parent.get("role", "")).startswith(
                 "status-triage-"
