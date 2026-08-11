@@ -26,6 +26,18 @@ The private author workspaces and model responses remain outside the repository.
 
 All three responses are immutable model-derived comparison artifacts, not accepted reviews and not evidence that their citations or factual assertions are correct. No Workbench IR or Finding for any manuscript influenced its fresh-session response.
 
+### Raw IR extraction status
+
+Each candidate now has one immutable, source-bound `attempt-0001`. The Reviewed IR hashes below are the deterministic zero-correction replay of those attempts; they are not yet human-confirmed. Raw responses and private workspaces remain outside the repository.
+
+| Candidate | Raw response SHA-256 | Raw record SHA-256 | Initial Reviewed IR SHA-256 | C / E / A / Z / R | Next uncompleted step |
+|---|---|---|---|---:|---|
+| `the-structural-stand-in.md` | `7583e1a72f4b83e331026adbaab88909a3c1e6d2e5bb8187f4d07da083b8a1cd` | `5b835416de7337da5fa803cd1906ca6da32395bf915a7fe7497bae981d76569d` | `003f4e0367e39a8748c0be5fc69a9a80307a1fdcd7418b5c7bb73ec88679830a` | 13 / 7 / 2 / 4 / 25 | timed human IR inspection |
+| `the-dynamic-dialectic-of-knowledge-systems-on-change-and-invariance-in-theoretical-identity.md` | `dacd887daaef667e1f3dd92afab5dc74c5279e0f49a045ff3a3fbba74a8e7557` | `312c749b5fba9aee5fea9832e49979aad5c07fd7150d8a80ad6e05a2085adbad` | `3e818b5f3fcf09ee6b49ff2ad9a507a4c1408b208d54f6cc84d8e1379f00d707` | 12 / 5 / 2 / 7 / 27 | timed human IR inspection |
+| `diachronic-continuity-and-argumentative-responsibility-in-knowledge-migration.md` | `9a00b13c3db957e2152196e4d2a6afc19888175fc9c885ab45df969c222994b8` | `cb519288d62b1a96081d4c80de4b8219bf5d6b94cc9c0ff59ba562d2465818d2` | `212024271d1fab7d8b04a5331be76e9581b2b8394e4a030d7fb33723ba5aabd0` | 13 / 6 / 2 / 6 / 27 | timed human IR inspection |
+
+The extraction producer label records OpenAI `gpt-5.6-sol` with high reasoning. It identifies model-derived output only; it does not human-confirm any node, relation, citation, or uncertainty entry.
+
 Every manuscript must complete the same Phase 1–3 path:
 
 1. in a fresh conversation with no prior context, preserve one direct full-text chat prompt, raw response, provider/model ID, full-manuscript delivery declaration, and actual elapsed time before Workbench Findings influence the evaluator;
