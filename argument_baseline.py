@@ -29,6 +29,23 @@ from argument_workbench import (
 
 
 BASELINE_PATTERN = re.compile(r"DB([1-9][0-9]*)\Z")
+DIRECT_REVIEW_PROTOCOL = "direct-full-manuscript-review-v1"
+DIRECT_REVIEW_HEADER = f"""# Direct full-manuscript review baseline
+
+Protocol: `{DIRECT_REVIEW_PROTOCOL}`
+
+Review the complete manuscript below as a standalone argument. Identify its main
+claims and the most important problems that could affect whether those claims are
+supported. For each problem, quote or precisely locate the relevant passage,
+explain the standard being applied, and suggest an actionable revision. Distinguish
+missing support, excessive scope, alternative explanations, conceptual ambiguity,
+and citation or attribution concerns when relevant. Preserve disagreements between
+standards instead of averaging them. Do not assign a manuscript score and do not
+rewrite the manuscript. Return a self-contained review in Markdown.
+
+## Complete manuscript
+
+""".encode("utf-8")
 
 
 @dataclass(frozen=True)
@@ -82,6 +99,26 @@ def _regular_input(path: Path | str, label: str) -> tuple[Path, bytes]:
     if not data:
         raise WorkbenchError(f"{label} must not be empty")
     return resolved, data
+
+
+def prepare_direct_review_prompt(
+    project_dir: Path | str, output_file: Path | str
+) -> tuple[Path, str]:
+    workspace = workspace_paths(project_dir)
+    version, _ = _read_json(workspace.version)
+    source_path = workspace.version_dir / str(version["source"]["relative_path"])
+    if source_path.is_symlink() or not source_path.is_file():
+        raise WorkbenchError("DocumentVersion source must be a regular file")
+    source_bytes = source_path.read_bytes()
+    if sha256_bytes(source_bytes) != version["source"]["sha256"]:
+        raise WorkbenchError("DocumentVersion source hash is disconnected")
+    output = Path(output_file).expanduser().resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    prompt_bytes = DIRECT_REVIEW_HEADER + source_bytes
+    if not prompt_bytes.endswith(b"\n"):
+        prompt_bytes += b"\n"
+    _write_new(output, prompt_bytes)
+    return output, sha256_bytes(prompt_bytes)
 
 
 def list_direct_review_baselines(
@@ -189,6 +226,10 @@ def collect_direct_review_baseline(
     source_bytes = source_path.read_bytes()
     if sha256_bytes(source_bytes) != version["source"]["sha256"]:
         raise WorkbenchError("DocumentVersion source hash is disconnected")
+    if manuscript_delivery == "inline" and source_bytes not in prompt_bytes:
+        raise WorkbenchError(
+            "inline baseline prompt does not contain the exact manuscript bytes"
+        )
     existing = list_direct_review_baselines(workspace.root)
     baseline_id = f"DB{len(existing) + 1}"
     paths = DirectBaselinePaths(workspace.version_dir, baseline_id)
@@ -333,6 +374,14 @@ def verify_direct_review_baselines(project_dir: Path | str) -> list[str]:
         for field, digest in expected_hashes.items():
             if record.get(field, {}).get("sha256") != digest:
                 errors.append(f"{prefix}: {field} exact-byte hash is disconnected")
+        if (
+            record.get("schema_version") == 2
+            and record.get("conditions", {}).get("manuscript_delivery") == "inline"
+            and source_bytes not in prompt_bytes
+        ):
+            errors.append(
+                f"{prefix}: inline prompt does not contain the exact manuscript bytes"
+            )
         expected_source = {
             "relative_path": version.get("source", {}).get("relative_path"),
             "sha256": version.get("source", {}).get("sha256"),

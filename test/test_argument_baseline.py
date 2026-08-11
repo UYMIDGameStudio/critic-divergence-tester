@@ -128,7 +128,7 @@ class DirectReviewBaselineTests(unittest.TestCase):
                             "--prior-context",
                             "none",
                             "--manuscript-delivery",
-                            "inline",
+                            "attachment",
                             "--full-manuscript-confirmed",
                             "--started-at",
                             "2026-08-10T10:00:00Z",
@@ -142,6 +142,64 @@ class DirectReviewBaselineTests(unittest.TestCase):
             entries = baseline.list_direct_review_baselines(project.root)
             self.assertEqual(len(entries), 1)
             self.assertEqual(entries[0][1]["provenance"]["origin"], "model-derived")
+
+    def test_prepare_baseline_embeds_exact_source_and_refuses_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project = self.make_project(root)
+            output = root / "direct prompt.md"
+            path, digest = baseline.prepare_direct_review_prompt(project.root, output)
+            version = json.loads(project.version.read_text(encoding="utf-8"))
+            source = project.version_dir / version["source"]["relative_path"]
+            prompt_bytes = path.read_bytes()
+            self.assertTrue(prompt_bytes.startswith(baseline.DIRECT_REVIEW_HEADER))
+            self.assertEqual(prompt_bytes.count(source.read_bytes()), 1)
+            self.assertEqual(contracts.sha256_bytes(prompt_bytes), digest)
+            with self.assertRaisesRegex(workbench.WorkbenchError, "refusing to overwrite"):
+                baseline.prepare_direct_review_prompt(project.root, output)
+
+            second = root / "cli prompt.md"
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(
+                    critic_runner.main(
+                        [
+                            "ir",
+                            "gate-a",
+                            "prepare-baseline",
+                            str(project.root),
+                            str(second),
+                        ]
+                    ),
+                    0,
+                )
+            self.assertIn("embedded verbatim", stdout.getvalue())
+
+    def test_inline_collection_requires_exact_manuscript_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project = self.make_project(root)
+            prompt = root / "prompt.md"
+            response = root / "response.md"
+            prompt.write_text("This omits the manuscript.\n", encoding="utf-8")
+            response.write_text("A model response.\n", encoding="utf-8")
+            with self.assertRaisesRegex(
+                workbench.WorkbenchError, "exact manuscript bytes"
+            ):
+                baseline.collect_direct_review_baseline(
+                    project.root,
+                    prompt_file=prompt,
+                    response_file=response,
+                    model_label="test-model",
+                    model_provider="test-provider",
+                    model_id="test-model-v1",
+                    interaction_mode="fresh-session",
+                    prior_context="none",
+                    manuscript_delivery="inline",
+                    full_manuscript_confirmed=True,
+                    started_at="2026-08-10T10:00:00Z",
+                    completed_at="2026-08-10T10:00:05Z",
+                )
 
     def test_controlled_gate_baseline_rejects_contaminated_conditions(self) -> None:
         record = {

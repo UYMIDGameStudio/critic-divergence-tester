@@ -436,13 +436,16 @@ documents/D1/versions/V1/
 Phase 3 完成后不能直接增加 Perspective Lens。`ir gate-a` 把 3–5 篇真实稿件的 Phase 1–3 结果固定为一个私有、本地 evidence corpus。它只保存 workspace locator 与精确哈希，不复制稿件正文；建议输出目录使用 `*.product-gate-a/`，该模式默认不进 Git。
 
 ```powershell
+# 用同一协议生成全文内嵌 prompt；已有文件不会被覆盖
+py -3 critic_runner.py ir gate-a prepare-baseline $project1 .\P1-direct-prompt.md
+
 # 在使用 Workbench Findings 前保存一次完整稿件 direct-chat 对照；时间由两个时间戳确定性计算
 py -3 critic_runner.py ir gate-a baseline $project1 `
   --prompt-file .\P1-direct-prompt.md --response-file .\P1-direct-response.md `
   --model-label "模型与版本标签" `
   --model-provider "模型提供方" --model-id "提供方模型 ID" `
   --interaction-mode fresh-session --prior-context none `
-  --manuscript-delivery attachment --full-manuscript-confirmed `
+  --manuscript-delivery inline --full-manuscript-confirmed `
   --started-at "2026-08-10T10:00:00+08:00" `
   --completed-at "2026-08-10T10:05:00+08:00"
 
@@ -467,7 +470,7 @@ py -3 critic_runner.py ir gate-a report $gate --show
 py -3 critic_runner.py ir gate-a verify $gate
 ```
 
-`ir gate-a baseline` 原样保存 direct-chat prompt/response、provider/model ID、开始/完成时间、稿件交付方式和会话条件，并绑定稿件精确字节；它不填写比较结论。新 Gate corpus 只接受 controlled v2 baseline：fresh session、没有既有对话上下文，而且模型确实收到完整稿件。旧 v1 baseline 继续可验证，但不能进入新的 Gate。`ir gate-a readiness` 可以在人工裁决尚未完成时运行，只读汇总 Claim、correction、模型 Findings、Finding 决定、status triage、revision plan 和 baseline 状态。只有全部项目没有 open Finding 或 open triage、revision plan 与 controlled baseline 已生成且 source bytes 互不重复时，才允许捕获不可变 corpus。
+`ir gate-a prepare-baseline` 使用版本化的 `direct-full-manuscript-review-v1` 协议，并把 DocumentVersion 的 source bytes 原样嵌入 prompt。`ir gate-a baseline` 原样保存 direct-chat prompt/response、provider/model ID、开始/完成时间、稿件交付方式和会话条件，并绑定稿件精确字节；inline 模式会再次验证 prompt 确实包含完整原稿。它不填写比较结论。新 Gate corpus 只接受 controlled v2 baseline：fresh session、没有既有对话上下文，而且模型确实收到完整稿件。旧 v1 baseline 继续可验证，但不能进入新的 Gate。`ir gate-a readiness` 可以在人工裁决尚未完成时运行，只读汇总 Claim、correction、模型 Findings、Finding 决定、status triage、revision plan 和 baseline 状态。只有全部项目没有 open Finding 或 open triage、revision plan 与 controlled baseline 已生成且 source bytes 互不重复时，才允许捕获不可变 corpus。
 
 对 P2/P3（以及可选的 P4/P5）完成 assessment 后，报告才会显示 `Ready for human gate decision: yes`。程序永远不会自动通过 Gate；只有人类 evaluator 可以追加决定：
 

@@ -59,7 +59,10 @@ from argument_adjudication import (
     rebuild_revision_plan as rebuild_workbench_revision_plan,
     run_adjudicator as run_workbench_adjudicator,
 )
-from argument_baseline import collect_direct_review_baseline
+from argument_baseline import (
+    collect_direct_review_baseline,
+    prepare_direct_review_prompt,
+)
 from argument_triage import (
     append_status_triage,
     rebuild_status_triages,
@@ -3277,6 +3280,14 @@ def ir_gate_a_baseline_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def ir_gate_a_prepare_baseline_command(args: argparse.Namespace) -> int:
+    output, digest = prepare_direct_review_prompt(args.project, args.output)
+    print(f"Direct-review prompt: {output}")
+    print(f"SHA-256: {digest}")
+    print("The bound manuscript bytes are embedded verbatim.")
+    return 0
+
+
 def ir_gate_a_assess_command(args: argparse.Namespace) -> int:
     metrics = {key: getattr(args, key) for key in GATE_A_METRIC_KEYS}
     output = append_gate_a_assessment(
@@ -4443,6 +4454,20 @@ def parser() -> argparse.ArgumentParser:
         "projects", nargs="+", help="3-5 real-manuscript Workbench projects"
     )
     ir_gate_a_readiness_parser.set_defaults(func=ir_gate_a_readiness_command)
+
+    ir_gate_a_prepare_baseline_parser = ir_gate_a_sub.add_parser(
+        "prepare-baseline",
+        help="create a deterministic full-manuscript direct-review prompt",
+    )
+    ir_gate_a_prepare_baseline_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    ir_gate_a_prepare_baseline_parser.add_argument(
+        "output", help="new UTF-8 prompt path outside the Workbench"
+    )
+    ir_gate_a_prepare_baseline_parser.set_defaults(
+        func=ir_gate_a_prepare_baseline_command
+    )
 
     ir_gate_a_baseline_parser = ir_gate_a_sub.add_parser(
         "baseline",
