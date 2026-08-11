@@ -59,7 +59,22 @@ from argument_adjudication import (
     rebuild_revision_plan as rebuild_workbench_revision_plan,
     run_adjudicator as run_workbench_adjudicator,
 )
-from argument_baseline import collect_direct_review_baseline
+from argument_baseline import (
+    collect_direct_review_baseline,
+    prepare_direct_review_prompt,
+)
+from argument_triage import (
+    append_status_triage,
+    rebuild_status_triages,
+    render_status_triage,
+    triage_items_for_review,
+)
+from argument_sessions import (
+    finish_work_session,
+    list_work_sessions,
+    render_work_sessions,
+    start_work_session,
+)
 from argument_gate import (
     METRIC_KEYS as GATE_A_METRIC_KEYS,
     append_assessment as append_gate_a_assessment,
@@ -70,7 +85,15 @@ from argument_gate import (
     render_gate_readiness,
     verify_gate,
 )
-from argument_contracts import GATE_A_BURDENS, GATE_A_COMPARISONS, GATE_A_DECISIONS
+from argument_contracts import (
+    BASELINE_INTERACTION_MODES,
+    BASELINE_MANUSCRIPT_DELIVERY,
+    BASELINE_PRIOR_CONTEXTS,
+    GATE_A_BURDENS,
+    GATE_A_COMPARISONS,
+    GATE_A_DECISIONS,
+    GATE_A_WORK_ACTIVITIES,
+)
 from critic_execution import ExecutorResult, execute_with_limits
 from critic_scoring import (
     ALL_COMPARISONS,
@@ -3055,17 +3078,20 @@ def ir_inspect_command(args: argparse.Namespace) -> int:
 def ir_rebuild_command(args: argparse.Namespace) -> int:
     map_path, changed = rebuild_workspace(args.project)
     review_outputs, reviews_changed = rebuild_reviews(args.project)
+    triage_outputs, triage_changed = rebuild_status_triages(args.project)
     adjudication_outputs, adjudications_changed = rebuild_adjudication_cache(
         args.project
     )
     print(f"Argument map: {map_path}")
     for output in review_outputs:
         print(f"Claim review: {output}")
+    for output in triage_outputs:
+        print(f"Status triage: {output}")
     for output in adjudication_outputs:
         print(f"Revision plan: {output}")
     print(
         "Derived artifacts rebuilt."
-        if changed or reviews_changed or adjudications_changed
+        if changed or reviews_changed or triage_changed or adjudications_changed
         else "Derived artifacts already current."
     )
     return 0
@@ -3173,6 +3199,31 @@ def ir_review_show_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def ir_review_triage_command(args: argparse.Namespace) -> int:
+    mutation_values = (args.task, args.decision, args.action, args.note)
+    if any(value is not None for value in mutation_values):
+        if not all(value is not None for value in mutation_values):
+            raise WorkbenchError(
+                "status triage mutation requires --task, --decision, --action, and --note"
+            )
+        output = append_status_triage(
+            args.project,
+            review_id=args.review_id,
+            task_id=args.task,
+            decision=args.decision,
+            action=args.action,
+            note=args.note,
+            producer=args.producer_label or "local-user",
+        )
+        print(f"Status triage event: {output}")
+    review, attempt_id, items = triage_items_for_review(
+        args.project, review_id=args.review_id
+    )
+    print(render_status_triage(items), end="")
+    print(f"Review status queue: {review.review_id}/{attempt_id}")
+    return 0
+
+
 def ir_adjudicate_command(args: argparse.Namespace) -> int:
     if not args.view_only and not args.summary_only:
         isatty = getattr(sys.stdin, "isatty", None)
@@ -3220,6 +3271,12 @@ def ir_gate_a_baseline_command(args: argparse.Namespace) -> int:
         prompt_file=args.prompt_file,
         response_file=args.response_file,
         model_label=args.model_label,
+        model_provider=args.model_provider,
+        model_id=args.model_id,
+        interaction_mode=args.interaction_mode,
+        prior_context=args.prior_context,
+        manuscript_delivery=args.manuscript_delivery,
+        full_manuscript_confirmed=args.full_manuscript_confirmed,
         started_at=args.started_at,
         completed_at=args.completed_at,
         producer_label=args.producer_label,
@@ -3230,8 +3287,46 @@ def ir_gate_a_baseline_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def ir_gate_a_prepare_baseline_command(args: argparse.Namespace) -> int:
+    output, digest = prepare_direct_review_prompt(args.project, args.output)
+    print(f"Direct-review prompt: {output}")
+    print(f"SHA-256: {digest}")
+    print("The bound manuscript bytes are embedded verbatim.")
+    return 0
+
+
+def ir_gate_a_session_start_command(args: argparse.Namespace) -> int:
+    paths = start_work_session(
+        args.project,
+        activity=args.activity,
+        note=args.note,
+        producer=args.producer_label,
+    )
+    print(f"Gate A work session started: {paths.session_id}")
+    print(f"Start artifact: {paths.start}")
+    return 0
+
+
+def ir_gate_a_session_finish_command(args: argparse.Namespace) -> int:
+    paths = finish_work_session(
+        args.project,
+        args.session,
+        producer=args.producer_label,
+    )
+    print(f"Gate A work session completed: {paths.session_id}")
+    print(f"Session artifact: {paths.record}")
+    return 0
+
+
+def ir_gate_a_session_list_command(args: argparse.Namespace) -> int:
+    print(render_work_sessions(list_work_sessions(args.project)), end="")
+    return 0
+
+
 def ir_gate_a_assess_command(args: argparse.Namespace) -> int:
     metrics = {key: getattr(args, key) for key in GATE_A_METRIC_KEYS}
+    if args.correction_minutes is not None:
+        metrics["correction_minutes"] = args.correction_minutes
     output = append_gate_a_assessment(
         args.gate,
         args.project,
@@ -4289,6 +4384,42 @@ def parser() -> argparse.ArgumentParser:
     )
     ir_review_show_parser.set_defaults(func=ir_review_show_command)
 
+    ir_review_triage_parser = ir_review_sub.add_parser(
+        "triage",
+        help="acknowledge or reject non-substantive model execution statuses",
+    )
+    ir_review_triage_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    ir_review_triage_parser.add_argument(
+        "--review-id",
+        help="Rule Review ID (default: most recent review with valid results)",
+    )
+    ir_review_triage_parser.add_argument(
+        "--task", help="non-evaluated task ID such as T4"
+    )
+    ir_review_triage_parser.add_argument(
+        "--decision", choices=("acknowledge", "reject")
+    )
+    ir_review_triage_parser.add_argument(
+        "--action",
+        choices=(
+            "correct_ir",
+            "add_context",
+            "add_evidence",
+            "acknowledge_not_applicable",
+            "rerun_review",
+            "other",
+        ),
+    )
+    ir_review_triage_parser.add_argument(
+        "--note", help="required human explanation for a triage decision"
+    )
+    ir_review_triage_parser.add_argument(
+        "--producer-label", help="human evaluator label for provenance"
+    )
+    ir_review_triage_parser.set_defaults(func=ir_review_triage_command)
+
     ir_adjudicate_parser = ir_sub.add_parser(
         "adjudicate",
         help="accept, reject, or defer Claim-level Workbench Findings",
@@ -4361,6 +4492,67 @@ def parser() -> argparse.ArgumentParser:
     )
     ir_gate_a_readiness_parser.set_defaults(func=ir_gate_a_readiness_command)
 
+    ir_gate_a_prepare_baseline_parser = ir_gate_a_sub.add_parser(
+        "prepare-baseline",
+        help="create a deterministic full-manuscript direct-review prompt",
+    )
+    ir_gate_a_prepare_baseline_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    ir_gate_a_prepare_baseline_parser.add_argument(
+        "output", help="new UTF-8 prompt path outside the Workbench"
+    )
+    ir_gate_a_prepare_baseline_parser.set_defaults(
+        func=ir_gate_a_prepare_baseline_command
+    )
+
+    ir_gate_a_session_parser = ir_gate_a_sub.add_parser(
+        "session", help="record actual human Gate A work time"
+    )
+    ir_gate_a_session_sub = ir_gate_a_session_parser.add_subparsers(
+        dest="ir_gate_a_session_command", required=True
+    )
+    ir_gate_a_session_start_parser = ir_gate_a_session_sub.add_parser(
+        "start", help="append a system-timed session start artifact"
+    )
+    ir_gate_a_session_start_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    ir_gate_a_session_start_parser.add_argument(
+        "--activity", choices=GATE_A_WORK_ACTIVITIES, required=True
+    )
+    ir_gate_a_session_start_parser.add_argument("--note", default="")
+    ir_gate_a_session_start_parser.add_argument(
+        "--producer-label", default="local-user"
+    )
+    ir_gate_a_session_start_parser.set_defaults(
+        func=ir_gate_a_session_start_command
+    )
+    ir_gate_a_session_finish_parser = ir_gate_a_session_sub.add_parser(
+        "finish", help="append completion and deterministic elapsed time"
+    )
+    ir_gate_a_session_finish_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    ir_gate_a_session_finish_parser.add_argument(
+        "session", help="session ID such as GS1"
+    )
+    ir_gate_a_session_finish_parser.add_argument(
+        "--producer-label", default="local-user"
+    )
+    ir_gate_a_session_finish_parser.set_defaults(
+        func=ir_gate_a_session_finish_command
+    )
+    ir_gate_a_session_list_parser = ir_gate_a_session_sub.add_parser(
+        "list", help="show completed and open human work sessions"
+    )
+    ir_gate_a_session_list_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    ir_gate_a_session_list_parser.set_defaults(
+        func=ir_gate_a_session_list_command
+    )
+
     ir_gate_a_baseline_parser = ir_gate_a_sub.add_parser(
         "baseline",
         help="immutably collect a direct full-text chat comparison",
@@ -4376,6 +4568,35 @@ def parser() -> argparse.ArgumentParser:
     )
     ir_gate_a_baseline_parser.add_argument(
         "--model-label", required=True, help="human-supplied model/version label"
+    )
+    ir_gate_a_baseline_parser.add_argument(
+        "--model-provider", required=True, help="human-supplied provider name"
+    )
+    ir_gate_a_baseline_parser.add_argument(
+        "--model-id", required=True, help="provider model identifier"
+    )
+    ir_gate_a_baseline_parser.add_argument(
+        "--interaction-mode",
+        choices=BASELINE_INTERACTION_MODES,
+        required=True,
+        help="whether the comparison ran in a fresh conversation",
+    )
+    ir_gate_a_baseline_parser.add_argument(
+        "--prior-context",
+        choices=BASELINE_PRIOR_CONTEXTS,
+        required=True,
+        help="context present before the comparison prompt",
+    )
+    ir_gate_a_baseline_parser.add_argument(
+        "--manuscript-delivery",
+        choices=BASELINE_MANUSCRIPT_DELIVERY,
+        required=True,
+        help="how the complete manuscript was supplied to the model",
+    )
+    ir_gate_a_baseline_parser.add_argument(
+        "--full-manuscript-confirmed",
+        action="store_true",
+        help="human confirmation that the model received the complete manuscript",
     )
     ir_gate_a_baseline_parser.add_argument(
         "--started-at", required=True, help="timezone-aware ISO start time"
@@ -4416,6 +4637,14 @@ def parser() -> argparse.ArgumentParser:
         ir_gate_a_assess_parser.add_argument(
             "--" + metric.replace("_", "-"), type=int, required=True
         )
+    ir_gate_a_assess_parser.add_argument(
+        "--correction-minutes",
+        type=int,
+        help=(
+            "legacy v1-v4 corpus only; v5 derives exact inspection time from "
+            "bound work-session artifacts"
+        ),
+    )
     ir_gate_a_assess_parser.add_argument(
         "--anchor",
         action="append",

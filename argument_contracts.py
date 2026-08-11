@@ -51,9 +51,34 @@ REVIEW_EXECUTION_STATUSES = (
     "not_applicable",
 )
 REVIEW_RESULT_STATUSES = ("valid", "unusable")
+TRIAGE_DECISIONS = ("acknowledge", "reject")
+TRIAGE_ACTIONS = (
+    "correct_ir",
+    "add_context",
+    "add_evidence",
+    "acknowledge_not_applicable",
+    "rerun_review",
+    "other",
+)
 GATE_A_COMPARISONS = ("clearer", "same", "worse", "uncertain")
 GATE_A_BURDENS = ("acceptable", "high", "uncertain")
 GATE_A_DECISIONS = ("pass", "fail", "defer")
+BASELINE_INTERACTION_MODES = ("fresh-session", "existing-session", "unknown")
+BASELINE_PRIOR_CONTEXTS = (
+    "none",
+    "non-workbench",
+    "workbench-exposed",
+    "unknown",
+)
+BASELINE_MANUSCRIPT_DELIVERY = ("inline", "attachment", "other")
+GATE_A_WORK_ACTIVITIES = (
+    "ir-inspection",
+    "finding-adjudication",
+    "status-triage",
+    "revision-planning",
+    "manuscript-revision",
+    "other",
+)
 
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _TIMESTAMP = re.compile(
@@ -620,14 +645,14 @@ def validate_rule_review_run(value: object) -> list[str]:
         "plan",
         "prompt",
     }
-    if schema_version == 2:
+    if schema_version in {2, 3}:
         extra_keys.add("review_scope")
     errors, item = _validate_base(
         value,
         artifact="rule-review-run",
         lifecycle="immutable",
         extra_keys=extra_keys,
-        schema_versions=(1, 2),
+        schema_versions=(1, 2, 3),
     )
     if item is None:
         return errors
@@ -656,7 +681,7 @@ def validate_rule_review_run(value: object) -> list[str]:
     _validate_rule_lens(item.get("lens"), "lens", errors)
     if item.get("depth") not in REVIEW_DEPTHS:
         errors.append(f"depth must be one of {REVIEW_DEPTHS}")
-    if schema_version == 2:
+    if schema_version in {2, 3}:
         review_scope = item.get("review_scope")
         if not isinstance(review_scope, dict):
             errors.append("review_scope must be an object")
@@ -753,23 +778,28 @@ def validate_review_result_attempt(value: object) -> list[str]:
 
 
 def validate_direct_review_baseline(value: object) -> list[str]:
+    schema_version = value.get("schema_version") if isinstance(value, dict) else None
+    extra_keys = {
+        "baseline_id",
+        "project_id",
+        "document_id",
+        "version_id",
+        "model",
+        "timing",
+        "source",
+        "prompt",
+        "response",
+        "collection",
+        "field_provenance",
+    }
+    if schema_version == 2:
+        extra_keys.add("conditions")
     errors, item = _validate_base(
         value,
         artifact="direct-review-baseline",
         lifecycle="immutable",
-        extra_keys={
-            "baseline_id",
-            "project_id",
-            "document_id",
-            "version_id",
-            "model",
-            "timing",
-            "source",
-            "prompt",
-            "response",
-            "collection",
-            "field_provenance",
-        },
+        extra_keys=extra_keys,
+        schema_versions=(1, 2),
     )
     if item is None:
         return errors
@@ -793,9 +823,18 @@ def validate_direct_review_baseline(value: object) -> list[str]:
     if not isinstance(model, dict):
         errors.append("model must be an object")
     else:
-        _strict_keys(model, {"label"}, "model", errors)
+        model_keys = (
+            {"label"}
+            if schema_version == 1
+            else {"label", "provider", "model_id"}
+        )
+        _strict_keys(model, model_keys, "model", errors)
         if not _nonempty(model.get("label")):
             errors.append("model.label must be a non-empty human-supplied label")
+        if schema_version == 2:
+            for key in ("provider", "model_id"):
+                if not _nonempty(model.get(key)):
+                    errors.append(f"model.{key} must be a non-empty human-supplied value")
     timing = item.get("timing")
     if not isinstance(timing, dict):
         errors.append("timing must be an object")
@@ -837,21 +876,79 @@ def validate_direct_review_baseline(value: object) -> list[str]:
         for key in ("prompt_source_name", "response_source_name"):
             if not _nonempty(collection.get(key)):
                 errors.append(f"collection.{key} must be non-empty")
+    if schema_version == 2:
+        conditions = item.get("conditions")
+        if not isinstance(conditions, dict):
+            errors.append("conditions must be an object")
+        else:
+            _strict_keys(
+                conditions,
+                {
+                    "interaction_mode",
+                    "prior_context",
+                    "manuscript_delivery",
+                    "full_manuscript_confirmed",
+                },
+                "conditions",
+                errors,
+            )
+            if conditions.get("interaction_mode") not in BASELINE_INTERACTION_MODES:
+                errors.append(
+                    f"conditions.interaction_mode must be one of {BASELINE_INTERACTION_MODES}"
+                )
+            if conditions.get("prior_context") not in BASELINE_PRIOR_CONTEXTS:
+                errors.append(
+                    f"conditions.prior_context must be one of {BASELINE_PRIOR_CONTEXTS}"
+                )
+            if (
+                conditions.get("manuscript_delivery")
+                not in BASELINE_MANUSCRIPT_DELIVERY
+            ):
+                errors.append(
+                    "conditions.manuscript_delivery must be one of "
+                    f"{BASELINE_MANUSCRIPT_DELIVERY}"
+                )
+            if not isinstance(conditions.get("full_manuscript_confirmed"), bool):
+                errors.append("conditions.full_manuscript_confirmed must be boolean")
     field_provenance = item.get("field_provenance")
-    expected_fields = {"source", "prompt", "response", "model", "timing"}
+    expected_fields = (
+        {"source", "prompt", "response", "model", "timing"}
+        if schema_version == 1
+        else {
+            "source",
+            "prompt",
+            "response",
+            "model",
+            "timestamps",
+            "elapsed_milliseconds",
+            "conditions",
+        }
+    )
     if not isinstance(field_provenance, dict):
         errors.append("field_provenance must be an object")
     else:
         _strict_keys(
             field_provenance, expected_fields, "field_provenance", errors
         )
-        expected_origins = {
-            "source": "deterministic",
-            "prompt": "human-confirmed",
-            "response": "model-derived",
-            "model": "human-confirmed",
-            "timing": "deterministic",
-        }
+        expected_origins = (
+            {
+                "source": "deterministic",
+                "prompt": "human-confirmed",
+                "response": "model-derived",
+                "model": "human-confirmed",
+                "timing": "deterministic",
+            }
+            if schema_version == 1
+            else {
+                "source": "deterministic",
+                "prompt": "human-confirmed",
+                "response": "model-derived",
+                "model": "human-confirmed",
+                "timestamps": "human-confirmed",
+                "elapsed_milliseconds": "deterministic",
+                "conditions": "human-confirmed",
+            }
+        )
         for field, origin in expected_origins.items():
             provenance = field_provenance.get(field)
             if not isinstance(provenance, dict):
@@ -867,6 +964,159 @@ def validate_direct_review_baseline(value: object) -> list[str]:
                 errors.append(f"field_provenance.{field}.origin must be {origin}")
             if not _nonempty(provenance.get("source")):
                 errors.append(f"field_provenance.{field}.source must be non-empty")
+    return errors
+
+
+def _validate_gate_session_identity(
+    item: dict[str, Any], errors: list[str]
+) -> None:
+    if not isinstance(item.get("session_id"), str) or re.fullmatch(
+        r"GS[1-9][0-9]*", str(item.get("session_id"))
+    ) is None:
+        errors.append("session_id must be GS1..GSn")
+    for key in ("project_id", "document_id"):
+        if not _nonempty(item.get(key)):
+            errors.append(f"{key} must be a non-empty string")
+    if not isinstance(item.get("version_id"), str) or re.fullmatch(
+        r"V[1-9][0-9]*", str(item.get("version_id"))
+    ) is None:
+        errors.append("version_id must be V1..Vn")
+    if item.get("activity") not in GATE_A_WORK_ACTIVITIES:
+        errors.append(f"activity must be one of {GATE_A_WORK_ACTIVITIES}")
+    if not isinstance(item.get("note"), str):
+        errors.append("note must be a string")
+
+
+def _validate_gate_session_field_provenance(
+    value: object, *, completed: bool, errors: list[str]
+) -> None:
+    expected = {"activity", "note", "timing" if completed else "started_at"}
+    if not isinstance(value, dict):
+        errors.append("field_provenance must be an object")
+        return
+    _strict_keys(value, expected, "field_provenance", errors)
+    for field in expected:
+        provenance = value.get(field)
+        if not isinstance(provenance, dict):
+            errors.append(f"field_provenance.{field} must be an object")
+            continue
+        _strict_keys(
+            provenance,
+            {"origin", "source"},
+            f"field_provenance.{field}",
+            errors,
+        )
+        expected_origin = "deterministic" if field in {"started_at", "timing"} else "human-confirmed"
+        if provenance.get("origin") != expected_origin:
+            errors.append(
+                f"field_provenance.{field}.origin must be {expected_origin}"
+            )
+        if not _nonempty(provenance.get("source")):
+            errors.append(f"field_provenance.{field}.source must be non-empty")
+
+
+def validate_gate_a_session_start(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="gate-a-session-start",
+        lifecycle="immutable",
+        extra_keys={
+            "session_id",
+            "project_id",
+            "document_id",
+            "version_id",
+            "activity",
+            "note",
+            "started_at",
+            "field_provenance",
+        },
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"human-confirmed"}, "gate-a-session-start", errors)
+    _require_parent_roles(item, {"document-version"}, errors)
+    _require_parent_artifacts(
+        item, {"document-version": "document-version"}, errors
+    )
+    _validate_gate_session_identity(item, errors)
+    if not _timestamp(item.get("started_at")):
+        errors.append("started_at must be a timezone-aware ISO timestamp")
+    provenance = item.get("provenance")
+    if (
+        isinstance(provenance, dict)
+        and _timestamp(item.get("started_at"))
+        and provenance.get("created_at") != item.get("started_at")
+    ):
+        errors.append("provenance.created_at must equal started_at")
+    _validate_gate_session_field_provenance(
+        item.get("field_provenance"), completed=False, errors=errors
+    )
+    return errors
+
+
+def validate_gate_a_work_session(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="gate-a-work-session",
+        lifecycle="immutable",
+        extra_keys={
+            "session_id",
+            "project_id",
+            "document_id",
+            "version_id",
+            "activity",
+            "note",
+            "timing",
+            "field_provenance",
+        },
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"human-confirmed"}, "gate-a-work-session", errors)
+    _require_parent_roles(item, {"document-version", "session-start"}, errors)
+    _require_parent_artifacts(
+        item,
+        {
+            "document-version": "document-version",
+            "session-start": "gate-a-session-start",
+        },
+        errors,
+    )
+    _validate_gate_session_identity(item, errors)
+    timing = item.get("timing")
+    if not isinstance(timing, dict):
+        errors.append("timing must be an object")
+    else:
+        _strict_keys(
+            timing,
+            {"started_at", "completed_at", "elapsed_milliseconds"},
+            "timing",
+            errors,
+        )
+        for key in ("started_at", "completed_at"):
+            if not _timestamp(timing.get(key)):
+                errors.append(f"timing.{key} must be timezone-aware ISO time")
+        elapsed = timing.get("elapsed_milliseconds")
+        if not isinstance(elapsed, int) or isinstance(elapsed, bool) or elapsed < 0:
+            errors.append("timing.elapsed_milliseconds must be non-negative")
+        if all(_timestamp(timing.get(key)) for key in ("started_at", "completed_at")):
+            started = datetime.fromisoformat(str(timing["started_at"]).replace("Z", "+00:00"))
+            completed = datetime.fromisoformat(str(timing["completed_at"]).replace("Z", "+00:00"))
+            expected = round((completed - started).total_seconds() * 1000)
+            if expected < 0:
+                errors.append("timing.completed_at must not precede started_at")
+            elif elapsed != expected:
+                errors.append("timing.elapsed_milliseconds must be derived from timestamps")
+        provenance = item.get("provenance")
+        if (
+            isinstance(provenance, dict)
+            and _timestamp(timing.get("completed_at"))
+            and provenance.get("created_at") != timing.get("completed_at")
+        ):
+            errors.append("provenance.created_at must equal timing.completed_at")
+    _validate_gate_session_field_provenance(
+        item.get("field_provenance"), completed=True, errors=errors
+    )
     return errors
 
 
@@ -886,7 +1136,7 @@ def validate_claim_review_index(value: object) -> list[str]:
             "view",
             "field_provenance",
         },
-        schema_versions=(1, 2),
+        schema_versions=(1, 2, 3),
     )
     if item is None:
         return errors
@@ -926,7 +1176,7 @@ def validate_claim_review_index(value: object) -> list[str]:
     _validate_rule_lens(item.get("lens"), "lens", errors)
     summary = item.get("summary")
     summary_keys = set(FINDING_VERDICTS)
-    if schema_version == 2:
+    if schema_version in {2, 3}:
         summary_keys.update(REVIEW_EXECUTION_STATUSES[1:])
     if not isinstance(summary, dict):
         errors.append("summary must be an object")
@@ -954,11 +1204,13 @@ def validate_claim_review_index(value: object) -> list[str]:
             "evidence_refs",
             "finding_id",
         }
-        if schema_version == 2:
+        if schema_version in {2, 3}:
             expected_keys.remove("evidence_refs")
             expected_keys.update(
                 {"execution_status", "basis_refs", "support_refs"}
             )
+            if schema_version == 3:
+                expected_keys.add("support_paths")
         for index, outcome in enumerate(outcomes):
             label = f"outcomes[{index}]"
             if not isinstance(outcome, dict):
@@ -977,7 +1229,7 @@ def validate_claim_review_index(value: object) -> list[str]:
             verdict = outcome.get("verdict")
             execution_status = (
                 outcome.get("execution_status")
-                if schema_version == 2
+                if schema_version in {2, 3}
                 else "evaluated"
             )
             if execution_status not in REVIEW_EXECUTION_STATUSES:
@@ -998,7 +1250,7 @@ def validate_claim_review_index(value: object) -> list[str]:
                     errors.append(f"{label}.verdict must be null when not evaluated")
             if not isinstance(outcome.get("consequence"), str):
                 errors.append(f"{label}.consequence must be a string")
-            if schema_version == 2:
+            if schema_version in {2, 3}:
                 _string_list(
                     outcome.get("basis_refs"), f"{label}.basis_refs", errors
                 )
@@ -1007,6 +1259,30 @@ def validate_claim_review_index(value: object) -> list[str]:
                     f"{label}.support_refs",
                     errors,
                 )
+                if schema_version == 3:
+                    support_paths = outcome.get("support_paths")
+                    if not isinstance(support_paths, list):
+                        errors.append(f"{label}.support_paths must be an array")
+                    else:
+                        for path_index, support_path in enumerate(support_paths):
+                            path_label = f"{label}.support_paths[{path_index}]"
+                            if not isinstance(support_path, dict):
+                                errors.append(f"{path_label} must be an object")
+                                continue
+                            _strict_keys(
+                                support_path,
+                                {"support_ref", "relation_ids"},
+                                path_label,
+                                errors,
+                            )
+                            if not isinstance(support_path.get("support_ref"), str):
+                                errors.append(f"{path_label}.support_ref must be a string")
+                            _string_list(
+                                support_path.get("relation_ids"),
+                                f"{path_label}.relation_ids",
+                                errors,
+                                allow_empty=False,
+                            )
             else:
                 _string_list(
                     outcome.get("evidence_refs"),
@@ -1048,7 +1324,7 @@ def validate_claim_review_index(value: object) -> list[str]:
         "summary",
         "view",
     }
-    if schema_version == 2:
+    if schema_version in {2, 3}:
         required_field_provenance.remove("outcomes.evidence_refs")
         required_field_provenance.update(
             {
@@ -1057,6 +1333,8 @@ def validate_claim_review_index(value: object) -> list[str]:
                 "outcomes.support_refs",
             }
         )
+        if schema_version == 3:
+            required_field_provenance.add("outcomes.support_paths")
     if not isinstance(field_provenance, dict):
         errors.append("field_provenance must be an object")
     else:
@@ -1091,13 +1369,285 @@ def validate_claim_review_index(value: object) -> list[str]:
                 "outcomes.basis_refs",
                 "outcomes.support_refs",
             ]
-            if schema_version == 2
+            if schema_version in {2, 3}
             else ["outcomes.evidence_refs"]
         )
+        if schema_version == 3:
+            semantic_fields.append("outcomes.support_paths")
         for semantic_field in semantic_fields:
             provenance = field_provenance.get(semantic_field)
             if isinstance(provenance, dict) and provenance.get("origin") != "model-derived":
                 errors.append(f"{semantic_field} must remain model-derived")
+    return errors
+
+
+def validate_review_status_triage(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="review-status-triage",
+        lifecycle="append-only",
+        extra_keys={
+            "review_id",
+            "attempt_id",
+            "triage_id",
+            "task_id",
+            "target_claim",
+            "check_id",
+            "model_status",
+            "decision",
+            "action",
+            "note",
+            "supersedes",
+            "field_provenance",
+        },
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"human-confirmed"}, "review-status-triage", errors)
+    for field, pattern, description in (
+        ("review_id", r"RV[1-9][0-9]*", "RV1..RVn"),
+        ("attempt_id", r"attempt-[0-9]{4}", "attempt-NNNN"),
+        ("triage_id", r"ST[0-9]{4}", "STNNNN"),
+        ("task_id", r"T[1-9][0-9]*", "T1..Tn"),
+    ):
+        if not isinstance(item.get(field), str) or re.fullmatch(
+            pattern, str(item.get(field))
+        ) is None:
+            errors.append(f"{field} must be {description}")
+    if not isinstance(item.get("target_claim"), str) or _VERSIONED_CLAIM.fullmatch(
+        str(item.get("target_claim"))
+    ) is None:
+        errors.append("target_claim must be version-qualified")
+    if not _nonempty(item.get("check_id")):
+        errors.append("check_id must be non-empty")
+    model_status = item.get("model_status")
+    if model_status not in REVIEW_EXECUTION_STATUSES[1:]:
+        errors.append(
+            "model_status must be blocked_missing_context, routing_mismatch, or not_applicable"
+        )
+    decision = item.get("decision")
+    action = item.get("action")
+    if decision not in TRIAGE_DECISIONS:
+        errors.append(f"decision must be one of {TRIAGE_DECISIONS}")
+    if action not in TRIAGE_ACTIONS:
+        errors.append(f"action must be one of {TRIAGE_ACTIONS}")
+    allowed_acknowledgements = {
+        "routing_mismatch": {"correct_ir", "rerun_review", "other"},
+        "blocked_missing_context": {
+            "add_context",
+            "add_evidence",
+            "rerun_review",
+            "other",
+        },
+        "not_applicable": {"acknowledge_not_applicable", "other"},
+    }
+    if (
+        decision == "acknowledge"
+        and model_status in allowed_acknowledgements
+        and action not in allowed_acknowledgements[str(model_status)]
+    ):
+        errors.append(f"{action} is not a valid acknowledgement action for {model_status}")
+    if decision == "reject" and action not in {"rerun_review", "other"}:
+        errors.append("reject requires rerun_review or other action")
+    if not _nonempty(item.get("note")):
+        errors.append("note must be a non-empty human explanation")
+    supersedes = item.get("supersedes")
+    if supersedes is not None and not _digest(supersedes):
+        errors.append("supersedes must be null or a SHA-256 digest")
+    parent_roles = {"review-run", "result-attempt", "lens-result"}
+    parent_artifacts = {
+        "review-run": "rule-review-run",
+        "result-attempt": "review-result-attempt",
+        "lens-result": "argument-check-results",
+    }
+    if supersedes is not None:
+        parent_roles.add("previous-triage")
+        parent_artifacts["previous-triage"] = "review-status-triage"
+    _require_parent_roles(item, parent_roles, errors)
+    _require_parent_artifacts(item, parent_artifacts, errors)
+    field_provenance = item.get("field_provenance")
+    expected_provenance = {
+        "binding": "deterministic",
+        "model_status": "model-derived",
+        "decision": "human-confirmed",
+    }
+    if not isinstance(field_provenance, dict):
+        errors.append("field_provenance must be an object")
+    else:
+        _strict_keys(
+            field_provenance,
+            set(expected_provenance),
+            "field_provenance",
+            errors,
+        )
+        for field, expected_origin in expected_provenance.items():
+            provenance = field_provenance.get(field)
+            if not isinstance(provenance, dict):
+                errors.append(f"field_provenance.{field} must be an object")
+                continue
+            _strict_keys(
+                provenance,
+                {"origin", "source"},
+                f"field_provenance.{field}",
+                errors,
+            )
+            if provenance.get("origin") != expected_origin:
+                errors.append(
+                    f"field_provenance.{field}.origin must be {expected_origin}"
+                )
+            if not _nonempty(provenance.get("source")):
+                errors.append(f"field_provenance.{field}.source must be non-empty")
+    return errors
+
+
+def validate_review_status_triage_index(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="review-status-triage-index",
+        lifecycle="derived-replaceable",
+        extra_keys={
+            "review_id",
+            "attempt_id",
+            "version_id",
+            "summary",
+            "items",
+            "view",
+            "field_provenance",
+        },
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"deterministic"}, "review-status-triage-index", errors)
+    if not isinstance(item.get("review_id"), str) or re.fullmatch(
+        r"RV[1-9][0-9]*", str(item.get("review_id"))
+    ) is None:
+        errors.append("review_id must be RV1..RVn")
+    if not isinstance(item.get("attempt_id"), str) or re.fullmatch(
+        r"attempt-[0-9]{4}", str(item.get("attempt_id"))
+    ) is None:
+        errors.append("attempt_id must be attempt-NNNN")
+    if not isinstance(item.get("version_id"), str) or re.fullmatch(
+        r"V[1-9][0-9]*", str(item.get("version_id"))
+    ) is None:
+        errors.append("version_id must be V1..Vn")
+    summary = item.get("summary")
+    summary_keys = {"total", "open", "acknowledge", "reject"}
+    if not isinstance(summary, dict):
+        errors.append("summary must be an object")
+    else:
+        _strict_keys(summary, summary_keys, "summary", errors)
+        if any(
+            not isinstance(summary.get(key), int)
+            or isinstance(summary.get(key), bool)
+            or summary.get(key) < 0
+            for key in summary_keys
+        ):
+            errors.append("summary counts must be non-negative integers")
+        elif summary["total"] != summary["open"] + summary["acknowledge"] + summary["reject"]:
+            errors.append("summary total must equal open plus human decisions")
+    items = item.get("items")
+    counted = {"open": 0, "acknowledge": 0, "reject": 0}
+    task_ids: list[str] = []
+    expected_item_keys = {
+        "task_id",
+        "target_claim",
+        "check_id",
+        "model_status",
+        "reason",
+        "decision",
+        "action",
+        "note",
+        "triage_id",
+    }
+    if not isinstance(items, list):
+        errors.append("items must be an array")
+    else:
+        for index, triage_item in enumerate(items):
+            label = f"items[{index}]"
+            if not isinstance(triage_item, dict):
+                errors.append(f"{label} must be an object")
+                continue
+            _strict_keys(triage_item, expected_item_keys, label, errors)
+            task_id = triage_item.get("task_id")
+            if not isinstance(task_id, str) or re.fullmatch(r"T[1-9][0-9]*", task_id) is None:
+                errors.append(f"{label}.task_id is invalid")
+            else:
+                task_ids.append(task_id)
+            if not isinstance(triage_item.get("target_claim"), str) or _VERSIONED_CLAIM.fullmatch(
+                str(triage_item.get("target_claim"))
+            ) is None:
+                errors.append(f"{label}.target_claim must be version-qualified")
+            if not _nonempty(triage_item.get("check_id")) or not _nonempty(
+                triage_item.get("reason")
+            ):
+                errors.append(f"{label}.check_id/reason must be non-empty")
+            if triage_item.get("model_status") not in REVIEW_EXECUTION_STATUSES[1:]:
+                errors.append(f"{label}.model_status is invalid")
+            decision = triage_item.get("decision")
+            if decision is None:
+                counted["open"] += 1
+                if any(triage_item.get(field) is not None for field in ("action", "note", "triage_id")):
+                    errors.append(f"{label} open item must not contain human fields")
+            elif decision in TRIAGE_DECISIONS:
+                counted[str(decision)] += 1
+                if triage_item.get("action") not in TRIAGE_ACTIONS:
+                    errors.append(f"{label}.action is invalid")
+                if not _nonempty(triage_item.get("note")):
+                    errors.append(f"{label}.note must be non-empty")
+                if not isinstance(triage_item.get("triage_id"), str) or re.fullmatch(
+                    r"ST[0-9]{4}", str(triage_item.get("triage_id"))
+                ) is None:
+                    errors.append(f"{label}.triage_id is invalid")
+            else:
+                errors.append(f"{label}.decision is invalid")
+        if len(task_ids) != len(set(task_ids)):
+            errors.append("items must not repeat task IDs")
+    if isinstance(summary, dict):
+        if isinstance(items, list) and summary.get("total") != len(items):
+            errors.append("summary.total must equal items")
+        for key in counted:
+            if summary.get(key) != counted[key]:
+                errors.append(f"summary.{key} must equal items")
+    _validate_bound_file(item.get("view"), "view", errors)
+    parents = item.get("parents")
+    triage_roles = {
+        str(parent.get("role"))
+        for parent in parents
+        if isinstance(parent, dict)
+        and isinstance(parent.get("role"), str)
+        and str(parent.get("role")).startswith("triage-")
+    } if isinstance(parents, list) else set()
+    expected_roles = {"review-run", "result-attempt", "lens-result", *triage_roles}
+    expected_artifacts = {
+        "review-run": "rule-review-run",
+        "result-attempt": "review-result-attempt",
+        "lens-result": "argument-check-results",
+        **{role: "review-status-triage" for role in triage_roles},
+    }
+    _require_parent_roles(item, expected_roles, errors)
+    _require_parent_artifacts(item, expected_artifacts, errors)
+    provenance = item.get("field_provenance")
+    expected_provenance = {
+        "model": "model-derived",
+        "human": "human-confirmed",
+        "binding": "deterministic",
+        "summary": "deterministic",
+        "view": "deterministic",
+    }
+    if not isinstance(provenance, dict):
+        errors.append("field_provenance must be an object")
+    else:
+        _strict_keys(provenance, set(expected_provenance), "field_provenance", errors)
+        for field, origin in expected_provenance.items():
+            value = provenance.get(field)
+            if not isinstance(value, dict):
+                errors.append(f"field_provenance.{field} must be an object")
+                continue
+            _strict_keys(value, {"origin", "source"}, f"field_provenance.{field}", errors)
+            if value.get("origin") != origin:
+                errors.append(f"field_provenance.{field}.origin must be {origin}")
+            if not _nonempty(value.get("source")):
+                errors.append(f"field_provenance.{field}.source must be non-empty")
     return errors
 
 
@@ -1466,16 +2016,21 @@ def validate_revision_plan_record(value: object) -> list[str]:
 
 
 def _validate_gate_a_metrics(
-    value: object, label: str, errors: list[str]
+    value: object,
+    label: str,
+    errors: list[str],
+    *,
+    include_correction_minutes: bool = True,
 ) -> None:
     expected = {
-        "correction_minutes",
         "missed_claims",
         "wrong_claim_types",
         "wrong_relations",
         "rhetoric_as_claims",
         "reversed_attributions",
     }
+    if include_correction_minutes:
+        expected.add("correction_minutes")
     if not isinstance(value, dict):
         errors.append(f"{label} must be an object")
         return
@@ -1493,7 +2048,7 @@ def validate_gate_a_corpus(value: object) -> list[str]:
         artifact="product-gate-a-corpus",
         lifecycle="immutable",
         extra_keys={"corpus_id", "entries"},
-        schema_versions=(1, 2),
+        schema_versions=(1, 2, 3, 4, 5),
     )
     if item is None:
         return errors
@@ -1505,6 +2060,11 @@ def validate_gate_a_corpus(value: object) -> list[str]:
     expected_artifacts: dict[str, str] = {}
     aliases: list[str] = []
     source_hashes: list[str] = []
+    parent_hashes = {
+        parent.get("role"): parent.get("sha256")
+        for parent in item.get("parents", [])
+        if isinstance(parent, dict)
+    }
     if not isinstance(entries, list) or not 3 <= len(entries) <= 5:
         errors.append("entries must contain 3 to 5 real manuscripts")
         entries = []
@@ -1513,7 +2073,7 @@ def validate_gate_a_corpus(value: object) -> list[str]:
         role = f"project-{index:03d}"
         expected_roles.add(role)
         expected_artifacts[role] = "argument-project"
-        if schema_version == 2:
+        if schema_version in {2, 3, 4, 5}:
             baseline_role = f"baseline-{index:03d}"
             expected_roles.add(baseline_role)
             expected_artifacts[baseline_role] = "direct-review-baseline"
@@ -1554,16 +2114,113 @@ def validate_gate_a_corpus(value: object) -> list[str]:
             "revision_plan_record",
             "revision_plan_markdown",
         }
-        if schema_version == 2:
+        if schema_version in {2, 3, 4, 5}:
             binding_keys.add("direct_review_baseline")
+        if schema_version in {3, 4, 5}:
+            binding_keys.add("status_triage")
+        if schema_version == 5:
+            binding_keys.add("ir_inspection_sessions")
         if not isinstance(bindings, dict):
             errors.append(f"{label}.bindings must be an object")
         else:
             _strict_keys(bindings, binding_keys, f"{label}.bindings", errors)
-            for key in binding_keys:
+            for key in binding_keys - {
+                "status_triage",
+                "ir_inspection_sessions",
+            }:
                 if not _digest(bindings.get(key)):
                     errors.append(f"{label}.bindings.{key} must be a SHA-256 digest")
             source_hashes.append(str(bindings.get("source")))
+            if schema_version in {3, 4, 5}:
+                triage_bindings = bindings.get("status_triage")
+                if not isinstance(triage_bindings, list):
+                    errors.append(f"{label}.bindings.status_triage must be an array")
+                else:
+                    seen_triage_reviews: set[tuple[object, object]] = set()
+                    for triage_index, triage in enumerate(triage_bindings, 1):
+                        triage_label = (
+                            f"{label}.bindings.status_triage[{triage_index - 1}]"
+                        )
+                        if not isinstance(triage, dict):
+                            errors.append(f"{triage_label} must be an object")
+                            continue
+                        _strict_keys(
+                            triage,
+                            {"review_id", "attempt_id", "sha256"},
+                            triage_label,
+                            errors,
+                        )
+                        if not isinstance(triage.get("review_id"), str) or re.fullmatch(
+                            r"RV[1-9][0-9]*", str(triage.get("review_id"))
+                        ) is None:
+                            errors.append(f"{triage_label}.review_id is invalid")
+                        if not isinstance(triage.get("attempt_id"), str) or re.fullmatch(
+                            r"attempt-[0-9]{4}", str(triage.get("attempt_id"))
+                        ) is None:
+                            errors.append(f"{triage_label}.attempt_id is invalid")
+                        if not _digest(triage.get("sha256")):
+                            errors.append(f"{triage_label}.sha256 must be a digest")
+                        key = (
+                            triage.get("review_id"),
+                            triage.get("attempt_id"),
+                        )
+                        if key in seen_triage_reviews:
+                            errors.append(f"{triage_label} repeats a review attempt")
+                        seen_triage_reviews.add(key)
+                        role = f"status-triage-{index:03d}-{triage_index:03d}"
+                        expected_roles.add(role)
+                        expected_artifacts[role] = "review-status-triage-index"
+            if schema_version == 5:
+                session_bindings = bindings.get("ir_inspection_sessions")
+                if not isinstance(session_bindings, list) or not session_bindings:
+                    errors.append(
+                        f"{label}.bindings.ir_inspection_sessions must be a non-empty array"
+                    )
+                else:
+                    session_ids: list[str] = []
+                    for session_index, session in enumerate(session_bindings, 1):
+                        session_label = (
+                            f"{label}.bindings.ir_inspection_sessions"
+                            f"[{session_index - 1}]"
+                        )
+                        if not isinstance(session, dict):
+                            errors.append(f"{session_label} must be an object")
+                            continue
+                        _strict_keys(
+                            session,
+                            {"session_id", "sha256", "elapsed_milliseconds"},
+                            session_label,
+                            errors,
+                        )
+                        if not isinstance(session.get("session_id"), str) or re.fullmatch(
+                            r"GS[1-9][0-9]*", str(session.get("session_id"))
+                        ) is None:
+                            errors.append(f"{session_label}.session_id is invalid")
+                        session_ids.append(str(session.get("session_id")))
+                        if not _digest(session.get("sha256")):
+                            errors.append(f"{session_label}.sha256 must be a digest")
+                        elapsed = session.get("elapsed_milliseconds")
+                        if (
+                            not isinstance(elapsed, int)
+                            or isinstance(elapsed, bool)
+                            or elapsed < 0
+                        ):
+                            errors.append(
+                                f"{session_label}.elapsed_milliseconds must be non-negative"
+                            )
+                        role = (
+                            f"ir-inspection-{index:03d}-{session_index:03d}"
+                        )
+                        expected_roles.add(role)
+                        expected_artifacts[role] = "gate-a-work-session"
+                        if parent_hashes.get(role) != session.get("sha256"):
+                            errors.append(
+                                f"{session_label}.sha256 must match parent {role}"
+                            )
+                    if len(session_ids) != len(set(session_ids)):
+                        errors.append(
+                            f"{label}.bindings.ir_inspection_sessions repeats a session"
+                        )
     if len(aliases) != len(set(aliases)):
         errors.append("entry aliases must be unique")
     if len(source_hashes) != len(set(source_hashes)):
@@ -1575,21 +2232,24 @@ def validate_gate_a_corpus(value: object) -> list[str]:
 
 def validate_gate_a_assessment(value: object) -> list[str]:
     schema_version = value.get("schema_version") if isinstance(value, dict) else None
+    extra_keys = {
+        "corpus_id",
+        "project_alias",
+        "comparison_to_direct_chat",
+        "correction_burden",
+        "metrics",
+        "regression_anchors",
+        "actual_revision_notes",
+        "notes",
+    }
+    if schema_version == 5:
+        extra_keys.update({"ir_inspection_timing", "field_provenance"})
     errors, item = _validate_base(
         value,
         artifact="product-gate-a-assessment",
         lifecycle="immutable",
-        extra_keys={
-            "corpus_id",
-            "project_alias",
-            "comparison_to_direct_chat",
-            "correction_burden",
-            "metrics",
-            "regression_anchors",
-            "actual_revision_notes",
-            "notes",
-        },
-        schema_versions=(1, 2),
+        extra_keys=extra_keys,
+        schema_versions=(1, 2, 3, 4, 5),
     )
     if item is None:
         return errors
@@ -1600,9 +2260,109 @@ def validate_gate_a_assessment(value: object) -> list[str]:
         "project": "argument-project",
         "revision-plan": "revision-plan-record",
     }
-    if schema_version == 2:
+    if schema_version in {2, 3, 4, 5}:
         parent_roles.add("direct-review-baseline")
         parent_artifacts["direct-review-baseline"] = "direct-review-baseline"
+    if schema_version in {3, 4, 5}:
+        for parent in item.get("parents", []):
+            if isinstance(parent, dict) and str(parent.get("role", "")).startswith(
+                "status-triage-"
+            ):
+                role = str(parent["role"])
+                if re.fullmatch(r"status-triage-[0-9]{3}", role) is None:
+                    errors.append(f"invalid status triage parent role: {role}")
+                parent_roles.add(role)
+                parent_artifacts[role] = "review-status-triage-index"
+    timing = item.get("ir_inspection_timing")
+    if schema_version == 5:
+        if not isinstance(timing, dict):
+            errors.append("ir_inspection_timing must be an object")
+        else:
+            _strict_keys(
+                timing,
+                {"elapsed_milliseconds", "sessions"},
+                "ir_inspection_timing",
+                errors,
+            )
+            elapsed = timing.get("elapsed_milliseconds")
+            if (
+                not isinstance(elapsed, int)
+                or isinstance(elapsed, bool)
+                or elapsed < 0
+            ):
+                errors.append(
+                    "ir_inspection_timing.elapsed_milliseconds must be non-negative"
+                )
+            sessions = timing.get("sessions")
+            if not isinstance(sessions, list) or not sessions:
+                errors.append(
+                    "ir_inspection_timing.sessions must be a non-empty array"
+                )
+            else:
+                session_ids: list[str] = []
+                parent_hashes = {
+                    parent.get("role"): parent.get("sha256")
+                    for parent in item.get("parents", [])
+                    if isinstance(parent, dict)
+                }
+                for index, session in enumerate(sessions, 1):
+                    label = f"ir_inspection_timing.sessions[{index - 1}]"
+                    role = f"ir-inspection-{index:03d}"
+                    parent_roles.add(role)
+                    parent_artifacts[role] = "gate-a-work-session"
+                    if not isinstance(session, dict):
+                        errors.append(f"{label} must be an object")
+                        continue
+                    _strict_keys(
+                        session,
+                        {"session_id", "sha256"},
+                        label,
+                        errors,
+                    )
+                    if not isinstance(session.get("session_id"), str) or re.fullmatch(
+                        r"GS[1-9][0-9]*", str(session.get("session_id"))
+                    ) is None:
+                        errors.append(f"{label}.session_id is invalid")
+                    session_ids.append(str(session.get("session_id")))
+                    if not _digest(session.get("sha256")):
+                        errors.append(f"{label}.sha256 must be a digest")
+                    if parent_hashes.get(role) != session.get("sha256"):
+                        errors.append(f"{label}.sha256 must match parent {role}")
+                if len(session_ids) != len(set(session_ids)):
+                    errors.append("ir_inspection_timing.sessions repeats a session")
+        field_provenance = item.get("field_provenance")
+        if not isinstance(field_provenance, dict):
+            errors.append("field_provenance must be an object")
+        else:
+            _strict_keys(
+                field_provenance,
+                {"human_observations", "ir_inspection_timing"},
+                "field_provenance",
+                errors,
+            )
+            expected_origins = {
+                "human_observations": "human-confirmed",
+                "ir_inspection_timing": "deterministic",
+            }
+            for field, origin in expected_origins.items():
+                provenance = field_provenance.get(field)
+                if not isinstance(provenance, dict):
+                    errors.append(f"field_provenance.{field} must be an object")
+                    continue
+                _strict_keys(
+                    provenance,
+                    {"origin", "source"},
+                    f"field_provenance.{field}",
+                    errors,
+                )
+                if provenance.get("origin") != origin:
+                    errors.append(
+                        f"field_provenance.{field}.origin must be {origin}"
+                    )
+                if not _nonempty(provenance.get("source")):
+                    errors.append(
+                        f"field_provenance.{field}.source must be non-empty"
+                    )
     _require_parent_roles(item, parent_roles, errors)
     _require_parent_artifacts(
         item,
@@ -1616,7 +2376,12 @@ def validate_gate_a_assessment(value: object) -> list[str]:
         errors.append(f"comparison_to_direct_chat must be one of {GATE_A_COMPARISONS}")
     if item.get("correction_burden") not in GATE_A_BURDENS:
         errors.append(f"correction_burden must be one of {GATE_A_BURDENS}")
-    _validate_gate_a_metrics(item.get("metrics"), "metrics", errors)
+    _validate_gate_a_metrics(
+        item.get("metrics"),
+        "metrics",
+        errors,
+        include_correction_minutes=schema_version != 5,
+    )
     _string_list(
         item.get("regression_anchors"),
         "regression_anchors",
@@ -1660,19 +2425,24 @@ def validate_gate_a_decision(value: object) -> list[str]:
 
 
 def validate_gate_a_report(value: object) -> list[str]:
+    schema_version = value.get("schema_version") if isinstance(value, dict) else None
+    extra_keys = {
+        "corpus_id",
+        "readiness",
+        "workflow_totals",
+        "human_observations",
+        "projects",
+        "gate_decision",
+        "payload",
+    }
+    if schema_version == 2:
+        extra_keys.add("work_timing")
     errors, item = _validate_base(
         value,
         artifact="product-gate-a-report",
         lifecycle="derived-replaceable",
-        extra_keys={
-            "corpus_id",
-            "readiness",
-            "workflow_totals",
-            "human_observations",
-            "projects",
-            "gate_decision",
-            "payload",
-        },
+        extra_keys=extra_keys,
+        schema_versions=(1, 2),
     )
     if item is None:
         return errors
@@ -1717,7 +2487,32 @@ def validate_gate_a_report(value: object) -> list[str]:
             value = observations.get(key)
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 errors.append(f"human_observations.{key} must be a non-negative integer")
-        _validate_gate_a_metrics(observations.get("metrics"), "human_observations.metrics", errors)
+        _validate_gate_a_metrics(
+            observations.get("metrics"),
+            "human_observations.metrics",
+            errors,
+            include_correction_minutes=schema_version == 1,
+        )
+    if schema_version == 2:
+        work_timing = item.get("work_timing")
+        if not isinstance(work_timing, dict):
+            errors.append("work_timing must be an object")
+        else:
+            _strict_keys(
+                work_timing,
+                {"ir_inspection_elapsed_milliseconds"},
+                "work_timing",
+                errors,
+            )
+            elapsed = work_timing.get("ir_inspection_elapsed_milliseconds")
+            if (
+                not isinstance(elapsed, int)
+                or isinstance(elapsed, bool)
+                or elapsed < 0
+            ):
+                errors.append(
+                    "work_timing.ir_inspection_elapsed_milliseconds must be non-negative"
+                )
     projects = item.get("projects")
     expected_parent_roles = {"corpus"}
     expected_parent_artifacts = {"corpus": "product-gate-a-corpus"}
@@ -1730,9 +2525,7 @@ def validate_gate_a_report(value: object) -> list[str]:
         if not isinstance(project, dict):
             errors.append(f"{label} must be an object")
             continue
-        _strict_keys(
-            project,
-            {
+        project_keys = {
                 "alias",
                 "bindings_match",
                 "workflow_complete",
@@ -1746,10 +2539,10 @@ def validate_gate_a_report(value: object) -> list[str]:
                 "assessment_id",
                 "regression_anchors",
                 "actual_revision_recorded",
-            },
-            label,
-            errors,
-        )
+            }
+        if schema_version == 2:
+            project_keys.add("ir_inspection_elapsed_milliseconds")
+        _strict_keys(project, project_keys, label, errors)
         if not _nonempty(project.get("alias")):
             errors.append(f"{label}.alias must be a non-empty string")
         aliases.append(str(project.get("alias")))
@@ -1760,6 +2553,16 @@ def validate_gate_a_report(value: object) -> list[str]:
             value = project.get(key)
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 errors.append(f"{label}.{key} must be a non-negative integer")
+        if schema_version == 2:
+            elapsed = project.get("ir_inspection_elapsed_milliseconds")
+            if (
+                not isinstance(elapsed, int)
+                or isinstance(elapsed, bool)
+                or elapsed < 0
+            ):
+                errors.append(
+                    f"{label}.ir_inspection_elapsed_milliseconds must be non-negative"
+                )
         assessment_id = project.get("assessment_id")
         if assessment_id is not None and not _nonempty(assessment_id):
             errors.append(f"{label}.assessment_id must be null or non-empty")
@@ -1773,6 +2576,22 @@ def validate_gate_a_report(value: object) -> list[str]:
             errors.append(f"{label}.workflow_complete requires intact bindings and zero open Findings")
     if len(aliases) != len(set(aliases)):
         errors.append("project aliases must be unique")
+    if schema_version == 2 and isinstance(item.get("work_timing"), dict):
+        expected_elapsed = sum(
+            int(project.get("ir_inspection_elapsed_milliseconds", 0))
+            for project in projects
+            if isinstance(project, dict)
+            and isinstance(project.get("ir_inspection_elapsed_milliseconds"), int)
+            and not isinstance(
+                project.get("ir_inspection_elapsed_milliseconds"), bool
+            )
+        )
+        if item["work_timing"].get(
+            "ir_inspection_elapsed_milliseconds"
+        ) != expected_elapsed:
+            errors.append(
+                "work_timing.ir_inspection_elapsed_milliseconds must equal project total"
+            )
     decision = item.get("gate_decision")
     if decision is not None and decision not in GATE_A_DECISIONS:
         errors.append("gate_decision must be pass/fail/defer/null")
@@ -1883,7 +2702,11 @@ VALIDATORS: dict[str, Callable[[object], list[str]]] = {
     "rule-review-run": validate_rule_review_run,
     "review-result-attempt": validate_review_result_attempt,
     "direct-review-baseline": validate_direct_review_baseline,
+    "gate-a-session-start": validate_gate_a_session_start,
+    "gate-a-work-session": validate_gate_a_work_session,
     "claim-review-index": validate_claim_review_index,
+    "review-status-triage": validate_review_status_triage,
+    "review-status-triage-index": validate_review_status_triage_index,
     "argument-finding": validate_argument_finding,
     "finding-adjudication": validate_finding_adjudication,
     "revision-action": validate_revision_action,

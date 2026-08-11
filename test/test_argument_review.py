@@ -74,19 +74,19 @@ class ArgumentReviewTests(unittest.TestCase):
         for index, task in enumerate(plan["tasks"]):
             verdict = verdicts[index] if index < len(verdicts) else "pass"
             policy = check_by_id[task["check_id"]]["evidence_policy"]
-            context = argument_ir._context_node_ids(argument, task["claim_id"])
+            eligible_paths = argument_ir._eligible_pass_support_paths(
+                argument, task["claim_id"]
+            )
             support_refs = []
             if verdict == "pass" and policy == "upstream-required":
                 support_refs = [
-                    next(
-                        ref for ref in sorted(context) if ref != task["claim_id"]
-                    )
+                    next(iter(eligible_paths))
                 ]
             elif verdict == "pass" and policy == "citation-required":
                 support_refs = [
                     next(
                         ref
-                        for ref in sorted(context)
+                        for ref in eligible_paths
                         if node_kinds.get(ref) == "citation"
                     )
                 ]
@@ -98,13 +98,20 @@ class ArgumentReviewTests(unittest.TestCase):
                     "reason": f"Reason for {task['check_id']}",
                     "basis_refs": [task["claim_id"], *support_refs],
                     "support_refs": support_refs,
+                    "support_paths": [
+                        {
+                            "support_ref": ref,
+                            "relation_ids": eligible_paths[ref],
+                        }
+                        for ref in support_refs
+                    ],
                     "consequence": "Revise or inspect this Claim."
                     if verdict in {"fail", "uncertain"}
                     else "",
                 }
             )
         return {
-            "schema_version": 2,
+            "schema_version": plan["schema_version"],
             "artifact": "argument-check-results",
             "source": {"plan_sha256": contracts.sha256_bytes(paths.plan.read_bytes())},
             "status": "complete",
@@ -233,6 +240,7 @@ class ArgumentReviewTests(unittest.TestCase):
                 reason="The extracted method does not match this empirical check.",
                 basis_refs=["C1"],
                 support_refs=[],
+                support_paths=[],
                 consequence="",
             )
             _, attempt = review.collect_review_results(

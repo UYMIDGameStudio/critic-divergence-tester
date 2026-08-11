@@ -41,8 +41,9 @@ py -3 critic_runner.py ir review prepare .\draft.argument-workbench --depth core
 # 5. 将 review-prompt.md 交给模型，再收集严格结果
 py -3 critic_runner.py ir review collect .\draft.argument-workbench --file .\review-results.json
 
-# 6. 从 Claim 查看结果，逐条作出人工决定并生成修改计划
+# 6. 先处理模型提出的 routing/applicability 状态，再裁决文章 Findings
 py -3 critic_runner.py ir review show .\draft.argument-workbench
+py -3 critic_runner.py ir review triage .\draft.argument-workbench
 py -3 critic_runner.py ir adjudicate .\draft.argument-workbench
 py -3 critic_runner.py ir revision-plan .\draft.argument-workbench --show
 
@@ -52,7 +53,7 @@ py -3 critic_runner.py ir verify-project .\draft.argument-workbench
 
 `review prepare` 的 `--scope thesis-chain` 是默认日常范围；可用 `--scope claim --claim C4`、`--scope claims --claim C4 --claim C7` 精确选择，或显式 `--scope all` 做全面审计。`--depth core|full` 只决定每个入选 Claim 使用 core checks 还是加上 extended checks，与 review scope 正交。
 
-新结果 contract 把检查执行状态与实质 verdict 分开：`routing_mismatch`、`not_applicable`、`blocked_missing_context` 保留在可审计索引，但不会伪装成文章缺陷进入 Revision Plan。PASS 同时记录判断依据 `basis_refs` 和真正支持通过的 `support_refs`；需要上游证据或 Citation 的规则不能再用目标 Claim 自证。
+新结果 contract 把检查执行状态与实质 verdict 分开：`routing_mismatch`、`not_applicable`、`blocked_missing_context` 不会伪装成文章缺陷，但必须经过独立的人工 triage。PASS 同时记录判断依据 `basis_refs`、真正支持通过的 `support_refs`，以及从该节点到目标 Claim 的 `support_paths`；路径只能使用 `supports`、合规的 `qualifies` 和 `cites`，不能让目标 Claim 自证，也不能让 `contradicts` 或 `assumes` 替它作证。
 
 更完整的文件布局、Inspector 操作和 Phase 1–3 示例见下方 Argument IR / Workbench 章节。
 
@@ -280,7 +281,7 @@ IR 明确分开 `Claim`、`Evidence`、`Assumption`、`Citation` 及其关系。
 
 社科方法矩阵现在位于 [`ir/social-science-checks.json`](ir/social-science-checks.json)。每条规则都声明适用的主张类型、研究方法、检查问题、失败条件、所需上下文和 PASS `evidence_policy`。因果机制与替代解释适用于所有因果 Claim；时间顺序、混杂、反向因果和选择偏差只适用于标明 `causal-observational` 或 `causal-experimental` 的经验识别 Claim。`core/full` 是 check depth；`thesis-chain/claim/claims/all` 是独立的 Claim scope。
 
-check plan 使用规范化引用结构：完整 Argument IR 只保存一次，选中的检查定义也只保存一次。v2 结果以 `basis_refs` 保存模型判断依据，以 `support_refs` 保存真正支持 PASS 的独立上游依据；`upstream-required` 不接受目标 Claim 自证，`citation-required` 必须引用同一论证链中的 Citation。`execution_status` 先区分 `evaluated`、缺上下文、routing mismatch 和实质不适用；后三者必须解释和留痕，但默认不生成文章缺陷 Finding。
+check plan 使用规范化引用结构：完整 Argument IR 只保存一次，选中的检查定义也只保存一次。v3 结果以 `basis_refs` 保存模型判断依据，以 `support_refs` 保存真正支持 PASS 的独立上游依据，并用 `support_paths[].relation_ids` 保存可验证的有向支持路径；`upstream-required` 不接受目标 Claim 自证，`citation-required` 必须从 Citation 经 `cites` 开始。`execution_status` 先区分 `evaluated`、缺上下文、routing mismatch 和实质不适用；后三者必须解释、留痕并由人确认或驳回，但不生成文章缺陷 Finding。旧 v1/v2 plan/results 继续按原 contract 验证，不会被静默升级语义。
 
 ### Argument Workbench：不用打开 JSON 的正式流程
 
@@ -373,7 +374,19 @@ reviews/RV1/
     └── findings/F0001.json ...
 ```
 
-`claim-review.md` 按 Claim 显示 PASS / FAIL / UNCERTAIN，以及 BLOCKED_MISSING_CONTEXT / ROUTING_MISMATCH / NOT_APPLICABLE，不生成论文总分。只有 evaluated 的 FAIL 与实质 UNCERTAIN 产生独立 `argument-finding`；执行或路由状态保留在 index 中但不进入修改队列。模型 status/verdict/reason 始终标记为 `model-derived`。
+`claim-review.md` 按 Claim 显示 PASS / FAIL / UNCERTAIN，以及 BLOCKED_MISSING_CONTEXT / ROUTING_MISMATCH / NOT_APPLICABLE，不生成论文总分。只有 evaluated 的 FAIL 与实质 UNCERTAIN 产生独立 `argument-finding`；执行或路由状态进入另一条人工队列：
+
+```powershell
+# 只读查看当前队列
+py -3 critic_runner.py ir review triage $project
+
+# 追加一条 human-confirmed 决定，不覆盖模型结果或旧决定
+py -3 critic_runner.py ir review triage $project `
+  --task T4 --decision acknowledge --action correct_ir `
+  --note "修正该 Claim 的 method 分类后重新运行审查。"
+```
+
+`routing_mismatch` 可进入 `correct_ir`，缺上下文可进入 `add_context` / `add_evidence`，`not_applicable` 必须由人明确 acknowledge 或 reject。未完成 triage 会阻止 Gate A corpus capture；决定及复议均为 append-only，并由可重建的 triage index 钉住精确字节。
 
 ### Phase 3：人工裁决与 Revision Plan
 
@@ -423,12 +436,25 @@ documents/D1/versions/V1/
 Phase 3 完成后不能直接增加 Perspective Lens。`ir gate-a` 把 3–5 篇真实稿件的 Phase 1–3 结果固定为一个私有、本地 evidence corpus。它只保存 workspace locator 与精确哈希，不复制稿件正文；建议输出目录使用 `*.product-gate-a/`，该模式默认不进 Git。
 
 ```powershell
+# 用同一协议生成全文内嵌 prompt；已有文件不会被覆盖
+py -3 critic_runner.py ir gate-a prepare-baseline $project1 .\P1-direct-prompt.md
+
 # 在使用 Workbench Findings 前保存一次完整稿件 direct-chat 对照；时间由两个时间戳确定性计算
 py -3 critic_runner.py ir gate-a baseline $project1 `
   --prompt-file .\P1-direct-prompt.md --response-file .\P1-direct-response.md `
   --model-label "模型与版本标签" `
+  --model-provider "模型提供方" --model-id "提供方模型 ID" `
+  --interaction-mode fresh-session --prior-context none `
+  --manuscript-delivery inline --full-manuscript-confirmed `
   --started-at "2026-08-10T10:00:00+08:00" `
   --completed-at "2026-08-10T10:05:00+08:00"
+
+# 实际检查 IR 前后分别调用；时间来自系统时钟，不再靠事后回忆
+py -3 critic_runner.py ir gate-a session start $project1 `
+  --activity ir-inspection --note "逐条对照原文检查 IR"
+py -3 critic_runner.py ir inspect $project1
+py -3 critic_runner.py ir gate-a session finish $project1 GS1
+py -3 critic_runner.py ir gate-a session list $project1
 
 # 在捕获 Gate corpus 前只读汇总 3–5 个项目；未完成时逐篇给出下一条命令
 py -3 critic_runner.py ir gate-a readiness $project1 $project2 $project3
@@ -440,7 +466,7 @@ py -3 critic_runner.py ir gate-a init $gate $project1 $project2 $project3
 # 每篇稿件追加一次人工 assessment；--anchor 可重复，用于保存已知重要 Claim、抽取陷阱、Finding 或框架反转
 py -3 critic_runner.py ir gate-a assess $gate P1 `
   --comparison clearer --burden acceptable `
-  --correction-minutes 18 --missed-claims 1 --wrong-claim-types 2 `
+  --missed-claims 1 --wrong-claim-types 2 `
   --wrong-relations 1 --rhetoric-as-claims 0 --reversed-attributions 0 `
   --anchor "‘总会’的 denominator problem" `
   --anchor "吉拉尔 attribution/citation issue" `
@@ -451,7 +477,9 @@ py -3 critic_runner.py ir gate-a report $gate --show
 py -3 critic_runner.py ir gate-a verify $gate
 ```
 
-`ir gate-a baseline` 原样保存 direct-chat prompt/response、模型标签、开始/完成时间并绑定稿件精确字节；它不填写比较结论。`ir gate-a readiness` 可以在人工裁决尚未完成时运行，只读汇总 Claim、correction、模型 Findings、人工决定、revision plan 和 baseline 状态。只有全部项目没有 open Finding、revision plan 与 baseline 已生成且 source bytes 互不重复时，才允许捕获不可变 corpus。
+`ir gate-a prepare-baseline` 使用版本化的 `direct-full-manuscript-review-v1` 协议，并把 DocumentVersion 的 source bytes 原样嵌入 prompt。`ir gate-a baseline` 原样保存 direct-chat prompt/response、provider/model ID、开始/完成时间、稿件交付方式和会话条件，并绑定稿件精确字节；inline 模式会再次验证 prompt 确实包含完整原稿。它不填写比较结论。新 Gate corpus 只接受 controlled v2 baseline：fresh session、没有既有对话上下文，而且模型确实收到完整稿件。旧 v1 baseline 继续可验证，但不能进入新的 Gate。`ir gate-a readiness` 可以在人工裁决尚未完成时运行，只读汇总 Claim、correction、模型 Findings、Finding 决定、status triage、revision plan、baseline 和 IR inspection timing 状态。只有全部项目没有 open Finding 或 open triage、revision plan 与 controlled baseline 已生成、至少一段 IR inspection 在首个 Rule Review 结果前完成、没有仍开放的 work session，且 source bytes 互不重复时，才允许捕获不可变 corpus。
+
+`ir gate-a session start/finish/list` 记录实际人工作业时间。start 和完成 record 都不可变，完成时间与 elapsed milliseconds 由系统时钟确定；同一 workspace 同时只允许一个 open session。活动明确区分 IR inspection、Finding adjudication、status triage、revision planning、manuscript revision 和 other。新建的 v5 Gate corpus 和 assessment 绑定首个 Rule Review 结果之前完成的全部 IR inspection record，并确定性汇总精确毫秒；`--correction-minutes` 仅为读取/追加旧 v1–v4 Gate 留作兼容参数，v5 会拒绝自报时间。旧 Gate 工件保持按原 schema 验证，不会被迁移或改写。
 
 对 P2/P3（以及可选的 P4/P5）完成 assessment 后，报告才会显示 `Ready for human gate decision: yes`。程序永远不会自动通过 Gate；只有人类 evaluator 可以追加决定：
 
@@ -459,7 +487,7 @@ py -3 critic_runner.py ir gate-a verify $gate
 py -3 critic_runner.py ir gate-a decide $gate pass --reason "真实语料上的控制性与校正成本达到进入 Phase 4 的要求"
 ```
 
-`pass` 前强制要求 3–5 个互不相同的 source、每个 workspace 的全部 hash 仍与捕获时一致、所有 Finding 已 adjudicate、每篇都有人工 assessment 和至少一个 regression anchor。报告只给出 Claims、corrections、accepted/rejected/deferred/open Findings、抽取错误和人工成本等计数，不生成质量分数。详细协议见 [`docs/product-gate-a.md`](docs/product-gate-a.md)。仓库中的 synthetic/现实结构 fixture 只测试工具机制，不能充当 Gate A 的真实文章，也不能证明 Gate 已通过。
+`pass` 前强制要求 3–5 个互不相同的 source、每个 workspace 的全部 hash 仍与捕获时一致、所有 Finding 已 adjudicate、所有非实质执行状态已完成人工 triage、每篇都有人工 assessment 和至少一个 regression anchor。报告只给出 Claims、corrections、accepted/rejected/deferred/open Findings、抽取错误和人工成本等计数，不生成质量分数。详细协议见 [`docs/product-gate-a.md`](docs/product-gate-a.md)。仓库中的 synthetic/现实结构 fixture 只测试工具机制，不能充当 Gate A 的真实文章，也不能证明 Gate 已通过。
 
 ### 兼容的低层 Argument IR 流程
 

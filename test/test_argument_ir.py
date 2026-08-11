@@ -556,22 +556,23 @@ class ArgumentIRTests(unittest.TestCase):
         for task in plan["tasks"]:
             claim_id = task["claim_id"]
             policy = check_by_id[task["check_id"]]["evidence_policy"]
-            context = argument_ir._context_node_ids(argument, claim_id)
+            eligible_paths = argument_ir._eligible_pass_support_paths(
+                argument, claim_id
+            )
             support_refs = []
             if policy == "upstream-required":
                 support_refs = [
-                    next(ref for ref in sorted(context) if ref != claim_id)
+                    next(iter(eligible_paths))
                 ]
             elif policy == "citation-required":
                 support_refs = [
                     next(
                         ref
-                        for ref in sorted(context)
+                        for ref in eligible_paths
                         if node_kinds.get(ref) == "citation"
                     )
                 ]
-            items.append(
-                {
+            item = {
                     "task_id": task["id"],
                     "execution_status": "evaluated",
                     "verdict": "pass",
@@ -580,15 +581,53 @@ class ArgumentIRTests(unittest.TestCase):
                     "support_refs": support_refs,
                     "consequence": "",
                 }
-            )
+            if plan["schema_version"] == 3:
+                item["support_paths"] = [
+                    {
+                        "support_ref": ref,
+                        "relation_ids": eligible_paths[ref],
+                    }
+                    for ref in support_refs
+                ]
+            items.append(item)
         return {
-            "schema_version": 2,
+            "schema_version": plan["schema_version"],
             "artifact": "argument-check-results",
             "source": {"plan_sha256": plan_hash},
             "status": "complete",
             "unverified": [],
             "results": items,
         }
+
+    def test_v2_plan_and_results_remain_verifiable_without_support_paths(self) -> None:
+        library = copy.deepcopy(self.library)
+        library["schema_version"] = 2
+        library_bytes = (
+            json.dumps(library, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        value = valid_ir(self.source_bytes)
+        ir_bytes = (
+            json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        plan = argument_ir.build_check_plan(
+            value,
+            library,
+            ir_sha256=digest(ir_bytes),
+            library_sha256=digest(library_bytes),
+            depth="core",
+        )
+        plan_bytes = (
+            json.dumps(plan, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        results = self._results(plan, digest(plan_bytes))
+        self.assertEqual(plan["schema_version"], 2)
+        self.assertNotIn("support_paths", results["results"][0])
+        self.assertEqual(
+            argument_ir.validate_check_results(
+                results, plan, plan_sha256=digest(plan_bytes)
+            ),
+            [],
+        )
 
     def test_results_are_plan_bound_complete_and_provenance_limited(self) -> None:
         plan = self._plan()
@@ -647,6 +686,7 @@ class ArgumentIRTests(unittest.TestCase):
         first = self_supported_pass["results"][0]
         first["basis_refs"] = ["C1"]
         first["support_refs"] = ["C1"]
+        first["support_paths"] = []
         self.assertTrue(
             any(
                 "independent of the target Claim" in error
@@ -706,6 +746,46 @@ class ArgumentIRTests(unittest.TestCase):
             )
         )
 
+    def test_v3_pass_support_path_rejects_a_contradicting_relation(self) -> None:
+        value = valid_ir(self.source_bytes)
+        value["relations"][0]["type"] = "contradicts"
+        ir_bytes = (
+            json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        plan = argument_ir.build_check_plan(
+            value,
+            self.library,
+            ir_sha256=digest(ir_bytes),
+            library_sha256=digest(self.library_bytes),
+            depth="core",
+        )
+        plan_bytes = (
+            json.dumps(plan, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        plan_hash = digest(plan_bytes)
+        results = self._results(plan, plan_hash)
+        target = next(
+            result
+            for result in results["results"]
+            if next(
+                task for task in plan["tasks"] if task["id"] == result["task_id"]
+            )["claim_id"]
+            == "C1"
+            and result["support_refs"]
+        )
+        target["support_refs"] = ["E1"]
+        target["support_paths"] = [
+            {"support_ref": "E1", "relation_ids": ["R1"]}
+        ]
+        self.assertTrue(
+            any(
+                "uses contradicts" in error
+                for error in argument_ir.validate_check_results(
+                    results, plan, plan_sha256=plan_hash
+                )
+            )
+        )
+
     def test_findings_are_derived_only_from_fail_and_uncertain(self) -> None:
         plan = self._plan()
         plan_bytes = (json.dumps(plan, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
@@ -715,12 +795,14 @@ class ArgumentIRTests(unittest.TestCase):
             verdict="fail",
             reason="材料与结论之间缺少推理连接。",
             support_refs=[],
+            support_paths=[],
             consequence="该主张当前只能降格为待检验假说。",
         )
         results["results"][1].update(
             verdict="uncertain",
             reason="上下文缺少范围信息。",
             support_refs=[],
+            support_paths=[],
             consequence="不能判断外推边界。",
         )
         results["results"][2].update(
@@ -729,6 +811,7 @@ class ArgumentIRTests(unittest.TestCase):
             reason="The Claim method classification routed an empirical check incorrectly.",
             basis_refs=["C1"],
             support_refs=[],
+            support_paths=[],
             consequence="",
         )
         results_bytes = (json.dumps(results, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
@@ -822,6 +905,7 @@ class ArgumentIRTests(unittest.TestCase):
                 verdict="fail",
                 reason="支持链不足。",
                 support_refs=[],
+                support_paths=[],
                 consequence="结论需要降格。",
             )
             results_path = root / "results.json"

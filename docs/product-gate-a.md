@@ -4,18 +4,65 @@ Product Gate A asks whether the Phase 1–3 Workbench is more understandable and
 
 ## Required corpus
 
-Use three to five real manuscripts. Include writing that has already received close human analysis when possible; the planned corpus should include 《结构的替身》 if its author can supply it. Do not count the bundled demo fixture as a real manuscript. Keep unpublished manuscript workspaces and Gate A evidence outside the repository.
+Use three to five real manuscripts. The author has identified `UYMIDGameStudio/billcharles-blog` as the source repository. The initial author-owned corpus candidates are `content/the-structural-stand-in.md`, `content/the-dynamic-dialectic-of-knowledge-systems-on-change-and-invariance-in-theoretical-identity.md`, and `content/diachronic-continuity-and-argumentative-responsibility-in-knowledge-migration.md`. Their repository presence establishes source ownership, not successful Gate evidence. Do not count the bundled demo fixture as a real manuscript. Keep manuscript workspaces and Gate A evidence outside either source repository.
+
+Candidate discovery was pinned at source commit `0f78443`. Before starting a real run, compare the current source bytes with these discovery hashes; if an article changed, use the new bytes as the manuscript version and let `DocumentVersion` record the new hash rather than silently substituting it.
+
+| Candidate | Discovery SHA-256 |
+|---|---|
+| `the-structural-stand-in.md` | `e8cec1b2186ed4f61053ed684673adbf28c734553b3cf06b46875f492d706abb` |
+| `the-dynamic-dialectic-of-knowledge-systems-on-change-and-invariance-in-theoretical-identity.md` | `92cebd820b2c9487ccd3f250b9bc1c3903c3db276797df7332606ff7e6b53fd1` |
+| `diachronic-continuity-and-argumentative-responsibility-in-knowledge-migration.md` | `60dbb82c963b356166a02104a2ab986994f94c04b265ca806de87e8d36b31fb6` |
+
+### Author-run execution status
+
+The private author workspaces and model responses remain outside the repository. This table records only reproducibility metadata and does not count a manuscript as Gate-complete.
+
+| Candidate | Direct baseline | Model | Prompt SHA-256 | Response SHA-256 | Elapsed | Next uncompleted step |
+|---|---|---|---|---|---:|---|
+| `the-structural-stand-in.md` | controlled `DB1` | OpenAI `gpt-5.6-sol`, high reasoning | `61d8b971ae0d6bd9a6b67ad98d89a00b44bcfc8206543f791efcb374aa0459cd` | `891b438bde3246e0f91dbadb77c77a64eda120ae5da8830c0d8d523f2a335a90` | 293,097 ms | collect Raw IR |
+| `the-dynamic-dialectic-of-knowledge-systems-on-change-and-invariance-in-theoretical-identity.md` | controlled `DB1` | OpenAI `gpt-5.6-sol`, high reasoning | `8aab782a912a27b8259afda484865461a90e7b90144684cafa44bd47761466bc` | `53e6e7479ac3aa496b6fe7aa89be27e90212b5177dac2619badb5de7f5380e43` | 247,238 ms | collect Raw IR |
+| `diachronic-continuity-and-argumentative-responsibility-in-knowledge-migration.md` | controlled `DB1` | OpenAI `gpt-5.6-sol`, high reasoning | `59b244e8cfcb191fd97aeec221a213d99aa1a89f406219218d5aebe4ed183745` | `41fdd7adb68488bf423e3e4bef58b24766c63cacfe04ad0ece450795e3deb05a` | 259,309 ms | collect Raw IR |
+
+All three responses are immutable model-derived comparison artifacts, not accepted reviews and not evidence that their citations or factual assertions are correct. No Workbench IR or Finding for any manuscript influenced its fresh-session response.
+
+### Raw IR extraction status
+
+Each candidate now has one immutable, source-bound `attempt-0001`. The Reviewed IR hashes below are the deterministic zero-correction replay of those attempts; they are not yet human-confirmed. Raw responses and private workspaces remain outside the repository.
+
+| Candidate | Raw response SHA-256 | Raw record SHA-256 | Initial Reviewed IR SHA-256 | C / E / A / Z / R | Next uncompleted step |
+|---|---|---|---|---:|---|
+| `the-structural-stand-in.md` | `7583e1a72f4b83e331026adbaab88909a3c1e6d2e5bb8187f4d07da083b8a1cd` | `5b835416de7337da5fa803cd1906ca6da32395bf915a7fe7497bae981d76569d` | `003f4e0367e39a8748c0be5fc69a9a80307a1fdcd7418b5c7bb73ec88679830a` | 13 / 7 / 2 / 4 / 25 | prepare Rule Review |
+| `the-dynamic-dialectic-of-knowledge-systems-on-change-and-invariance-in-theoretical-identity.md` | `dacd887daaef667e1f3dd92afab5dc74c5279e0f49a045ff3a3fbba74a8e7557` | `312c749b5fba9aee5fea9832e49979aad5c07fd7150d8a80ad6e05a2085adbad` | `3e818b5f3fcf09ee6b49ff2ad9a507a4c1408b208d54f6cc84d8e1379f00d707` | 12 / 5 / 2 / 7 / 27 | timed human IR inspection |
+| `diachronic-continuity-and-argumentative-responsibility-in-knowledge-migration.md` | `9a00b13c3db957e2152196e4d2a6afc19888175fc9c885ab45df969c222994b8` | `cb519288d62b1a96081d4c80de4b8219bf5d6b94cc9c0ff59ba562d2465818d2` | `212024271d1fab7d8b04a5331be76e9581b2b8394e4a030d7fb33723ba5aabd0` | 13 / 6 / 2 / 6 / 27 | timed human IR inspection |
+
+The extraction producer label records OpenAI `gpt-5.6-sol` with high reasoning. It identifies model-derived output only; it does not human-confirm any node, relation, citation, or uncertainty entry.
+
+### Human IR inspection status
+
+The first author inspection was completed through the line-oriented Inspector without editing JSON. The measured duration includes initial UI confusion, the clarification of what IR deletion means, and the guided node-by-node review; it must not be interpreted as pure editing time.
+
+| Candidate | Session | Exact elapsed | Correction events | Net result | Reviewed IR SHA-256 | Reviewed record SHA-256 | Next uncompleted step |
+|---|---|---:|---:|---|---|---|---|
+| `the-structural-stand-in.md` | `GS1` (`bc75d31b714c6708f944aaf259eb949707294f79f7eb4a3135993202a694a12c`) | 5,899,678 ms | 5 | 13 → 10 Claims; three deletions, one deletion later reverted; all other nodes and 18 surviving relations retained; E2/E3/Z2 human-confirmed as intentionally unbound | `8d01bea49786f872216fdbcc215143c8aabad0b418c6c9a79b2ea69d26459ebb` | `a4d517a6dcecbc7b17f72113214e9c01dadfcf434a300c880a84e938cff7dafa` | prepare Rule Review |
+| `the-dynamic-dialectic-of-knowledge-systems-on-change-and-invariance-in-theoretical-identity.md` | pending | — | 0 | zero-correction model replay only | — | — | timed human IR inspection |
+| `diachronic-continuity-and-argumentative-responsibility-in-knowledge-migration.md` | pending | — | 0 | zero-correction model replay only | — | — | timed human IR inspection |
+
+The P1 correction chain consists of immutable `IC0001`–`IC0005`; `IC0005` reverts `IC0004` rather than erasing it. The final Reviewed record binds the ordered correction hashes. The session and final Reviewed artifacts both pass `ir verify-project`.
 
 Every manuscript must complete the same Phase 1–3 path:
 
-1. preserve one direct full-text chat prompt, raw response, model label, and actual elapsed time before Workbench Findings influence the evaluator;
+1. in a fresh conversation with no prior context, preserve one direct full-text chat prompt, raw response, provider/model ID, full-manuscript delivery declaration, and actual elapsed time before Workbench Findings influence the evaluator;
 2. import the exact source and collect a Raw IR model response;
-3. inspect and correct the IR without editing JSON;
-4. prepare a scoped v2 Rule Review and collect at least one current result;
-5. adjudicate every evaluated FAIL/substantive UNCERTAIN Finding as accept, reject, or defer;
-6. create the revision plan and verify the whole Workbench project.
+3. start an `ir-inspection` work session, inspect and correct the IR without editing JSON, then finish that exact session so correction burden has system-timed evidence;
+4. prepare a scoped v3 Rule Review and collect at least one current result with relation-bound PASS support paths;
+5. acknowledge or reject every non-evaluated execution/routing status through the separate human triage queue;
+6. adjudicate every evaluated FAIL/substantive UNCERTAIN Finding as accept, reject, or defer;
+7. create the revision plan and verify the whole Workbench project.
 
-Collect each comparison with `ir gate-a baseline PROJECT --prompt-file ... --response-file ... --model-label ... --started-at ... --completed-at ...`. Then run `ir gate-a readiness PROJECT...`. Readiness reports model Findings separately from human decisions and checks baseline presence without creating an assessment or Gate decision. `ir gate-a init` refuses missing baselines, duplicate sources, invalid workspaces, missing revision plans, and open Findings. The resulting corpus is immutable.
+Generate the same versioned direct-review protocol for every project with `ir gate-a prepare-baseline PROJECT PROMPT.md`. It embeds the bound source bytes verbatim and refuses to overwrite an existing prompt. Run that exact prompt in a fresh model conversation, then collect it with `ir gate-a baseline PROJECT --prompt-file ... --response-file ... --model-label ... --model-provider ... --model-id ... --interaction-mode fresh-session --prior-context none --manuscript-delivery inline --full-manuscript-confirmed --started-at ... --completed-at ...`. Inline collection and later verification reject a prompt that does not actually contain the exact manuscript bytes. Then run `ir gate-a readiness PROJECT...`. Readiness reports model Findings, Finding adjudications, execution-status triage, baseline control failures, and IR-inspection timing separately without creating an assessment or Gate decision. `ir gate-a init` refuses missing or uncontrolled baselines, duplicate sources, invalid workspaces, missing revision plans, open Findings, open triage items, open work sessions, or a missing pre-review IR-inspection session. The resulting v5 corpus is immutable and binds the exact baseline, triage indexes, and eligible work-session records.
+
+Wrap human activities with `ir gate-a session start PROJECT --activity ir-inspection` and `ir gate-a session finish PROJECT GS1`; use `session list` to inspect open and completed intervals. The session artifacts use actual system timestamps and enter project verification. Finish IR inspection before collecting the first Rule Review result. Gate v5 binds those exact completed records, derives elapsed milliseconds, and rejects self-reported correction minutes. Historical v1–v4 artifacts remain verifiable without retroactive rewriting.
 
 ## Engineering regression corpus
 
@@ -37,7 +84,7 @@ For each corpus alias, record:
 
 - whether the workflow was clearer/more controllable than direct full-text chat review;
 - whether IR correction burden was acceptable, high, or uncertain;
-- correction time in minutes;
+- exact system-timed IR-inspection milliseconds (the report also renders minutes for readability), derived from the bound pre-review work-session records rather than entered by the evaluator;
 - missed Claims, wrong Claim types, wrong relations, rhetoric extracted as Claims, and reversed attribution counts;
 - at least one known regression anchor, such as an important Claim, extraction trap, expected Finding, actual adjudication, or framework reversal;
 - what the author actually changed, if the observation extended through revision;
@@ -76,6 +123,6 @@ The first full Rule Review plan produced 704 tasks; the first core plan still pr
 
 These legacy v1 verdicts are model-derived proposals, not accepted criticism. Their 200 PASS outcomes predate `basis_refs`/`support_refs` and the explicit evidence policies, so they remain reproducible historical artifacts but cannot establish strong PASS evidence. No IR correction, Finding adjudication, revision action, direct baseline, usability assessment, or Gate decision has been attributed to a human. Product Gate A remains incomplete, and Phase 4 remains blocked.
 
-The convergence iteration addresses the observed cost directly: daily review now defaults to the thesis support chain rather than all Claims; PASS evidence follows per-check policy; execution/routing failures are separated from substantive uncertainty; and Gate comparisons bind an immutable direct-chat baseline. The five engineering projects should be rerun with v2 only as a regression smoke test. The actual Product Gate corpus must instead include three author-owned manuscripts that will receive real corrections, adjudications, RevisionActions, and later revisions.
+The convergence iterations address the observed cost and audit gaps directly: daily review defaults to the thesis support chain rather than all Claims; v3 PASS evidence binds an allowed directed relation path; execution/routing states enter a separate append-only human triage queue; and Gate comparisons bind an immutable, controlled direct-chat baseline plus the resulting triage indexes. The five engineering projects should be rerun with v3 only as a regression smoke test. The three author-owned candidates above must still receive fresh baseline runs, real corrections, triage decisions, adjudications, RevisionActions, and later revisions before they count as a Product Gate corpus.
 
 A read-only v2 plan dry-run on the existing model-refined IRs selected 61 of 66 Claims and 294 core tasks, versus 316 under `scope=all` (P01 75/81, P02 54/54, P03 59/59, P04 75/75, P05 31/47). This is only a modest reduction because the extractor labeled 37 of 66 Claims as `intermediate`, and most premises are connected to a conclusion chain. Scope is now controllable and P05 benefits materially, but the dry-run does not show that the default queue is yet affordable. Human role correction and explicit `claim/claims` scoping must be measured in the author-owned Gate corpus rather than hidden by another automatic heuristic.

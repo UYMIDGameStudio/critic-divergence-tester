@@ -318,7 +318,7 @@ def prepare_rule_review(
             "sha256": sha256_bytes(prompt_bytes),
         },
     }
-    if plan["schema_version"] == 2:
+    if plan["schema_version"] in {2, 3}:
         record["review_scope"] = dict(plan["review_scope"])
     contract_errors = validate_artifact(record)
     if contract_errors:
@@ -500,18 +500,23 @@ def _derive_review_attempt(
         task = task_by_id[result["task_id"]]
         execution_status = (
             str(result["execution_status"])
-            if result_schema_version == 2
+            if result_schema_version in {2, 3}
             else "evaluated"
         )
         verdict = result["verdict"]
         basis_refs = (
             list(result["basis_refs"])
-            if result_schema_version == 2
+            if result_schema_version in {2, 3}
             else list(result["evidence_refs"])
         )
         support_refs = (
             list(result["support_refs"])
-            if result_schema_version == 2
+            if result_schema_version in {2, 3}
+            else []
+        )
+        support_paths = (
+            list(result["support_paths"])
+            if result_schema_version == 3
             else []
         )
         finding_id: str | None = None
@@ -568,7 +573,7 @@ def _derive_review_attempt(
             "reason": result["reason"],
             "consequence": result["consequence"],
         }
-        if result_schema_version == 2:
+        if result_schema_version in {2, 3}:
             outcome["execution_status"] = execution_status
             outcome["basis_refs"] = [
                 _versioned(version_id, reference) for reference in basis_refs
@@ -576,6 +581,19 @@ def _derive_review_attempt(
             outcome["support_refs"] = [
                 _versioned(version_id, reference) for reference in support_refs
             ]
+            if result_schema_version == 3:
+                outcome["support_paths"] = [
+                    {
+                        "support_ref": _versioned(
+                            version_id, str(path["support_ref"])
+                        ),
+                        "relation_ids": [
+                            _versioned(version_id, str(relation_id))
+                            for relation_id in path["relation_ids"]
+                        ],
+                    }
+                    for path in support_paths
+                ]
             outcome["finding_id"] = finding_id
         else:
             outcome["evidence_refs"] = [
@@ -592,7 +610,7 @@ def _derive_review_attempt(
         )
         for verdict_name in FINDING_VERDICTS
     }
-    if result_schema_version == 2:
+    if result_schema_version in {2, 3}:
         summary.update(
             {
                 status_name: sum(
@@ -686,9 +704,14 @@ def _derive_review_attempt(
             },
         },
     }
-    if result_schema_version == 2:
+    if result_schema_version in {2, 3}:
         for field in ("execution_status", "basis_refs", "support_refs"):
             index["field_provenance"][f"outcomes.{field}"] = {
+                "origin": "model-derived",
+                "source": "review-result-attempt",
+            }
+        if result_schema_version == 3:
+            index["field_provenance"]["outcomes.support_paths"] = {
                 "origin": "model-derived",
                 "source": "review-result-attempt",
             }
@@ -854,6 +877,13 @@ def render_claim_review(
         f"- Result attempt: `{attempt_id}`",
         f"- Result SHA-256: `{result_sha256}`",
         "- Semantic verdicts and reasons are model-derived; Finding status remains open until human adjudication.",
+        *(
+            [
+                "- Non-evaluated execution statuses are model-derived and remain open until separate human triage."
+            ]
+            if any("support_paths" in outcome for outcome in outcomes)
+            else []
+        ),
         f"- Outcomes: {shown_summary['pass']} pass, {shown_summary['fail']} fail, {shown_summary['uncertain']} uncertain",
         *(
             [
@@ -909,6 +939,18 @@ def render_claim_review(
                         [
                             f"- Basis refs: {', '.join(outcome['basis_refs']) or 'none'}",
                             f"- PASS support refs: {', '.join(outcome['support_refs']) or 'none'}",
+                            *(
+                                [
+                                    "- PASS support paths: "
+                                    + "; ".join(
+                                        f"{path['support_ref']} via "
+                                        + " -> ".join(path["relation_ids"])
+                                        for path in outcome["support_paths"]
+                                    )
+                                ]
+                                if "support_paths" in outcome
+                                else []
+                            ),
                         ]
                         if "basis_refs" in outcome
                         else [
@@ -1110,7 +1152,7 @@ def verify_reviews(project_dir: Path | str) -> list[str]:
             errors.append(f"{prefix}: Rule Lens identity is not bound to the library")
         if review.get("depth") != plan.get("depth"):
             errors.append(f"{prefix}: review depth does not match check plan")
-        if plan.get("schema_version") == 2 and review.get("review_scope") != plan.get(
+        if plan.get("schema_version") in {2, 3} and review.get("review_scope") != plan.get(
             "review_scope"
         ):
             errors.append(f"{prefix}: review scope does not match check plan")

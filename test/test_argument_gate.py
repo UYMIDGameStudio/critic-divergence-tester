@@ -19,6 +19,8 @@ import argument_contracts as contracts  # noqa: E402
 import argument_gate as gate  # noqa: E402
 import argument_ir  # noqa: E402
 import argument_review as review  # noqa: E402
+import argument_sessions as sessions  # noqa: E402
+import argument_triage as triage  # noqa: E402
 import argument_workbench as workbench  # noqa: E402
 import critic_runner  # noqa: E402
 
@@ -35,6 +37,8 @@ class ArgumentGateTests(unittest.TestCase):
         *,
         open_finding: bool = False,
         with_baseline: bool = True,
+        routing_mismatch: bool = False,
+        with_ir_inspection_session: bool = True,
     ) -> workbench.WorkspacePaths:
         source = root / f"真实稿件-{number}.md"
         source_bytes = (FIXTURE / "manuscript.md").read_bytes() + (
@@ -59,10 +63,20 @@ class ArgumentGateTests(unittest.TestCase):
             producer_label="test-model",
         )
         workbench.rebuild_workspace(workspace.root)
+        if with_ir_inspection_session:
+            sessions.start_work_session(
+                workspace.root,
+                activity="ir-inspection",
+                note="Test author checked the extracted IR against the source.",
+                producer="test-human",
+            )
+            sessions.finish_work_session(
+                workspace.root, "GS1", producer="test-human"
+            )
         review_paths, _ = review.prepare_rule_review(workspace.root, RULES, depth="core")
         plan = json.loads(review_paths.plan.read_text(encoding="utf-8"))
         results = {
-            "schema_version": 2,
+            "schema_version": plan["schema_version"],
             "artifact": "argument-check-results",
             "source": {"plan_sha256": contracts.sha256_bytes(review_paths.plan.read_bytes())},
             "status": "complete",
@@ -82,21 +96,35 @@ class ArgumentGateTests(unittest.TestCase):
             for item in argument[field]
         }
         for index, task in enumerate(plan["tasks"]):
+            if routing_mismatch and index == 0:
+                results["results"].append(
+                    {
+                        "task_id": task["id"],
+                        "execution_status": "routing_mismatch",
+                        "verdict": None,
+                        "reason": "The extracted method routes this check incorrectly.",
+                        "basis_refs": [task["claim_id"]],
+                        "support_refs": [],
+                        "support_paths": [],
+                        "consequence": "",
+                    }
+                )
+                continue
             verdict = "fail" if open_finding and index == 0 else "pass"
             policy = check_by_id[task["check_id"]]["evidence_policy"]
-            context = argument_ir._context_node_ids(argument, task["claim_id"])
+            eligible_paths = argument_ir._eligible_pass_support_paths(
+                argument, task["claim_id"]
+            )
             support_refs = []
             if verdict == "pass" and policy == "upstream-required":
                 support_refs = [
-                    next(
-                        ref for ref in sorted(context) if ref != task["claim_id"]
-                    )
+                    next(iter(eligible_paths))
                 ]
             elif verdict == "pass" and policy == "citation-required":
                 support_refs = [
                     next(
                         ref
-                        for ref in sorted(context)
+                        for ref in eligible_paths
                         if node_kinds.get(ref) == "citation"
                     )
                 ]
@@ -108,6 +136,13 @@ class ArgumentGateTests(unittest.TestCase):
                     "reason": "The evaluator found a test outcome for this workflow.",
                     "basis_refs": [task["claim_id"], *support_refs],
                     "support_refs": support_refs,
+                    "support_paths": [
+                        {
+                            "support_ref": ref,
+                            "relation_ids": eligible_paths[ref],
+                        }
+                        for ref in support_refs
+                    ],
                     "consequence": "Revise this Claim." if verdict == "fail" else "",
                 }
             )
@@ -132,6 +167,12 @@ class ArgumentGateTests(unittest.TestCase):
                 prompt_file=prompt,
                 response_file=response,
                 model_label="test-model-v1",
+                model_provider="test-provider",
+                model_id="test-model-v1",
+                interaction_mode="fresh-session",
+                prior_context="none",
+                manuscript_delivery="attachment",
+                full_manuscript_confirmed=True,
                 started_at="2026-08-10T10:00:00+08:00",
                 completed_at="2026-08-10T10:02:00+08:00",
                 producer_label="test-direct-model",
@@ -213,9 +254,75 @@ class ArgumentGateTests(unittest.TestCase):
             self.assertEqual(readiness["summary"]["ready_for_capture"], 2)
             missing = readiness["projects"][2]
             self.assertFalse(missing["direct_review_baseline"])
-            self.assertIn("ir gate-a baseline", missing["next_command"])
+            self.assertIn("ir gate-a prepare-baseline", missing["next_command"])
             with self.assertRaisesRegex(workbench.WorkbenchError, "no direct-review"):
                 gate.initialize_gate(root / "missing.product-gate-a", projects)
+
+    def test_new_gate_requires_pre_review_ir_inspection_timing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            projects = [
+                self.completed_project(root, 1).root,
+                self.completed_project(root, 2).root,
+                self.completed_project(
+                    root, 3, with_ir_inspection_session=False
+                ).root,
+            ]
+            readiness = gate.gate_readiness(projects)
+            missing = readiness["projects"][2]
+            self.assertEqual(missing["completed_ir_inspection_sessions"], 0)
+            self.assertIn("--activity ir-inspection", missing["next_command"])
+            with self.assertRaisesRegex(
+                workbench.WorkbenchError, "completed ir-inspection"
+            ):
+                gate.initialize_gate(root / "untimed.product-gate-a", projects)
+
+            sessions.start_work_session(
+                projects[2], activity="ir-inspection", producer="test-human"
+            )
+            sessions.finish_work_session(
+                projects[2], "GS1", producer="test-human"
+            )
+            readiness = gate.gate_readiness(projects)
+            self.assertEqual(
+                readiness["projects"][2]["completed_ir_inspection_sessions"],
+                0,
+            )
+            with self.assertRaisesRegex(
+                workbench.WorkbenchError, "before the first Rule Review"
+            ):
+                gate.initialize_gate(root / "late-timing.product-gate-a", projects)
+
+    def test_readiness_requires_human_triage_for_non_evaluated_statuses(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            projects = [
+                self.completed_project(root, 1).root,
+                self.completed_project(root, 2).root,
+                self.completed_project(root, 3, routing_mismatch=True).root,
+            ]
+            readiness = gate.gate_readiness(projects)
+            blocked = readiness["projects"][2]
+            self.assertEqual(blocked["status_triage"]["open"], 1)
+            self.assertIn("ir review triage", blocked["next_command"])
+            with self.assertRaisesRegex(workbench.WorkbenchError, "human triage"):
+                gate.initialize_gate(root / "untriaged.product-gate-a", projects)
+
+            _, _, items = triage.triage_items_for_review(projects[2])
+            triage.append_status_triage(
+                projects[2],
+                task_id=items[0].task_id,
+                decision="acknowledge",
+                action="correct_ir",
+                note="Record the routing issue for correction and rerun it before use.",
+            )
+            readiness = gate.gate_readiness(projects)
+            self.assertEqual(readiness["projects"][2]["status_triage"]["open"], 0)
+            self.assertEqual(readiness["summary"]["ready_for_capture"], 3)
+            paths = gate.initialize_gate(root / "triaged.product-gate-a", projects)
+            corpus = json.loads(paths.corpus.read_text(encoding="utf-8"))
+            self.assertEqual(len(corpus["entries"][2]["bindings"]["status_triage"]), 1)
+            self.assertEqual(gate.verify_gate(paths.root), [])
 
     def test_gate_rejects_a_baseline_captured_after_workbench_review(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -228,6 +335,12 @@ class ArgumentGateTests(unittest.TestCase):
                 prompt_file=root / "direct-prompt-3.md",
                 response_file=root / "direct-response-3.md",
                 model_label="test-model-v1",
+                model_provider="test-provider",
+                model_id="test-model-v1",
+                interaction_mode="fresh-session",
+                prior_context="none",
+                manuscript_delivery="attachment",
+                full_manuscript_confirmed=True,
                 started_at="2030-08-10T10:00:00+08:00",
                 completed_at="2030-08-10T10:02:00+08:00",
                 producer_label="test-direct-model",
@@ -239,6 +352,38 @@ class ArgumentGateTests(unittest.TestCase):
             ):
                 gate.initialize_gate(root / "contaminated.product-gate-a", projects)
 
+    def test_new_gate_rejects_an_uncontrolled_latest_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            projects = [
+                self.completed_project(root, number).root for number in range(1, 4)
+            ]
+            baseline.collect_direct_review_baseline(
+                projects[2],
+                prompt_file=root / "direct-prompt-3.md",
+                response_file=root / "direct-response-3.md",
+                model_label="test-model-v1",
+                model_provider="test-provider",
+                model_id="test-model-v1",
+                interaction_mode="existing-session",
+                prior_context="workbench-exposed",
+                manuscript_delivery="attachment",
+                full_manuscript_confirmed=True,
+                started_at="2026-08-10T10:00:00+08:00",
+                completed_at="2026-08-10T10:02:00+08:00",
+                producer_label="test-direct-model",
+            )
+            readiness = gate.gate_readiness(projects)
+            entry = readiness["projects"][2]
+            self.assertTrue(entry["direct_review_baseline"])
+            self.assertFalse(entry["direct_review_baseline_controlled"])
+            self.assertTrue(entry["baseline_control_errors"])
+            self.assertIn("fresh session", entry["baseline_control_errors"][0])
+            with self.assertRaisesRegex(
+                workbench.WorkbenchError, "not a controlled comparison"
+            ):
+                gate.initialize_gate(root / "uncontrolled.product-gate-a", projects)
+
     def test_private_corpus_assessments_and_human_decision_are_traceable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -246,11 +391,20 @@ class ArgumentGateTests(unittest.TestCase):
             paths = gate.initialize_gate(root / "evidence.product-gate-a", projects)
             self.assertEqual(gate.verify_gate(paths.root), [])
             corpus = json.loads(paths.corpus.read_text(encoding="utf-8"))
-            self.assertEqual(corpus["schema_version"], 2)
+            self.assertEqual(corpus["schema_version"], 5)
             self.assertEqual(len(corpus["entries"]), 3)
             self.assertTrue(
                 all(
                     "direct_review_baseline" in entry["bindings"]
+                    for entry in corpus["entries"]
+                )
+            )
+            self.assertTrue(
+                all("status_triage" in entry["bindings"] for entry in corpus["entries"])
+            )
+            self.assertTrue(
+                all(
+                    entry["bindings"]["ir_inspection_sessions"]
                     for entry in corpus["entries"]
                 )
             )
@@ -263,13 +417,47 @@ class ArgumentGateTests(unittest.TestCase):
                 3,
             )
             corpus_text = paths.corpus.read_text(encoding="utf-8")
+            legacy_corpus = copy.deepcopy(corpus)
+            legacy_corpus["schema_version"] = 4
+            legacy_corpus["parents"] = [
+                parent
+                for parent in legacy_corpus["parents"]
+                if parent["artifact"] != "gate-a-work-session"
+            ]
+            for legacy_entry in legacy_corpus["entries"]:
+                del legacy_entry["bindings"]["ir_inspection_sessions"]
+            self.assertEqual(contracts.validate_artifact(legacy_corpus), [])
             self.assertNotIn("本文主张", corpus_text)
             report = json.loads(paths.report_record.read_text(encoding="utf-8"))
+            self.assertEqual(report["schema_version"], 2)
+            self.assertEqual(
+                report["work_timing"]["ir_inspection_elapsed_milliseconds"],
+                sum(
+                    binding["elapsed_milliseconds"]
+                    for entry in corpus["entries"]
+                    for binding in entry["bindings"]["ir_inspection_sessions"]
+                ),
+            )
             self.assertEqual(report["readiness"]["workflows_complete"], 3)
             self.assertFalse(report["readiness"]["ready_for_human_decision"])
             self.assertIsNone(report["gate_decision"])
             with self.assertRaisesRegex(workbench.WorkbenchError, "cannot pass"):
                 gate.append_gate_decision(paths.root, "pass", "Not assessed yet.")
+            self_reported = self.metrics()
+            self_reported["correction_minutes"] = 10
+            with self.assertRaisesRegex(
+                workbench.WorkbenchError, "must contain exactly"
+            ):
+                gate.append_assessment(
+                    paths.root,
+                    "P1",
+                    comparison_to_direct_chat="clearer",
+                    correction_burden="acceptable",
+                    metrics=self_reported,
+                    regression_anchors=["Known important Claim 1"],
+                    actual_revision_notes="",
+                    notes="must not accept self-reported timing",
+                )
 
             comparisons = ("clearer", "same", "uncertain")
             burdens = ("acceptable", "acceptable", "uncertain")
@@ -286,7 +474,25 @@ class ArgumentGateTests(unittest.TestCase):
                 )
                 self.assertEqual(output.name, f"AS{index:04d}.json")
                 assessment = json.loads(output.read_text(encoding="utf-8"))
-                self.assertEqual(assessment["schema_version"], 2)
+                self.assertEqual(assessment["schema_version"], 5)
+                self.assertNotIn("correction_minutes", assessment["metrics"])
+                self.assertGreaterEqual(
+                    assessment["ir_inspection_timing"]["elapsed_milliseconds"],
+                    0,
+                )
+                legacy_assessment = copy.deepcopy(assessment)
+                legacy_assessment["schema_version"] = 4
+                legacy_assessment["parents"] = [
+                    parent
+                    for parent in legacy_assessment["parents"]
+                    if parent["artifact"] != "gate-a-work-session"
+                ]
+                del legacy_assessment["ir_inspection_timing"]
+                del legacy_assessment["field_provenance"]
+                legacy_assessment["metrics"]["correction_minutes"] = index
+                self.assertEqual(
+                    contracts.validate_artifact(legacy_assessment), []
+                )
                 self.assertIn(
                     "direct-review-baseline",
                     {parent["role"] for parent in assessment["parents"]},
@@ -313,8 +519,39 @@ class ArgumentGateTests(unittest.TestCase):
             self.assertEqual(report["gate_decision"], "pass")
             markdown = paths.report_markdown.read_text(encoding="utf-8")
             self.assertIn("not a manuscript quality score", markdown)
+            self.assertIn("System-timed IR inspection", markdown)
             self.assertIn("`pass` `[human-confirmed]`", markdown)
             self.assertEqual(gate.verify_gate(paths.root), [])
+
+    def test_gate_detects_tampered_bound_ir_inspection_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            projects = [
+                self.completed_project(root, number).root
+                for number in range(1, 4)
+            ]
+            paths = gate.initialize_gate(
+                root / "session-tamper.product-gate-a", projects
+            )
+            session_record = (
+                projects[0]
+                / "documents"
+                / "D1"
+                / "versions"
+                / "V1"
+                / "gate-a-sessions"
+                / "GS1"
+                / "record.json"
+            )
+            value = json.loads(session_record.read_text(encoding="utf-8"))
+            value["timing"]["elapsed_milliseconds"] += 1
+            session_record.write_text(
+                json.dumps(value, ensure_ascii=False), encoding="utf-8"
+            )
+            errors = gate.verify_gate(paths.root)
+            self.assertTrue(
+                any("work sessions" in error or "invalid" in error for error in errors)
+            )
 
     def test_gate_detects_changed_workspaces_and_rebuilds_only_derived_report(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -366,8 +603,6 @@ class ArgumentGateTests(unittest.TestCase):
                             "clearer",
                             "--burden",
                             "acceptable",
-                            "--correction-minutes",
-                            "10",
                             "--missed-claims",
                             "1",
                             "--wrong-claim-types",
