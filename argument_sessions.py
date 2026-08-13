@@ -235,6 +235,85 @@ def finish_work_session(
     return entry.paths
 
 
+def abandon_work_session(
+    project_dir: Path | str,
+    session_id: str,
+    *,
+    reason: str,
+    producer: str = "local-user",
+) -> WorkSessionPaths:
+    """Close an interrupted interval without claiming that work was completed."""
+    if not producer.strip():
+        raise WorkbenchError("producer must not be empty")
+    if not isinstance(reason, str) or not reason.strip():
+        raise WorkbenchError("abandonment reason must not be empty")
+    entries = list_work_sessions(project_dir)
+    entry = next(
+        (item for item in entries if item.paths.session_id == session_id), None
+    )
+    if entry is None:
+        raise WorkbenchError(f"unknown Gate A session: {session_id}")
+    if entry.record is not None:
+        raise WorkbenchError(f"Gate A session {session_id} is already closed")
+    workspace = workspace_paths(project_dir)
+    project, _ = _read_json(workspace.project)
+    version, version_bytes = _read_json(workspace.version)
+    abandoned_at = utc_now()
+    started = _parse_time(str(entry.start["started_at"]))
+    abandoned = _parse_time(abandoned_at)
+    elapsed = round((abandoned - started).total_seconds() * 1000)
+    if elapsed < 0:
+        raise WorkbenchError("system clock moved before the session start")
+    value = {
+        "schema_version": 1,
+        "artifact": "gate-a-session-abandonment",
+        "artifact_id": session_id + "-abandoned",
+        "lifecycle": "immutable",
+        "provenance": _provenance(
+            "human-confirmed", abandoned_at, producer.strip()
+        ),
+        "parents": [
+            _parent("document-version", "document-version", version_bytes),
+            _parent("session-start", "gate-a-session-start", entry.start_bytes),
+        ],
+        "session_id": session_id,
+        "project_id": project["project_id"],
+        "document_id": version["document_id"],
+        "version_id": version["version_id"],
+        "activity": entry.start["activity"],
+        "note": entry.start["note"],
+        "reason": reason.strip(),
+        "timing": {
+            "started_at": entry.start["started_at"],
+            "abandoned_at": abandoned_at,
+            "elapsed_milliseconds": elapsed,
+        },
+        "field_provenance": {
+            "activity": {
+                "origin": "human-confirmed",
+                "source": "gate-a-session-start",
+            },
+            "note": {
+                "origin": "human-confirmed",
+                "source": "gate-a-session-start",
+            },
+            "reason": {
+                "origin": "human-confirmed",
+                "source": "CLI text",
+            },
+            "timing": {
+                "origin": "deterministic",
+                "source": "system clock difference",
+            },
+        },
+    }
+    errors = validate_artifact(value)
+    if errors:
+        raise WorkbenchError("internal session-abandonment error: " + "; ".join(errors))
+    _write_new(entry.paths.record, json_bytes(value))
+    return entry.paths
+
+
 def render_work_sessions(entries: list[WorkSessionEntry]) -> str:
     lines = ["Product Gate A human work sessions", ""]
     if not entries:
@@ -243,6 +322,9 @@ def render_work_sessions(entries: list[WorkSessionEntry]) -> str:
     for entry in entries:
         if entry.record is None:
             state = f"open since {entry.start['started_at']}"
+        elif entry.record.get("artifact") == "gate-a-session-abandonment":
+            elapsed = int(entry.record["timing"]["elapsed_milliseconds"])
+            state = f"abandoned · {elapsed / 60000:.2f} minutes"
         else:
             elapsed = int(entry.record["timing"]["elapsed_milliseconds"])
             state = f"complete · {elapsed / 60000:.2f} minutes"
@@ -251,6 +333,11 @@ def render_work_sessions(entries: list[WorkSessionEntry]) -> str:
         )
         if entry.start["note"]:
             lines.append(f"  {entry.start['note']}")
+        if (
+            entry.record is not None
+            and entry.record.get("artifact") == "gate-a-session-abandonment"
+        ):
+            lines.append(f"  Abandoned: {entry.record['reason']}")
     lines.append("")
     return "\n".join(lines)
 

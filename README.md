@@ -454,6 +454,10 @@ py -3 critic_runner.py ir gate-a session start $project1 `
   --activity ir-inspection --note "逐条对照原文检查 IR"
 py -3 critic_runner.py ir inspect $project1
 py -3 critic_runner.py ir gate-a session finish $project1 GS1
+
+# If no valid inspection occurred, close the interval without counting it:
+py -3 critic_runner.py ir gate-a session abandon $project1 GS1 `
+  --reason "The author left before making an IR judgment."
 py -3 critic_runner.py ir gate-a session list $project1
 
 # 在捕获 Gate corpus 前只读汇总 3–5 个项目；未完成时逐篇给出下一条命令
@@ -479,7 +483,7 @@ py -3 critic_runner.py ir gate-a verify $gate
 
 `ir gate-a prepare-baseline` 使用版本化的 `direct-full-manuscript-review-v1` 协议，并把 DocumentVersion 的 source bytes 原样嵌入 prompt。`ir gate-a baseline` 原样保存 direct-chat prompt/response、provider/model ID、开始/完成时间、稿件交付方式和会话条件，并绑定稿件精确字节；inline 模式会再次验证 prompt 确实包含完整原稿。它不填写比较结论。新 Gate corpus 只接受 controlled v2 baseline：fresh session、没有既有对话上下文，而且模型确实收到完整稿件。旧 v1 baseline 继续可验证，但不能进入新的 Gate。`ir gate-a readiness` 可以在人工裁决尚未完成时运行，只读汇总 Claim、correction、模型 Findings、Finding 决定、status triage、revision plan、baseline 和 IR inspection timing 状态。只有全部项目没有 open Finding 或 open triage、revision plan 与 controlled baseline 已生成、至少一段 IR inspection 在首个 Rule Review 结果前完成、没有仍开放的 work session，且 source bytes 互不重复时，才允许捕获不可变 corpus。
 
-`ir gate-a session start/finish/list` 记录实际人工作业时间。start 和完成 record 都不可变，完成时间与 elapsed milliseconds 由系统时钟确定；同一 workspace 同时只允许一个 open session。活动明确区分 IR inspection、Finding adjudication、status triage、revision planning、manuscript revision 和 other。新建的 v5 Gate corpus 和 assessment 绑定首个 Rule Review 结果之前完成的全部 IR inspection record，并确定性汇总精确毫秒；`--correction-minutes` 仅为读取/追加旧 v1–v4 Gate 留作兼容参数，v5 会拒绝自报时间。旧 Gate 工件保持按原 schema 验证，不会被迁移或改写。
+`ir gate-a session start/finish/abandon/list` 记录实际人工作业时间。start、完成 record 和 abandonment record 都不可变，结束时间与 elapsed milliseconds 由系统时钟确定；同一 workspace 同时只允许一个 open session。若命名活动未实际发生或区间被中断，必须使用 `abandon` 并记录理由；该区间仍可审计，但不会计入 Gate 时间，也不能满足 IR inspection 要求。活动明确区分 IR inspection、Finding adjudication、status triage、revision planning、manuscript revision 和 other。新建的 v5 Gate corpus 和 assessment 仅绑定首个 Rule Review 结果之前真正完成的 IR inspection record，并确定性汇总精确毫秒；`--correction-minutes` 仅为读取/追加旧 v1–v4 Gate 留作兼容参数，v5 会拒绝自报时间。旧 Gate 工件保持按原 schema 验证，不会被迁移或改写。
 
 对 P2/P3（以及可选的 P4/P5）完成 assessment 后，报告才会显示 `Ready for human gate decision: yes`。程序永远不会自动通过 Gate；只有人类 evaluator 可以追加决定：
 

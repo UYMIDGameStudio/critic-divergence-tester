@@ -39,6 +39,7 @@ class ArgumentGateTests(unittest.TestCase):
         with_baseline: bool = True,
         routing_mismatch: bool = False,
         with_ir_inspection_session: bool = True,
+        with_abandoned_ir_inspection_session: bool = False,
     ) -> workbench.WorkspacePaths:
         source = root / f"真实稿件-{number}.md"
         source_bytes = (FIXTURE / "manuscript.md").read_bytes() + (
@@ -72,6 +73,19 @@ class ArgumentGateTests(unittest.TestCase):
             )
             sessions.finish_work_session(
                 workspace.root, "GS1", producer="test-human"
+            )
+        elif with_abandoned_ir_inspection_session:
+            sessions.start_work_session(
+                workspace.root,
+                activity="ir-inspection",
+                note="The author left before inspection began.",
+                producer="test-human",
+            )
+            sessions.abandon_work_session(
+                workspace.root,
+                "GS1",
+                reason="No human IR judgment was made.",
+                producer="test-human",
             )
         review_paths, _ = review.prepare_rule_review(workspace.root, RULES, depth="core")
         plan = json.loads(review_paths.plan.read_text(encoding="utf-8"))
@@ -241,6 +255,33 @@ class ArgumentGateTests(unittest.TestCase):
             self.assertFalse(any(root.glob("*.product-gate-a")))
             for project in projects:
                 self.assertEqual(workbench.verify_workspace(project), [])
+
+    def test_abandoned_ir_inspection_does_not_satisfy_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            projects = [
+                self.completed_project(root, 1).root,
+                self.completed_project(root, 2).root,
+                self.completed_project(
+                    root,
+                    3,
+                    with_ir_inspection_session=False,
+                    with_abandoned_ir_inspection_session=True,
+                ).root,
+            ]
+            readiness = gate.gate_readiness(projects)
+            abandoned = readiness["projects"][2]
+            self.assertEqual(abandoned["completed_ir_inspection_sessions"], 0)
+            self.assertEqual(abandoned["open_work_sessions"], [])
+            self.assertIn("session start", abandoned["next_command"])
+            self.assertFalse(readiness["summary"]["can_capture_corpus"])
+            with self.assertRaisesRegex(
+                workbench.WorkbenchError,
+                "requires at least one completed ir-inspection",
+            ):
+                gate.initialize_gate(
+                    root / "abandoned.product-gate-a", projects
+                )
 
     def test_readiness_requires_a_bound_direct_review_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

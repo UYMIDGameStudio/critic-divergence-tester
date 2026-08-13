@@ -70,6 +70,7 @@ from argument_triage import (
     triage_items_for_review,
 )
 from argument_sessions import (
+    abandon_work_session,
     finish_work_session,
     list_work_sessions,
     render_work_sessions,
@@ -3318,6 +3319,19 @@ def ir_gate_a_session_finish_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def ir_gate_a_session_abandon_command(args: argparse.Namespace) -> int:
+    paths = abandon_work_session(
+        args.project,
+        args.session,
+        reason=args.reason,
+        producer=args.producer_label,
+    )
+    print(f"Gate A work session abandoned: {paths.session_id}")
+    print(f"Abandonment artifact: {paths.record}")
+    print("This interval will not count as completed Gate A work.")
+    return 0
+
+
 def ir_gate_a_session_list_command(args: argparse.Namespace) -> int:
     print(render_work_sessions(list_work_sessions(args.project)), end="")
     return 0
@@ -4542,6 +4556,24 @@ def parser() -> argparse.ArgumentParser:
     )
     ir_gate_a_session_finish_parser.set_defaults(
         func=ir_gate_a_session_finish_command
+    )
+    ir_gate_a_session_abandon_parser = ir_gate_a_session_sub.add_parser(
+        "abandon", help="close an interrupted interval without counting it as work"
+    )
+    ir_gate_a_session_abandon_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    ir_gate_a_session_abandon_parser.add_argument(
+        "session", help="session ID such as GS1"
+    )
+    ir_gate_a_session_abandon_parser.add_argument(
+        "--reason", required=True, help="human-confirmed reason for abandoning the interval"
+    )
+    ir_gate_a_session_abandon_parser.add_argument(
+        "--producer-label", default="local-user"
+    )
+    ir_gate_a_session_abandon_parser.set_defaults(
+        func=ir_gate_a_session_abandon_command
     )
     ir_gate_a_session_list_parser = ir_gate_a_session_sub.add_parser(
         "list", help="show completed and open human work sessions"

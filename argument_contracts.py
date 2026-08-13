@@ -1120,6 +1120,106 @@ def validate_gate_a_work_session(value: object) -> list[str]:
     return errors
 
 
+def validate_gate_a_session_abandonment(value: object) -> list[str]:
+    """Validate an immutable close event that must not count as completed work."""
+    errors, item = _validate_base(
+        value,
+        artifact="gate-a-session-abandonment",
+        lifecycle="immutable",
+        extra_keys={
+            "session_id",
+            "project_id",
+            "document_id",
+            "version_id",
+            "activity",
+            "note",
+            "reason",
+            "timing",
+            "field_provenance",
+        },
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"human-confirmed"}, "gate-a-session-abandonment", errors)
+    _require_parent_roles(item, {"document-version", "session-start"}, errors)
+    _require_parent_artifacts(
+        item,
+        {
+            "document-version": "document-version",
+            "session-start": "gate-a-session-start",
+        },
+        errors,
+    )
+    _validate_gate_session_identity(item, errors)
+    if not _nonempty(item.get("reason")):
+        errors.append("reason must be a non-empty string")
+    timing = item.get("timing")
+    if not isinstance(timing, dict):
+        errors.append("timing must be an object")
+    else:
+        _strict_keys(
+            timing,
+            {"started_at", "abandoned_at", "elapsed_milliseconds"},
+            "timing",
+            errors,
+        )
+        for key in ("started_at", "abandoned_at"):
+            if not _timestamp(timing.get(key)):
+                errors.append(f"timing.{key} must be timezone-aware ISO time")
+        elapsed = timing.get("elapsed_milliseconds")
+        if not isinstance(elapsed, int) or isinstance(elapsed, bool) or elapsed < 0:
+            errors.append("timing.elapsed_milliseconds must be non-negative")
+        if all(_timestamp(timing.get(key)) for key in ("started_at", "abandoned_at")):
+            started = datetime.fromisoformat(str(timing["started_at"]).replace("Z", "+00:00"))
+            abandoned = datetime.fromisoformat(str(timing["abandoned_at"]).replace("Z", "+00:00"))
+            expected = round((abandoned - started).total_seconds() * 1000)
+            if expected < 0:
+                errors.append("timing.abandoned_at must not precede started_at")
+            elif elapsed != expected:
+                errors.append("timing.elapsed_milliseconds must be derived from timestamps")
+        provenance = item.get("provenance")
+        if (
+            isinstance(provenance, dict)
+            and _timestamp(timing.get("abandoned_at"))
+            and provenance.get("created_at") != timing.get("abandoned_at")
+        ):
+            errors.append("provenance.created_at must equal timing.abandoned_at")
+    field_provenance = item.get("field_provenance")
+    if not isinstance(field_provenance, dict):
+        errors.append("field_provenance must be an object")
+    else:
+        _strict_keys(
+            field_provenance,
+            {"activity", "note", "reason", "timing"},
+            "field_provenance",
+            errors,
+        )
+        expected_origins = {
+            "activity": "human-confirmed",
+            "note": "human-confirmed",
+            "reason": "human-confirmed",
+            "timing": "deterministic",
+        }
+        for field, expected_origin in expected_origins.items():
+            provenance = field_provenance.get(field)
+            if not isinstance(provenance, dict):
+                errors.append(f"field_provenance.{field} must be an object")
+                continue
+            _strict_keys(
+                provenance,
+                {"origin", "source"},
+                f"field_provenance.{field}",
+                errors,
+            )
+            if provenance.get("origin") != expected_origin:
+                errors.append(
+                    f"field_provenance.{field}.origin must be {expected_origin}"
+                )
+            if not _nonempty(provenance.get("source")):
+                errors.append(f"field_provenance.{field}.source must be non-empty")
+    return errors
+
+
 def validate_claim_review_index(value: object) -> list[str]:
     schema_version = value.get("schema_version") if isinstance(value, dict) else None
     errors, item = _validate_base(
@@ -2704,6 +2804,7 @@ VALIDATORS: dict[str, Callable[[object], list[str]]] = {
     "direct-review-baseline": validate_direct_review_baseline,
     "gate-a-session-start": validate_gate_a_session_start,
     "gate-a-work-session": validate_gate_a_work_session,
+    "gate-a-session-abandonment": validate_gate_a_session_abandonment,
     "claim-review-index": validate_claim_review_index,
     "review-status-triage": validate_review_status_triage,
     "review-status-triage-index": validate_review_status_triage_index,
