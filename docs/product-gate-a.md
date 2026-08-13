@@ -20,9 +20,9 @@ The private author workspaces and model responses remain outside the repository.
 
 | Candidate | Direct baseline | Model | Prompt SHA-256 | Response SHA-256 | Elapsed | Next uncompleted step |
 |---|---|---|---|---|---:|---|
-| `the-structural-stand-in.md` | controlled `DB1` | OpenAI `gpt-5.6-sol`, high reasoning | `61d8b971ae0d6bd9a6b67ad98d89a00b44bcfc8206543f791efcb374aa0459cd` | `891b438bde3246e0f91dbadb77c77a64eda120ae5da8830c0d8d523f2a335a90` | 293,097 ms | collect Raw IR |
-| `the-dynamic-dialectic-of-knowledge-systems-on-change-and-invariance-in-theoretical-identity.md` | controlled `DB1` | OpenAI `gpt-5.6-sol`, high reasoning | `8aab782a912a27b8259afda484865461a90e7b90144684cafa44bd47761466bc` | `53e6e7479ac3aa496b6fe7aa89be27e90212b5177dac2619badb5de7f5380e43` | 247,238 ms | collect Raw IR |
-| `diachronic-continuity-and-argumentative-responsibility-in-knowledge-migration.md` | controlled `DB1` | OpenAI `gpt-5.6-sol`, high reasoning | `59b244e8cfcb191fd97aeec221a213d99aa1a89f406219218d5aebe4ed183745` | `41fdd7adb68488bf423e3e4bef58b24766c63cacfe04ad0ece450795e3deb05a` | 259,309 ms | collect Raw IR |
+| `the-structural-stand-in.md` | controlled `DB1` | OpenAI `gpt-5.6-sol`, high reasoning | `61d8b971ae0d6bd9a6b67ad98d89a00b44bcfc8206543f791efcb374aa0459cd` | `891b438bde3246e0f91dbadb77c77a64eda120ae5da8830c0d8d523f2a335a90` | 293,097 ms | human triage and Finding adjudication |
+| `the-dynamic-dialectic-of-knowledge-systems-on-change-and-invariance-in-theoretical-identity.md` | controlled `DB1` | OpenAI `gpt-5.6-sol`, high reasoning | `8aab782a912a27b8259afda484865461a90e7b90144684cafa44bd47761466bc` | `53e6e7479ac3aa496b6fe7aa89be27e90212b5177dac2619badb5de7f5380e43` | 247,238 ms | timed human IR inspection |
+| `diachronic-continuity-and-argumentative-responsibility-in-knowledge-migration.md` | controlled `DB1` | OpenAI `gpt-5.6-sol`, high reasoning | `59b244e8cfcb191fd97aeec221a213d99aa1a89f406219218d5aebe4ed183745` | `41fdd7adb68488bf423e3e4bef58b24766c63cacfe04ad0ece450795e3deb05a` | 259,309 ms | timed human IR inspection |
 
 All three responses are immutable model-derived comparison artifacts, not accepted reviews and not evidence that their citations or factual assertions are correct. No Workbench IR or Finding for any manuscript influenced its fresh-session response.
 
@@ -32,7 +32,7 @@ Each candidate now has one immutable, source-bound `attempt-0001`. The Reviewed 
 
 | Candidate | Raw response SHA-256 | Raw record SHA-256 | Initial Reviewed IR SHA-256 | C / E / A / Z / R | Next uncompleted step |
 |---|---|---|---|---:|---|
-| `the-structural-stand-in.md` | `7583e1a72f4b83e331026adbaab88909a3c1e6d2e5bb8187f4d07da083b8a1cd` | `5b835416de7337da5fa803cd1906ca6da32395bf915a7fe7497bae981d76569d` | `003f4e0367e39a8748c0be5fc69a9a80307a1fdcd7418b5c7bb73ec88679830a` | 13 / 7 / 2 / 4 / 25 | prepare Rule Review |
+| `the-structural-stand-in.md` | `7583e1a72f4b83e331026adbaab88909a3c1e6d2e5bb8187f4d07da083b8a1cd` | `5b835416de7337da5fa803cd1906ca6da32395bf915a7fe7497bae981d76569d` | `003f4e0367e39a8748c0be5fc69a9a80307a1fdcd7418b5c7bb73ec88679830a` | 13 / 7 / 2 / 4 / 25 | human triage and Finding adjudication |
 | `the-dynamic-dialectic-of-knowledge-systems-on-change-and-invariance-in-theoretical-identity.md` | `dacd887daaef667e1f3dd92afab5dc74c5279e0f49a045ff3a3fbba74a8e7557` | `312c749b5fba9aee5fea9832e49979aad5c07fd7150d8a80ad6e05a2085adbad` | `3e818b5f3fcf09ee6b49ff2ad9a507a4c1408b208d54f6cc84d8e1379f00d707` | 12 / 5 / 2 / 7 / 27 | timed human IR inspection |
 | `diachronic-continuity-and-argumentative-responsibility-in-knowledge-migration.md` | `9a00b13c3db957e2152196e4d2a6afc19888175fc9c885ab45df969c222994b8` | `cb519288d62b1a96081d4c80de4b8219bf5d6b94cc9c0ff59ba562d2465818d2` | `212024271d1fab7d8b04a5331be76e9581b2b8394e4a030d7fb33723ba5aabd0` | 13 / 6 / 2 / 6 / 27 | timed human IR inspection |
 
@@ -44,11 +44,25 @@ The first author inspection was completed through the line-oriented Inspector wi
 
 | Candidate | Session | Exact elapsed | Correction events | Net result | Reviewed IR SHA-256 | Reviewed record SHA-256 | Next uncompleted step |
 |---|---|---:|---:|---|---|---|---|
-| `the-structural-stand-in.md` | `GS1` (`bc75d31b714c6708f944aaf259eb949707294f79f7eb4a3135993202a694a12c`) | 5,899,678 ms | 5 | 13 → 10 Claims; three deletions, one deletion later reverted; all other nodes and 18 surviving relations retained; E2/E3/Z2 human-confirmed as intentionally unbound | `8d01bea49786f872216fdbcc215143c8aabad0b418c6c9a79b2ea69d26459ebb` | `a4d517a6dcecbc7b17f72113214e9c01dadfcf434a300c880a84e938cff7dafa` | prepare Rule Review |
+| `the-structural-stand-in.md` | `GS1` (`bc75d31b714c6708f944aaf259eb949707294f79f7eb4a3135993202a694a12c`) | 5,899,678 ms | 5 | 13 → 10 Claims; three deletions, one deletion later reverted; all other nodes and 18 surviving relations retained; E2/E3/Z2 human-confirmed as intentionally unbound | `8d01bea49786f872216fdbcc215143c8aabad0b418c6c9a79b2ea69d26459ebb` | `a4d517a6dcecbc7b17f72113214e9c01dadfcf434a300c880a84e938cff7dafa` | human triage and Finding adjudication |
 | `the-dynamic-dialectic-of-knowledge-systems-on-change-and-invariance-in-theoretical-identity.md` | pending | — | 0 | zero-correction model replay only | — | — | timed human IR inspection |
 | `diachronic-continuity-and-argumentative-responsibility-in-knowledge-migration.md` | pending | — | 0 | zero-correction model replay only | — | — | timed human IR inspection |
 
 The P1 correction chain consists of immutable `IC0001`–`IC0005`; `IC0005` reverts `IC0004` rather than erasing it. The final Reviewed record binds the ordered correction hashes. The session and final Reviewed artifacts both pass `ir verify-project`.
+
+### First author Rule Review status
+
+The first author manuscript now has one current `core` / `thesis-chain` Rule Review, `RV1`, against its human-reviewed ten-Claim IR. The plan contains 44 tasks from 16 checks. The model result is an immutable proposal produced by OpenAI `gpt-5.6-sol` with high reasoning; no verdict, Finding, or routing status in this run is human-confirmed.
+
+| Review | Plan SHA-256 | Run SHA-256 | Response SHA-256 | Attempt SHA-256 | Derived index SHA-256 |
+|---|---|---|---|---|---|
+| `RV1` | `a45b3fc639e1800e3f63785af97d6ea19107c7df3bda46c8a52806ec54d54b87` | `98ed031645dbd8e8f763c251fc0bcc757fb4f6806d09b36f1f7154ea90869651` | `0f8a85f857961e549c89dc24dbe856fb1439197d04757896b568444d00477fd7` | `fde691c59c7a34ed2d80c4013326820f14422b333ce37610706301157787de2b` | `f4e00b92e45b03b186d88ec2ac99f547c36fd384050e9d9fbd43e9e3aa2b9d71` |
+
+| Total tasks | PASS | FAIL | Substantive UNCERTAIN | Routing mismatch | Not applicable | Blocked missing context | Open Findings | Open triage |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 44 | 6 | 23 | 9 | 2 | 2 | 2 | 32 | 6 |
+
+Only FAIL and substantive UNCERTAIN results became Findings. The six execution/routing states remain visible in the separate human triage queue. All 32 Findings and all six triage items remain open; the Workbench has not accepted criticism, created a RevisionAction, or claimed that the manuscript was revised. The project verifies successfully with the exact review snapshot and derived index above.
 
 Every manuscript must complete the same Phase 1–3 path:
 
