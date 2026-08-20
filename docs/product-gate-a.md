@@ -67,11 +67,11 @@ All three author manuscripts now have current `core` / `thesis-chain` Rule Revie
 | Candidate | Total tasks | PASS | FAIL | Substantive UNCERTAIN | Routing mismatch | Not applicable | Blocked missing context | Open Findings | Open triage |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | P1 | 44 | 6 | 23 | 9 | 2 | 2 | 2 | 32 | 0 |
-| P2 | 54 | 7 | 29 | 13 | 0 | 0 | 5 | 42 | 5 |
+| P2 | 54 | 7 | 29 | 13 | 0 | 0 | 5 | 42 | 0 |
 | P3 | 61 | 32 | 8 | 19 | 0 | 2 | 0 | 27 | 2 |
-| **Total** | **159** | **45** | **60** | **41** | **2** | **4** | **7** | **101** | **7** |
+| **Total** | **159** | **45** | **60** | **41** | **2** | **4** | **7** | **101** | **2** |
 
-Only FAIL and substantive UNCERTAIN results became Findings. The thirteen execution/routing states remain visible in separate human triage queues. All 101 Findings remain open; six P1 triage items are decided and seven P2/P3 items remain open. The Workbench has not accepted criticism, created a RevisionAction, or claimed that any manuscript was revised. All three projects verify successfully with the exact review snapshots and derived indexes above.
+Only FAIL and substantive UNCERTAIN results became Findings. The thirteen execution/routing states remain visible in separate human triage queues. All 101 Findings remain open; eleven P1/P2 triage items are decided and two P3 items remain open. The Workbench has not accepted criticism, created a RevisionAction, or claimed that any manuscript was revised. All three projects verify successfully with the exact review snapshots and derived indexes above.
 
 P2 also records an unusable `attempt-0001` rather than silently replacing it. Its response (`ca7ec18332209fc31b55396e6b5010f6c694f1913ce3ce944a7720d784952889`) referenced A2 outside C7's permitted context and was rejected by the validator; its attempt record is `a24fa6193ad1d94b1ce65ae989e35eddd602a4dbf63e63ca9c6da409715efe62`. The corrected output was collected as distinct valid `attempt-0002`, which is the current result shown above.
 
@@ -82,6 +82,10 @@ P3 likewise preserves an unusable `attempt-0001`: twelve proposed PASS results o
 P1's six non-evaluated states have received append-only human decisions: four were acknowledged and two were rejected, leaving no open P1 triage item. The author acknowledged one historical-comparability routing mismatch, one not-applicable stipulative-definition check, and two missing-context statuses requiring source context or independent evidence. The author rejected historical source silence as a routing mismatch and rejected treating the empirical identifiability of the stand-in definition as not applicable; both are marked for substantive rerun rather than silently dropped.
 
 The current P1 triage index is `5d115bfddd36c27c238cf20f050614af51f72f86cb7664f951d0f932f8cf94f1`. Ordered decisions `ST0001`–`ST0006` have hashes `33a49eea7b7c142b7987642eb7ffe896eabc22238197a263bc97c973f3f51e03`, `6fadbcf3510ffab61ee36462496344d04b938ed8a5fb0c104cada0abeecd3177`, `31230bba6e11f74a646944baff06400d6eaeec120bb666bbf948b688a3c983e6`, `3af300f3cdaebefd374ac59fbc884c2ce2aef911b5b8ea3840375a7c1f0c5e1d`, `ad62563886ac5a35363dc231dee5667ace49e9edec4f28e06b6f9e12b688f088`, and `f6d7a4cb4216f2f801ed804cc11ba796d190fe98d9e1d01fdea643dbc4020661`. These decisions govern workflow routing only; none adjudicates a manuscript Finding.
+
+P2's five missing-context states have also received append-only human decisions: four were acknowledged and one was rejected, leaving no open P2 triage item. The author requested added source context for the Marxism interpretation, the Russell-paradox programmes, and the broad historical scope of C12. The author rejected the claim that C6's source-silence check requires a predefined historical source universe and directed the check to make a substantive judgment from the existing material.
+
+The current P2 triage index is `4374e3820bc0ef06eade8e3a633de113606289eb2d6bf57f81e6e584c4f8bb40`. Ordered decisions `ST0001`–`ST0005` have hashes `a600b053353304a4cf80f96976d7e86f1f2b43bc990aaf66ce93e3d61fc534de`, `c2aabf520df8b32b05f747a33b69ad59447c24be4e31e2b7c3095f63fd3f5596`, `64368c3cc1f83e2f4b5403047131c66c73404ac0a42d6c6d5990ed22a58ae550`, `24601bed03bfe401bd20af5228658f1274a4701537b191a5bc369ce31677776d`, and `e9359f16b6db8ef77f67e0a82d6d11aa38dc519f8e8bad8dd4ad8948ef94bb0d`.
 
 Every manuscript must complete the same Phase 1–3 path:
 
