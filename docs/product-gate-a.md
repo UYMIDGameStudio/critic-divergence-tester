@@ -60,18 +60,18 @@ All three author manuscripts now have current `core` / `thesis-chain` Rule Revie
 
 | Candidate / review | Plan SHA-256 | Run SHA-256 | Current response SHA-256 | Current attempt SHA-256 | Derived index SHA-256 |
 |---|---|---|---|---|---|
-| P1 / `RV1` | `a45b3fc639e1800e3f63785af97d6ea19107c7df3bda46c8a52806ec54d54b87` | `98ed031645dbd8e8f763c251fc0bcc757fb4f6806d09b36f1f7154ea90869651` | `0f8a85f857961e549c89dc24dbe856fb1439197d04757896b568444d00477fd7` | `fde691c59c7a34ed2d80c4013326820f14422b333ce37610706301157787de2b` | `f4e00b92e45b03b186d88ec2ac99f547c36fd384050e9d9fbd43e9e3aa2b9d71` |
-| P2 / `RV1` | `687d6c807a8b0d08aa66fc7bee2959341341650c7d8d9af4f45f6ee9ed122967` | `559618ac5d7764cb1c7463e630239df4ba45594b99369039f5f2d02533122153` | `8e8d3f7ce0b30e64c3a721f9786434edffb1634e93e608a0b21193b4863da844` | `9aa73658ce3beff78a83a449fdb6f327ee3b75860aea899a4fb38e9a6a4c3a87` | `5ae21e895ba750dde5402780574463d64984b82108abeb6d7ef7bd757ce85ab6` |
-| P3 / `RV1` | `e9e9c7b902d70ab58d193a14880f55948a644fcee52f4a1ade219b508ccfd6b3` | `805e659b096e41b4a7a1f395f875957ff97337d519d6c8ff27b90aef190ca819` | `ba2a8b2b69ed8696241af0ee8ccb26bbbce564335656f9ed0236bf18200b52b8` | `67423511674c9f4b6e6b69eda2c37a722321ab823915c3ed6255f2feaa44669f` | `773982fef54c764e1898915d1ff82afb2db77c9b6a057bd7a5911860c3461764` |
+| P1 / `RV1` | `a45b3fc639e1800e3f63785af97d6ea19107c7df3bda46c8a52806ec54d54b87` | `98ed031645dbd8e8f763c251fc0bcc757fb4f6806d09b36f1f7154ea90869651` | `90bf0cf24eab106db96513bf16d54dbc4353a30349ab90b045a9ea90ef4fb85b` | `e276086ca20b0cef2bb2c3ebc723f6060639c4cce2d7fe047b13648833d44f9f` | `c148477acc706bf43a5d17df292264dd330f5d8648473c348e0b6950a16657dd` |
+| P2 / `RV1` | `687d6c807a8b0d08aa66fc7bee2959341341650c7d8d9af4f45f6ee9ed122967` | `559618ac5d7764cb1c7463e630239df4ba45594b99369039f5f2d02533122153` | `8d318f471eb77706855077c9f7644b8e55c618a6c23ea0845ba764bb14aca20c` | `b4e4b5741d74d04c3ed2483a4d4f42997373faae8f9dc2346608579ed54640c1` | `76bd4f641debeefbc8a92a0952f8ab61d559669aaee04b315d3af55bbb4e33bd` |
+| P3 / `RV1` | `e9e9c7b902d70ab58d193a14880f55948a644fcee52f4a1ade219b508ccfd6b3` | `805e659b096e41b4a7a1f395f875957ff97337d519d6c8ff27b90aef190ca819` | `9fc9761f0f08d8d6330a6d1746316621057f984d63cf257a7fb66a053473b1e3` | `0d3847789c55d147c4befd854ab45949fb98c9c11055b616bc1db0773633d750` | `7689c9a9a63fbc124b0a955128f503464be3b3c4288e2ffb5fdd4526b6323a1f` |
 
 | Candidate | Total tasks | PASS | FAIL | Substantive UNCERTAIN | Routing mismatch | Not applicable | Blocked missing context | Open Findings | Open triage |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| P1 | 44 | 6 | 23 | 9 | 2 | 2 | 2 | 32 | 0 |
-| P2 | 54 | 7 | 29 | 13 | 0 | 0 | 5 | 42 | 0 |
-| P3 | 61 | 32 | 8 | 19 | 0 | 2 | 0 | 27 | 0 |
-| **Total** | **159** | **45** | **60** | **41** | **2** | **4** | **7** | **101** | **0** |
+| P1 | 44 | 6 | 25 | 9 | 1 | 1 | 2 | 34 | 0 |
+| P2 | 54 | 7 | 30 | 13 | 0 | 0 | 4 | 43 | 0 |
+| P3 | 61 | 32 | 8 | 20 | 0 | 1 | 0 | 28 | 0 |
+| **Total** | **159** | **45** | **63** | **42** | **1** | **2** | **6** | **105** | **0** |
 
-Only FAIL and substantive UNCERTAIN results became Findings. The thirteen execution/routing states remain visible in separate human triage queues and all now have decisions. All 101 Findings remain open. The Workbench has not accepted criticism, created a RevisionAction, or claimed that any manuscript was revised. All three projects verify successfully with the exact review snapshots and derived indexes above.
+Only FAIL and substantive UNCERTAIN results became Findings. The nine current execution/routing states remain visible in separate human triage queues and all have carried-forward decisions grounded in the author's prior judgments. All 105 Findings remain open. The Workbench has not accepted criticism, created a RevisionAction, or claimed that any manuscript was revised. All three projects verify successfully with the exact review snapshots and derived indexes above.
 
 P2 also records an unusable `attempt-0001` rather than silently replacing it. Its response (`ca7ec18332209fc31b55396e6b5010f6c694f1913ce3ce944a7720d784952889`) referenced A2 outside C7's permitted context and was rejected by the validator; its attempt record is `a24fa6193ad1d94b1ce65ae989e35eddd602a4dbf63e63ca9c6da409715efe62`. The corrected output was collected as distinct valid `attempt-0002`, which is the current result shown above.
 
@@ -90,6 +90,16 @@ The current P2 triage index is `4374e3820bc0ef06eade8e3a633de113606289eb2d6bf57f
 P3's two not-applicable states are also decided: the author rejected excluding sampling scrutiny from the single-project C6 description but acknowledged that a comparison denominator is unnecessary because C6 makes no prevalence or population-rate claim. The current P3 triage index is `688525e84c596edd6fd3ff9f2c12f9476da4150b6aaf53fea696942f89c223f7`; `ST0001` and `ST0002` have hashes `1e98e3b76defebae8b10d2d45aa09f56c5a40a2527d0ba060c271de8d4ae24d8` and `049ba834a0be713bdb0f3d91993d5f5ccaa6cbab1d90882f74fc11c0e31991f1`.
 
 Across the three projects, four model-proposed exit states were rejected by the author and carry `rerun_review`: P1 T14 and T19, P2 T22, and P3 T24. Triage completion must not make those checks disappear; each rejected status must receive a later evaluated result before Finding adjudication is treated as current.
+
+### Rejected-status rerun
+
+All four rejected exit states have now been evaluated in new immutable result attempts before Finding adjudication. P1 T14 and T19 became FAIL, P2 T22 became FAIL, and P3 T24 became substantive UNCERTAIN. No artificial PASS support was added. This increased the current Finding queue from 101 to 105. Unchanged non-evaluated tasks received carried-forward decisions whose notes bind the exact earlier human-decision hashes; the old result attempts and their original triage indexes remain verifiable.
+
+| Candidate | Current result attempt | Current response SHA-256 | Current attempt SHA-256 | Current derived index SHA-256 | Current triage index SHA-256 |
+|---|---|---|---|---|---|
+| P1 | `attempt-0002` | `90bf0cf24eab106db96513bf16d54dbc4353a30349ab90b045a9ea90ef4fb85b` | `e276086ca20b0cef2bb2c3ebc723f6060639c4cce2d7fe047b13648833d44f9f` | `c148477acc706bf43a5d17df292264dd330f5d8648473c348e0b6950a16657dd` | `70cfcd524a94d21e893ce8602f6f6f9aa3073d33a4c4953fe4e85385ea38ab2a` |
+| P2 | `attempt-0003` | `8d318f471eb77706855077c9f7644b8e55c618a6c23ea0845ba764bb14aca20c` | `b4e4b5741d74d04c3ed2483a4d4f42997373faae8f9dc2346608579ed54640c1` | `76bd4f641debeefbc8a92a0952f8ab61d559669aaee04b315d3af55bbb4e33bd` | `b8920214c7f29b5f78efdfadac96c12a3f517b9ad54d6fb6980881c1072be7cf` |
+| P3 | `attempt-0003` | `9fc9761f0f08d8d6330a6d1746316621057f984d63cf257a7fb66a053473b1e3` | `0d3847789c55d147c4befd854ab45949fb98c9c11055b616bc1db0773633d750` | `7689c9a9a63fbc124b0a955128f503464be3b3c4288e2ffb5fdd4526b6323a1f` | `f31c5b6508975a78435a5e16a356272fde45ec1bf8449856dc26bfb770fe67ee` |
 
 Every manuscript must complete the same Phase 1–3 path:
 
