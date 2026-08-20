@@ -22,7 +22,7 @@ The private author workspaces and model responses remain outside the repository.
 |---|---|---|---|---|---:|---|
 | `the-structural-stand-in.md` | controlled `DB1` | OpenAI `gpt-5.6-sol`, high reasoning | `61d8b971ae0d6bd9a6b67ad98d89a00b44bcfc8206543f791efcb374aa0459cd` | `891b438bde3246e0f91dbadb77c77a64eda120ae5da8830c0d8d523f2a335a90` | 293,097 ms | human triage and Finding adjudication |
 | `the-dynamic-dialectic-of-knowledge-systems-on-change-and-invariance-in-theoretical-identity.md` | controlled `DB1` | OpenAI `gpt-5.6-sol`, high reasoning | `8aab782a912a27b8259afda484865461a90e7b90144684cafa44bd47761466bc` | `53e6e7479ac3aa496b6fe7aa89be27e90212b5177dac2619badb5de7f5380e43` | 247,238 ms | human triage and Finding adjudication |
-| `diachronic-continuity-and-argumentative-responsibility-in-knowledge-migration.md` | controlled `DB1` | OpenAI `gpt-5.6-sol`, high reasoning | `59b244e8cfcb191fd97aeec221a213d99aa1a89f406219218d5aebe4ed183745` | `41fdd7adb68488bf423e3e4bef58b24766c63cacfe04ad0ece450795e3deb05a` | 259,309 ms | prepare Rule Review |
+| `diachronic-continuity-and-argumentative-responsibility-in-knowledge-migration.md` | controlled `DB1` | OpenAI `gpt-5.6-sol`, high reasoning | `59b244e8cfcb191fd97aeec221a213d99aa1a89f406219218d5aebe4ed183745` | `41fdd7adb68488bf423e3e4bef58b24766c63cacfe04ad0ece450795e3deb05a` | 259,309 ms | human triage and Finding adjudication |
 
 All three responses are immutable model-derived comparison artifacts, not accepted reviews and not evidence that their citations or factual assertions are correct. No Workbench IR or Finding for any manuscript influenced its fresh-session response.
 
@@ -34,7 +34,7 @@ Each candidate now has one immutable, source-bound `attempt-0001`. The Reviewed 
 |---|---|---|---|---:|---|
 | `the-structural-stand-in.md` | `7583e1a72f4b83e331026adbaab88909a3c1e6d2e5bb8187f4d07da083b8a1cd` | `5b835416de7337da5fa803cd1906ca6da32395bf915a7fe7497bae981d76569d` | `003f4e0367e39a8748c0be5fc69a9a80307a1fdcd7418b5c7bb73ec88679830a` | 13 / 7 / 2 / 4 / 25 | human triage and Finding adjudication |
 | `the-dynamic-dialectic-of-knowledge-systems-on-change-and-invariance-in-theoretical-identity.md` | `dacd887daaef667e1f3dd92afab5dc74c5279e0f49a045ff3a3fbba74a8e7557` | `312c749b5fba9aee5fea9832e49979aad5c07fd7150d8a80ad6e05a2085adbad` | `3e818b5f3fcf09ee6b49ff2ad9a507a4c1408b208d54f6cc84d8e1379f00d707` | 12 / 5 / 2 / 7 / 27 | human triage and Finding adjudication |
-| `diachronic-continuity-and-argumentative-responsibility-in-knowledge-migration.md` | `9a00b13c3db957e2152196e4d2a6afc19888175fc9c885ab45df969c222994b8` | `cb519288d62b1a96081d4c80de4b8219bf5d6b94cc9c0ff59ba562d2465818d2` | `212024271d1fab7d8b04a5331be76e9581b2b8394e4a030d7fb33723ba5aabd0` | 13 / 6 / 2 / 6 / 27 | prepare Rule Review |
+| `diachronic-continuity-and-argumentative-responsibility-in-knowledge-migration.md` | `9a00b13c3db957e2152196e4d2a6afc19888175fc9c885ab45df969c222994b8` | `cb519288d62b1a96081d4c80de4b8219bf5d6b94cc9c0ff59ba562d2465818d2` | `212024271d1fab7d8b04a5331be76e9581b2b8394e4a030d7fb33723ba5aabd0` | 13 / 6 / 2 / 6 / 27 | human triage and Finding adjudication |
 
 The extraction producer label records OpenAI `gpt-5.6-sol` with high reasoning. It identifies model-derived output only; it does not human-confirm any node, relation, citation, or uncertainty entry.
 
@@ -46,7 +46,7 @@ The first author inspection was completed through the line-oriented Inspector wi
 |---|---|---:|---:|---|---|---|---|
 | `the-structural-stand-in.md` | `GS1` (`bc75d31b714c6708f944aaf259eb949707294f79f7eb4a3135993202a694a12c`) | 5,899,678 ms | 5 | 13 → 10 Claims; three deletions, one deletion later reverted; all other nodes and 18 surviving relations retained; E2/E3/Z2 human-confirmed as intentionally unbound | `8d01bea49786f872216fdbcc215143c8aabad0b418c6c9a79b2ea69d26459ebb` | `a4d517a6dcecbc7b17f72113214e9c01dadfcf434a300c880a84e938cff7dafa` | human triage and Finding adjudication |
 | `the-dynamic-dialectic-of-knowledge-systems-on-change-and-invariance-in-theoretical-identity.md` | `GS2`–`GS6` (five records) | 129,752 ms | 1 | all 12 Claims and all Evidence/Assumptions/Citations retained; model-proposed `C1 → C2` removed, leaving 26 relations | `50f943938e52a83f8a4d44f9133ad22c851e020570e6214a8789a01ec0eb820e` | `48e9be5467b4a607958dbbb7962b0037d448f9390f07c01f109f019f0ee4121e` | human triage and Finding adjudication |
-| `diachronic-continuity-and-argumentative-responsibility-in-knowledge-migration.md` | `GS1`–`GS4` (four records) | 15,044 ms | 0 | all 13 Claims, all other nodes, and all 27 relations retained | `212024271d1fab7d8b04a5331be76e9581b2b8394e4a030d7fb33723ba5aabd0` | `6a345b15288fa22864eaad5e2cd7068cfb9357ef81c0f70a4162db6b1c7116d7` | prepare Rule Review |
+| `diachronic-continuity-and-argumentative-responsibility-in-knowledge-migration.md` | `GS1`–`GS4` (four records) | 15,044 ms | 0 | all 13 Claims, all other nodes, and all 27 relations retained | `212024271d1fab7d8b04a5331be76e9581b2b8394e4a030d7fb33723ba5aabd0` | `6a345b15288fa22864eaad5e2cd7068cfb9357ef81c0f70a4162db6b1c7116d7` | human triage and Finding adjudication |
 
 The P1 correction chain consists of immutable `IC0001`–`IC0005`; `IC0005` reverts `IC0004` rather than erasing it. The final Reviewed record binds the ordered correction hashes. The session and final Reviewed artifacts both pass `ir verify-project`.
 
@@ -56,22 +56,26 @@ The P3 inspection is bound by completed sessions `GS1`–`GS4` with record hashe
 
 ### Author Rule Review status
 
-The first two author manuscripts now have current `core` / `thesis-chain` Rule Reviews against their human-reviewed IRs. P1's plan contains 44 tasks from 16 checks; P2's contains 54 tasks and excludes isolated C1 after the author removed its only support relation. The model results are immutable proposals produced by OpenAI `gpt-5.6-sol` with high reasoning; no verdict, Finding, or routing status in these runs is human-confirmed.
+All three author manuscripts now have current `core` / `thesis-chain` Rule Reviews against their human-reviewed IRs. P1's plan contains 44 tasks from 16 checks; P2's contains 54 tasks and excludes isolated C1 after the author removed its only support relation; P3's contains 61 tasks across all 13 Claims. The model results are immutable proposals produced by OpenAI `gpt-5.6-sol` with high reasoning; no verdict, Finding, or routing status in these runs is human-confirmed.
 
 | Candidate / review | Plan SHA-256 | Run SHA-256 | Current response SHA-256 | Current attempt SHA-256 | Derived index SHA-256 |
 |---|---|---|---|---|---|
 | P1 / `RV1` | `a45b3fc639e1800e3f63785af97d6ea19107c7df3bda46c8a52806ec54d54b87` | `98ed031645dbd8e8f763c251fc0bcc757fb4f6806d09b36f1f7154ea90869651` | `0f8a85f857961e549c89dc24dbe856fb1439197d04757896b568444d00477fd7` | `fde691c59c7a34ed2d80c4013326820f14422b333ce37610706301157787de2b` | `f4e00b92e45b03b186d88ec2ac99f547c36fd384050e9d9fbd43e9e3aa2b9d71` |
 | P2 / `RV1` | `687d6c807a8b0d08aa66fc7bee2959341341650c7d8d9af4f45f6ee9ed122967` | `559618ac5d7764cb1c7463e630239df4ba45594b99369039f5f2d02533122153` | `8e8d3f7ce0b30e64c3a721f9786434edffb1634e93e608a0b21193b4863da844` | `9aa73658ce3beff78a83a449fdb6f327ee3b75860aea899a4fb38e9a6a4c3a87` | `5ae21e895ba750dde5402780574463d64984b82108abeb6d7ef7bd757ce85ab6` |
+| P3 / `RV1` | `e9e9c7b902d70ab58d193a14880f55948a644fcee52f4a1ade219b508ccfd6b3` | `805e659b096e41b4a7a1f395f875957ff97337d519d6c8ff27b90aef190ca819` | `ba2a8b2b69ed8696241af0ee8ccb26bbbce564335656f9ed0236bf18200b52b8` | `67423511674c9f4b6e6b69eda2c37a722321ab823915c3ed6255f2feaa44669f` | `773982fef54c764e1898915d1ff82afb2db77c9b6a057bd7a5911860c3461764` |
 
 | Candidate | Total tasks | PASS | FAIL | Substantive UNCERTAIN | Routing mismatch | Not applicable | Blocked missing context | Open Findings | Open triage |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | P1 | 44 | 6 | 23 | 9 | 2 | 2 | 2 | 32 | 6 |
 | P2 | 54 | 7 | 29 | 13 | 0 | 0 | 5 | 42 | 5 |
-| **Total** | **98** | **13** | **52** | **22** | **2** | **2** | **7** | **74** | **11** |
+| P3 | 61 | 32 | 8 | 19 | 0 | 2 | 0 | 27 | 2 |
+| **Total** | **159** | **45** | **60** | **41** | **2** | **4** | **7** | **101** | **13** |
 
-Only FAIL and substantive UNCERTAIN results became Findings. The eleven execution/routing states remain visible in separate human triage queues. All 74 Findings and all eleven triage items remain open; the Workbench has not accepted criticism, created a RevisionAction, or claimed that either manuscript was revised. Both projects verify successfully with the exact review snapshots and derived indexes above.
+Only FAIL and substantive UNCERTAIN results became Findings. The thirteen execution/routing states remain visible in separate human triage queues. All 101 Findings and all thirteen triage items remain open; the Workbench has not accepted criticism, created a RevisionAction, or claimed that any manuscript was revised. All three projects verify successfully with the exact review snapshots and derived indexes above.
 
 P2 also records an unusable `attempt-0001` rather than silently replacing it. Its response (`ca7ec18332209fc31b55396e6b5010f6c694f1913ce3ce944a7720d784952889`) referenced A2 outside C7's permitted context and was rejected by the validator; its attempt record is `a24fa6193ad1d94b1ce65ae989e35eddd602a4dbf63e63ca9c6da409715efe62`. The corrected output was collected as distinct valid `attempt-0002`, which is the current result shown above.
+
+P3 likewise preserves an unusable `attempt-0001`: twelve proposed PASS results omitted the independent upstream support binding required by their check policies. Its response is `2c3cdac116ed4cf95eb9c45ea3b6dd1755c60095a0c177afad7dc04697e6f267` and its attempt record is `e0d1d3e3cfe9c07a5c05608d90436b853c11f79810676a13b539a9caaecac886`. The corrected `attempt-0002` adds allowed directed paths where evidence exists and changes two unsupported PASS proposals to substantive UNCERTAIN rather than manufacturing support.
 
 Every manuscript must complete the same Phase 1–3 path:
 
