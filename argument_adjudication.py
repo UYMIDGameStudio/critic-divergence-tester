@@ -199,6 +199,101 @@ def filter_finding_entries(
     return selected
 
 
+def open_finding_entries(
+    project_dir: Path | str,
+    *,
+    review_id: str | None = None,
+    verdict: str | None = None,
+    claim: str | None = None,
+    check_id: str | None = None,
+) -> list[FindingEntry]:
+    """Return current Findings in scope that have no human decision."""
+    paths = human_review_paths(project_dir)
+    findings = filter_finding_entries(
+        current_finding_entries(paths.workspace.root, review_id=review_id),
+        verdict=verdict,
+        claim=claim,
+        check_id=check_id,
+    )
+    latest = latest_adjudications(list_adjudications(paths))
+    return [
+        finding
+        for finding in findings
+        if str(finding.value["finding_id"]) not in latest
+    ]
+
+
+def claim_bundle_status(
+    project_dir: Path | str,
+    *,
+    review_id: str | None = None,
+    verdict: str | None = None,
+    claim: str | None = None,
+    check_id: str | None = None,
+) -> str:
+    """Render undecided Findings as Claim-level confirmation bundles."""
+    findings = open_finding_entries(
+        project_dir,
+        review_id=review_id,
+        verdict=verdict,
+        claim=claim,
+        check_id=check_id,
+    )
+    claim_texts: dict[str, str] = {}
+    grouped: dict[str, list[FindingEntry]] = {}
+    for finding in findings:
+        target = str(finding.value["target_claim"])
+        grouped.setdefault(target, []).append(finding)
+        if target in claim_texts:
+            continue
+        ir, _ = _read_json(finding.review.target_ir)
+        local_id = target.split(":", 1)[1]
+        node = next(
+            (
+                item
+                for item in ir.get("claims", [])
+                if isinstance(item, dict) and item.get("id") == local_id
+            ),
+            None,
+        )
+        claim_texts[target] = (
+            str(node.get("text"))
+            if isinstance(node, dict)
+            else "Claim text unavailable"
+        )
+    lines = [
+        "Claim-level Finding bundles",
+        "",
+        "One explicit batch confirmation still creates one append-only human decision per Finding.",
+        "Model verdicts remain model-derived; no bundle is an automatic recommendation.",
+        "",
+    ]
+    if not grouped:
+        lines.extend(["No open Findings match the selected filters.", ""])
+        return "\n".join(lines)
+    for target, entries in grouped.items():
+        fail = sum(1 for entry in entries if entry.value["verdict"] == "fail")
+        uncertain = len(entries) - fail
+        lines.extend(
+            [
+                f"## {target} - {len(entries)} open ({fail} FAIL / {uncertain} UNCERTAIN)",
+                "",
+                claim_texts[target],
+                "",
+            ]
+        )
+        for index, entry in enumerate(entries, 1):
+            check_id_value = entry.value["lens"].get("check_id") or "perspective"
+            lines.extend(
+                [
+                    f"{index}. {entry.value['finding_id']} - {check_id_value} [{entry.value['verdict']}]",
+                    f"   {entry.value['reason']}",
+                ]
+            )
+        lines.append("")
+    return "\n".join(lines)
+
+
 def list_adjudications(
     paths: HumanReviewPaths,
 ) -> list[tuple[Path, dict[str, Any], bytes]]:
@@ -375,6 +470,72 @@ def append_finding_decision(
             pass
         raise
     return adjudication_path, action_paths
+
+
+def append_claim_bundle_decisions(
+    project_dir: Path | str,
+    *,
+    claim: str,
+    decision: str,
+    reason: str,
+    actions: list[tuple[str, str]],
+    confirm_count: int,
+    review_id: str | None = None,
+    verdict: str | None = None,
+    check_id: str | None = None,
+    producer: str = "local-user",
+) -> list[tuple[Path, list[Path]]]:
+    """Apply one explicit human choice to the exact open Findings of one Claim.
+
+    The count is an optimistic-lock guard: if review results or earlier decisions
+    changed after the user inspected the bundle, nothing is written. Each Finding
+    still receives its own immutable adjudication and, for acceptance, its own
+    RevisionAction artifact(s).
+    """
+    if not isinstance(confirm_count, int) or isinstance(confirm_count, bool):
+        raise WorkbenchError("confirm_count must be an integer")
+    if confirm_count < 1:
+        raise WorkbenchError("confirm_count must be at least 1")
+    normalized_claim = claim.strip().upper()
+    if re.fullmatch(r"C[1-9][0-9]*", normalized_claim):
+        normalized_claim = f"V1:{normalized_claim}"
+    elif re.fullmatch(r"V[1-9][0-9]*:C[1-9][0-9]*", normalized_claim) is None:
+        raise WorkbenchError("Claim bundle requires one Claim such as C1 or V1:C1")
+    _validate_decision_input(decision.casefold(), reason, actions)
+    findings = open_finding_entries(
+        project_dir,
+        review_id=review_id,
+        verdict=verdict,
+        claim=normalized_claim,
+        check_id=check_id,
+    )
+    if len(findings) != confirm_count:
+        raise WorkbenchError(
+            "Claim bundle changed: "
+            f"confirmation expected {confirm_count} open Findings but current scope has {len(findings)}; "
+            "inspect the bundle again before deciding"
+        )
+    created: list[tuple[Path, list[Path]]] = []
+    try:
+        for finding in findings:
+            created.append(
+                append_finding_decision(
+                    project_dir,
+                    str(finding.value["finding_id"]),
+                    decision=decision,
+                    reason=reason,
+                    actions=actions,
+                    producer=producer,
+                )
+            )
+    except Exception as exc:
+        if created:
+            raise WorkbenchError(
+                f"Claim bundle stopped after {len(created)} append-only decisions; "
+                "progress was preserved and the bundle must be inspected again"
+            ) from exc
+        raise
+    return created
 
 
 def _derive_revision_plan(

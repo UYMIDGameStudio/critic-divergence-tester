@@ -26,7 +26,7 @@ RULES = REPO_ROOT / "ir" / "social-science-checks.json"
 
 class ArgumentAdjudicationTests(unittest.TestCase):
     def make_reviewed_project(
-        self, root: Path
+        self, root: Path, *, two_findings_on_c1: bool = False
     ) -> tuple[workbench.WorkspacePaths, review.ReviewPaths]:
         workspace = workbench.initialize_workspace(
             FIXTURE / "manuscript.md",
@@ -44,9 +44,27 @@ class ArgumentAdjudicationTests(unittest.TestCase):
         review_paths, _ = review.prepare_rule_review(
             workspace.root, RULES, depth="core"
         )
+        result_bytes = (FIXTURE / "review-results.json").read_bytes()
+        if two_findings_on_c1:
+            result = json.loads(result_bytes)
+            extra = next(
+                item for item in result["results"] if item["task_id"] == "T4"
+            )
+            extra.update(
+                {
+                    "verdict": "uncertain",
+                    "reason": "The sample boundary is not explicit enough to assess representativeness.",
+                    "support_refs": [],
+                    "support_paths": [],
+                    "consequence": "The manuscript should state which public cases the claim covers.",
+                }
+            )
+            result_bytes = (
+                json.dumps(result, ensure_ascii=False, indent=2) + "\n"
+            ).encode("utf-8")
         review.collect_review_results(
             workspace.root,
-            (FIXTURE / "review-results.json").read_bytes(),
+            result_bytes,
             review_id=review_paths.review_id,
             method="file",
             source_name="review-results.json",
@@ -401,6 +419,125 @@ class ArgumentAdjudicationTests(unittest.TestCase):
             paths = adjudication.human_review_paths(workspace.root)
             self.assertEqual(adjudication.list_adjudications(paths), [])
             self.assertFalse(paths.plan_dir.exists())
+            self.assertEqual(workbench.verify_workspace(workspace), [])
+
+    def test_claim_bundle_view_and_count_guard_write_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace, _ = self.make_reviewed_project(
+                Path(temporary), two_findings_on_c1=True
+            )
+            rendered = adjudication.claim_bundle_status(workspace.root, claim="C1")
+            self.assertIn("## V1:C1 - 2 open", rendered)
+            self.assertIn("F0001", rendered)
+            self.assertIn("F0002", rendered)
+            self.assertIn("sample boundary is not explicit", rendered)
+            self.assertIn("one append-only human decision per Finding", rendered)
+            self.assertIn("Model verdicts remain model-derived", rendered)
+
+            paths = adjudication.human_review_paths(workspace.root)
+            with self.assertRaisesRegex(workbench.WorkbenchError, "expected 3"):
+                adjudication.append_claim_bundle_decisions(
+                    workspace.root,
+                    claim="C1",
+                    decision="reject",
+                    reason="These checks do not match the intended local claim.",
+                    actions=[],
+                    confirm_count=3,
+                )
+            self.assertFalse(paths.adjudications_dir.exists())
+            self.assertFalse(paths.actions_dir.exists())
+            self.assertFalse(paths.plan_dir.exists())
+            self.assertEqual(workbench.verify_workspace(workspace), [])
+
+    def test_claim_bundle_accept_creates_individual_decisions_and_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace, _ = self.make_reviewed_project(
+                Path(temporary), two_findings_on_c1=True
+            )
+            created = adjudication.append_claim_bundle_decisions(
+                workspace.root,
+                claim="V1:C1",
+                decision="accept",
+                reason="Both checks identify the same overbroad case claim.",
+                actions=[("narrow_claim", "Limit the claim to the observed cases.")],
+                confirm_count=2,
+            )
+            self.assertEqual(len(created), 2)
+            self.assertEqual(
+                [path.name for path, _ in created], ["AD0001.json", "AD0002.json"]
+            )
+            self.assertEqual(
+                [[path.name for path in action_paths] for _, action_paths in created],
+                [["RA0001.json"], ["RA0002.json"]],
+            )
+            paths = adjudication.human_review_paths(workspace.root)
+            decisions = adjudication.list_adjudications(paths)
+            self.assertEqual(
+                [entry[1]["finding_id"] for entry in decisions],
+                [
+                    "V1-RV1-attempt-0001-F0001",
+                    "V1-RV1-attempt-0001-F0002",
+                ],
+            )
+            actions = adjudication.list_revision_actions(paths)
+            self.assertEqual(len(actions), 2)
+            self.assertEqual(
+                [entry[1]["adjudication_id"] for entry in actions],
+                ["AD0001", "AD0002"],
+            )
+            plan = json.loads(paths.plan_record.read_text(encoding="utf-8"))
+            self.assertEqual(
+                plan["summary"],
+                {"accept": 2, "reject": 0, "defer": 0, "open": 1},
+            )
+            self.assertEqual(workbench.verify_workspace(workspace), [])
+
+    def test_claim_bundle_cli_view_and_batch_reject_work_without_tty(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace, _ = self.make_reviewed_project(Path(temporary))
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                self.assertEqual(
+                    critic_runner.main(
+                        [
+                            "ir",
+                            "adjudicate",
+                            str(workspace.root),
+                            "--group-by-claim",
+                            "--claim",
+                            "C1",
+                        ]
+                    ),
+                    0,
+                )
+                self.assertEqual(
+                    critic_runner.main(
+                        [
+                            "ir",
+                            "adjudicate",
+                            str(workspace.root),
+                            "--claim",
+                            "C1",
+                            "--batch-decision",
+                            "reject",
+                            "--reason",
+                            "The rule does not apply to the intended local wording.",
+                            "--confirm-count",
+                            "1",
+                        ]
+                    ),
+                    0,
+                )
+            self.assertEqual(stderr.getvalue(), "")
+            rendered = stdout.getvalue()
+            self.assertIn("## V1:C1 - 1 open", rendered)
+            self.assertIn("Recorded 1 independent human adjudications", rendered)
+            paths = adjudication.human_review_paths(workspace.root)
+            decisions = adjudication.list_adjudications(paths)
+            self.assertEqual(len(decisions), 1)
+            self.assertEqual(decisions[0][1]["decision"], "reject")
+            self.assertEqual(adjudication.list_revision_actions(paths), [])
             self.assertEqual(workbench.verify_workspace(workspace), [])
 
 

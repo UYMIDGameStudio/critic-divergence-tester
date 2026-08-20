@@ -402,10 +402,27 @@ py -3 critic_runner.py ir adjudicate $project --view-only
 # 大队列先看按 check 与 Claim 聚合的只读 open 摘要
 py -3 critic_runner.py ir adjudicate $project --summary-only
 
+# 展开为 Claim-level bundles；不写决定
+py -3 critic_runner.py ir adjudicate $project --group-by-claim
+py -3 critic_runner.py ir adjudicate $project --group-by-claim --claim C4
+
 # 大队列可先处理 FAIL，再按 Claim 或精确 check 缩小范围；仍然逐条人工确认
 py -3 critic_runner.py ir adjudicate $project --verdict fail
 py -3 critic_runner.py ir adjudicate $project --claim C4
 py -3 critic_runner.py ir adjudicate $project --check causal.alternative-explanation
+
+# 若同一 Claim 下的 3 条 open Findings 确实应作相同决定，可一次明确确认整组
+py -3 critic_runner.py ir adjudicate $project --claim C4 `
+  --batch-decision reject `
+  --reason "这些检查依赖本文没有作出的总体性主张。" `
+  --confirm-count 3
+
+# 批量 Accept 仍要求 RevisionAction；每条 Finding 各生成一份独立 action artifact
+py -3 critic_runner.py ir adjudicate $project --claim C7 `
+  --batch-decision accept `
+  --reason "这些问题共同暴露了论断范围过宽。" `
+  --confirm-count 2 `
+  --action "narrow_claim:把结论限制到本文观察的案例。"
 
 # 随时确定性重建 revision plan；--show 同时输出到终端
 py -3 critic_runner.py ir revision-plan $project --show
@@ -414,7 +431,9 @@ py -3 critic_runner.py ir revision-plan $project --show
 py -3 critic_runner.py ir verify-project $project
 ```
 
-`--summary-only` 不要求交互终端，只给出范围内的 FAIL/UNCERTAIN、人工决定计数，以及 open queue 的 check/Claim 聚合，不创建 adjudication 或 revision-plan。`--verdict fail|uncertain`、`--claim C4|V1:C4` 与 `--check CHECK_ID` 可以组合，只改变本次显示和交互队列，不改变 Finding、不批量写决定，也不把被过滤掉的条目视为 resolved。之后不带过滤器再次运行即可继续其余 open Findings。
+`--summary-only` 不要求交互终端，只给出范围内的 FAIL/UNCERTAIN、人工决定计数，以及 open queue 的 check/Claim 聚合，不创建 adjudication 或 revision-plan。`--group-by-claim` 展开每个 Claim 的原文、Finding、check、verdict 和 reason，也保持只读。`--verdict fail|uncertain`、`--claim C4|V1:C4` 与 `--check CHECK_ID` 可以组合，只改变本次显示和交互队列，不把被过滤掉的条目视为 resolved。之后不带过滤器再次运行即可继续其余 open Findings。
+
+`--batch-decision` 只是减少重复确认的 application-layer 操作，不产生“综合裁决”：它必须指定唯一 Claim、人工理由和刚刚看到的精确 open 数量。`--confirm-count` 是乐观锁；队列变化时整组拒绝写入。确认成功后，每条 Finding 仍分别生成不可变的 `finding-adjudication`，并保留模型 verdict 的 `model-derived` 来源。Accept 的每个 Finding 还分别生成指定的 RevisionAction；Reject / Defer 禁止带 action。若一组内判断不同，应继续使用逐条模式，或用 `--verdict` / `--check` 缩小到真正同质的子集。
 
 Accept 必须至少指定一个结构化 action type（`narrow_claim`、`add_evidence`、`add_qualification`、`remove_claim`、`restructure_argument`、`clarify_concept`、`verify_citation` 或 `other`）和具体行动文本。Reject / Defer 必须记录理由。改变决定不会覆盖历史：新 `ADnnnn` 通过 `supersedes` 指向旧决定；旧 RevisionAction 也保留。
 

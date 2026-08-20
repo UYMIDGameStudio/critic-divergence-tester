@@ -84,6 +84,8 @@ Workbench decisions reuse the legacy workflow's `accept` / `reject` / `defer` fi
 
 Each `finding-adjudication` binds the exact Finding bytes. Reconsidering a Finding appends another adjudication with `supersedes` and the previous adjudication hash; it never edits or deletes the earlier decision. A `revision-action` binds the exact accepted adjudication and uses one of the documented action types plus unconstrained human text. Bundle validation rejects an accepted adjudication without at least one linked action.
 
+Claim-level batch confirmation is an application interaction, not a new artifact or an epistemic aggregation. It requires one explicit Claim and the exact number of open Findings the human just inspected. That count is an optimistic-lock guard: a changed queue refuses all writes. A successful confirmation invokes the same contract once per Finding, so every decision has its own immutable artifact and every accepted Finding has its own linked RevisionAction. Model verdicts remain model-derived, and mixed judgments must use individual decisions or narrower explicit filters. If an unexpected write failure occurs after progress begins, already appended records are preserved and the user must inspect the remaining open bundle again.
+
 `revision-plan/record.json` and `revision-plan.md` are deterministic caches. The record binds every current Finding, latest adjudication, and applicable action by exact-byte SHA-256, records the Markdown payload hash, and separates model-derived Finding fields from human-confirmed decisions and actions. Rebuild replaces only these derived files. Open, deferred, rejected, and accepted counts are workflow state, not a manuscript quality score.
 
 ## Product Gate A evidence
