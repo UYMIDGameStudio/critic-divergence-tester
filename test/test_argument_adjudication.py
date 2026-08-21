@@ -490,6 +490,21 @@ class ArgumentAdjudicationTests(unittest.TestCase):
                 plan["summary"],
                 {"accept": 2, "reject": 0, "defer": 0, "open": 1},
             )
+            markdown = paths.plan_markdown.read_text(encoding="utf-8")
+            self.assertIn("Consolidated Revision Actions", markdown)
+            self.assertIn("AG0001 - V1:C1 - `narrow_claim`", markdown)
+            self.assertIn(
+                "V1-RV1-attempt-0001-F0001, V1-RV1-attempt-0001-F0002",
+                markdown,
+            )
+            self.assertIn("RA0001, RA0002", markdown)
+            self.assertEqual(
+                markdown.count("Limit the claim to the observed cases."), 1
+            )
+            self.assertEqual(markdown.count("Revision action groups: `AG0001`"), 1)
+            self.assertIn("### V1:C1 - 2 accepted", markdown)
+            self.assertIn("F0001 (AD0001)", markdown)
+            self.assertIn("F0002 (AD0002)", markdown)
             self.assertEqual(workbench.verify_workspace(workspace), [])
 
     def test_claim_bundle_cli_view_and_batch_reject_work_without_tty(self) -> None:

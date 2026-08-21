@@ -693,6 +693,38 @@ def _derive_revision_plan(
 def render_revision_plan(
     items: list[dict[str, Any]], summary: dict[str, int]
 ) -> str:
+    action_groups: list[dict[str, Any]] = []
+    action_group_index: dict[tuple[str, str, str], dict[str, Any]] = {}
+    action_group_by_instance: dict[tuple[str, str], str] = {}
+    for item in items:
+        if item["decision"] != "accept":
+            continue
+        for action in item["actions"]:
+            key = (
+                str(item["target_claim"]),
+                str(action["action_type"]),
+                str(action["text"]),
+            )
+            group = action_group_index.get(key)
+            if group is None:
+                group = {
+                    "group_id": f"AG{len(action_groups) + 1:04d}",
+                    "target_claim": key[0],
+                    "action_type": key[1],
+                    "text": key[2],
+                    "finding_ids": [],
+                    "action_ids": [],
+                }
+                action_groups.append(group)
+                action_group_index[key] = group
+            finding_id = str(item["finding_id"])
+            action_id = str(action["action_id"])
+            if finding_id not in group["finding_ids"]:
+                group["finding_ids"].append(finding_id)
+            group["action_ids"].append(action_id)
+            action_group_by_instance[(finding_id, action_id)] = str(
+                group["group_id"]
+            )
     lines = [
         "# Revision Plan",
         "",
@@ -705,9 +737,87 @@ def render_revision_plan(
         f"- Deferred: {summary['defer']}",
         f"- Open: {summary['open']}",
         "",
+        "## Consolidated Revision Actions",
+        "",
     ]
+    if not action_groups:
+        lines.extend(["None.", ""])
+    else:
+        lines.extend(
+            [
+                "Identical human-confirmed actions are shown once for readability; every underlying RevisionAction remains a separate immutable artifact.",
+                "",
+            ]
+        )
+        for group in action_groups:
+            lines.extend(
+                [
+                    f"### {group['group_id']} - {group['target_claim']} - `{group['action_type']}`",
+                    "",
+                    str(group["text"]),
+                    "",
+                    "- Covers Findings: " + ", ".join(group["finding_ids"]),
+                    "- RevisionAction artifacts: "
+                    + ", ".join(group["action_ids"]),
+                    "",
+                ]
+            )
+    accepted = [item for item in items if item["decision"] == "accept"]
+    lines.extend(["## Accepted Findings and Revision Actions", ""])
+    if not accepted:
+        lines.extend(["None.", ""])
+    else:
+        accepted_by_claim: dict[str, list[dict[str, Any]]] = {}
+        for item in accepted:
+            accepted_by_claim.setdefault(str(item["target_claim"]), []).append(
+                item
+            )
+        for target_claim, claim_items in accepted_by_claim.items():
+            lines.extend(
+                [
+                    f"### {target_claim} - {len(claim_items)} accepted",
+                    "",
+                    "- Human-confirmed reasons:",
+                ]
+            )
+            reasons: dict[str, list[str]] = {}
+            for item in claim_items:
+                reasons.setdefault(str(item["human_reason"]), []).append(
+                    str(item["finding_id"])
+                )
+            for reason, finding_ids in reasons.items():
+                lines.append(
+                    "  - "
+                    + (reason or "none")
+                    + " ("
+                    + ", ".join(finding_ids)
+                    + ") `[human-confirmed]`"
+                )
+            lines.append("- Model-derived Finding trace:")
+            claim_group_ids: list[str] = []
+            for item in claim_items:
+                check_id = item["lens"].get("check_id")
+                lens_label = str(item["lens"]["id"])
+                if check_id is not None:
+                    lens_label += f" / {check_id}"
+                lines.append(
+                    f"  - {item['finding_id']} ({item['adjudication_id']}) - "
+                    f"`{lens_label}` / `{item['verdict']}`: "
+                    f"{item['model_reason']} `[model-derived]`"
+                )
+                for action in item["actions"]:
+                    group_id = action_group_by_instance[
+                        (str(item["finding_id"]), str(action["action_id"]))
+                    ]
+                    if group_id not in claim_group_ids:
+                        claim_group_ids.append(group_id)
+            lines.append(
+                "- Revision action groups: "
+                + ", ".join(f"`{group_id}`" for group_id in claim_group_ids)
+            )
+            lines.append("")
+
     sections = (
-        ("accept", "Accepted Findings and Revision Actions"),
         ("defer", "Deferred Findings"),
         ("reject", "Rejected Findings"),
         (None, "Open Findings"),
@@ -736,11 +846,16 @@ def render_revision_plan(
                 ]
             )
             if item["actions"]:
-                lines.append("- Revision actions:")
-                for action in item["actions"]:
-                    lines.append(
-                        f"  - `{action['action_type']}` ({action['action_id']}): {action['text']}"
-                    )
+                group_ids = [
+                    action_group_by_instance[
+                        (str(item["finding_id"]), str(action["action_id"]))
+                    ]
+                    for action in item["actions"]
+                ]
+                lines.append(
+                    "- Revision action groups: "
+                    + ", ".join(f"`{group_id}`" for group_id in group_ids)
+                )
             else:
                 lines.append("- Revision actions: none")
             lines.append("")

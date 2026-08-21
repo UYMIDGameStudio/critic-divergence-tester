@@ -450,6 +450,8 @@ documents/D1/versions/V1/
 
 `revision-plan.md` 分列 accepted / deferred / rejected / open Finding，并保留模型 reason、人工 reason 和行动来源；它只显示状态计数，不产生论文总分。`record.json` 是 `derived-replaceable` cache，逐字绑定 Markdown，并可由 immutable Finding、Adjudication 和 RevisionAction 完整重建。已有顶层 `adjudicate` / `revision-plan` 命令继续服务 legacy report workflow，不被这套 `ir` 子命令替换。
 
+为避免同一 Claim 的同一修改动作因逐 Finding provenance 而重复几十次，Markdown 会确定性生成 `Consolidated Revision Actions`：按 Claim、action type 和完整文本聚合展示，并列出覆盖的 Finding IDs 与全部底层 RevisionAction IDs。聚合只改变可读 cache；每个 adjudication/action artifact、父哈希和 `record.json` item 都保持独立，不能借展示合并抹掉方法论分歧或人工历史。
+
 ### Product Gate A：先用真实文章验证，再进入 Phase 4
 
 Phase 3 完成后不能直接增加 Perspective Lens。`ir gate-a` 把 3–5 篇真实稿件的 Phase 1–3 结果固定为一个私有、本地 evidence corpus。它只保存 workspace locator 与精确哈希，不复制稿件正文；建议输出目录使用 `*.product-gate-a/`，该模式默认不进 Git。
