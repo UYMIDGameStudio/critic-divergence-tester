@@ -200,6 +200,7 @@ def _project_snapshot(
         entry
         for entry in work_sessions
         if entry.record is not None
+        and entry.record.get("artifact") == "gate-a-work-session"
         and entry.start.get("activity") == "ir-inspection"
         and entry.record_bytes is not None
         and (
@@ -409,6 +410,7 @@ def gate_readiness(project_dirs: list[Path | str]) -> dict[str, Any]:
                 entry
                 for entry in session_entries
                 if entry.record is not None
+                and entry.record.get("artifact") == "gate-a-work-session"
                 and entry.start.get("activity") == "ir-inspection"
                 and (
                     first_review is None

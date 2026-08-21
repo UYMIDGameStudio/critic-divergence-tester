@@ -55,6 +55,8 @@ from argument_review import (
     show_claim_review,
 )
 from argument_adjudication import (
+    append_claim_bundle_decisions,
+    claim_bundle_status,
     rebuild_adjudication_cache,
     rebuild_revision_plan as rebuild_workbench_revision_plan,
     run_adjudicator as run_workbench_adjudicator,
@@ -70,6 +72,7 @@ from argument_triage import (
     triage_items_for_review,
 )
 from argument_sessions import (
+    abandon_work_session,
     finish_work_session,
     list_work_sessions,
     render_work_sessions,
@@ -93,6 +96,7 @@ from argument_contracts import (
     GATE_A_COMPARISONS,
     GATE_A_DECISIONS,
     GATE_A_WORK_ACTIVITIES,
+    REVISION_ACTION_TYPES,
 )
 from critic_execution import ExecutorResult, execute_with_limits
 from critic_scoring import (
@@ -3225,6 +3229,87 @@ def ir_review_triage_command(args: argparse.Namespace) -> int:
 
 
 def ir_adjudicate_command(args: argparse.Namespace) -> int:
+    batch_fields = (
+        args.batch_decision,
+        args.reason,
+        args.confirm_count,
+        args.action,
+        args.producer_label,
+    )
+    batch_requested = any(value is not None for value in batch_fields)
+    if batch_requested:
+        if (
+            args.batch_decision is None
+            or args.reason is None
+            or args.confirm_count is None
+        ):
+            raise WorkbenchError(
+                "batch adjudication requires --batch-decision, --reason, and --confirm-count"
+            )
+        if args.claim is None:
+            raise WorkbenchError("batch adjudication requires exactly one --claim")
+        if args.review_all or args.view_only or args.summary_only or args.group_by_claim:
+            raise WorkbenchError(
+                "batch adjudication cannot be combined with --review-all, --view-only, "
+                "--summary-only, or --group-by-claim"
+            )
+        actions: list[tuple[str, str]] = []
+        for raw_action in args.action or []:
+            action_type, separator, text = raw_action.partition(":")
+            if (
+                not separator
+                or action_type not in REVISION_ACTION_TYPES
+                or not text.strip()
+            ):
+                allowed = ", ".join(REVISION_ACTION_TYPES)
+                raise WorkbenchError(
+                    "--action must use ACTION_TYPE:TEXT with one of: " + allowed
+                )
+            actions.append((action_type, text.strip()))
+        created = append_claim_bundle_decisions(
+            args.project,
+            claim=args.claim,
+            decision=args.batch_decision,
+            reason=args.reason,
+            actions=actions,
+            confirm_count=args.confirm_count,
+            review_id=args.review_id,
+            verdict=args.verdict,
+            check_id=args.check_id,
+            producer=args.producer_label or "local-user",
+        )
+        action_count = sum(len(action_paths) for _, action_paths in created)
+        print(
+            f"Recorded {len(created)} independent human adjudications "
+            f"and {action_count} RevisionAction artifacts."
+        )
+        print(
+            claim_bundle_status(
+                args.project,
+                review_id=args.review_id,
+                verdict=args.verdict,
+                claim=args.claim,
+                check_id=args.check_id,
+            ),
+            end="",
+        )
+        return 0
+    if args.group_by_claim:
+        if args.review_all:
+            raise WorkbenchError(
+                "--group-by-claim shows only open Findings; omit --review-all"
+            )
+        print(
+            claim_bundle_status(
+                args.project,
+                review_id=args.review_id,
+                verdict=args.verdict,
+                claim=args.claim,
+                check_id=args.check_id,
+            ),
+            end="",
+        )
+        return 0
     if not args.view_only and not args.summary_only:
         isatty = getattr(sys.stdin, "isatty", None)
         if isatty is not None and not isatty():
@@ -3315,6 +3400,19 @@ def ir_gate_a_session_finish_command(args: argparse.Namespace) -> int:
     )
     print(f"Gate A work session completed: {paths.session_id}")
     print(f"Session artifact: {paths.record}")
+    return 0
+
+
+def ir_gate_a_session_abandon_command(args: argparse.Namespace) -> int:
+    paths = abandon_work_session(
+        args.project,
+        args.session,
+        reason=args.reason,
+        producer=args.producer_label,
+    )
+    print(f"Gate A work session abandoned: {paths.session_id}")
+    print(f"Abandonment artifact: {paths.record}")
+    print("This interval will not count as completed Gate A work.")
     return 0
 
 
@@ -4447,6 +4545,11 @@ def parser() -> argparse.ArgumentParser:
         help="show grouped open counts without listing or deciding Findings",
     )
     ir_adjudicate_parser.add_argument(
+        "--group-by-claim",
+        action="store_true",
+        help="show open Findings as Claim-level confirmation bundles without writing",
+    )
+    ir_adjudicate_parser.add_argument(
         "--verdict",
         choices=("fail", "uncertain"),
         help="show or adjudicate only model FAIL or UNCERTAIN Findings",
@@ -4459,6 +4562,29 @@ def parser() -> argparse.ArgumentParser:
         "--check",
         dest="check_id",
         help="show or adjudicate one exact Rule Lens check ID",
+    )
+    ir_adjudicate_parser.add_argument(
+        "--batch-decision",
+        choices=("accept", "reject", "defer"),
+        help="apply one explicit human choice to the exact open Findings of --claim",
+    )
+    ir_adjudicate_parser.add_argument(
+        "--reason",
+        help="required human reason for a batch decision",
+    )
+    ir_adjudicate_parser.add_argument(
+        "--confirm-count",
+        type=int,
+        help="required optimistic-lock count from the inspected Claim bundle",
+    )
+    ir_adjudicate_parser.add_argument(
+        "--action",
+        action="append",
+        help="repeatable ACTION_TYPE:TEXT; required for accept and forbidden otherwise",
+    )
+    ir_adjudicate_parser.add_argument(
+        "--producer-label",
+        help="human evaluator label recorded in batch-decision provenance",
     )
     ir_adjudicate_parser.set_defaults(func=ir_adjudicate_command)
 
@@ -4542,6 +4668,24 @@ def parser() -> argparse.ArgumentParser:
     )
     ir_gate_a_session_finish_parser.set_defaults(
         func=ir_gate_a_session_finish_command
+    )
+    ir_gate_a_session_abandon_parser = ir_gate_a_session_sub.add_parser(
+        "abandon", help="close an interrupted interval without counting it as work"
+    )
+    ir_gate_a_session_abandon_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    ir_gate_a_session_abandon_parser.add_argument(
+        "session", help="session ID such as GS1"
+    )
+    ir_gate_a_session_abandon_parser.add_argument(
+        "--reason", required=True, help="human-confirmed reason for abandoning the interval"
+    )
+    ir_gate_a_session_abandon_parser.add_argument(
+        "--producer-label", default="local-user"
+    )
+    ir_gate_a_session_abandon_parser.set_defaults(
+        func=ir_gate_a_session_abandon_command
     )
     ir_gate_a_session_list_parser = ir_gate_a_session_sub.add_parser(
         "list", help="show completed and open human work sessions"

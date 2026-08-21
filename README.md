@@ -402,10 +402,27 @@ py -3 critic_runner.py ir adjudicate $project --view-only
 # 大队列先看按 check 与 Claim 聚合的只读 open 摘要
 py -3 critic_runner.py ir adjudicate $project --summary-only
 
+# 展开为 Claim-level bundles；不写决定
+py -3 critic_runner.py ir adjudicate $project --group-by-claim
+py -3 critic_runner.py ir adjudicate $project --group-by-claim --claim C4
+
 # 大队列可先处理 FAIL，再按 Claim 或精确 check 缩小范围；仍然逐条人工确认
 py -3 critic_runner.py ir adjudicate $project --verdict fail
 py -3 critic_runner.py ir adjudicate $project --claim C4
 py -3 critic_runner.py ir adjudicate $project --check causal.alternative-explanation
+
+# 若同一 Claim 下的 3 条 open Findings 确实应作相同决定，可一次明确确认整组
+py -3 critic_runner.py ir adjudicate $project --claim C4 `
+  --batch-decision reject `
+  --reason "这些检查依赖本文没有作出的总体性主张。" `
+  --confirm-count 3
+
+# 批量 Accept 仍要求 RevisionAction；每条 Finding 各生成一份独立 action artifact
+py -3 critic_runner.py ir adjudicate $project --claim C7 `
+  --batch-decision accept `
+  --reason "这些问题共同暴露了论断范围过宽。" `
+  --confirm-count 2 `
+  --action "narrow_claim:把结论限制到本文观察的案例。"
 
 # 随时确定性重建 revision plan；--show 同时输出到终端
 py -3 critic_runner.py ir revision-plan $project --show
@@ -414,7 +431,9 @@ py -3 critic_runner.py ir revision-plan $project --show
 py -3 critic_runner.py ir verify-project $project
 ```
 
-`--summary-only` 不要求交互终端，只给出范围内的 FAIL/UNCERTAIN、人工决定计数，以及 open queue 的 check/Claim 聚合，不创建 adjudication 或 revision-plan。`--verdict fail|uncertain`、`--claim C4|V1:C4` 与 `--check CHECK_ID` 可以组合，只改变本次显示和交互队列，不改变 Finding、不批量写决定，也不把被过滤掉的条目视为 resolved。之后不带过滤器再次运行即可继续其余 open Findings。
+`--summary-only` 不要求交互终端，只给出范围内的 FAIL/UNCERTAIN、人工决定计数，以及 open queue 的 check/Claim 聚合，不创建 adjudication 或 revision-plan。`--group-by-claim` 展开每个 Claim 的原文、Finding、check、verdict 和 reason，也保持只读。`--verdict fail|uncertain`、`--claim C4|V1:C4` 与 `--check CHECK_ID` 可以组合，只改变本次显示和交互队列，不把被过滤掉的条目视为 resolved。之后不带过滤器再次运行即可继续其余 open Findings。
+
+`--batch-decision` 只是减少重复确认的 application-layer 操作，不产生“综合裁决”：它必须指定唯一 Claim、人工理由和刚刚看到的精确 open 数量。`--confirm-count` 是乐观锁；队列变化时整组拒绝写入。确认成功后，每条 Finding 仍分别生成不可变的 `finding-adjudication`，并保留模型 verdict 的 `model-derived` 来源。Accept 的每个 Finding 还分别生成指定的 RevisionAction；Reject / Defer 禁止带 action。若一组内判断不同，应继续使用逐条模式，或用 `--verdict` / `--check` 缩小到真正同质的子集。
 
 Accept 必须至少指定一个结构化 action type（`narrow_claim`、`add_evidence`、`add_qualification`、`remove_claim`、`restructure_argument`、`clarify_concept`、`verify_citation` 或 `other`）和具体行动文本。Reject / Defer 必须记录理由。改变决定不会覆盖历史：新 `ADnnnn` 通过 `supersedes` 指向旧决定；旧 RevisionAction 也保留。
 
@@ -430,6 +449,8 @@ documents/D1/versions/V1/
 ```
 
 `revision-plan.md` 分列 accepted / deferred / rejected / open Finding，并保留模型 reason、人工 reason 和行动来源；它只显示状态计数，不产生论文总分。`record.json` 是 `derived-replaceable` cache，逐字绑定 Markdown，并可由 immutable Finding、Adjudication 和 RevisionAction 完整重建。已有顶层 `adjudicate` / `revision-plan` 命令继续服务 legacy report workflow，不被这套 `ir` 子命令替换。
+
+为避免同一 Claim 的同一修改动作因逐 Finding provenance 而重复几十次，Markdown 会确定性生成 `Consolidated Revision Actions`：按 Claim、action type 和完整文本聚合展示，并列出覆盖的 Finding IDs 与全部底层 RevisionAction IDs。聚合只改变可读 cache；每个 adjudication/action artifact、父哈希和 `record.json` item 都保持独立，不能借展示合并抹掉方法论分歧或人工历史。
 
 ### Product Gate A：先用真实文章验证，再进入 Phase 4
 
@@ -454,6 +475,10 @@ py -3 critic_runner.py ir gate-a session start $project1 `
   --activity ir-inspection --note "逐条对照原文检查 IR"
 py -3 critic_runner.py ir inspect $project1
 py -3 critic_runner.py ir gate-a session finish $project1 GS1
+
+# If no valid inspection occurred, close the interval without counting it:
+py -3 critic_runner.py ir gate-a session abandon $project1 GS1 `
+  --reason "The author left before making an IR judgment."
 py -3 critic_runner.py ir gate-a session list $project1
 
 # 在捕获 Gate corpus 前只读汇总 3–5 个项目；未完成时逐篇给出下一条命令
@@ -479,7 +504,7 @@ py -3 critic_runner.py ir gate-a verify $gate
 
 `ir gate-a prepare-baseline` 使用版本化的 `direct-full-manuscript-review-v1` 协议，并把 DocumentVersion 的 source bytes 原样嵌入 prompt。`ir gate-a baseline` 原样保存 direct-chat prompt/response、provider/model ID、开始/完成时间、稿件交付方式和会话条件，并绑定稿件精确字节；inline 模式会再次验证 prompt 确实包含完整原稿。它不填写比较结论。新 Gate corpus 只接受 controlled v2 baseline：fresh session、没有既有对话上下文，而且模型确实收到完整稿件。旧 v1 baseline 继续可验证，但不能进入新的 Gate。`ir gate-a readiness` 可以在人工裁决尚未完成时运行，只读汇总 Claim、correction、模型 Findings、Finding 决定、status triage、revision plan、baseline 和 IR inspection timing 状态。只有全部项目没有 open Finding 或 open triage、revision plan 与 controlled baseline 已生成、至少一段 IR inspection 在首个 Rule Review 结果前完成、没有仍开放的 work session，且 source bytes 互不重复时，才允许捕获不可变 corpus。
 
-`ir gate-a session start/finish/list` 记录实际人工作业时间。start 和完成 record 都不可变，完成时间与 elapsed milliseconds 由系统时钟确定；同一 workspace 同时只允许一个 open session。活动明确区分 IR inspection、Finding adjudication、status triage、revision planning、manuscript revision 和 other。新建的 v5 Gate corpus 和 assessment 绑定首个 Rule Review 结果之前完成的全部 IR inspection record，并确定性汇总精确毫秒；`--correction-minutes` 仅为读取/追加旧 v1–v4 Gate 留作兼容参数，v5 会拒绝自报时间。旧 Gate 工件保持按原 schema 验证，不会被迁移或改写。
+`ir gate-a session start/finish/abandon/list` 记录实际人工作业时间。start、完成 record 和 abandonment record 都不可变，结束时间与 elapsed milliseconds 由系统时钟确定；同一 workspace 同时只允许一个 open session。若命名活动未实际发生或区间被中断，必须使用 `abandon` 并记录理由；该区间仍可审计，但不会计入 Gate 时间，也不能满足 IR inspection 要求。活动明确区分 IR inspection、Finding adjudication、status triage、revision planning、manuscript revision 和 other。新建的 v5 Gate corpus 和 assessment 仅绑定首个 Rule Review 结果之前真正完成的 IR inspection record，并确定性汇总精确毫秒；`--correction-minutes` 仅为读取/追加旧 v1–v4 Gate 留作兼容参数，v5 会拒绝自报时间。旧 Gate 工件保持按原 schema 验证，不会被迁移或改写。
 
 对 P2/P3（以及可选的 P4/P5）完成 assessment 后，报告才会显示 `Ready for human gate decision: yes`。程序永远不会自动通过 Gate；只有人类 evaluator 可以追加决定：
 

@@ -132,6 +132,70 @@ class GateAWorkSessionTests(unittest.TestCase):
             self.assertIn("complete", rendered)
             self.assertIn("status-triage", rendered)
 
+    def test_abandoned_session_is_closed_but_not_completed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project = self.make_project(root)
+            paths = sessions.start_work_session(
+                project.root,
+                activity="ir-inspection",
+                note="The author did not begin inspection.",
+                producer="test-human",
+            )
+            sessions.abandon_work_session(
+                project.root,
+                "GS1",
+                reason="The user left before making a human judgment.",
+                producer="test-human",
+            )
+            record = json.loads(paths.record.read_text(encoding="utf-8"))
+            self.assertEqual(record["artifact"], "gate-a-session-abandonment")
+            self.assertEqual(record["provenance"]["origin"], "human-confirmed")
+            self.assertGreaterEqual(record["timing"]["elapsed_milliseconds"], 0)
+            self.assertEqual(contracts.validate_artifact(record), [])
+            rendered = sessions.render_work_sessions(
+                sessions.list_work_sessions(project.root)
+            )
+            self.assertIn("abandoned", rendered)
+            self.assertIn("did not begin inspection", rendered)
+            self.assertEqual(sessions.verify_work_sessions(project.root), [])
+            self.assertEqual(workbench.verify_workspace(project.root), [])
+            second = sessions.start_work_session(
+                project.root, activity="ir-inspection"
+            )
+            self.assertEqual(second.session_id, "GS2")
+            with self.assertRaisesRegex(workbench.WorkbenchError, "already closed"):
+                sessions.abandon_work_session(
+                    project.root,
+                    "GS1",
+                    reason="Cannot abandon twice.",
+                )
+
+    def test_cli_can_abandon_an_open_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project = self.make_project(root)
+            sessions.start_work_session(project.root, activity="ir-inspection")
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(
+                    critic_runner.main(
+                        [
+                            "ir",
+                            "gate-a",
+                            "session",
+                            "abandon",
+                            str(project.root),
+                            "GS1",
+                            "--reason",
+                            "No human judgment was made.",
+                        ]
+                    ),
+                    0,
+                )
+            self.assertIn("will not count", stdout.getvalue())
+            self.assertEqual(workbench.verify_workspace(project.root), [])
+
     def test_tampering_and_noncontinuous_ids_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
