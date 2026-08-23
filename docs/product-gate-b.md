@@ -162,5 +162,11 @@ remained clear.
 The bound private Gate B report now verifies with two assessed projects, 25
 human lineage decisions, and 23 human Finding Resolution decisions. Its
 deterministic readiness result is `ready for a human pass/fail/defer decision`.
-The current gate decision remains `pending`; readiness is not an automatic
-product verdict.
+Readiness was not treated as an automatic product verdict. The author then made
+the explicit final human decision `pass`, recording that lineage, split
+handling, Finding inheritance and persistence, and revision rationales remained
+understandable across both real V1-to-V2 workflows. The append-only decision is
+bound to the immutable corpus and both human assessments, and the complete
+private Gate B bundle verifies reproducibly. Product Gate B is therefore passed;
+Phase 7 may begin without claiming that the gate constitutes a manuscript
+quality score or a judgment that either manuscript is correct.
