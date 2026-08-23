@@ -20,6 +20,23 @@ py -3 critic_runner.py app
 py -3 critic_runner.py app ".\结构的替身.md"
 ```
 
+需要审查公文、通知、制度文件、活动策划案、项目方案或商业企划案时，
+使用新的文档优先工作台：
+
+```powershell
+python critic_runner.py studio
+```
+
+Document Review Studio 当前标记为 **experimental preview**。它支持 Markdown、TXT、DOCX、文本 PDF 和扫描 PDF；
+上传后必须先确认识别质量和文档上下文，再明确选择“本地确定性预检”或导出/导入五个独立 AI critic。原始文件
+字节与 SHA-256 永不覆盖，解析警告、页码/表格单元格定位、人工裁决和导出
+审计包都保存在本地项目中。详细限制和环境要求见
+[`docs/document-review-studio.md`](docs/document-review-studio.md)。
+独立 AI 导入要求原始响应回显所选请求的 `request_id`、`prompt_sha256`、provider
+和 model；人工导入只记录 `declared_model_metadata`，不冒充直接模型调用。
+识别确认由受保护的 extraction decision 产物授权，`state.json` 只是可重建缓存；
+本地索引可发现普通修改/删除，但强回滚仍需要项目外可信检查点或签名。
+
 应用会自动打开本机页面。创建项目后，页面始终只突出一个下一步：导入现有审查报告 → 复制模型无关提示词 → 确认原子发现 → 只为已接受问题生成修改提案 → 逐 hunk 接受、拒绝或手改 → 生成不可变 V2 → 按原标准复查 → 导出。用户不需要打开 JSON 或拼 artifact 路径。
 
 已有 Reviewed IR 的项目会在同一项目主页显示“专业研究视图”，继续提供 Claim、Rule/Perspective Lens、Citation、版本 lineage 和 Finding Resolution；不同 Lens 的结论保持并列，不做投票合并。快速修订仍是默认入口。

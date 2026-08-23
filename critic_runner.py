@@ -92,6 +92,10 @@ from argument_citations import (
 )
 from argument_ui import serve_workbench
 from argument_app import default_data_dir, serve_product_app
+from document_review_ingest import doctor_dependencies
+from document_review_ui import default_studio_data_dir, serve_document_review_studio
+from document_review_studio import DocumentReviewProject, ReviewStudioError
+from document_review_model import CRITIC_DIMENSIONS
 from argument_adjudication import (
     append_claim_bundle_decisions,
     claim_bundle_status,
@@ -3091,6 +3095,51 @@ def app_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def studio_command(args: argparse.Namespace) -> int:
+    """Start the Document Review Studio loopback application."""
+    server, url = serve_document_review_studio(
+        data_dir=args.data_dir,
+        project_dir=args.project,
+        host=args.host,
+        port=args.port,
+        open_browser=not args.no_browser,
+    )
+    print(f"Document Review Studio: {url}")
+    print(f"Local projects: {Path(args.data_dir or default_studio_data_dir()).resolve()}")
+    print("Local-only session; press Ctrl+C to stop.")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nDocument Review Studio stopped.")
+    finally:
+        server.server_close()
+    return 0
+
+
+def studio_protocols_command(args: argparse.Namespace) -> int:
+    try:
+        project = DocumentReviewProject(Path(args.project))
+        rows = project.prepare_ai_audits(args.critic or None, provider=args.provider, model=args.model)
+    except (OSError, ValueError, ReviewStudioError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    for row in rows:
+        print(f"{row['critic']}\t{row['request_id']}\t{row['prompt_sha256']}\t{row['relative_path']}")
+    return 0
+
+
+def studio_import_ai_command(args: argparse.Namespace) -> int:
+    try:
+        project = DocumentReviewProject(Path(args.project))
+        response = Path(args.file).read_bytes()
+        run = project.collect_model_audit(args.critic, response, provider=args.provider, model=args.model, request_id=args.request_id)
+    except (OSError, ValueError, ReviewStudioError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps({"run_id": run.run_id, "critic": run.critic, "findings": len(run.findings), "model_label": run.model_label}, ensure_ascii=False))
+    return 0
+
+
 def ir_import_version_command(args: argparse.Namespace) -> int:
     source_path = resolve_manuscript_path(args.manuscript)
     paths = import_document_version(
@@ -4565,6 +4614,7 @@ def list_tracks(_: argparse.Namespace) -> int:
 def doctor(args: argparse.Namespace) -> int:
     errors: list[str] = []
     checks: list[str] = []
+    warnings: list[str] = []
     if sys.version_info < (3, 10):
         errors.append("Python 3.10 or newer is required")
     else:
@@ -4634,8 +4684,25 @@ def doctor(args: argparse.Namespace) -> int:
         else:
             checks.append(f"working directory is writable: {directory}")
 
+    # Document Review Studio keeps parser and OCR dependencies replaceable.
+    # Missing optional components are visible here, but do not make the legacy
+    # Markdown/TXT runner unusable.
+    try:
+        for dependency in doctor_dependencies():
+            if dependency["available"]:
+                checks.append(f"Document Review Studio {dependency['name']} available")
+            else:
+                warnings.append(
+                    f"Document Review Studio {dependency['name']} unavailable: "
+                    f"{dependency.get('detail') or dependency.get('install', 'install the adapter')}"
+                )
+    except (OSError, ValueError) as exc:
+        warnings.append(f"Document Review Studio dependency check failed: {exc}")
+
     for check in checks:
         print(f"[ok] {check}")
+    for warning in warnings:
+        print(f"[warning] {warning}")
     if errors:
         for error in errors:
             print(f"[error] {error}", file=sys.stderr)
@@ -4825,6 +4892,36 @@ def parser() -> argparse.ArgumentParser:
     app_parser.add_argument("--port", type=int, default=0, help="local port (default: automatic)")
     app_parser.add_argument("--no-browser", action="store_true", help="print URL without opening it")
     app_parser.set_defaults(func=app_command)
+
+    studio_parser = sub.add_parser(
+        "studio", help="start the local Document Review Studio application"
+    )
+    studio_parser.add_argument("--project", help="existing .document-review-studio project")
+    studio_parser.add_argument("--data-dir", help="local Document Review Studio project library")
+    studio_parser.add_argument("--host", default="127.0.0.1", help="loopback host only")
+    studio_parser.add_argument("--port", type=int, default=0, help="port (default: automatic)")
+    studio_parser.add_argument("--no-browser", action="store_true", help="print URL without opening it")
+    studio_parser.set_defaults(func=studio_command)
+
+    studio_protocols_parser = sub.add_parser(
+        "studio-protocols", help="export independent AI critic protocols for a Document Review Studio project"
+    )
+    studio_protocols_parser.add_argument("project", help="existing .document-review-studio project")
+    studio_protocols_parser.add_argument("--critic", action="append", choices=CRITIC_DIMENSIONS, help="critic to export; repeat or omit for all five")
+    studio_protocols_parser.add_argument("--provider", required=True, help="provider label recorded in the request")
+    studio_protocols_parser.add_argument("--model", required=True, help="model label recorded in the request")
+    studio_protocols_parser.set_defaults(func=studio_protocols_command)
+
+    studio_import_parser = sub.add_parser(
+        "studio-import-ai", help="import one raw independent AI critic JSON response"
+    )
+    studio_import_parser.add_argument("project", help="existing .document-review-studio project")
+    studio_import_parser.add_argument("critic", choices=CRITIC_DIMENSIONS)
+    studio_import_parser.add_argument("file", help="UTF-8 JSON response file")
+    studio_import_parser.add_argument("--provider", required=True, help="provider label bound by the exported request")
+    studio_import_parser.add_argument("--model", required=True, help="model label bound by the exported request")
+    studio_import_parser.add_argument("--request-id", help="specific exported AI request id")
+    studio_import_parser.set_defaults(func=studio_import_ai_command)
 
     sub.add_parser("list", help="list available protocols").set_defaults(func=list_protocols)
     sub.add_parser("tracks", help="list academic tracks and their protocols").set_defaults(
