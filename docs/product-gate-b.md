@@ -77,3 +77,12 @@ Candidate drafts must never overwrite or publish the blog source. A
 model-generated draft that has not been reviewed by the author is test input,
 not Gate B evidence.
 
+## Candidate-draft checkpoint
+
+On 2026-08-23 the author explicitly authorized isolated candidate drafts for
+`the-structural-stand-in.md` and
+`the-dynamic-dialectic-of-knowledge-systems-on-change-and-invariance-in-theoretical-identity.md`.
+The candidates were generated outside both repositories and accompanied by a
+RevisionAction coverage audit. They remain outside the Gate corpus until the
+author adopts them. This checkpoint records authorization and lifecycle only;
+it deliberately does not publish manuscript text or local private paths.
