@@ -492,9 +492,15 @@ def _pdf_text(data: bytes, source: RawFileBinding, limits: IngestionLimits) -> S
             raise IngestionError(f"PDF 解析器失败，未生成审查输入：{exc}") from exc
     page_count = len(page_texts)
     text_chars = sum(len(value) for value in page_texts)
-    scanned_pages = len([value for value in page_texts if len(value.strip()) < 20])
+    # A short page is not a scanned page. OCR routing is allowed only when the
+    # selected text backend extracted no text at all for that page.
+    scanned_page_numbers = [index + 1 for index, value in enumerate(page_texts) if not value.strip()]
+    scanned_pages = len(scanned_page_numbers)
     if scanned_pages:
-        warnings.append(ExtractionWarning("scan-pages-detected", "high", f"检测到 {scanned_pages} 个疑似扫描页；需要 OCR 或人工确认", details={"pages": [index + 1 for index, value in enumerate(page_texts) if len(value.strip()) < 20]}))
+        warnings.append(ExtractionWarning("scan-pages-detected", "high", f"检测到 {scanned_pages} 个无可提取文本页；需要 OCR 或人工确认", details={"pages": scanned_page_numbers}))
+    low_text_pages = [index + 1 for index, value in enumerate(page_texts) if value.strip() and len(value.strip()) < 20]
+    if low_text_pages:
+        warnings.append(ExtractionWarning("short-text-pages", "low", "部分页面文本较短；这不是扫描件判据，请在内容预览中确认", details={"pages": low_text_pages}))
     if name == "pypdf":
         warnings.append(ExtractionWarning("pdf-coordinates-unavailable", "medium", "当前使用 pypdf；已保存页码但没有可靠字符坐标"))
     quality = QualitySignals(page_count=page_count, blank_pages=blank_pages, text_coverage=(text_chars / max(1, page_count * 1200)), suspected_reading_order=suspected_order, parser_available=True, ocr_available=None, requires_confirmation=True)

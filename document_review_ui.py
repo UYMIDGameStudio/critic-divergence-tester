@@ -99,8 +99,12 @@ class StudioApp:
             project.confirm_extraction(str(data.get("choice", "")), corrected_text=data.get("corrected_text"))
         elif action == "confirm_context":
             project.confirm_context(data)
-        elif action == "run_audits":
-            project.run_audits(data.get("critics"))
+        elif action in {"run_audits", "run_local_prechecks"}:
+            project.run_local_prechecks(data.get("critics"))
+        elif action == "prepare_ai_audits":
+            project.prepare_ai_audits(data.get("critics"), provider=str(data.get("provider", "")), model=str(data.get("model", "")))
+        elif action == "import_ai_audit":
+            project.collect_model_audit(str(data.get("critic", "")), str(data.get("response", "")), provider=str(data.get("provider", "")), model=str(data.get("model", "")), request_id=str(data.get("request_id", "")) or None)
         elif action == "decide_finding":
             project.decide_finding(str(data.get("finding_id", "")), str(data.get("decision", "")), reason=str(data.get("reason", "")), corrected_action=data.get("corrected_action"))
         elif action == "prepare_bridge":
@@ -204,11 +208,20 @@ _render_studio_shell_base = render_studio_shell
 
 
 def render_studio_shell(token: str) -> str:
-    """Keep export visible for a legitimate zero-Finding audit."""
-    return _render_studio_shell_base(token).replace(
-        "if(s.findings.length){",
-        "if(s.findings.length||st.review_state==='completed'){if(!s.findings.length)body+='<div class=\"card\"><h2>本轮没有产生 Finding</h2><p>零 Finding 结果仍保留审查范围和依据，不代表自动确认合规或质量。</p></div>';",
-    )
+    """Mark the product as preview and expose local and AI review as separate paths."""
+    shell = _render_studio_shell_base(token)
+    shell = shell.replace("<title>Document Review Studio</title>", "<title>Document Review Studio · Experimental Preview</title>")
+    shell = shell.replace("<h1>Document Review Studio</h1>", "<h1>Document Review Studio <span class=\"pill\">experimental preview</span></h1>")
+    shell = shell.replace("先确认识别，再运行独立审查；Finding 不投票、不打总分，人工决定是否进入修改闭环。", "先确认抽取内容，再分别运行本地确定性预检或导入五个独立 AI critic；Finding 不投票、不打总分，人工决定并可修正动作。")
+    shell = shell.replace("<h2>运行独立审查</h2><p>每个维度单独保存，保留分歧，不产生总分。</p>", "<h2>运行本地确定性预检</h2><p>这是关键词和结构规则预检，不是专业 AI 审查；每个维度单独保存，保留分歧，不产生总分。</p>")
+    shell = shell.replace("运行选中的审查</button>", "运行选中的本地预检</button>")
+    shell = shell.replace("act('run_audits'", "act('run_local_prechecks'")
+    shell = shell.replace("+(e.available?'<div class=\"row\">", "+(e.available?'<h3>抽取内容与定位预览</h3><div class=\"quote\">'+(e.blocks||[]).map(b=>'['+esc(b.location&&b.location.block_id||b.block_id)+' · page '+esc(b.location&&b.location.page||'-')+'] '+esc(b.text)).join('\\n\\n')+'</div><div class=\"row\">")
+    ai_card = "if(s.can_review){body+='<div class=\"card next\"><h2>运行 / 导入独立 AI 审查</h2><p>先为每个 critic 导出独立协议，再把严格 JSON 原始响应导回。系统保存 provider、model、prompt hash、原始响应和解析结果。</p><div class=\"grid\"><div><label>Provider</label><input id=\"ai-provider\" value=\"external\"><label>Model</label><input id=\"ai-model\" placeholder=\"例如 gpt-5\"><button id=\"prepare-ai\">导出五份独立协议</button></div><div><label>已导出的协议</label><select id=\"ai-request\">'+(s.ai_requests||[]).map(r=>'<option value=\"'+esc(r.request_id)+'\">'+esc(r.critic)+' · '+esc(r.provider)+'/'+esc(r.model)+'</option>').join('')+'</select><label>模型原始 JSON 响应</label><textarea id=\"ai-response\" placeholder=\"粘贴所选 critic 的严格 JSON 原始响应\"></textarea><button id=\"import-ai\">导入并校验 AI 审查</button></div></div>'+(s.ai_requests||[]).map(r=>'<details><summary>'+esc(r.critic)+' · prompt '+esc(r.prompt_sha256.slice(0,12))+'</summary><div class=\"block\">'+esc(r.prompt)+'</div></details>').join('')+'<div id=\"err\" class=\"error\"></div></div>';}"
+    shell = shell.replace("if(s.findings.length){", ai_card + "if(s.findings.length||['local_precheck_completed','ai_review_imported'].includes(st.review_state)){if(!s.findings.length)body+='<div class=\"card\"><h2>本轮没有产生 Finding</h2><p>零 Finding 结果仍保留审查范围和依据，不代表自动确认合规或质量。</p></div>';" )
+    shell = shell.replace("+'<input id=\"reason-'+esc(f.finding_id)+'\" placeholder=\"人工决定理由\"><div class=\"row\"><button class=\"decision\" data-id=\"'+esc(f.finding_id)+'\" data-decision=\"accept\">接受</button>", "+'<input id=\"reason-'+esc(f.finding_id)+'\" placeholder=\"人工决定理由\"><label>人工修正动作（accept/correct 时优先进入修改桥）</label><textarea id=\"action-'+esc(f.finding_id)+'\" placeholder=\"'+esc(f.suggested_action)+'\"></textarea><div class=\"row\"><button class=\"decision\" data-id=\"'+esc(f.finding_id)+'\" data-decision=\"accept\">接受</button><button class=\"decision secondary\" data-id=\"'+esc(f.finding_id)+'\" data-decision=\"correct\">修正后接受</button>")
+    shell = shell.replace("document.querySelectorAll('.decision').forEach(b=>b.onclick=()=>act('decide_finding',{finding_id:b.dataset.id,decision:b.dataset.decision,reason:document.getElementById('reason-'+b.dataset.id).value}));", "if(document.getElementById('prepare-ai'))document.getElementById('prepare-ai').onclick=()=>act('prepare_ai_audits',{critics:['expression_ambiguity','execution_feasibility','compliance_legal_screen','reasonableness_governance','official_professional_format'],provider:document.getElementById('ai-provider').value,model:document.getElementById('ai-model').value});if(document.getElementById('import-ai'))document.getElementById('import-ai').onclick=()=>{const id=document.getElementById('ai-request').value,r=(s.ai_requests||[]).find(x=>x.request_id===id);if(!r)return alert('请先导出协议');act('import_ai_audit',{request_id:id,critic:r.critic,provider:r.provider,model:r.model,response:document.getElementById('ai-response').value})};document.querySelectorAll('.decision').forEach(b=>b.onclick=()=>act('decide_finding',{finding_id:b.dataset.id,decision:b.dataset.decision,reason:document.getElementById('reason-'+b.dataset.id).value,corrected_action:document.getElementById('action-'+b.dataset.id).value||null}));")
+    return shell
 
 
 __all__ = ["StudioApp", "StudioHTTPServer", "default_studio_data_dir", "render_studio_shell", "serve_document_review_studio"]

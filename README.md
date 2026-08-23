@@ -27,8 +27,8 @@ py -3 critic_runner.py app ".\结构的替身.md"
 python critic_runner.py studio
 ```
 
-Document Review Studio 支持 Markdown、TXT、DOCX、文本 PDF 和扫描 PDF；
-上传后必须先确认识别质量和文档上下文，再运行五个独立审查维度。原始文件
+Document Review Studio 当前标记为 **experimental preview**。它支持 Markdown、TXT、DOCX、文本 PDF 和扫描 PDF；
+上传后必须先确认识别质量和文档上下文，再明确选择“本地确定性预检”或导出/导入五个独立 AI critic。原始文件
 字节与 SHA-256 永不覆盖，解析警告、页码/表格单元格定位、人工裁决和导出
 审计包都保存在本地项目中。详细限制和环境要求见
 [`docs/document-review-studio.md`](docs/document-review-studio.md)。

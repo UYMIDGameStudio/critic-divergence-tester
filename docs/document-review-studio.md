@@ -1,5 +1,9 @@
 # Document Review Studio
 
+> Status: **experimental preview**. Do not present this branch as a formal V1
+> until the constrained Finding → Action → Hunk → Resolution loop produces and
+> verifies a genuinely revised document.
+
 Document Review Studio is the document-first workflow in this repository. It
 keeps the uploaded bytes separate from the internal review representation and
 does not require a model SDK or cloud account.
@@ -21,7 +25,8 @@ The UI flow is intentionally gated:
 3. Confirm, correct, continue with warning, or replace the upload.
 4. Confirm document type, jurisdiction, effective date, publisher, audience,
    publication status, and risk-domain context.
-5. Run one or more independent dimensions.
+5. Run the clearly labelled deterministic local precheck, or export five
+   critic-specific AI protocols and import each raw JSON response.
 6. Decide each Finding manually.
 7. Prepare the bridge into the existing constrained revision workflow.
 8. Export the audit package and editable draft.
@@ -36,15 +41,20 @@ Each project is a `.document-review-studio` directory containing:
 - `extraction/document.json`: the format-neutral block model;
 - `extraction/quality.json`, `warnings.json`, and `source-map.json`;
 - `context.json`: human-confirmed review context;
-- `audits/<critic>/`: independent prompts and immutable runs;
+- `ai-requests/<request>/`: provider/model-bound critic prompts;
+- `audits/<critic>/`: raw model responses and parsed immutable runs;
 - `finding-decisions/`: append-only human decisions;
 - `exports/`: audit reports, drafts, DOCX output, and the revision bridge;
 - `audit-log.jsonl`: local workflow events.
 
-Every mutation rechecks the original hash, document binding, audit source
-hashes, and symlink safety. A mismatch sets `read_only` and the browser refuses
-further writes. The check detects ordinary local tampering; it is not a keyed
-cryptographic signature against an attacker who can rewrite every artifact.
+Every protected artifact has a receipt binding its content SHA-256, parent
+artifact hashes, provenance, and the immutable `integrity-policy.json` marker.
+The chain covers the source, structured extraction/corrections, context,
+critic prompt, raw response, parsed run/Finding, sequenced human decision,
+revision bridge, and export. Missing receipts, changed parents, broken decision
+sequences, and deletion of the policy marker force read-only mode. This detects
+ordinary local tampering; it is not a keyed signature against an attacker who
+can rewrite the entire project and every receipt.
 
 ## Parser limits
 
@@ -82,7 +92,23 @@ screen without supplied sources can only create `cannot-confirm` follow-ups;
 it cannot output an unconditional legal conclusion. Zero-Finding runs retain
 their inspection scope and basis in the audit package.
 
-The bundled rules are a deterministic baseline. The generated dimension
-prompt accepts strict JSON from any model, and `collect_model_audit` validates
-the source hash, critic identity, Finding contract, and block locations before
-archiving the model result.
+The bundled keyword/structure rules are labelled as a deterministic local
+precheck, not as professional AI review. Each AI critic has a distinct role,
+objective, checks, evidence standard, and exclusions. The browser supports the
+full export → external model → import path. The same path is available in the
+CLI:
+
+```powershell
+python critic_runner.py studio-protocols <project> --provider <provider> --model <model>
+python critic_runner.py studio-import-ai <project> <critic> <response.json> --provider <provider> --model <model> --request-id <request-id>
+```
+
+Imports preserve provider, model, prompt hash, raw response hash/content, and
+the parsed AuditRun/Finding separately. `collect_model_audit` validates source
+hash, critic identity, Finding contract, and block locations.
+
+For DOCX inputs, preview exports are named
+`normalized-editable-copy.docx`. They may lose source layout and are not a
+revision. `revised.docx` is deliberately unavailable until the constrained
+revision chain is complete and verified. A human `corrected_action` is carried
+into the revision bridge and supersedes the critic's original suggestion.
