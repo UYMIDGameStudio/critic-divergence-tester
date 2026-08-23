@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/argument-workbench/revision-workflow.schema.json",
+  "title": "Argument Workbench revision artifacts",
+  "description": "Reference schemas for the immutable and append-only artifacts enforced by argument_revision.py.",
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "id": {"type": "string", "pattern": "^[A-Z][A-Z0-9]*[1-9][0-9]*$"},
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin", "created_at", "producer"],
+      "properties": {
+        "origin": {"enum": ["deterministic", "model-derived", "human-confirmed"]},
+        "created_at": {"type": "string", "format": "date-time"},
+        "producer": {"type": "string", "minLength": 1}
+      }
+    },
+    "revision-generation-run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_type", "schema_version", "generation_run_id", "manuscript_version_id", "source_sha256", "finding_ids", "action_ids", "finding_bindings", "prompt", "provenance", "lifecycle"],
+      "properties": {
+        "artifact_type": {"const": "revision-generation-run"}, "schema_version": {"const": 1},
+        "generation_run_id": {"$ref": "#/$defs/id"}, "manuscript_version_id": {"pattern": "^V[1-9][0-9]*$"}, "source_sha256": {"$ref": "#/$defs/digest"},
+        "finding_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+        "action_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+        "finding_bindings": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+        "prompt": {"type": "object", "required": ["relative_path", "sha256"]},
+        "provenance": {"$ref": "#/$defs/provenance"}, "lifecycle": {"const": "immutable"}
+      }
+    },
+    "revision-result-attempt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["artifact_type", "schema_version", "attempt_id", "generation_run_id", "valid", "errors", "response_sha256", "provenance", "lifecycle"],
+      "properties": {"artifact_type": {"const": "revision-result-attempt"}, "schema_version": {"const": 1}, "attempt_id": {"type": "string"}, "generation_run_id": {"$ref": "#/$defs/id"}, "valid": {"type": "boolean"}, "errors": {"type": "array", "items": {"type": "string"}}, "response_sha256": {"$ref": "#/$defs/digest"}, "provenance": {"$ref": "#/$defs/provenance"}, "lifecycle": {"const": "immutable"}}
+    },
+    "revision-patch-proposal": {
+      "type": "object", "additionalProperties": false,
+      "required": ["artifact_type", "schema_version", "generation_run_id", "attempt_id", "manuscript_version_id", "source_sha256", "changes", "provenance", "lifecycle"],
+      "properties": {"artifact_type": {"const": "revision-patch-proposal"}, "schema_version": {"const": 1}, "generation_run_id": {"$ref": "#/$defs/id"}, "attempt_id": {"type": "string"}, "manuscript_version_id": {"pattern": "^V[1-9][0-9]*$"}, "source_sha256": {"$ref": "#/$defs/digest"}, "changes": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/change"}}, "provenance": {"$ref": "#/$defs/provenance"}, "lifecycle": {"const": "immutable"}}
+    },
+    "change": {
+      "type": "object", "additionalProperties": false,
+      "required": ["change_id", "original_quote", "insertion_anchor", "replacement_text", "finding_ids", "action_ids", "change_kind", "reason", "uncertainties", "fact_change", "verification_note"],
+      "properties": {"change_id": {"$ref": "#/$defs/id"}, "original_quote": {"type": "string"}, "insertion_anchor": {"type": ["string", "null"]}, "replacement_text": {"type": "string"}, "finding_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}}, "action_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}}, "change_kind": {"enum": ["replace", "insert_before", "insert_after", "delete", "restructure"]}, "reason": {"type": "string", "minLength": 1}, "uncertainties": {"type": "array", "items": {"type": "string"}}, "fact_change": {"type": "boolean"}, "verification_note": {"type": "string"}}
+    },
+    "revision-hunk-decision": {
+      "type": "object", "additionalProperties": false,
+      "required": ["artifact_type", "schema_version", "decision_id", "change_id", "decision", "reason", "edited_text", "fact_change", "verification_note", "proposal_sha256", "provenance", "lifecycle"],
+      "properties": {"artifact_type": {"const": "revision-hunk-decision"}, "schema_version": {"const": 1}, "decision_id": {"$ref": "#/$defs/id"}, "change_id": {"$ref": "#/$defs/id"}, "decision": {"enum": ["accept", "reject", "edit", "regenerate"]}, "reason": {"type": "string", "minLength": 1}, "edited_text": {"type": ["string", "null"]}, "fact_change": {"type": "boolean"}, "verification_note": {"type": "string"}, "proposal_sha256": {"$ref": "#/$defs/digest"}, "provenance": {"$ref": "#/$defs/provenance"}, "lifecycle": {"const": "append-only"}}
+    },
+    "revision-application-record": {
+      "type": "object", "additionalProperties": false,
+      "required": ["artifact_type", "schema_version", "application_id", "generation_run_id", "proposal_sha256", "decision_fingerprint", "base_version_id", "base_source_sha256", "output_version_id", "output_source_sha256", "applied_changes", "rejected_changes", "decision_sha256s", "provenance", "lifecycle"],
+      "properties": {"artifact_type": {"const": "revision-application-record"}, "schema_version": {"const": 1}, "application_id": {"$ref": "#/$defs/id"}, "generation_run_id": {"$ref": "#/$defs/id"}, "proposal_sha256": {"$ref": "#/$defs/digest"}, "decision_fingerprint": {"$ref": "#/$defs/digest"}, "base_version_id": {"pattern": "^V[1-9][0-9]*$"}, "base_source_sha256": {"$ref": "#/$defs/digest"}, "output_version_id": {"pattern": "^V[1-9][0-9]*$"}, "output_source_sha256": {"$ref": "#/$defs/digest"}, "applied_changes": {"type": "array"}, "rejected_changes": {"type": "array", "items": {"$ref": "#/$defs/id"}}, "decision_sha256s": {"type": "array", "items": {"$ref": "#/$defs/digest"}}, "provenance": {"$ref": "#/$defs/provenance"}, "lifecycle": {"const": "immutable"}}
+    }
+  },
+  "oneOf": [
+    {"$ref": "#/$defs/revision-generation-run"},
+    {"$ref": "#/$defs/revision-result-attempt"},
+    {"$ref": "#/$defs/revision-patch-proposal"},
+    {"$ref": "#/$defs/revision-hunk-decision"},
+    {"$ref": "#/$defs/revision-application-record"}
+  ]
+}
