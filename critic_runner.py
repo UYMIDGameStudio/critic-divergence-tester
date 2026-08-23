@@ -76,6 +76,21 @@ from argument_lineage import (
     render_lineage_history,
     show_lineage,
 )
+from argument_resolution import (
+    append_resolution_decision,
+    collect_resolution_results,
+    prepare_resolution,
+    rebuild_resolutions,
+    render_resolution,
+)
+from argument_citations import (
+    append_citation_decision,
+    collect_citation_results,
+    prepare_citation_audit,
+    rebuild_citation_audits,
+    render_citation_audit,
+)
+from argument_ui import serve_workbench
 from argument_adjudication import (
     append_claim_bundle_decisions,
     claim_bundle_status,
@@ -110,6 +125,13 @@ from argument_gate import (
     render_gate_readiness,
     verify_gate,
 )
+from argument_gate_b import (
+    append_gate_b_assessment,
+    append_gate_b_decision,
+    initialize_gate_b,
+    rebuild_gate_b_report,
+    verify_gate_b,
+)
 from argument_contracts import (
     BASELINE_INTERACTION_MODES,
     BASELINE_MANUSCRIPT_DELIVERY,
@@ -118,7 +140,15 @@ from argument_contracts import (
     GATE_A_COMPARISONS,
     GATE_A_DECISIONS,
     GATE_A_WORK_ACTIVITIES,
+    GATE_B_CLARITIES,
+    GATE_B_DECISIONS,
+    GATE_B_JUDGMENTS,
+    CITATION_BIBLIOGRAPHIC_STATUSES,
+    CITATION_CONTENT_SUPPORT_STATUSES,
+    CITATION_CONTEXT_STATUSES,
+    CITATION_SOURCE_LOCATION_STATUSES,
     LINEAGE_RELATIONS,
+    RESOLUTION_STATUSES,
     REVISION_ACTION_TYPES,
 )
 from critic_execution import ExecutorResult, execute_with_limits
@@ -3015,6 +3045,24 @@ def ir_init_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def ir_ui_command(args: argparse.Namespace) -> int:
+    server, url = serve_workbench(
+        args.project,
+        host=args.host,
+        port=args.port,
+        open_browser=not args.no_browser,
+    )
+    print(f"Argument Workbench UI: {url}")
+    print("Local-only session; press Ctrl+C to stop.")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nArgument Workbench UI stopped.")
+    finally:
+        server.server_close()
+    return 0
+
+
 def ir_import_version_command(args: argparse.Namespace) -> int:
     source_path = resolve_manuscript_path(args.manuscript)
     paths = import_document_version(
@@ -3133,6 +3181,171 @@ def ir_lineage_history_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def ir_resolve_prepare_command(args: argparse.Namespace) -> int:
+    paths, created = prepare_resolution(
+        args.project, args.finding_id, from_version=args.from_version,
+        to_version=args.to_version, lineage_decision_id=args.lineage_decision_id,
+    )
+    print(f"Finding Resolution: {paths.record}")
+    print(f"Original-Lens retest prompt: {paths.root / 'resolution-retest-prompt.md'}")
+    print("Resolution retest prepared." if created else "Matching immutable retest already exists.")
+    return 0
+
+
+def ir_resolve_collect_command(args: argparse.Namespace) -> int:
+    if args.paste:
+        response_bytes = _read_review_paste_bytes(); method = "terminal-paste"; source_name = "pasted-resolution-retest.json"
+    else:
+        response_path = Path(args.file).resolve()
+        if response_path.is_symlink() or not response_path.is_file(): raise WorkbenchError("resolution result input must be a regular file")
+        response_bytes = response_path.read_bytes(); method = "file"; source_name = response_path.name
+    path, record = collect_resolution_results(args.project, response_bytes, resolution_id=args.resolution_id, method=method, source_name=source_name, producer_label=args.producer_label)
+    print(f"Resolution retest attempt: {path}"); print(f"Validation status: {record['validation']['status']}")
+    for error in record["validation"]["errors"]: print(f"  - {error}")
+    return 0 if record["validation"]["status"] == "valid" else EXIT_INVALID_WORKFLOW
+
+
+def ir_resolve_decide_command(args: argparse.Namespace) -> int:
+    output = append_resolution_decision(args.project, resolution_id=args.resolution_id, decision=args.decision, reason=args.reason, final_status=args.final_status)
+    print(f"Human resolution decision: {output}"); return 0
+
+
+def ir_resolve_show_command(args: argparse.Namespace) -> int:
+    print(render_resolution(args.project, args.resolution_id), end=""); return 0
+
+
+def ir_citations_prepare_command(args: argparse.Namespace) -> int:
+    paths, created = prepare_citation_audit(
+        args.project, citation_ids=args.citation, version_id=args.version
+    )
+    print(f"Citation Audit: {paths.audit_id}")
+    print(f"Citation audit prompt: {paths.prompt}")
+    print("Citation audit prepared." if created else "Matching Citation Audit already exists; reused.")
+    return 0
+
+
+def ir_citations_collect_command(args: argparse.Namespace) -> int:
+    if args.paste:
+        response_bytes = _read_review_paste_bytes()
+        method = "terminal-paste"
+        source_name = "pasted-citation-audit.json"
+    else:
+        response_path = Path(args.file).resolve()
+        if response_path.is_symlink() or not response_path.is_file():
+            raise WorkbenchError("Citation Audit input must be a regular file")
+        response_bytes = response_path.read_bytes()
+        method = "file"
+        source_name = response_path.name
+    path, record = collect_citation_results(
+        args.project,
+        response_bytes,
+        audit_id=args.audit_id,
+        version_id=args.version,
+        method=method,
+        source_name=source_name,
+        producer_label=args.producer_label,
+    )
+    print(f"Citation result attempt: {path}")
+    print(f"Validation status: {record['validation']['status']}")
+    for error in record["validation"]["errors"]:
+        print(f"  - {error}")
+    return 0 if record["validation"]["status"] == "valid" else EXIT_INVALID_WORKFLOW
+
+
+def ir_citations_decide_command(args: argparse.Namespace) -> int:
+    final_outcome = None
+    if args.decision == "correct":
+        missing = [
+            option
+            for option, value in (
+                ("--bibliographic-existence", args.bibliographic_existence),
+                ("--exact-source-located", args.exact_source_located),
+                ("--content-support", args.content_support),
+                ("--context-preserved", args.context_preserved),
+            )
+            if value is None
+        ]
+        if missing:
+            raise WorkbenchError(
+                "decision=correct requires " + ", ".join(missing)
+            )
+        final_outcome = {
+            "bibliographic_existence": args.bibliographic_existence,
+            "exact_source_located": args.exact_source_located,
+            "content_support": args.content_support,
+            "context_preserved": args.context_preserved,
+            "uncertainty": args.uncertainty,
+        }
+    output = append_citation_decision(
+        args.project,
+        audit_id=args.audit_id,
+        version_id=args.version,
+        citation_id=args.citation,
+        decision=args.decision,
+        reason=args.reason,
+        final_outcome=final_outcome,
+        producer=args.producer_label or "local-user",
+    )
+    print(f"Human Citation decision: {output}")
+    return 0
+
+
+def ir_citations_show_command(args: argparse.Namespace) -> int:
+    print(
+        render_citation_audit(
+            args.project, audit_id=args.audit_id, version_id=args.version
+        ),
+        end="",
+    )
+    return 0
+
+
+def ir_citations_rebuild_command(args: argparse.Namespace) -> int:
+    outputs, changed = rebuild_citation_audits(args.project)
+    for output in outputs:
+        print(f"Citation provenance: {output}")
+    print("Citation provenance rebuilt." if changed else "Citation provenance already current.")
+    return 0
+
+
+def ir_gate_b_init_command(args: argparse.Namespace) -> int:
+    paths = initialize_gate_b(args.output, args.projects)
+    print(f"Product Gate B evidence: {paths.root}")
+    return 0
+
+
+def ir_gate_b_assess_command(args: argparse.Namespace) -> int:
+    output = append_gate_b_assessment(
+        args.gate, args.project,
+        lineage_correction_minutes=args.lineage_correction_minutes,
+        lineage_reasonable=args.lineage_reasonable,
+        split_merge_worked=args.split_merge_worked,
+        finding_inheritance_correct=args.finding_inheritance_correct,
+        resolved_stopped_reappearing=args.resolved_stopped_reappearing,
+        unresolved_persisted=args.unresolved_persisted,
+        revision_rationale_clarity=args.revision_rationale_clarity,
+        notes=args.notes,
+    )
+    print(f"Gate B assessment: {output}")
+    return 0
+
+
+def ir_gate_b_report_command(args: argparse.Namespace) -> int:
+    output, _ = rebuild_gate_b_report(args.gate)
+    print(output.read_text(encoding="utf-8"), end="") if args.show else print(f"Gate B report: {output}")
+    return 0
+
+
+def ir_gate_b_decide_command(args: argparse.Namespace) -> int:
+    output = append_gate_b_decision(args.gate, args.decision, args.reason)
+    print(f"Gate B decision: {output}")
+    return 0
+
+
+def ir_gate_b_verify_command(args: argparse.Namespace) -> int:
+    return _ir_print_validation("product-gate-b", verify_gate_b(args.gate))
+
+
 def _read_ir_paste_bytes() -> bytes:
     print(
         "Paste the model's pure Argument IR JSON. On a new line enter "
@@ -3228,6 +3441,8 @@ def ir_rebuild_command(args: argparse.Namespace) -> int:
     )
     diff_outputs, diffs_changed = rebuild_structural_diffs(args.project)
     lineage_outputs, lineages_changed = rebuild_lineage_analyses(args.project)
+    resolution_outputs, resolutions_changed = rebuild_resolutions(args.project)
+    citation_outputs, citations_changed = rebuild_citation_audits(args.project)
     triage_outputs, triage_changed = rebuild_status_triages(args.project)
     adjudication_outputs, adjudications_changed = rebuild_adjudication_cache(
         args.project
@@ -3241,6 +3456,10 @@ def ir_rebuild_command(args: argparse.Namespace) -> int:
         print(f"Structural diff: {output}")
     for output in lineage_outputs:
         print(f"Claim lineage: {output}")
+    for output in resolution_outputs:
+        print(f"Finding resolution: {output}")
+    for output in citation_outputs:
+        print(f"Citation provenance: {output}")
     for output in triage_outputs:
         print(f"Status triage: {output}")
     for output in adjudication_outputs:
@@ -3252,6 +3471,8 @@ def ir_rebuild_command(args: argparse.Namespace) -> int:
         or perspectives_changed
         or diffs_changed
         or lineages_changed
+        or resolutions_changed
+        or citations_changed
         or triage_changed
         or adjudications_changed
         else "Derived artifacts already current."
@@ -4591,6 +4812,26 @@ def parser() -> argparse.ArgumentParser:
     ir_init_parser.add_argument("--title", help="project/document title (default: filename stem)")
     ir_init_parser.set_defaults(func=ir_init_command)
 
+    ir_ui_parser = ir_sub.add_parser(
+        "ui",
+        help="open the local document-first Argument Workbench application",
+    )
+    ir_ui_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    ir_ui_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="loopback host only (default: 127.0.0.1)",
+    )
+    ir_ui_parser.add_argument(
+        "--port", type=int, default=0, help="local port (default: choose a free port)"
+    )
+    ir_ui_parser.add_argument(
+        "--no-browser", action="store_true", help="print the URL without opening a browser"
+    )
+    ir_ui_parser.set_defaults(func=ir_ui_command)
+
     ir_import_version_parser = ir_sub.add_parser(
         "import-version",
         help="append a new immutable manuscript DocumentVersion",
@@ -4687,6 +4928,114 @@ def parser() -> argparse.ArgumentParser:
     ir_lineage_history_parser.add_argument("--to-version")
     ir_lineage_history_parser.add_argument("--analysis-id")
     ir_lineage_history_parser.set_defaults(func=ir_lineage_history_command)
+
+    ir_resolve_parser = ir_sub.add_parser(
+        "resolve", help="retest accepted Findings against descendant Claims with the original Lens"
+    )
+    ir_resolve_sub = ir_resolve_parser.add_subparsers(dest="ir_resolve_command", required=True)
+    ir_resolve_prepare_parser = ir_resolve_sub.add_parser("prepare", help="prepare an exact original-Lens retest")
+    ir_resolve_prepare_parser.add_argument("project"); ir_resolve_prepare_parser.add_argument("finding_id")
+    ir_resolve_prepare_parser.add_argument("--from-version", required=True); ir_resolve_prepare_parser.add_argument("--to-version", required=True)
+    ir_resolve_prepare_parser.add_argument("--lineage-decision-id"); ir_resolve_prepare_parser.set_defaults(func=ir_resolve_prepare_command)
+    ir_resolve_collect_parser = ir_resolve_sub.add_parser("collect", help="collect exact original-Lens retest results")
+    ir_resolve_collect_parser.add_argument("project"); source = ir_resolve_collect_parser.add_mutually_exclusive_group(required=True); source.add_argument("--paste", action="store_true"); source.add_argument("--file")
+    ir_resolve_collect_parser.add_argument("--resolution-id"); ir_resolve_collect_parser.add_argument("--producer-label"); ir_resolve_collect_parser.set_defaults(func=ir_resolve_collect_command)
+    ir_resolve_decide_parser = ir_resolve_sub.add_parser("decide", help="human-confirm or correct the proposed resolution")
+    ir_resolve_decide_parser.add_argument("project"); ir_resolve_decide_parser.add_argument("--resolution-id")
+    ir_resolve_decide_parser.add_argument("--decision", choices=("confirm", "reject", "correct"), required=True); ir_resolve_decide_parser.add_argument("--reason", required=True)
+    ir_resolve_decide_parser.add_argument("--final-status", choices=RESOLUTION_STATUSES); ir_resolve_decide_parser.set_defaults(func=ir_resolve_decide_command)
+    ir_resolve_show_parser = ir_resolve_sub.add_parser("show", help="show the full Finding Resolution chain")
+    ir_resolve_show_parser.add_argument("project"); ir_resolve_show_parser.add_argument("--resolution-id"); ir_resolve_show_parser.set_defaults(func=ir_resolve_show_command)
+
+    ir_citations_parser = ir_sub.add_parser(
+        "citations",
+        help="verify Citation -> Evidence -> Claim provenance without declaring Claims false",
+    )
+    ir_citations_sub = ir_citations_parser.add_subparsers(
+        dest="ir_citations_command", required=True
+    )
+    ir_citations_prepare = ir_citations_sub.add_parser(
+        "prepare", help="prepare a substantive Citation verification prompt"
+    )
+    ir_citations_prepare.add_argument("project")
+    ir_citations_prepare.add_argument("--version")
+    ir_citations_prepare.add_argument(
+        "--citation",
+        action="append",
+        help="repeatable Citation ID such as Z1 (default: every Citation in the version)",
+    )
+    ir_citations_prepare.set_defaults(func=ir_citations_prepare_command)
+
+    ir_citations_collect = ir_citations_sub.add_parser(
+        "collect", help="immutably collect a model Citation verification result"
+    )
+    ir_citations_collect.add_argument("project")
+    citation_source = ir_citations_collect.add_mutually_exclusive_group(required=True)
+    citation_source.add_argument("--paste", action="store_true")
+    citation_source.add_argument("--file")
+    ir_citations_collect.add_argument("--version")
+    ir_citations_collect.add_argument("--audit-id")
+    ir_citations_collect.add_argument("--producer-label")
+    ir_citations_collect.set_defaults(func=ir_citations_collect_command)
+
+    ir_citations_decide = ir_citations_sub.add_parser(
+        "decide", help="confirm, reject, or correct one Citation proposal"
+    )
+    ir_citations_decide.add_argument("project")
+    ir_citations_decide.add_argument("--version")
+    ir_citations_decide.add_argument("--audit-id")
+    ir_citations_decide.add_argument("--citation", required=True)
+    ir_citations_decide.add_argument(
+        "--decision", choices=("confirm", "reject", "correct"), required=True
+    )
+    ir_citations_decide.add_argument("--reason", required=True)
+    ir_citations_decide.add_argument(
+        "--bibliographic-existence", choices=CITATION_BIBLIOGRAPHIC_STATUSES
+    )
+    ir_citations_decide.add_argument(
+        "--exact-source-located", choices=CITATION_SOURCE_LOCATION_STATUSES
+    )
+    ir_citations_decide.add_argument(
+        "--content-support", choices=CITATION_CONTENT_SUPPORT_STATUSES
+    )
+    ir_citations_decide.add_argument(
+        "--context-preserved", choices=CITATION_CONTEXT_STATUSES
+    )
+    ir_citations_decide.add_argument("--uncertainty", default="")
+    ir_citations_decide.add_argument("--producer-label")
+    ir_citations_decide.set_defaults(func=ir_citations_decide_command)
+
+    ir_citations_show = ir_citations_sub.add_parser(
+        "show", help="show Citation outcomes and downstream dependency flags"
+    )
+    ir_citations_show.add_argument("project")
+    ir_citations_show.add_argument("--version")
+    ir_citations_show.add_argument("--audit-id")
+    ir_citations_show.set_defaults(func=ir_citations_show_command)
+
+    ir_citations_rebuild = ir_citations_sub.add_parser(
+        "rebuild", help="rebuild Citation provenance indexes and Markdown"
+    )
+    ir_citations_rebuild.add_argument("project")
+    ir_citations_rebuild.set_defaults(func=ir_citations_rebuild_command)
+
+    ir_gate_b_parser = ir_sub.add_parser(
+        "gate-b", help="capture human Product Gate B evidence for real multi-version writing"
+    )
+    ir_gate_b_sub = ir_gate_b_parser.add_subparsers(dest="ir_gate_b_command", required=True)
+    gate_b_init = ir_gate_b_sub.add_parser("init", help="bind 2-3 completed real multi-version projects")
+    gate_b_init.add_argument("output"); gate_b_init.add_argument("projects", nargs="+"); gate_b_init.set_defaults(func=ir_gate_b_init_command)
+    gate_b_assess = ir_gate_b_sub.add_parser("assess", help="append one human multi-version usability assessment")
+    gate_b_assess.add_argument("gate"); gate_b_assess.add_argument("project"); gate_b_assess.add_argument("--lineage-correction-minutes", type=int, required=True)
+    for field in ("lineage-reasonable", "split-merge-worked", "finding-inheritance-correct", "resolved-stopped-reappearing", "unresolved-persisted"):
+        gate_b_assess.add_argument("--" + field, choices=GATE_B_JUDGMENTS, required=True)
+    gate_b_assess.add_argument("--revision-rationale-clarity", choices=GATE_B_CLARITIES, required=True); gate_b_assess.add_argument("--notes", default=""); gate_b_assess.set_defaults(func=ir_gate_b_assess_command)
+    gate_b_report = ir_gate_b_sub.add_parser("report", help="rebuild deterministic Gate B report")
+    gate_b_report.add_argument("gate"); gate_b_report.add_argument("--show", action="store_true"); gate_b_report.set_defaults(func=ir_gate_b_report_command)
+    gate_b_decide = ir_gate_b_sub.add_parser("decide", help="append a human Gate B pass/fail/defer decision")
+    gate_b_decide.add_argument("gate"); gate_b_decide.add_argument("decision", choices=GATE_B_DECISIONS); gate_b_decide.add_argument("--reason", required=True); gate_b_decide.set_defaults(func=ir_gate_b_decide_command)
+    gate_b_verify = ir_gate_b_sub.add_parser("verify", help="verify Gate B bindings and report bytes")
+    gate_b_verify.add_argument("gate"); gate_b_verify.set_defaults(func=ir_gate_b_verify_command)
 
     ir_collect_parser = ir_sub.add_parser(
         "collect",

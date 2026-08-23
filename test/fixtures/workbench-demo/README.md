@@ -47,3 +47,25 @@ py -3 critic_runner.py ir verify-project .\demo.argument-workbench
 ```
 
 One realistic session accepts C1's denominator Finding with `narrow_claim` or `add_evidence`, and defers C3's rival-reading Finding with a recorded reason. Those are demonstration choices, not bundled model decisions or gold adjudications. Each confirmation is append-only and can be reconsidered later without deleting its history.
+
+Phase 7 can be demonstrated without pretending that the fixture Citation has
+been verified. Start from a fresh, uncorrected fixture workspace so the bundled
+context hashes match:
+
+```powershell
+py -3 critic_runner.py ir citations prepare .\demo.argument-workbench
+py -3 critic_runner.py ir citations collect .\demo.argument-workbench `
+  --file .\test\fixtures\workbench-demo\citation-audit-results.json `
+  --producer-label offline-regression
+py -3 critic_runner.py ir citations show .\demo.argument-workbench
+py -3 critic_runner.py ir citations decide .\demo.argument-workbench `
+  --citation Z1 --decision confirm `
+  --reason "确认当前四个维度都仍未核实，不把模型记忆当来源"
+py -3 critic_runner.py ir verify-project .\demo.argument-workbench
+```
+
+The result intentionally has no sources and keeps all four dimensions
+`uncertain`. Before the human decision, even a positive model result would
+remain a proposal. After this particular confirmation, Z1 remains unverified
+and the Claims reached through `Z1 --cites→ C2 --qualifies→ C1 --supports→ C3`
+are displayed as `depends_on_unverified_evidence`, never `claim_false`.

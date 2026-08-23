@@ -40,7 +40,14 @@ jobs:
           argument_workbench.py
           argument_review.py
           argument_adjudication.py
+          argument_perspective.py
+          argument_versioning.py
+          argument_lineage.py
+          argument_resolution.py
+          argument_citations.py
+          argument_ui.py
           argument_gate.py
+          argument_gate_b.py
           critic_execution.py
           critic_scoring.py
           critic_workflow.py
@@ -49,6 +56,12 @@ jobs:
           test/test_argument_workbench.py
           test/test_argument_review.py
           test/test_argument_adjudication.py
+          test/test_argument_perspective.py
+          test/test_argument_versioning.py
+          test/test_argument_lineage.py
+          test/test_argument_resolution.py
+          test/test_argument_citations.py
+          test/test_argument_ui.py
           test/test_argument_gate.py
           test/test_critic_runner.py
 
@@ -61,6 +74,19 @@ jobs:
           python critic_runner.py ir inspect --help
           python critic_runner.py ir rebuild --help
           python critic_runner.py ir verify-project --help
+          python critic_runner.py ir ui --help
+          python critic_runner.py ir import-version --help
+          python critic_runner.py ir diff-versions --help
+          python critic_runner.py ir lineage prepare --help
+          python critic_runner.py ir lineage collect --help
+          python critic_runner.py ir lineage adjudicate --help
+          python critic_runner.py ir resolve prepare --help
+          python critic_runner.py ir resolve collect --help
+          python critic_runner.py ir resolve decide --help
+          python critic_runner.py ir citations prepare --help
+          python critic_runner.py ir citations collect --help
+          python critic_runner.py ir citations decide --help
+          python critic_runner.py ir citations show --help
           python critic_runner.py ir review prepare --help
           python critic_runner.py ir review collect --help
           python critic_runner.py ir review show --help

@@ -62,6 +62,15 @@ SEMANTIC_CHANGE_TYPES = (
     "other",
     "uncertain",
 )
+RESOLUTION_STATUSES = (
+    "resolved",
+    "partially_resolved",
+    "unresolved",
+    "obsolete",
+    "uncertain",
+)
+RESOLUTION_RETEST_STATUSES = ("complete", "blocked")
+RESOLUTION_DECISIONS = ("confirm", "reject", "correct")
 REVIEW_DEPTHS = ("core", "full")
 REVIEW_SCOPES = ("thesis-chain", "claim", "claims", "all")
 REVIEW_EXECUTION_STATUSES = (
@@ -83,6 +92,36 @@ TRIAGE_ACTIONS = (
 GATE_A_COMPARISONS = ("clearer", "same", "worse", "uncertain")
 GATE_A_BURDENS = ("acceptable", "high", "uncertain")
 GATE_A_DECISIONS = ("pass", "fail", "defer")
+GATE_B_DECISIONS = ("pass", "fail", "defer")
+GATE_B_JUDGMENTS = ("yes", "no", "not_observed", "uncertain")
+GATE_B_CLARITIES = ("clear", "confusing", "uncertain")
+CITATION_AUDIT_STATUSES = ("complete", "partial", "blocked")
+CITATION_BIBLIOGRAPHIC_STATUSES = (
+    "verified",
+    "not_verified",
+    "contradicted",
+    "uncertain",
+)
+CITATION_SOURCE_LOCATION_STATUSES = ("verified", "not_verified", "uncertain")
+CITATION_CONTENT_SUPPORT_STATUSES = (
+    "supports",
+    "partially_supports",
+    "does_not_support",
+    "uncertain",
+)
+CITATION_CONTEXT_STATUSES = ("yes", "no", "uncertain")
+CITATION_SOURCE_KINDS = ("primary", "repository", "catalog", "secondary", "other")
+CITATION_SOURCE_DIMENSIONS = (
+    "bibliographic_existence",
+    "exact_source_located",
+    "content_support",
+    "context_preserved",
+)
+CITATION_VERIFICATION_DECISIONS = ("confirm", "reject", "correct")
+CITATION_DEPENDENCY_STATUSES = (
+    "citation_verified",
+    "depends_on_unverified_evidence",
+)
 BASELINE_INTERACTION_MODES = ("fresh-session", "existing-session", "unknown")
 BASELINE_PRIOR_CONTEXTS = (
     "none",
@@ -1910,6 +1949,1053 @@ def validate_claim_lineage_index(value: object) -> list[str]:
                 errors.append(f"field_provenance.{field}.origin must be {origin}")
             if not _nonempty(entry.get("source")):
                 errors.append(f"field_provenance.{field}.source must be non-empty")
+    return errors
+
+
+def validate_resolution_retest_run(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="resolution-retest-run",
+        lifecycle="immutable",
+        extra_keys={
+            "resolution_id", "document_id", "from_version", "to_version",
+            "original_finding_id", "descendant_claims", "lens",
+            "original_finding", "accepted_adjudication", "revision_actions",
+            "confirmed_lineage", "target_ir", "lens_protocol", "prompt",
+            "lens_content",
+        },
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"deterministic"}, "resolution-retest-run", errors)
+    if not _nonempty(item.get("resolution_id")):
+        errors.append("resolution_id must be non-empty")
+    if not _nonempty(item.get("document_id")):
+        errors.append("document_id must be non-empty")
+    for field in ("from_version", "to_version"):
+        if not isinstance(item.get(field), str) or re.fullmatch(
+            r"V[1-9][0-9]*", str(item.get(field))
+        ) is None:
+            errors.append(f"{field} must be V1..Vn")
+    if not _nonempty(item.get("original_finding_id")):
+        errors.append("original_finding_id must be non-empty")
+    descendants = _string_list(
+        item.get("descendant_claims"), "descendant_claims", errors
+    )
+    to_version = item.get("to_version")
+    for claim in descendants:
+        if _VERSIONED_CLAIM.fullmatch(claim) is None or not claim.startswith(
+            f"{to_version}:"
+        ):
+            errors.append("descendant_claims must belong to to_version")
+    lens = item.get("lens")
+    if not isinstance(lens, dict):
+        errors.append("lens must be an object")
+        lens_kind = None
+    else:
+        _strict_keys(lens, {"kind", "id", "check_id"}, "lens", errors)
+        lens_kind = lens.get("kind")
+        if lens_kind not in LENS_KINDS:
+            errors.append(f"lens.kind must be one of {LENS_KINDS}")
+        if not _nonempty(lens.get("id")):
+            errors.append("lens.id must be non-empty")
+        if lens_kind == "rule" and not _nonempty(lens.get("check_id")):
+            errors.append("rule resolution retest requires check_id")
+        if lens_kind == "perspective" and lens.get("check_id") is not None:
+            errors.append("perspective resolution retest requires check_id=null")
+    actions = item.get("revision_actions")
+    if not isinstance(actions, list) or not actions:
+        errors.append("revision_actions must be a non-empty array")
+        action_count = 0
+    else:
+        action_count = len(actions)
+        for index, action in enumerate(actions):
+            _validate_bound_file(action, f"revision_actions[{index}]", errors)
+    for field in (
+        "original_finding", "accepted_adjudication", "confirmed_lineage",
+        "target_ir", "lens_protocol", "prompt",
+        "lens_content",
+    ):
+        _validate_bound_file(item.get(field), field, errors)
+    roles = {
+        "original-finding": "argument-finding",
+        "accepted-adjudication": "finding-adjudication",
+        "confirmed-lineage": "claim-lineage",
+        "target-ir": "argument-ir",
+        "lens-protocol": (
+            "perspective-lens-protocol"
+            if lens_kind == "perspective"
+            else "argument-check-library"
+        ),
+    }
+    for index in range(1, action_count + 1):
+        roles[f"revision-action-{index:04d}"] = "revision-action"
+    _require_parent_roles(item, set(roles), errors)
+    _require_parent_artifacts(item, roles, errors)
+    return errors
+
+
+def validate_resolution_result_attempt(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="resolution-result-attempt",
+        lifecycle="immutable",
+        extra_keys={"resolution_id", "attempt_id", "collection", "response", "validation"},
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"model-derived"}, "resolution-result-attempt", errors)
+    _require_parent_roles(item, {"retest-run"}, errors)
+    _require_parent_artifacts(item, {"retest-run": "resolution-retest-run"}, errors)
+    if not _nonempty(item.get("resolution_id")):
+        errors.append("resolution_id must be non-empty")
+    if not isinstance(item.get("attempt_id"), str) or re.fullmatch(
+        r"attempt-[0-9]{4}", str(item.get("attempt_id"))
+    ) is None:
+        errors.append("attempt_id must be attempt-NNNN")
+    collection = item.get("collection")
+    if not isinstance(collection, dict):
+        errors.append("collection must be an object")
+    else:
+        _strict_keys(collection, {"method", "source_name", "producer_label"}, "collection", errors)
+        if collection.get("method") not in {"file", "terminal-paste"}:
+            errors.append("collection.method must be file or terminal-paste")
+        if not _safe_basename(collection.get("source_name")):
+            errors.append("collection.source_name must be a safe basename")
+        if collection.get("producer_label") is not None and not _nonempty(collection.get("producer_label")):
+            errors.append("collection.producer_label must be null or non-empty")
+    _validate_bound_file(item.get("response"), "response", errors)
+    validation = item.get("validation")
+    if not isinstance(validation, dict):
+        errors.append("validation must be an object")
+    else:
+        _strict_keys(validation, {"status", "errors"}, "validation", errors)
+        if validation.get("status") not in REVIEW_RESULT_STATUSES:
+            errors.append(f"validation.status must be one of {REVIEW_RESULT_STATUSES}")
+        found = _string_list(validation.get("errors"), "validation.errors", errors)
+        if validation.get("status") == "valid" and found:
+            errors.append("valid resolution result requires errors=[]")
+        if validation.get("status") == "unusable" and not found:
+            errors.append("unusable resolution result requires errors")
+    return errors
+
+
+def validate_resolution_retest_results(value: object) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(value, dict):
+        return ["resolution-retest-results must be an object"]
+    _strict_keys(value, {"schema_version", "artifact", "source", "status", "unverified", "results"}, "resolution-retest-results", errors)
+    if value.get("schema_version") != 1:
+        errors.append("schema_version must be 1")
+    if value.get("artifact") != "resolution-retest-results":
+        errors.append("artifact must be resolution-retest-results")
+    source = value.get("source")
+    if not isinstance(source, dict):
+        errors.append("source must be an object")
+    else:
+        _strict_keys(source, {"original_finding_sha256", "target_ir_sha256", "lens_protocol_sha256"}, "source", errors)
+        for field in ("original_finding_sha256", "target_ir_sha256", "lens_protocol_sha256"):
+            if not _digest(source.get(field)):
+                errors.append(f"source.{field} must be a SHA-256 digest")
+    status = value.get("status")
+    if status not in RESOLUTION_RETEST_STATUSES:
+        errors.append(f"status must be one of {RESOLUTION_RETEST_STATUSES}")
+    unverified = _string_list(value.get("unverified"), "unverified", errors)
+    results = value.get("results")
+    if not isinstance(results, list):
+        errors.append("results must be an array")
+        return errors
+    if status == "complete" and unverified:
+        errors.append("complete retest requires unverified=[]")
+    if status == "blocked" and (not unverified or results):
+        errors.append("blocked retest requires unverified and results=[]")
+    for index, result in enumerate(results):
+        label = f"results[{index}]"
+        if not isinstance(result, dict):
+            errors.append(f"{label} must be an object")
+            continue
+        _strict_keys(result, {"target_claim", "verdict", "reason", "basis_refs", "support_refs", "support_paths", "analysis"}, label, errors)
+        if not isinstance(result.get("target_claim"), str) or _VERSIONED_CLAIM.fullmatch(str(result.get("target_claim"))) is None:
+            errors.append(f"{label}.target_claim must be version-qualified")
+        if result.get("verdict") not in FINDING_VERDICTS:
+            errors.append(f"{label}.verdict must be one of {FINDING_VERDICTS}")
+        if not _nonempty(result.get("reason")):
+            errors.append(f"{label}.reason must be non-empty")
+        _string_list(result.get("basis_refs"), f"{label}.basis_refs", errors, allow_empty=False)
+        support_refs = _string_list(result.get("support_refs"), f"{label}.support_refs", errors)
+        support_paths = result.get("support_paths")
+        if not isinstance(support_paths, list):
+            errors.append(f"{label}.support_paths must be an array")
+        else:
+            for path_index, support_path in enumerate(support_paths):
+                path_label = f"{label}.support_paths[{path_index}]"
+                if not isinstance(support_path, dict):
+                    errors.append(f"{path_label} must be an object")
+                    continue
+                _strict_keys(support_path, {"support_ref", "relation_ids"}, path_label, errors)
+                if not isinstance(support_path.get("support_ref"), str):
+                    errors.append(f"{path_label}.support_ref must be a string")
+                _string_list(support_path.get("relation_ids"), f"{path_label}.relation_ids", errors, allow_empty=False)
+            mapped = [path.get("support_ref") for path in support_paths if isinstance(path, dict)]
+            if mapped != support_refs:
+                errors.append(f"{label}.support_paths must map one-to-one to support_refs")
+        if result.get("verdict") != "pass" and (support_refs or support_paths):
+            errors.append(f"{label}.support_refs/support_paths are reserved for PASS")
+        if not isinstance(result.get("analysis"), str):
+            errors.append(f"{label}.analysis must be a string")
+    return errors
+
+
+def validate_finding_resolution_proposal(value: object) -> list[str]:
+    schema_version = value.get("schema_version") if isinstance(value, dict) else None
+    errors, item = _validate_base(
+        value,
+        artifact="finding-resolution-proposal",
+        lifecycle="derived-replaceable",
+        extra_keys={"resolution_id", "original_finding_id", "descendant_claims", "proposed_status", "mapping_reason", "retest_summary", "field_provenance"},
+        schema_versions=(1, 2),
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"deterministic"}, "finding-resolution-proposal", errors)
+    parent_artifacts = (
+        {"retest-run": "resolution-retest-run"}
+        if schema_version == 2
+        else {"retest-run": "resolution-retest-run", "result-attempt": "resolution-result-attempt", "retest-results": "resolution-retest-results"}
+    )
+    _require_parent_roles(item, set(parent_artifacts), errors)
+    _require_parent_artifacts(item, parent_artifacts, errors)
+    for field in ("resolution_id", "original_finding_id", "mapping_reason"):
+        if not _nonempty(item.get(field)):
+            errors.append(f"{field} must be non-empty")
+    descendants = _string_list(item.get("descendant_claims"), "descendant_claims", errors)
+    if any(_VERSIONED_CLAIM.fullmatch(claim) is None for claim in descendants):
+        errors.append("descendant_claims must be version-qualified")
+    if item.get("proposed_status") not in RESOLUTION_STATUSES:
+        errors.append(f"proposed_status must be one of {RESOLUTION_STATUSES}")
+    if schema_version == 2 and (item.get("proposed_status") != "obsolete" or descendants):
+        errors.append("schema v2 resolution proposal is reserved for removed Claims with no descendants")
+    if schema_version == 1 and item.get("proposed_status") == "obsolete":
+        errors.append("retest-derived schema v1 proposal cannot be obsolete")
+    summary = item.get("retest_summary")
+    if not isinstance(summary, dict):
+        errors.append("retest_summary must be an object")
+    else:
+        _strict_keys(summary, set(FINDING_VERDICTS), "retest_summary", errors)
+        if any(not isinstance(summary.get(key), int) or summary.get(key) < 0 for key in FINDING_VERDICTS):
+            errors.append("retest_summary counts must be non-negative integers")
+    provenance = item.get("field_provenance")
+    expected = {"retest_summary": "deterministic", "proposed_status": "deterministic", "mapping_reason": "deterministic"}
+    if not isinstance(provenance, dict):
+        errors.append("field_provenance must be an object")
+    else:
+        _strict_keys(provenance, set(expected), "field_provenance", errors)
+        for field, origin in expected.items():
+            entry = provenance.get(field)
+            if not isinstance(entry, dict):
+                errors.append(f"field_provenance.{field} must be an object")
+                continue
+            _strict_keys(entry, {"origin", "source"}, f"field_provenance.{field}", errors)
+            if entry.get("origin") != origin or not _nonempty(entry.get("source")):
+                errors.append(f"field_provenance.{field} must be sourced deterministic provenance")
+    return errors
+
+
+def validate_finding_resolution_decision(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="finding-resolution-decision",
+        lifecycle="immutable",
+        extra_keys={"decision_id", "resolution_id", "decision", "final_status", "reason", "supersedes"},
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"human-confirmed"}, "finding-resolution-decision", errors)
+    for field in ("decision_id", "resolution_id", "reason"):
+        if not _nonempty(item.get(field)):
+            errors.append(f"{field} must be non-empty")
+    decision = item.get("decision")
+    if decision not in RESOLUTION_DECISIONS:
+        errors.append(f"decision must be one of {RESOLUTION_DECISIONS}")
+    final_status = item.get("final_status")
+    if decision == "reject" and final_status is not None:
+        errors.append("reject requires final_status=null")
+    if decision in {"confirm", "correct"} and final_status not in RESOLUTION_STATUSES:
+        errors.append("confirm/correct requires a valid final_status")
+    supersedes = item.get("supersedes")
+    if supersedes is not None and not _digest(supersedes):
+        errors.append("supersedes must be null or a SHA-256 digest")
+    roles = {"resolution-proposal"}
+    artifacts = {"resolution-proposal": "finding-resolution-proposal"}
+    if supersedes is not None:
+        roles.add("previous-decision")
+        artifacts["previous-decision"] = "finding-resolution-decision"
+    _require_parent_roles(item, roles, errors)
+    _require_parent_artifacts(item, artifacts, errors)
+    if supersedes is not None:
+        parents = item.get("parents") if isinstance(item.get("parents"), list) else []
+        previous = next((parent for parent in parents if isinstance(parent, dict) and parent.get("role") == "previous-decision"), None)
+        if not isinstance(previous, dict) or previous.get("sha256") != supersedes:
+            errors.append("previous-decision parent must match supersedes")
+    return errors
+
+
+def validate_gate_b_corpus(value: object) -> list[str]:
+    errors, item = _validate_base(value, artifact="product-gate-b-corpus", lifecycle="immutable", extra_keys={"gate_id", "projects"})
+    if item is None: return errors
+    _require_origin(item, {"human-confirmed"}, "product-gate-b-corpus", errors)
+    if not _nonempty(item.get("gate_id")): errors.append("gate_id must be non-empty")
+    projects = item.get("projects")
+    if not isinstance(projects, list) or not 2 <= len(projects) <= 3:
+        errors.append("Gate B corpus must contain 2-3 real multi-version projects"); return errors
+    aliases: list[str] = []
+    for index, project in enumerate(projects):
+        label = f"projects[{index}]"
+        if not isinstance(project, dict): errors.append(f"{label} must be an object"); continue
+        _strict_keys(project, {"alias", "locator", "project_id", "document_id", "versions", "bindings", "observed_relations"}, label, errors)
+        for field in ("alias", "locator", "project_id", "document_id"):
+            if not _nonempty(project.get(field)): errors.append(f"{label}.{field} must be non-empty")
+        aliases.append(str(project.get("alias")))
+        versions = _string_list(project.get("versions"), f"{label}.versions", errors, allow_empty=False)
+        if len(versions) < 2 or any(re.fullmatch(r"V[1-9][0-9]*", version) is None for version in versions): errors.append(f"{label}.versions must contain at least two Version IDs")
+        relations = _string_list(project.get("observed_relations"), f"{label}.observed_relations", errors)
+        if any(relation not in LINEAGE_RELATIONS for relation in relations): errors.append(f"{label}.observed_relations contains invalid lineage relation")
+        bindings = project.get("bindings")
+        if not isinstance(bindings, dict): errors.append(f"{label}.bindings must be an object"); continue
+        _strict_keys(bindings, {"project", "document_versions", "reviewed_irs", "lineage_decisions", "resolution_decisions"}, f"{label}.bindings", errors)
+        if not _digest(bindings.get("project")): errors.append(f"{label}.bindings.project must be a digest")
+        for field in ("document_versions", "reviewed_irs", "lineage_decisions", "resolution_decisions"):
+            hashes = _string_list(bindings.get(field), f"{label}.bindings.{field}", errors, allow_empty=field == "resolution_decisions")
+            if any(not _digest(digest) for digest in hashes): errors.append(f"{label}.bindings.{field} must contain digests")
+        if isinstance(bindings.get("document_versions"), list) and len(bindings["document_versions"]) != len(versions): errors.append(f"{label}.document version bindings must match versions")
+        if isinstance(bindings.get("reviewed_irs"), list) and len(bindings["reviewed_irs"]) != len(versions): errors.append(f"{label}.Reviewed IR bindings must match versions")
+    if len(aliases) != len(set(aliases)): errors.append("Gate B project aliases must be unique")
+    return errors
+
+
+def validate_gate_b_assessment(value: object) -> list[str]:
+    errors, item = _validate_base(value, artifact="product-gate-b-assessment", lifecycle="immutable", extra_keys={"assessment_id", "project_alias", "lineage_correction_minutes", "lineage_reasonable", "split_merge_worked", "finding_inheritance_correct", "resolved_stopped_reappearing", "unresolved_persisted", "revision_rationale_clarity", "notes"})
+    if item is None: return errors
+    _require_origin(item, {"human-confirmed"}, "product-gate-b-assessment", errors)
+    _require_parent_roles(item, {"corpus"}, errors); _require_parent_artifacts(item, {"corpus": "product-gate-b-corpus"}, errors)
+    for field in ("assessment_id", "project_alias"):
+        if not _nonempty(item.get(field)): errors.append(f"{field} must be non-empty")
+    minutes = item.get("lineage_correction_minutes")
+    if not isinstance(minutes, int) or isinstance(minutes, bool) or minutes < 0: errors.append("lineage_correction_minutes must be a non-negative integer")
+    for field in ("lineage_reasonable", "split_merge_worked", "finding_inheritance_correct", "resolved_stopped_reappearing", "unresolved_persisted"):
+        if item.get(field) not in GATE_B_JUDGMENTS: errors.append(f"{field} must be one of {GATE_B_JUDGMENTS}")
+    if item.get("revision_rationale_clarity") not in GATE_B_CLARITIES: errors.append(f"revision_rationale_clarity must be one of {GATE_B_CLARITIES}")
+    if not isinstance(item.get("notes"), str): errors.append("notes must be a string")
+    return errors
+
+
+def validate_gate_b_decision(value: object) -> list[str]:
+    errors, item = _validate_base(value, artifact="product-gate-b-decision", lifecycle="immutable", extra_keys={"decision_id", "decision", "reason", "supersedes"})
+    if item is None: return errors
+    _require_origin(item, {"human-confirmed"}, "product-gate-b-decision", errors)
+    for field in ("decision_id", "reason"):
+        if not _nonempty(item.get(field)): errors.append(f"{field} must be non-empty")
+    if item.get("decision") not in GATE_B_DECISIONS: errors.append(f"decision must be one of {GATE_B_DECISIONS}")
+    supersedes = item.get("supersedes")
+    if supersedes is not None and not _digest(supersedes): errors.append("supersedes must be null or a digest")
+    roles = {"corpus"} if supersedes is None else {"corpus", "previous-decision"}
+    artifacts = {"corpus": "product-gate-b-corpus"}
+    if supersedes is not None: artifacts["previous-decision"] = "product-gate-b-decision"
+    _require_parent_roles(item, roles, errors); _require_parent_artifacts(item, artifacts, errors)
+    return errors
+
+
+def validate_gate_b_report(value: object) -> list[str]:
+    errors, item = _validate_base(value, artifact="product-gate-b-report", lifecycle="derived-replaceable", extra_keys={"gate_id", "summary", "gate_decision", "payload"})
+    if item is None: return errors
+    _require_origin(item, {"deterministic"}, "product-gate-b-report", errors)
+    if not _nonempty(item.get("gate_id")): errors.append("gate_id must be non-empty")
+    summary = item.get("summary")
+    keys = {"projects", "assessed", "lineage_decisions", "resolution_decisions", "split_merge_projects"}
+    if not isinstance(summary, dict): errors.append("summary must be an object")
+    else:
+        _strict_keys(summary, keys, "summary", errors)
+        if any(not isinstance(summary.get(key), int) or isinstance(summary.get(key), bool) or summary.get(key) < 0 for key in keys): errors.append("summary values must be non-negative integers")
+    if item.get("gate_decision") is not None and item.get("gate_decision") not in GATE_B_DECISIONS: errors.append("gate_decision must be pass/fail/defer/null")
+    _validate_bound_file(item.get("payload"), "payload", errors)
+    parents = item.get("parents") if isinstance(item.get("parents"), list) else []
+    roles = {str(parent.get("role")) for parent in parents if isinstance(parent, dict)}
+    expected = {"corpus", *{role for role in roles if role.startswith("assessment-") or role.startswith("decision-")}}
+    _require_parent_roles(item, expected, errors)
+    artifacts = {role: "product-gate-b-assessment" if role.startswith("assessment-") else "product-gate-b-decision" if role.startswith("decision-") else "product-gate-b-corpus" for role in expected}
+    _require_parent_artifacts(item, artifacts, errors)
+    return errors
+
+
+def _validate_citation_dimensions(
+    value: object,
+    label: str,
+    errors: list[str],
+) -> None:
+    if not isinstance(value, dict):
+        errors.append(f"{label} must be an object")
+        return
+    _strict_keys(
+        value,
+        {
+            "bibliographic_existence",
+            "exact_source_located",
+            "content_support",
+            "context_preserved",
+            "uncertainty",
+        },
+        label,
+        errors,
+    )
+    if value.get("bibliographic_existence") not in CITATION_BIBLIOGRAPHIC_STATUSES:
+        errors.append(
+            f"{label}.bibliographic_existence must be one of "
+            f"{CITATION_BIBLIOGRAPHIC_STATUSES}"
+        )
+    if value.get("exact_source_located") not in CITATION_SOURCE_LOCATION_STATUSES:
+        errors.append(
+            f"{label}.exact_source_located must be one of "
+            f"{CITATION_SOURCE_LOCATION_STATUSES}"
+        )
+    if value.get("content_support") not in CITATION_CONTENT_SUPPORT_STATUSES:
+        errors.append(
+            f"{label}.content_support must be one of "
+            f"{CITATION_CONTENT_SUPPORT_STATUSES}"
+        )
+    if value.get("context_preserved") not in CITATION_CONTEXT_STATUSES:
+        errors.append(
+            f"{label}.context_preserved must be one of {CITATION_CONTEXT_STATUSES}"
+        )
+    if not isinstance(value.get("uncertainty"), str):
+        errors.append(f"{label}.uncertainty must be a string")
+    if value.get("exact_source_located") != "verified":
+        if value.get("content_support") != "uncertain":
+            errors.append(
+                f"{label}.content_support must be uncertain until the exact source is located"
+            )
+        if value.get("context_preserved") != "uncertain":
+            errors.append(
+                f"{label}.context_preserved must be uncertain until the exact source is located"
+            )
+    if value.get("bibliographic_existence") == "contradicted" and value.get(
+        "exact_source_located"
+    ) == "verified":
+        errors.append(
+            f"{label} cannot locate an exact source after contradicting bibliographic existence"
+        )
+
+
+def validate_citation_audit_results(value: object) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(value, dict):
+        return ["citation-audit-results must be a JSON object"]
+    _strict_keys(
+        value,
+        {
+            "schema_version",
+            "artifact",
+            "source",
+            "status",
+            "sources",
+            "outcomes",
+            "unverified",
+        },
+        "citation-audit-results",
+        errors,
+    )
+    if value.get("schema_version") != 1:
+        errors.append("citation-audit-results schema_version must be 1")
+    if value.get("artifact") != "citation-audit-results":
+        errors.append("artifact must be citation-audit-results")
+    source = value.get("source")
+    if not isinstance(source, dict):
+        errors.append("source must be an object")
+    else:
+        _strict_keys(
+            source,
+            {"audit_context_sha256", "reviewed_ir_sha256", "source_sha256"},
+            "source",
+            errors,
+        )
+        for key in ("audit_context_sha256", "reviewed_ir_sha256", "source_sha256"):
+            if not _digest(source.get(key)):
+                errors.append(f"source.{key} must be a lowercase SHA-256 digest")
+    if value.get("status") not in CITATION_AUDIT_STATUSES:
+        errors.append(f"status must be one of {CITATION_AUDIT_STATUSES}")
+
+    sources = value.get("sources")
+    source_ids: set[str] = set()
+    source_dimensions: dict[str, set[str]] = {}
+    source_kinds: dict[str, str] = {}
+    if not isinstance(sources, list):
+        errors.append("sources must be an array")
+        sources = []
+    for index, source_item in enumerate(sources):
+        label = f"sources[{index}]"
+        if not isinstance(source_item, dict):
+            errors.append(f"{label} must be an object")
+            continue
+        _strict_keys(
+            source_item,
+            {"source_id", "kind", "title", "locator", "accessed_at", "dimensions", "note"},
+            label,
+            errors,
+        )
+        expected_id = f"S{index + 1}"
+        source_id = source_item.get("source_id")
+        if source_id != expected_id:
+            errors.append(f"{label}.source_id must be {expected_id}")
+        elif isinstance(source_id, str):
+            source_ids.add(source_id)
+        kind = source_item.get("kind")
+        if kind not in CITATION_SOURCE_KINDS:
+            errors.append(f"{label}.kind must be one of {CITATION_SOURCE_KINDS}")
+        elif isinstance(source_id, str):
+            source_kinds[source_id] = str(kind)
+        for key in ("title", "locator", "note"):
+            if not _nonempty(source_item.get(key)):
+                errors.append(f"{label}.{key} must be a non-empty string")
+        if not _timestamp(source_item.get("accessed_at")):
+            errors.append(f"{label}.accessed_at must be a timezone-aware ISO timestamp")
+        dimensions = _string_list(
+            source_item.get("dimensions"),
+            f"{label}.dimensions",
+            errors,
+            allow_empty=False,
+        )
+        unknown_dimensions = sorted(set(dimensions) - set(CITATION_SOURCE_DIMENSIONS))
+        if unknown_dimensions:
+            errors.append(f"{label}.dimensions contains unknown values: {unknown_dimensions}")
+        if isinstance(source_id, str):
+            source_dimensions[source_id] = set(dimensions)
+
+    outcomes = value.get("outcomes")
+    if not isinstance(outcomes, list):
+        errors.append("outcomes must be an array")
+        outcomes = []
+    if value.get("status") != "blocked" and not outcomes:
+        errors.append("non-blocked citation audit must contain outcomes")
+    citation_ids: list[str] = []
+    for index, outcome in enumerate(outcomes):
+        label = f"outcomes[{index}]"
+        if not isinstance(outcome, dict):
+            errors.append(f"{label} must be an object")
+            continue
+        _strict_keys(
+            outcome,
+            {
+                "citation_id",
+                "bibliographic_existence",
+                "exact_source_located",
+                "content_support",
+                "context_preserved",
+                "reason",
+                "source_refs",
+                "uncertainty",
+            },
+            label,
+            errors,
+        )
+        citation_id = outcome.get("citation_id")
+        if not isinstance(citation_id, str) or re.fullmatch(r"Z[1-9][0-9]*", citation_id) is None:
+            errors.append(f"{label}.citation_id must be an Argument IR Citation ID")
+        else:
+            citation_ids.append(citation_id)
+        dimensions = {
+            key: outcome.get(key)
+            for key in (
+                "bibliographic_existence",
+                "exact_source_located",
+                "content_support",
+                "context_preserved",
+                "uncertainty",
+            )
+        }
+        _validate_citation_dimensions(dimensions, label, errors)
+        if not _nonempty(outcome.get("reason")):
+            errors.append(f"{label}.reason must be a non-empty string")
+        refs = _string_list(outcome.get("source_refs"), f"{label}.source_refs", errors)
+        unknown_refs = sorted(set(refs) - source_ids)
+        if unknown_refs:
+            errors.append(f"{label}.source_refs contains unknown sources: {unknown_refs}")
+        definitive = any(
+            outcome.get(key) not in {"uncertain", "not_verified"}
+            for key in (
+                "bibliographic_existence",
+                "exact_source_located",
+                "content_support",
+                "context_preserved",
+            )
+        )
+        if definitive and not refs:
+            errors.append(f"{label} definitive judgments require source_refs")
+        required_dimensions = {
+            "bibliographic_existence": outcome.get("bibliographic_existence")
+            in {"verified", "contradicted"},
+            "exact_source_located": outcome.get("exact_source_located") == "verified",
+            "content_support": outcome.get("content_support")
+            in {"supports", "partially_supports", "does_not_support"},
+            "context_preserved": outcome.get("context_preserved") in {"yes", "no"},
+        }
+        for dimension, required in required_dimensions.items():
+            if required and not any(
+                dimension in source_dimensions.get(ref, set()) for ref in refs
+            ):
+                errors.append(f"{label} lacks source evidence for {dimension}")
+        if outcome.get("exact_source_located") == "verified" and not any(
+            source_kinds.get(ref) in {"primary", "repository"}
+            and "exact_source_located" in source_dimensions.get(ref, set())
+            for ref in refs
+        ):
+            errors.append(
+                f"{label}.exact_source_located requires a primary or repository source"
+            )
+        if outcome.get("content_support") in {
+            "supports",
+            "partially_supports",
+            "does_not_support",
+        } and not any(
+            source_kinds.get(ref) in {"primary", "repository"}
+            and "content_support" in source_dimensions.get(ref, set())
+            for ref in refs
+        ):
+            errors.append(f"{label}.content_support requires primary-source evidence")
+    if len(citation_ids) != len(set(citation_ids)):
+        errors.append("outcomes must not repeat Citation IDs")
+    if value.get("status") == "complete":
+        for index, outcome in enumerate(outcomes):
+            if isinstance(outcome, dict) and any(
+                outcome.get(key) in {"uncertain", "not_verified"}
+                for key in (
+                    "bibliographic_existence",
+                    "exact_source_located",
+                    "content_support",
+                    "context_preserved",
+                )
+            ):
+                errors.append(
+                    f"outcomes[{index}] has unresolved dimensions, so status cannot be complete"
+                )
+    unverified = _string_list(value.get("unverified"), "unverified", errors)
+    if value.get("status") == "complete" and unverified:
+        errors.append("complete citation audit must not list unverified items")
+    if value.get("status") in {"partial", "blocked"} and not unverified:
+        errors.append("partial or blocked citation audit must list what remains unverified")
+    return errors
+
+
+def validate_citation_audit_run(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="citation-audit-run",
+        lifecycle="immutable",
+        extra_keys={
+            "audit_id",
+            "document_id",
+            "version_id",
+            "selected_citations",
+            "context",
+            "reviewed_ir",
+            "prompt",
+        },
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"deterministic"}, "citation-audit-run", errors)
+    _require_parent_roles(item, {"document-version", "reviewed-record", "reviewed-ir"}, errors)
+    _require_parent_artifacts(
+        item,
+        {
+            "document-version": "document-version",
+            "reviewed-record": "reviewed-argument-ir",
+            "reviewed-ir": "argument-ir",
+        },
+        errors,
+    )
+    if re.fullmatch(r"CA[1-9][0-9]*", str(item.get("audit_id", ""))) is None:
+        errors.append("audit_id must be CA1..CAn")
+    if not _nonempty(item.get("document_id")):
+        errors.append("document_id must be a non-empty string")
+    if re.fullmatch(r"V[1-9][0-9]*", str(item.get("version_id", ""))) is None:
+        errors.append("version_id must be V1..Vn")
+    selected = _string_list(
+        item.get("selected_citations"),
+        "selected_citations",
+        errors,
+        allow_empty=False,
+    )
+    if any(re.fullmatch(r"Z[1-9][0-9]*", citation_id) is None for citation_id in selected):
+        errors.append("selected_citations must contain Argument IR Citation IDs")
+    _validate_bound_file(item.get("reviewed_ir"), "reviewed_ir", errors)
+    _validate_bound_file(item.get("context"), "context", errors)
+    _validate_bound_file(item.get("prompt"), "prompt", errors)
+    return errors
+
+
+def validate_citation_result_attempt(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="citation-result-attempt",
+        lifecycle="immutable",
+        extra_keys={"audit_id", "attempt_id", "collection", "response", "validation"},
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"model-derived"}, "citation-result-attempt", errors)
+    _require_parent_roles(item, {"citation-audit-run"}, errors)
+    _require_parent_artifacts(item, {"citation-audit-run": "citation-audit-run"}, errors)
+    if re.fullmatch(r"CA[1-9][0-9]*", str(item.get("audit_id", ""))) is None:
+        errors.append("audit_id must be CA1..CAn")
+    if re.fullmatch(r"attempt-[0-9]{4}", str(item.get("attempt_id", ""))) is None:
+        errors.append("attempt_id must be attempt-NNNN")
+    collection = item.get("collection")
+    if not isinstance(collection, dict):
+        errors.append("collection must be an object")
+    else:
+        _strict_keys(collection, {"method", "source_name", "producer_label"}, "collection", errors)
+        if collection.get("method") not in {"file", "terminal-paste"}:
+            errors.append("collection.method must be file or terminal-paste")
+        if not _safe_basename(collection.get("source_name")):
+            errors.append("collection.source_name must be a safe basename")
+        if collection.get("producer_label") is not None and not _nonempty(
+            collection.get("producer_label")
+        ):
+            errors.append("collection.producer_label must be null or a non-empty string")
+    _validate_bound_file(item.get("response"), "response", errors)
+    validation = item.get("validation")
+    if not isinstance(validation, dict):
+        errors.append("validation must be an object")
+    else:
+        _strict_keys(validation, {"status", "errors"}, "validation", errors)
+        if validation.get("status") not in {"valid", "unusable"}:
+            errors.append("validation.status must be valid or unusable")
+        _string_list(validation.get("errors"), "validation.errors", errors)
+        if validation.get("status") == "valid" and validation.get("errors") != []:
+            errors.append("valid citation attempt must have no validation errors")
+        if validation.get("status") == "unusable" and validation.get("errors") == []:
+            errors.append("unusable citation attempt must explain its validation errors")
+    return errors
+
+
+def validate_citation_verification_decision(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="citation-verification-decision",
+        lifecycle="immutable",
+        extra_keys={
+            "decision_id",
+            "audit_id",
+            "citation_id",
+            "attempt_id",
+            "decision",
+            "reason",
+            "final_outcome",
+            "supersedes",
+        },
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"human-confirmed"}, "citation-verification-decision", errors)
+    parents = item.get("parents")
+    actual_roles = {
+        parent.get("role")
+        for parent in parents
+        if isinstance(parent, dict)
+    } if isinstance(parents, list) else set()
+    required = {"citation-audit-run", "result-attempt", "audit-results"}
+    if not required.issubset(actual_roles) or actual_roles - required - {"previous-decision"}:
+        errors.append(
+            "citation decision parents must be run, attempt, results, and optional previous-decision"
+        )
+    _require_parent_artifacts(
+        item,
+        {
+            "citation-audit-run": "citation-audit-run",
+            "result-attempt": "citation-result-attempt",
+            "audit-results": "citation-audit-results",
+            "previous-decision": "citation-verification-decision",
+        },
+        errors,
+    )
+    if re.fullmatch(r"CD[0-9]{4}", str(item.get("decision_id", ""))) is None:
+        errors.append("decision_id must be CDNNNN")
+    if re.fullmatch(r"CA[1-9][0-9]*", str(item.get("audit_id", ""))) is None:
+        errors.append("audit_id must be CA1..CAn")
+    if re.fullmatch(r"Z[1-9][0-9]*", str(item.get("citation_id", ""))) is None:
+        errors.append("citation_id must be an Argument IR Citation ID")
+    if re.fullmatch(r"attempt-[0-9]{4}", str(item.get("attempt_id", ""))) is None:
+        errors.append("attempt_id must be attempt-NNNN")
+    decision = item.get("decision")
+    if decision not in CITATION_VERIFICATION_DECISIONS:
+        errors.append(f"decision must be one of {CITATION_VERIFICATION_DECISIONS}")
+    if not _nonempty(item.get("reason")):
+        errors.append("reason must be a non-empty string")
+    final_outcome = item.get("final_outcome")
+    if decision == "correct":
+        _validate_citation_dimensions(final_outcome, "final_outcome", errors)
+    elif final_outcome is not None:
+        errors.append("final_outcome is allowed only for correct decisions")
+    supersedes = item.get("supersedes")
+    if supersedes is not None and not _digest(supersedes):
+        errors.append("supersedes must be null or a lowercase SHA-256 digest")
+    if supersedes is None and "previous-decision" in actual_roles:
+        errors.append("first citation decision must not have previous-decision parent")
+    if supersedes is not None and "previous-decision" not in actual_roles:
+        errors.append("superseding citation decision requires previous-decision parent")
+    return errors
+
+
+def validate_citation_provenance_index(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="citation-provenance-index",
+        lifecycle="derived-replaceable",
+        extra_keys={
+            "audit_id",
+            "version_id",
+            "selected_attempt_id",
+            "citations",
+            "evidence_dependencies",
+            "claim_dependencies",
+            "summary",
+            "report",
+            "field_provenance",
+        },
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"deterministic"}, "citation-provenance-index", errors)
+    parent_roles = {
+        parent.get("role")
+        for parent in item.get("parents", [])
+        if isinstance(parent, dict)
+    }
+    if not {"citation-audit-run", "result-attempt", "audit-results"}.issubset(parent_roles):
+        errors.append("citation index requires run, attempt, and results parents")
+    _require_parent_artifacts(
+        item,
+        {
+            "citation-audit-run": "citation-audit-run",
+            "result-attempt": "citation-result-attempt",
+            "audit-results": "citation-audit-results",
+        },
+        errors,
+    )
+    for parent in item.get("parents", []):
+        if not isinstance(parent, dict):
+            continue
+        role = str(parent.get("role", ""))
+        if role.startswith("decision-"):
+            if re.fullmatch(r"decision-[0-9]{4}", role) is None:
+                errors.append(f"invalid citation decision parent role: {role}")
+            if parent.get("artifact") != "citation-verification-decision":
+                errors.append(f"parent {role!r} artifact must be citation-verification-decision")
+        elif role not in {"citation-audit-run", "result-attempt", "audit-results"}:
+            errors.append(f"unexpected citation index parent role: {role}")
+    if re.fullmatch(r"CA[1-9][0-9]*", str(item.get("audit_id", ""))) is None:
+        errors.append("audit_id must be CA1..CAn")
+    if re.fullmatch(r"V[1-9][0-9]*", str(item.get("version_id", ""))) is None:
+        errors.append("version_id must be V1..Vn")
+    if re.fullmatch(r"attempt-[0-9]{4}", str(item.get("selected_attempt_id", ""))) is None:
+        errors.append("selected_attempt_id must be attempt-NNNN")
+    citations = item.get("citations")
+    if not isinstance(citations, list):
+        errors.append("citations must be an array")
+        citations = []
+    seen_citations: set[str] = set()
+    for index, citation in enumerate(citations):
+        label = f"citations[{index}]"
+        if not isinstance(citation, dict):
+            errors.append(f"{label} must be an object")
+            continue
+        _strict_keys(
+            citation,
+            {
+                "citation_id",
+                "citation_text",
+                "proposal",
+                "human_decision",
+                "final_outcome",
+                "current_status",
+                "verification_state",
+                "source_refs",
+            },
+            label,
+            errors,
+        )
+        citation_id = citation.get("citation_id")
+        if not isinstance(citation_id, str) or re.fullmatch(r"Z[1-9][0-9]*", citation_id) is None:
+            errors.append(f"{label}.citation_id is invalid")
+        elif citation_id in seen_citations:
+            errors.append(f"{label}.citation_id is duplicated")
+        else:
+            seen_citations.add(citation_id)
+        if not _nonempty(citation.get("citation_text")):
+            errors.append(f"{label}.citation_text must be non-empty")
+        _validate_citation_dimensions(citation.get("proposal"), f"{label}.proposal", errors)
+        if citation.get("human_decision") not in {None, *CITATION_VERIFICATION_DECISIONS}:
+            errors.append(f"{label}.human_decision is invalid")
+        final_outcome = citation.get("final_outcome")
+        if final_outcome is not None:
+            _validate_citation_dimensions(final_outcome, f"{label}.final_outcome", errors)
+        if citation.get("current_status") not in {
+            "model_proposed",
+            "human_confirmed",
+            "proposal_rejected",
+        }:
+            errors.append(f"{label}.current_status is invalid")
+        if citation.get("verification_state") not in {
+            "verified",
+            "unverified",
+        }:
+            errors.append(f"{label}.verification_state must be verified or unverified")
+        _string_list(citation.get("source_refs"), f"{label}.source_refs", errors)
+        current_status = citation.get("current_status")
+        human_decision = citation.get("human_decision")
+        verification_state = citation.get("verification_state")
+        if current_status == "model_proposed" and (
+            human_decision is not None or final_outcome is not None
+        ):
+            errors.append(f"{label} model proposal must not masquerade as a human final outcome")
+        if current_status == "proposal_rejected" and (
+            human_decision != "reject" or final_outcome is not None
+        ):
+            errors.append(f"{label} rejected proposal must have reject and no final outcome")
+        if current_status == "human_confirmed" and (
+            human_decision not in {"confirm", "correct"} or final_outcome is None
+        ):
+            errors.append(f"{label} human-confirmed status requires a final human outcome")
+        fully_verified = isinstance(final_outcome, dict) and (
+            final_outcome.get("bibliographic_existence") == "verified"
+            and final_outcome.get("exact_source_located") == "verified"
+            and final_outcome.get("content_support") == "supports"
+            and final_outcome.get("context_preserved") == "yes"
+        )
+        if verification_state == "verified" and not (
+            current_status == "human_confirmed" and fully_verified
+        ):
+            errors.append(f"{label} verified state requires all four human-confirmed dimensions")
+    for field, node_prefix in (("evidence_dependencies", "E"), ("claim_dependencies", "C")):
+        dependencies = item.get(field)
+        if not isinstance(dependencies, list):
+            errors.append(f"{field} must be an array")
+            continue
+        for index, dependency in enumerate(dependencies):
+            label = f"{field}[{index}]"
+            if not isinstance(dependency, dict):
+                errors.append(f"{label} must be an object")
+                continue
+            expected = {"node_id", "citation_ids", "status"}
+            if field == "claim_dependencies":
+                expected.add("evidence_ids")
+            _strict_keys(dependency, expected, label, errors)
+            if re.fullmatch(node_prefix + r"[1-9][0-9]*", str(dependency.get("node_id", ""))) is None:
+                errors.append(f"{label}.node_id is invalid")
+            citation_ids = _string_list(
+                dependency.get("citation_ids"),
+                f"{label}.citation_ids",
+                errors,
+                allow_empty=False,
+            )
+            unknown_citations = sorted(set(citation_ids) - seen_citations)
+            if unknown_citations:
+                errors.append(f"{label}.citation_ids contains unknown Citations: {unknown_citations}")
+            if field == "claim_dependencies":
+                evidence_ids = _string_list(dependency.get("evidence_ids"), f"{label}.evidence_ids", errors)
+                if any(re.fullmatch(r"E[1-9][0-9]*", evidence_id) is None for evidence_id in evidence_ids):
+                    errors.append(f"{label}.evidence_ids must contain Evidence IDs")
+            if dependency.get("status") not in CITATION_DEPENDENCY_STATUSES:
+                errors.append(f"{label}.status must be one of {CITATION_DEPENDENCY_STATUSES}")
+    summary = item.get("summary")
+    summary_keys = {
+        "citations_total",
+        "verified",
+        "unverified",
+        "human_confirmed",
+        "human_pending",
+        "proposal_rejected",
+        "evidence_depending_on_unverified_citations",
+        "claims_depending_on_unverified_evidence",
+    }
+    if not isinstance(summary, dict):
+        errors.append("summary must be an object")
+    else:
+        _strict_keys(summary, summary_keys, "summary", errors)
+        for key in summary_keys:
+            if not isinstance(summary.get(key), int) or summary.get(key, -1) < 0:
+                errors.append(f"summary.{key} must be a non-negative integer")
+        if summary.get("citations_total") != len(citations):
+            errors.append("summary.citations_total must equal citations length")
+        if isinstance(summary.get("verified"), int) and isinstance(summary.get("unverified"), int):
+            if summary["verified"] + summary["unverified"] != len(citations):
+                errors.append("summary verified + unverified must equal citations_total")
+        expected_counts = {
+            "verified": sum(
+                item.get("verification_state") == "verified"
+                for item in citations
+                if isinstance(item, dict)
+            ),
+            "unverified": sum(
+                item.get("verification_state") == "unverified"
+                for item in citations
+                if isinstance(item, dict)
+            ),
+            "human_confirmed": sum(
+                item.get("current_status") == "human_confirmed"
+                for item in citations
+                if isinstance(item, dict)
+            ),
+            "human_pending": sum(
+                item.get("current_status") == "model_proposed"
+                for item in citations
+                if isinstance(item, dict)
+            ),
+            "proposal_rejected": sum(
+                item.get("current_status") == "proposal_rejected"
+                for item in citations
+                if isinstance(item, dict)
+            ),
+            "evidence_depending_on_unverified_citations": sum(
+                item.get("status") == "depends_on_unverified_evidence"
+                for item in item.get("evidence_dependencies", [])
+                if isinstance(item, dict)
+            ),
+            "claims_depending_on_unverified_evidence": sum(
+                item.get("status") == "depends_on_unverified_evidence"
+                for item in item.get("claim_dependencies", [])
+                if isinstance(item, dict)
+            ),
+        }
+        for key, expected in expected_counts.items():
+            if summary.get(key) != expected:
+                errors.append(f"summary.{key} must equal {expected}")
+    _validate_bound_file(item.get("report"), "report", errors)
+    field_provenance = item.get("field_provenance")
+    if not isinstance(field_provenance, dict):
+        errors.append("field_provenance must be an object")
+    else:
+        _strict_keys(
+            field_provenance,
+            {"model_outcomes", "human_decisions", "dependency_graph", "verification_state"},
+            "field_provenance",
+            errors,
+        )
+        expected_origins = {
+            "model_outcomes": "model-derived",
+            "human_decisions": "human-confirmed",
+            "dependency_graph": "deterministic",
+            "verification_state": "deterministic",
+        }
+        for key, origin in expected_origins.items():
+            entry = field_provenance.get(key)
+            if not isinstance(entry, dict):
+                errors.append(f"field_provenance.{key} must be an object")
+                continue
+            _strict_keys(entry, {"origin", "source"}, f"field_provenance.{key}", errors)
+            if entry.get("origin") != origin:
+                errors.append(f"field_provenance.{key}.origin must be {origin}")
+            if not _nonempty(entry.get("source")):
+                errors.append(f"field_provenance.{key}.source must be non-empty")
     return errors
 
 
@@ -4025,6 +5111,20 @@ VALIDATORS: dict[str, Callable[[object], list[str]]] = {
     "lineage-proposal-attempt": validate_lineage_proposal_attempt,
     "claim-lineage-proposals": validate_claim_lineage_proposals,
     "claim-lineage-index": validate_claim_lineage_index,
+    "resolution-retest-run": validate_resolution_retest_run,
+    "resolution-result-attempt": validate_resolution_result_attempt,
+    "resolution-retest-results": validate_resolution_retest_results,
+    "finding-resolution-proposal": validate_finding_resolution_proposal,
+    "finding-resolution-decision": validate_finding_resolution_decision,
+    "product-gate-b-corpus": validate_gate_b_corpus,
+    "product-gate-b-assessment": validate_gate_b_assessment,
+    "product-gate-b-decision": validate_gate_b_decision,
+    "product-gate-b-report": validate_gate_b_report,
+    "citation-audit-results": validate_citation_audit_results,
+    "citation-audit-run": validate_citation_audit_run,
+    "citation-result-attempt": validate_citation_result_attempt,
+    "citation-verification-decision": validate_citation_verification_decision,
+    "citation-provenance-index": validate_citation_provenance_index,
     "direct-review-baseline": validate_direct_review_baseline,
     "gate-a-session-start": validate_gate_a_session_start,
     "gate-a-work-session": validate_gate_a_work_session,

@@ -44,6 +44,21 @@ Parent hashes always cover the exact file bytes on disk. Artifact objects do not
 | `lineage-proposal-attempt` | immutable | One exact model response plus reproducible validation; unusable attempts remain archived |
 | `claim-lineage-proposals` | immutable model payload | Unconfirmed many-to-many semantic correspondence proposals with reasons, basis refs, changes, and uncertainty |
 | `claim-lineage-index` | derived-replaceable | Reproducible proposal projection and readable Markdown bound to every derived `claim-lineage` artifact |
+| `resolution-retest-run` | immutable | Original accepted Finding, RevisionActions, human-confirmed lineage, descendant IR, and the exact original Rule/Perspective Lens protocol to rerun |
+| `resolution-result-attempt` | immutable | Exact model response to one original-Lens retest and its reproducible validation outcome |
+| `resolution-retest-results` | immutable model payload | Per-descendant verdicts from the original Lens; never a direct generic “resolved?” judgment |
+| `finding-resolution-proposal` | derived-replaceable | Deterministic mapping from descendant retest verdicts to resolved/partial/unresolved/obsolete/uncertain |
+| `finding-resolution-decision` | immutable | Human confirmation, rejection, or correction of a proposed resolution; reconsideration uses `supersedes` |
+| `citation-audit-context` | immutable deterministic payload | Exact version, Citation selection, Reviewed IR hash, and manuscript source hash supplied to a Citation audit without a self-hash cycle |
+| `citation-audit-run` | immutable | Exact context, Reviewed IR snapshot, selected Citations, and provider-neutral substantive-verification prompt |
+| `citation-result-attempt` | immutable | One exact model response plus reproducible validation; invalid and blocked attempts remain archived |
+| `citation-audit-results` | immutable model payload | Separate bibliographic-existence, exact-source, content-support, and context-preservation proposals with inspectable source locators |
+| `citation-verification-decision` | immutable | Human confirmation, rejection, or correction of one Citation proposal; reconsideration uses a per-Citation `supersedes` chain |
+| `citation-provenance-index` | derived-replaceable | Current Citation state plus deterministic Citation→Evidence→Claim dependencies and a readable evidence-provenance report |
+| `product-gate-b-corpus` | immutable | Human-selected local references and exact hashes for 2–3 real multi-version projects; manuscript bytes are not copied |
+| `product-gate-b-assessment` | immutable | Per-project human observations on lineage burden, split/merge, Finding inheritance/persistence, and revision rationale |
+| `product-gate-b-decision` | immutable | Human pass/fail/defer decision; pass is rejected until the explicit Gate B evidence conditions hold |
+| `product-gate-b-report` | derived-replaceable | Reproducible evidence counts and readiness issues without a score or automatic product verdict |
 | `review-status-triage` | append-only | One human acknowledgement or rejection of a model-proposed non-evaluated status, with an explicit follow-up action |
 | `review-status-triage-index` | derived-replaceable | Reproducible open/acknowledged/rejected execution-status queue binding every triage event |
 | `direct-review-baseline` | immutable | Exact direct-chat prompt/response, manuscript binding, provider/model identity, declared session conditions, and elapsed-time evidence for Gate A comparison |
@@ -67,6 +82,46 @@ DocumentVersion IDs are version-local sequence labels, not Claim identity. `V1` 
 `structural-version-diff` binds both DocumentVersion records, both Reviewed IR records, and both compatible Argument IR payloads. Source hunks come from exact line comparison. Node matching first uses exact content excluding only local ID and normalized position, then an exact `kind + text + source_quote` anchor to expose changed classification fields. Relations use their type plus exact endpoint anchor fingerprints. These comparisons are deterministic equality tests, not Claim correspondence proposals: changed wording remains removed + added until a separate semantic lineage artifact is proposed and confirmed.
 
 Semantic lineage uses a second, explicitly non-deterministic layer. `lineage-analysis-run` snapshots the two Reviewed records/payloads, the structural diff, and prompt bytes so later IR corrections cannot rewrite an earlier analysis. Every collected response is an immutable `lineage-proposal-attempt`; invalid JSON, wrong-version references, unknown nodes, or incomplete `status=complete` coverage are retained as unusable attempts and cannot produce derived lineage. A valid response derives schema-v2 `claim-lineage` artifacts whose exact parents include both relevant IR snapshots, the proposal attempt, and the raw proposal payload. These artifacts remain `status=proposed` and `provenance.origin=model-derived`; the readable index does not turn them into facts.
+
+Finding Resolution never asks a generic model to decide whether revision succeeded. A `resolution-retest-run` requires an accepted Finding, at least one exact RevisionAction, one human-confirmed ClaimLineage, the descendant IR, and the original Lens protocol/content. The model only re-executes that Lens against every descendant Claim. Rule-Lens PASS retains the original `evidence_policy` and exact relation-aware `support_paths`; Perspective Lens retests preserve the complete protocol and do not invent checklist support. The derived proposal maps all-pass to `resolved`, all-fail to `unresolved`, mixed pass/fail to `partially_resolved`, any substantive uncertainty to `uncertain`, and a confirmed removal with no descendant to `obsolete` without a fake model run. This mapping is deterministic but its input verdicts remain model-derived. Only `finding-resolution-decision` can make the status human-confirmed.
+
+## Evidence and Citation provenance
+
+Citation verification is version-local and never upgrades the Argument IR's
+model-extracted `Citation` node into a verified fact. `citation-audit-context`
+first freezes the exact Citation selection, Reviewed IR hash, and source hash.
+The prompt binds that context; `citation-result-attempt` then binds the exact
+`citation-audit-run` and raw response bytes. This extra context payload avoids a
+self-hash cycle while retaining exact-file SHA-256 on every provenance edge.
+
+The model payload keeps four questions separate:
+
+- whether the bibliographic item exists;
+- whether the exact source was located;
+- whether its content supports the manuscript's wording; and
+- whether the surrounding context was preserved.
+
+Definitive judgments require explicit `source_refs`. Exact-source and content
+judgments additionally require a primary or repository source. If the exact
+source was not located, the validator forces content support and context to
+remain `uncertain`; model memory cannot fill the gap. `complete` is rejected
+while any dimension remains unverified, and `partial`/`blocked` must explain
+what remains unknown.
+
+Even an all-positive model outcome remains `model_proposed` and therefore
+unverified until a person confirms it. Human `confirm`, `reject`, and `correct`
+events append independently per Citation; correction supplies all four final
+dimensions without editing the model response. Only a human-confirmed outcome
+of bibliographic `verified`, exact source `verified`, content `supports`, and
+context `yes` becomes `citation_verified`.
+
+The derived index follows only Argument IR `cites` edges and downstream
+`supports`/`qualifies` paths. It therefore computes which Evidence and Claims
+depend on each audited Citation without inventing a semantic relation. Any
+pending, rejected, negative, partial, or uncertain Citation gives the dependent
+node the explicit status `depends_on_unverified_evidence`. That status never
+means `claim_false`, never becomes a manuscript score, and never substitutes a
+human judgment about the Claim.
 
 ## Field provenance in Reviewed IR
 
@@ -134,3 +189,21 @@ The report is deterministic and replaceable. It exposes workflow completeness, o
 `critic-adjudication` v1 remains the compatible report-oriented workflow. It is not silently treated as a Claim-centered Workbench adjudication. The Workbench shares its decision-field rules through an adapter, while `argument-finding`, `finding-adjudication`, and `revision-action` provide the product contract. A later migration can translate immutable legacy report evidence without changing either existing archive.
 
 Campaign, divergence, W/B, blind scorecards, and generic-critic controls remain Evaluation/Advanced artifacts. Their scores are not manuscript quality measures and do not appear in the Workbench project view.
+
+## Local UI application boundary
+
+`argument_ui.py` is an application projection, not a new artifact authority.
+Before serving a project it runs the complete project verifier, reads only
+validated immutable or derived artifacts, and labels deterministic,
+model-derived and human-confirmed fields separately. Earlier DocumentVersions
+are view-only. A current-version browser adjudication calls the same domain
+service as `ir adjudicate`, so it appends the existing `finding-adjudication`
+and `revision-action` contracts and deterministically rebuilds the Revision
+Plan. The UI never edits a Finding, model result, Reviewed IR, Lineage or
+Citation proposal in place.
+
+The server is standard-library-only, loopback-only and process-local. A random
+token gates artifact reads and writes; the HTML shell itself contains no source
+or IR payload. This token protects the localhost API from ordinary cross-origin
+requests, but it is not presented as multi-user authentication or permission to
+publish a workspace over a network.
