@@ -236,6 +236,78 @@ class ArgumentContractTests(unittest.TestCase):
             [],
         )
 
+    def test_finding_resolution_requires_original_lens_retest_and_human_confirmation(self) -> None:
+        bound = lambda name, digit: {"relative_path": name, "sha256": digit * 64}
+        run = {
+            **base(
+                "resolution-retest-run", "RR1", "immutable", "deterministic",
+                parents=[
+                    {"role": "original-finding", "artifact": "argument-finding", "sha256": "1" * 64},
+                    {"role": "accepted-adjudication", "artifact": "finding-adjudication", "sha256": "2" * 64},
+                    {"role": "revision-action-0001", "artifact": "revision-action", "sha256": "3" * 64},
+                    {"role": "confirmed-lineage", "artifact": "claim-lineage", "sha256": "4" * 64},
+                    {"role": "target-ir", "artifact": "argument-ir", "sha256": "5" * 64},
+                    {"role": "lens-protocol", "artifact": "argument-check-library", "sha256": "6" * 64},
+                ],
+            ),
+            "resolution_id": "RR1", "document_id": "D1",
+            "from_version": "V1", "to_version": "V2",
+            "original_finding_id": "F1", "descendant_claims": ["V2:C7"],
+            "lens": {"kind": "rule", "id": "social-science", "check_id": "descriptive.denominator"},
+            "original_finding": bound("original-finding.json", "1"),
+            "accepted_adjudication": bound("accepted-adjudication.json", "2"),
+            "revision_actions": [bound("revision-actions/RA1.json", "3")],
+            "confirmed_lineage": bound("confirmed-lineage.json", "4"),
+            "target_ir": bound("target-argument-ir.json", "5"),
+            "lens_protocol": bound("lens-protocol.json", "6"),
+            "prompt": bound("resolution-retest-prompt.md", "7"),
+        }
+        self.assertEqual(contracts.validate_resolution_retest_run(run), [])
+        no_action = copy.deepcopy(run)
+        no_action["revision_actions"] = []
+        no_action["parents"] = [parent for parent in no_action["parents"] if parent["role"] != "revision-action-0001"]
+        self.assertTrue(any("non-empty" in error for error in contracts.validate_resolution_retest_run(no_action)))
+
+        results = {
+            "schema_version": 1, "artifact": "resolution-retest-results",
+            "source": {"retest_run_sha256": "8" * 64, "target_ir_sha256": "5" * 64, "lens_protocol_sha256": "6" * 64},
+            "status": "complete", "unverified": [],
+            "results": [{"target_claim": "V2:C7", "verdict": "pass", "reason": "A denominator was added.", "basis_refs": ["V2:C7", "V2:E4"], "analysis": "The original check now passes."}],
+        }
+        self.assertEqual(contracts.validate_resolution_retest_results(results), [])
+        proposal = {
+            **base(
+                "finding-resolution-proposal", "RP1", "derived-replaceable", "deterministic",
+                parents=[
+                    {"role": "retest-run", "artifact": "resolution-retest-run", "sha256": "8" * 64},
+                    {"role": "result-attempt", "artifact": "resolution-result-attempt", "sha256": "9" * 64},
+                    {"role": "retest-results", "artifact": "resolution-retest-results", "sha256": "a" * 64},
+                ],
+            ),
+            "resolution_id": "RR1", "original_finding_id": "F1",
+            "descendant_claims": ["V2:C7"], "proposed_status": "resolved",
+            "mapping_reason": "Every descendant passed the original Lens.",
+            "retest_summary": {"pass": 1, "fail": 0, "uncertain": 0},
+            "field_provenance": {
+                key: {"origin": "deterministic", "source": "resolution status mapping v1"}
+                for key in ("retest_summary", "proposed_status", "mapping_reason")
+            },
+        }
+        self.assertEqual(contracts.validate_finding_resolution_proposal(proposal), [])
+        decision = {
+            **base(
+                "finding-resolution-decision", "RD1", "immutable", "human-confirmed",
+                parents=[parent("resolution-proposal", "finding-resolution-proposal", proposal)],
+            ),
+            "decision_id": "RD1", "resolution_id": "RR1", "decision": "confirm",
+            "final_status": "resolved", "reason": "The original denominator issue is fixed.",
+            "supersedes": None,
+        }
+        self.assertEqual(contracts.validate_finding_resolution_decision(decision), [])
+        forged = copy.deepcopy(decision)
+        forged["provenance"]["origin"] = "model-derived"
+        self.assertTrue(any("human-confirmed" in error for error in contracts.validate_finding_resolution_decision(forged)))
+
     def test_rule_review_contracts_separate_model_outcomes_from_derived_index(self) -> None:
         review = {
             **base(

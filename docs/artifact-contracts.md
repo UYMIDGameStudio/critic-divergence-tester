@@ -44,6 +44,11 @@ Parent hashes always cover the exact file bytes on disk. Artifact objects do not
 | `lineage-proposal-attempt` | immutable | One exact model response plus reproducible validation; unusable attempts remain archived |
 | `claim-lineage-proposals` | immutable model payload | Unconfirmed many-to-many semantic correspondence proposals with reasons, basis refs, changes, and uncertainty |
 | `claim-lineage-index` | derived-replaceable | Reproducible proposal projection and readable Markdown bound to every derived `claim-lineage` artifact |
+| `resolution-retest-run` | immutable | Original accepted Finding, RevisionActions, human-confirmed lineage, descendant IR, and the exact original Rule/Perspective Lens protocol to rerun |
+| `resolution-result-attempt` | immutable | Exact model response to one original-Lens retest and its reproducible validation outcome |
+| `resolution-retest-results` | immutable model payload | Per-descendant verdicts from the original Lens; never a direct generic “resolved?” judgment |
+| `finding-resolution-proposal` | derived-replaceable | Deterministic mapping from descendant retest verdicts to resolved/partial/unresolved/obsolete/uncertain |
+| `finding-resolution-decision` | immutable | Human confirmation, rejection, or correction of a proposed resolution; reconsideration uses `supersedes` |
 | `review-status-triage` | append-only | One human acknowledgement or rejection of a model-proposed non-evaluated status, with an explicit follow-up action |
 | `review-status-triage-index` | derived-replaceable | Reproducible open/acknowledged/rejected execution-status queue binding every triage event |
 | `direct-review-baseline` | immutable | Exact direct-chat prompt/response, manuscript binding, provider/model identity, declared session conditions, and elapsed-time evidence for Gate A comparison |
@@ -67,6 +72,8 @@ DocumentVersion IDs are version-local sequence labels, not Claim identity. `V1` 
 `structural-version-diff` binds both DocumentVersion records, both Reviewed IR records, and both compatible Argument IR payloads. Source hunks come from exact line comparison. Node matching first uses exact content excluding only local ID and normalized position, then an exact `kind + text + source_quote` anchor to expose changed classification fields. Relations use their type plus exact endpoint anchor fingerprints. These comparisons are deterministic equality tests, not Claim correspondence proposals: changed wording remains removed + added until a separate semantic lineage artifact is proposed and confirmed.
 
 Semantic lineage uses a second, explicitly non-deterministic layer. `lineage-analysis-run` snapshots the two Reviewed records/payloads, the structural diff, and prompt bytes so later IR corrections cannot rewrite an earlier analysis. Every collected response is an immutable `lineage-proposal-attempt`; invalid JSON, wrong-version references, unknown nodes, or incomplete `status=complete` coverage are retained as unusable attempts and cannot produce derived lineage. A valid response derives schema-v2 `claim-lineage` artifacts whose exact parents include both relevant IR snapshots, the proposal attempt, and the raw proposal payload. These artifacts remain `status=proposed` and `provenance.origin=model-derived`; the readable index does not turn them into facts.
+
+Finding Resolution never asks a generic model to decide whether revision succeeded. A `resolution-retest-run` requires an accepted Finding, at least one exact RevisionAction, one human-confirmed ClaimLineage, the descendant IR, and the original Lens protocol. The model only re-executes that Lens against every descendant Claim. The derived proposal maps all-pass to `resolved`, all-fail to `unresolved`, mixed pass/fail to `partially_resolved`, any substantive uncertainty to `uncertain`, and a confirmed removal with no descendant to `obsolete`. This mapping is deterministic but its input verdicts remain model-derived. Only `finding-resolution-decision` can make the status human-confirmed.
 
 ## Field provenance in Reviewed IR
 
