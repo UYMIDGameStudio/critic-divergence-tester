@@ -59,10 +59,17 @@ class ArgumentUITests(unittest.TestCase):
             self.assertEqual(view["dashboard"]["claims"], 3)
             self.assertEqual(view["dashboard"]["open_findings"], 2)
             self.assertEqual(view["dashboard"]["unverified_citations"], 1)
+            self.assertEqual(len(view["version_history"]), 1)
+            self.assertEqual(view["version_history"][0]["corrections"], 0)
             self.assertTrue(any(line["claim_ids"] for line in view["manuscript"]))
             claim = next(item for item in view["claims"] if item["id"] == "C1")
             self.assertTrue(any(item["from"] == "E2" for item in claim["incoming"]))
             self.assertTrue(any(item["id"] == "social-science" for item in view["lenses"]))
+            denominator = next(
+                item for item in view["outcomes"] if item.get("check_id") == "descriptive.denominator"
+            )
+            self.assertIn("比较", denominator["lens_basis"]["question"])
+            self.assertIn("分母", denominator["lens_basis"]["failure_condition"])
             self.assertEqual(
                 view["provenance_legend"]["review_outcomes"], "model-derived"
             )
@@ -123,6 +130,33 @@ class ArgumentUITests(unittest.TestCase):
             self.assertEqual(view["dashboard"]["open_findings"], 0)
             self.assertTrue((workspace.version_dir / "reviews" / "RV1").is_dir())
 
+    def test_perspective_lens_exposes_complete_framework_without_voting(self) -> None:
+        from test.test_argument_perspective import PerspectiveReviewTests
+        import argument_perspective as perspective
+
+        with tempfile.TemporaryDirectory() as temporary:
+            helper = PerspectiveReviewTests()
+            workspace = helper.make_project(Path(temporary))
+            paths, _ = perspective.prepare_perspective_review(
+                workspace,
+                lens_id="methodological-individualism",
+                review_scope="thesis-chain",
+            )
+            perspective.collect_perspective_results(
+                workspace,
+                helper.encoded(helper.results(paths)),
+                review_id=paths.review_id,
+                method="file",
+                source_name="perspective-results.json",
+                producer_label="fixture-perspective-model",
+            )
+            view = ui.build_project_view(workspace)
+            lens = next(item for item in view["lenses"] if item["kind"] == "perspective")
+            self.assertIn("methodological-individualist commitment", lens["protocol_text"].casefold())
+            outcome = next(item for item in view["outcomes"] if item["review_id"] == "PV1")
+            self.assertEqual(outcome["lens_basis"]["evidence_policy"], "framework-commitment")
+            self.assertNotIn("vote", view)
+
     def test_argument_history_connects_finding_action_lineage_and_resolution(self) -> None:
         from test.test_argument_resolution import ArgumentResolutionTests
         import argument_resolution as resolution
@@ -149,6 +183,7 @@ class ArgumentUITests(unittest.TestCase):
             )
             view = ui.build_project_view(v2)
             self.assertEqual(len(view["lineage"]), 1)
+            self.assertEqual([item["version_id"] for item in view["version_history"]], ["V1", "V2"])
             self.assertTrue(
                 all(
                     proposal["human_decision"]["decision"] == "confirm"
@@ -176,6 +211,7 @@ class ArgumentUITests(unittest.TestCase):
                         self.skipTest("local TCP connections are blocked by this sandbox")
                     raise
                 self.assertIn("Manuscript · 原文", shell)
+                self.assertIn("Argument History", shell)
                 with self.assertRaises(urllib.error.HTTPError) as caught:
                     urllib.request.urlopen(url + "api/view", timeout=5)
                 self.assertEqual(caught.exception.code, 403)

@@ -31,6 +31,11 @@ The header is a project dashboard: current draft, Claim count, open/deferred/
 accepted Findings, human-confirmed resolved Findings and unverified Citations.
 There is no manuscript score, Lens vote or automatic synthesis.
 
+`Argument History` opens a whole-project timeline with every version's source
+hash, Claim/correction/Finding/Citation state, each Lineage transition and each
+old Finding Resolution. The Claim-level view remains the default; the timeline
+is a history view rather than a graph-first homepage.
+
 Version selection is read-only for earlier drafts. The current draft permits
 `accept`, `reject` and `defer`. Accept requires an action type and free-text
 revision action. The browser delegates this operation to the existing
@@ -43,6 +48,10 @@ exact source, Reviewed IR, Review run, Lens protocol, raw model result,
 Finding, human adjudication and RevisionAction SHA-256 values. This is a
 readable projection of existing parent bindings, not a second provenance
 claim.
+
+Rule outcomes also expose the exact machine-readable check question, failure
+condition and evidence policy. Perspective outcomes expose the complete
+snapshotted protocol rather than a generated checklist or cross-Lens vote.
 
 ## Local security boundary
 
@@ -71,6 +80,8 @@ Automated tests additionally prove that:
 - a browser adjudication uses the existing append-only contract;
 - a multi-version view connects the original Finding, RevisionAction,
   human-confirmed Lineage, original-Lens retest and final Resolution;
+- the whole-project timeline exposes version-local workflow state without a
+  score, and a Finding exposes its exact Rule or Perspective basis;
 - the HTTP API rejects requests without the unpredictable local token;
 - non-loopback listeners are refused; and
 - the application shell contains no quality score.

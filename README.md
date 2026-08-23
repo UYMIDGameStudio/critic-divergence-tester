@@ -717,6 +717,8 @@ py -3 critic_runner.py ir ui $project
 
 服务只监听 `127.0.0.1`，每次启动使用新的本地 token，Ctrl+C 即停止。它没有账号、同步、遥测或云端数据库，也不允许改成公网监听。界面不显示总分、不投票、不自动综合方法论冲突。架构、安全边界、真实浏览器演示和仍保留为行式交互的功能见 [`docs/phase8-local-ui.md`](docs/phase8-local-ui.md)。
 
+从导入、人工校正到 Argument History 的最终逐项验收矩阵见 [`docs/product-definition-of-done.md`](docs/product-definition-of-done.md)。它同时记录仍保留的 UX 限制，不把工程闭环夸大为模型正确性。
+
 ### 兼容的低层 Argument IR 流程
 
 先让工具为原稿生成一份**抽取提示词**：
