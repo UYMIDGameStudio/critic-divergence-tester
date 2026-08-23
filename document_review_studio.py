@@ -12,6 +12,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import html
+import io
 import json
 import os
 import re
@@ -88,6 +89,32 @@ CRITIC_PROTOCOLS: dict[str, dict[str, Any]] = {
         "exclusions": "不要把版式偏好写成强制规则，不要跨维度做实质合规结论。",
     },
 }
+
+
+_NEGATED_TERM_RE = re.compile(r"(?:没有|无|未(?:有|提供|设置|明确|见)?|不涉及|不含|无需|不用|不存在|尚无|尚未|缺少|缺乏)[^。！？；\n,，]{0,32}")
+
+
+def _contains_positive_term(text: str, terms: Iterable[str]) -> bool:
+    """Detect a term as affirmative evidence, not merely in a negation.
+
+    This is intentionally a small routing heuristic, not a natural-language
+    entailment engine. It prevents obvious phrases such as “没有预算” and
+    “不涉及收费” from being treated as positive coverage while leaving the
+    resulting item for human review.
+    """
+    normalized = text.casefold()
+    blocked_ranges = [(match.start(), match.end()) for match in _NEGATED_TERM_RE.finditer(normalized)]
+    for term in terms:
+        start = 0
+        needle = term.casefold()
+        while True:
+            index = normalized.find(needle, start)
+            if index < 0:
+                break
+            if not any(begin <= index < end for begin, end in blocked_ranges):
+                return True
+            start = index + len(needle)
+    return False
 
 
 class ReviewStudioError(ValueError):
@@ -1127,18 +1154,18 @@ class DocumentReviewProject:
             if not findings:
                 zero_basis.extend(["逐块扫描了模糊限定词与行动主体", "未发现足以形成两个竞争读法的确定性证据；仍不替代人工语境确认"])
         elif critic == "execution_feasibility":
-            if not any(word in lower for word in ("负责人", "责任人", "牵头", "承办")):
+            if not _contains_positive_term(text, ("负责人", "责任人", "牵头", "承办")):
                 findings.append(self._finding(critic, document, context, first, issue="执行模型缺少负责人", standard="目标必须映射到交付物和明确负责人", consequence="出现延期、质量问题或跨部门依赖时没有责任承接点，无法升级或纠偏", severity="high", suggested_action="为每项交付物指定一名负责人，并写明授权边界和替补人", owner="项目负责人", blocks=True, uncertainties=["尚未确认是否存在附件或口头任命"], observation="需要看到责任矩阵或正式任命"))
-            if not any(word in lower for word in ("预算", "费用", "金额", "经费")):
+            if not _contains_positive_term(text, ("预算", "费用", "金额", "经费")):
                 findings.append(self._finding(critic, document, context, first, issue="执行模型缺少预算依据", standard="资源与预算应能支撑交付物和风险响应", consequence="采购、场地或人员成本在执行中暴露，导致范围缩水、临时垫付或项目中止", severity="high", suggested_action="补充成本项、数量、单价、预算上限和超支审批人", owner="方案负责人", blocks=True, uncertainties=["尚未确认是否存在单独预算表"], observation="需要看到预算表及审批记录"))
-            if not any(word in lower for word in ("验收", "指标", "完成标准", "交付")):
+            if not _contains_positive_term(text, ("验收", "指标", "完成标准", "交付")):
                 findings.append(self._finding(critic, document, context, first, issue="方案没有可验证的验收指标", standard="交付物应能通过事先约定的指标判断完成", consequence="项目可能在反向情形下仍自称成功，无法决定是否补救或关闭", suggested_action="为每个交付物增加可测量指标、证据格式和验收人"))
             if not findings:
                 zero_basis.append("已检查目标、交付物、负责人、时间、资源、预算和验收关键词；未发现确定性缺口")
         elif critic == "compliance_legal_screen":
             triggers = []
             for word, label in (("收费", "付款/收费"), ("赞助", "赞助"), ("合同", "合同"), ("未成年人", "未成年人保护"), ("个人信息", "个人信息"), ("隐私", "隐私"), ("版权", "知识产权"), ("知识产权", "知识产权"), ("退款", "退款/票务"), ("处分", "治理/处分")):
-                if word in lower and label not in triggers:
+                if _contains_positive_term(text, (word,)) and label not in triggers:
                     triggers.append(label)
             if triggers:
                 findings.append(self._finding(critic, document, context, first, issue="文档触及需核实的合规风险领域：" + "、".join(triggers), standard="合规筛查必须绑定管辖范围、来源条款、有效性和适用事实", consequence="在缺少法源和事实确认时直接执行，可能遗漏授权、隐私、未成年人、付款或知识产权义务", severity="high", verification_state="cannot-confirm", suggested_action="补充适用地区、正式来源、条款定位和待核实事实；必要时交专业法律审查", owner="法务/审批人", blocks=False, uncertainties=["未提供可核验的法律、政策或内部制度材料"], basis=ExternalBasis(jurisdiction=context.jurisdiction, validity="unknown", application="当前仅根据文本触发词路由待核实问题", unresolved_facts=["适用主体资格", "发布或执行授权", "具体业务事实"]), observation="只有用户提供来源或联网检索得到当前有效条款后，才能改变 verification_state"))
@@ -1147,7 +1174,7 @@ class DocumentReviewProject:
         elif critic == "reasonableness_governance":
             missing = []
             for word, label in (("申诉", "申诉渠道"), ("复议", "复议渠道"), ("回避", "利益冲突回避"), ("授权", "权力来源"), ("边界", "权力边界")):
-                if word not in lower:
+                if not _contains_positive_term(text, (word,)):
                     missing.append(label)
             if missing:
                 findings.append(self._finding(critic, document, context, first, issue="治理文本未显示：" + "、".join(missing), standard="规范判断采用比例原则、程序正当、可申诉和利益冲突回避等明确原则", consequence="权力来源或纠错渠道不清时，弱势参与者可能承担无法复核的处分和风险", severity="medium", suggested_action="补充权力来源、边界、回避、申诉、复议和纠错机制，并说明适用原则", owner="治理审批人", uncertainties=["未确认是否存在独立治理制度"], observation="需要审阅上位章程、授权文件和申诉流程"))
@@ -1359,6 +1386,12 @@ class DocumentReviewProject:
         else:
             editable_path = output / "editable-draft.md"
             _write_tracked(self.root, editable_path, draft.encode("utf-8"), parents=[_parent_ref(self.root, draft_path, role="normalized-markdown")], provenance="normalized-editable-copy")
+        package_buffer = io.BytesIO()
+        with zipfile.ZipFile(package_buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for path in sorted(output.rglob("*")):
+                if path.is_file() and path.name != "audit-package.zip":
+                    archive.write(path, path.relative_to(output).as_posix())
+        _write_tracked(self.root, output / "audit-package.zip", package_buffer.getvalue(), parents=[_parent_ref(self.root, audit_path, role="audit-json"), _parent_ref(self.root, audit_markdown_path, role="audit-markdown")], provenance="audit-package-archive")
         self._append_event("export_created", {"export_id": export_id, "relative_path": str(output.relative_to(self.root)).replace("\\", "/")})
         return output
 
@@ -1371,10 +1404,85 @@ class DocumentReviewProject:
                 prompt_path = request_path.parent / "prompt.md"
                 value["prompt"] = prompt_path.read_text(encoding="utf-8")
                 value["relative_path"] = str(prompt_path.relative_to(self.root)).replace("\\", "/")
+                matching_runs: list[dict[str, Any]] = []
+                for run_path in sorted((self.root / "audits" / str(value.get("critic", ""))).glob("*.json")):
+                    try:
+                        run = _read_json(run_path)
+                    except (OSError, ValueError, ReviewStudioError):
+                        continue
+                    metadata = run.get("declared_model_metadata", {})
+                    if metadata.get("request_id") == value.get("request_id"):
+                        matching_runs.append(run)
+                latest = matching_runs[-1] if matching_runs else None
+                value["completed"] = latest is not None
+                value["run_id"] = latest.get("run_id") if latest else None
+                value["finding_count"] = len(latest.get("findings", [])) if latest else 0
+                value["response_binding"] = latest.get("response_binding") if latest else None
                 rows.append(value)
             except (OSError, ValueError, ReviewStudioError):
                 continue
         return rows
+
+    def export_summary(self) -> list[dict[str, Any]]:
+        """Return user-facing export files without exposing receipt internals."""
+        rows: list[dict[str, Any]] = []
+        root = self.root / "exports"
+        if not root.is_dir():
+            return rows
+        labels = {
+            "audit.json": "结构化结果",
+            "audit.md": "审查报告",
+            "audit-package.zip": "完整审计包",
+            "quality-report.json": "识别质量报告",
+            "normalized-editable-copy.docx": "可编辑规范化副本",
+            "editable-draft.md": "可编辑规范化副本",
+            "draft.md": "规范化文本副本",
+            "difference-report.md": "差异报告",
+        }
+        for directory in sorted((path for path in root.iterdir() if path.is_dir() and path.name != "revision-bridge"), reverse=True):
+            files = []
+            for path in sorted(directory.rglob("*")):
+                if not path.is_file() or path.name.endswith(".receipt.json"):
+                    continue
+                relative = str(path.relative_to(self.root)).replace("\\", "/")
+                files.append({"name": path.name, "label": labels.get(path.name, path.name), "relative_path": relative, "size": path.stat().st_size})
+            if not files:
+                continue
+            audit_value: dict[str, Any] = {}
+            try:
+                audit_value = _read_json(directory / "audit.json")
+            except (OSError, ValueError, ReviewStudioError):
+                pass
+            rows.append({"kind": "export", "export_id": directory.name, "created_at": audit_value.get("created_at") or datetime.fromtimestamp(directory.stat().st_mtime, tz=timezone.utc).isoformat(), "files": files})
+        bridge_root = root / "revision-bridge"
+        for directory in sorted((path for path in bridge_root.iterdir() if path.is_dir()), reverse=True) if bridge_root.is_dir() else []:
+            files = []
+            for path in sorted(directory.rglob("*")):
+                if path.is_file() and not path.name.endswith(".receipt.json"):
+                    files.append({"name": path.name, "label": "修改任务报告" if path.name == "findings-report.md" else path.name, "relative_path": str(path.relative_to(self.root)).replace("\\", "/"), "size": path.stat().st_size})
+            if not files:
+                continue
+            binding: dict[str, Any] = {}
+            try:
+                binding = _read_json(directory / "bridge.json")
+            except (OSError, ValueError, ReviewStudioError):
+                pass
+            rows.append({"kind": "revision-bridge", "export_id": directory.name, "created_at": datetime.fromtimestamp(directory.stat().st_mtime, tz=timezone.utc).isoformat(), "finding_count": len(binding.get("finding_ids", [])), "files": files})
+        return sorted(rows, key=lambda row: str(row.get("created_at", "")), reverse=True)
+
+    def export_file(self, relative_path: str) -> Path:
+        """Resolve one export/bridge file, rejecting traversal and symlinks."""
+        if not isinstance(relative_path, str) or not relative_path.startswith("exports/"):
+            raise ReviewStudioError("只能访问项目导出目录中的文件")
+        candidate = (self.root / relative_path).resolve()
+        export_root = (self.root / "exports").resolve()
+        try:
+            candidate.relative_to(export_root)
+        except ValueError as exc:
+            raise ReviewStudioError("导出文件不在项目目录内") from exc
+        if candidate.is_symlink() or not candidate.is_file():
+            raise ReviewStudioError("导出文件不存在")
+        return candidate
 
     def view(self) -> dict[str, Any]:
         self._enforce_integrity()
@@ -1389,7 +1497,12 @@ class DocumentReviewProject:
             finding_rows = [finding.to_dict() for finding in self.findings()]
         except (OSError, KeyError, TypeError, ValueError, ReviewStudioError):
             finding_rows = []
-        return {"project": manifest, "product_status": "experimental-preview", "state": state, "extraction": {"available": document is not None, "quality": document.quality.to_dict() if document else {}, "warnings": [warning.to_dict() for warning in document.warnings] if document else [], "blocks": [block.to_dict() for block in document.blocks[:100]] if document else []}, "context": self.context().to_dict() if self.context() else {"model_suggestion": self.suggested_document_type()}, "can_review": can_review, "review_blockers": reasons, "ai_requests": self.ai_requests(), "findings": finding_rows}
+        ai_requests = self.ai_requests()
+        findings_total = len(finding_rows)
+        finding_summary = {"total": findings_total, "open": sum(1 for item in finding_rows if item.get("status") == "open"), "accept": sum(1 for item in finding_rows if item.get("status") == "accept"), "correct": sum(1 for item in finding_rows if item.get("status") == "correct"), "reject": sum(1 for item in finding_rows if item.get("status") == "reject"), "defer": sum(1 for item in finding_rows if item.get("status") == "defer"), "by_severity": {severity: sum(1 for item in finding_rows if item.get("severity") == severity) for severity in ("critical", "high", "medium", "low", "info")}}
+        exports = self.export_summary()
+        workflow = [{"key": "extraction", "label": "文档识别", "status": "completed" if state.get("extraction_state", "") in {"confirmed", "confirmed_corrected", "confirmed_with_warning"} else "not_started", "detail": "已确认" if state.get("extraction_state", "") in {"confirmed", "confirmed_corrected", "confirmed_with_warning"} else "待确认"}, {"key": "context", "label": "审查上下文", "status": "completed" if state.get("context_state") == "confirmed" else "not_started", "detail": "已确认" if state.get("context_state") == "confirmed" else "待确认"}, {"key": "local", "label": "本地预检", "status": "completed" if state.get("review_state") in {"local_precheck_completed", "ai_review_imported", "completed"} else "not_started", "detail": "已运行" if state.get("review_state") in {"local_precheck_completed", "ai_review_imported", "completed"} else "未运行"}, {"key": "ai", "label": "AI 专项审查", "status": "completed" if ai_requests and all(item.get("completed") for item in ai_requests) else "in_progress" if any(item.get("completed") for item in ai_requests) else "not_started", "detail": f"{sum(1 for item in ai_requests if item.get('completed'))}/{len(ai_requests) or 5} 已导入"}, {"key": "adjudication", "label": "人工裁决", "status": "completed" if findings_total and finding_summary["open"] == 0 else "in_progress" if findings_total else "not_started", "detail": f"{findings_total - finding_summary['open']}/{findings_total} 已处理" if findings_total else "暂无 Finding"}, {"key": "bridge", "label": "受约束修改", "status": "completed" if any(item.get("kind") == "revision-bridge" for item in exports) else "not_started", "detail": "已生成修改任务" if any(item.get("kind") == "revision-bridge" for item in exports) else "未开始"}, {"key": "export", "label": "导出结果", "status": "completed" if any(item.get("kind") == "export" for item in exports) else "not_started", "detail": "已有导出文件" if any(item.get("kind") == "export" for item in exports) else "未导出"}]
+        return {"project": manifest, "product_status": "experimental-preview", "state": state, "extraction": {"available": document is not None, "quality": document.quality.to_dict() if document else {}, "warnings": [warning.to_dict() for warning in document.warnings] if document else [], "blocks": [block.to_dict() for block in document.blocks] if document else [], "total_blocks": len(document.blocks) if document else 0}, "context": self.context().to_dict() if self.context() else {"model_suggestion": self.suggested_document_type()}, "can_review": can_review, "review_blockers": reasons, "ai_requests": ai_requests, "findings": finding_rows, "finding_summary": finding_summary, "workflow": workflow, "exports": exports}
 
 
 def _document_from_dict(value: Mapping[str, Any]) -> StructuredDocument:

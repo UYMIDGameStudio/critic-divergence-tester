@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import base64
 import json
+import mimetypes
+import os
 import secrets
 import shutil
+import subprocess
 import threading
 import webbrowser
 from dataclasses import dataclass, replace
@@ -13,7 +16,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from document_review_ingest import IngestionLimits, doctor_dependencies, repair_dependencies
 from document_review_studio import DocumentReviewProject, ReviewStudioError
@@ -90,6 +93,18 @@ class StudioApp:
         repair_dependencies(names)
         return self
 
+    def open_export_folder(self, relative_path: str) -> "StudioApp":
+        project = self.require_project()
+        target = project.export_file(relative_path)
+        folder = target.parent
+        if os.name == "nt" and hasattr(os, "startfile"):
+            os.startfile(str(folder))  # type: ignore[attr-defined]
+        elif os.name == "darwin":
+            subprocess.Popen(["open", str(folder)], close_fds=True)
+        else:
+            subprocess.Popen(["xdg-open", str(folder)], close_fds=True)
+        return self
+
     def require_project(self) -> DocumentReviewProject:
         if self.project is None:
             raise ReviewStudioError("请先上传或打开文档")
@@ -117,11 +132,15 @@ class StudioApp:
             raise ReviewStudioError("操作请求无效")
         if action == "delete_project":
             return self.delete_project(str(data.get("directory", "")))
+        if action == "close_project":
+            return replace(self, project=None)
         if action == "repair_environment":
             names = data.get("names")
             if names is not None and (not isinstance(names, list) or not all(isinstance(name, str) for name in names)):
                 raise ReviewStudioError("环境修复目标无效")
             return self.repair_environment(names)
+        if action == "open_export_folder":
+            return self.open_export_folder(str(data.get("relative_path", "")))
         project = self.require_project()
         if action == "confirm_extraction":
             project.confirm_extraction(str(data.get("choice", "")), corrected_text=data.get("corrected_text"))
@@ -177,13 +196,30 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
         return secrets.compare_digest(self.headers.get("X-Document-Review-Token", ""), self.server.app.token)
 
     def do_GET(self) -> None:  # noqa: N802
-        path = urlsplit(self.path).path
+        parsed_url = urlsplit(self.path)
+        path = parsed_url.path
         if path == "/":
             self._send(HTTPStatus.OK, render_studio_shell(self.server.app.token).encode("utf-8"), "text/html; charset=utf-8")
         elif path == "/api/state" and self._auth():
             self._json(HTTPStatus.OK, self.server.app.view())
+        elif path == "/api/download" and self._auth():
+            try:
+                project = self.server.app.require_project()
+                relative_path = parse_qs(parsed_url.query).get("path", [""])[0]
+                target = project.export_file(relative_path)
+                content = target.read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", mimetypes.guess_type(target.name)[0] or "application/octet-stream")
+                self.send_header("Content-Length", str(len(content)))
+                self.send_header("Content-Disposition", f'attachment; filename="{target.name.replace(chr(34), "")}"')
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                self.wfile.write(content)
+            except (OSError, ValueError, ReviewStudioError) as exc:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         else:
-            self._json(HTTPStatus.FORBIDDEN if path == "/api/state" else HTTPStatus.NOT_FOUND, {"error": "local UI token required" if path == "/api/state" else "not found"})
+            self._json(HTTPStatus.FORBIDDEN if path in {"/api/state", "/api/download"} else HTTPStatus.NOT_FOUND, {"error": "local UI token required" if path in {"/api/state", "/api/download"} else "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
@@ -238,22 +274,35 @@ _render_studio_shell_base = render_studio_shell
 def render_studio_shell(token: str) -> str:
     """Mark the product as preview and expose local and AI review as separate paths."""
     shell = _render_studio_shell_base(token)
+    shell = shell.replace("</style>", ".workflow{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin:10px 0}.workflow-step{padding:9px 7px;border-radius:8px;background:#eef3ec;font-size:12px}.workflow-step.current{background:#f7e4c3;border:1px solid var(--amber)}.workflow-step.done{background:#dcece1}.workflow-step b{display:block;margin-top:3px}.summary{display:flex;gap:8px;flex-wrap:wrap}.summary .pill{background:#eef3ec}.toolbar{display:flex;gap:8px;align-items:end;flex-wrap:wrap}.toolbar>label{min-width:145px}.review-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr);gap:15px}.finding-list{min-width:0}.finding-card{scroll-margin-top:15px}.finding-card.selected{outline:2px solid var(--amber)}.sticky{position:sticky;top:12px;align-self:start}.export-file{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line)}@media(max-width:900px){.workflow{grid-template-columns:repeat(4,1fr)}.review-grid{grid-template-columns:1fr}.sticky{position:static}}@media(max-width:760px){.workflow{grid-template-columns:repeat(2,1fr)}}" + "</style>")
     shell = shell.replace("<title>Document Review Studio</title>", "<title>Document Review Studio · Experimental Preview</title>")
     shell = shell.replace("<h1>Document Review Studio</h1>", "<h1>Document Review Studio <span class=\"pill\">experimental preview</span></h1>")
+    shell = shell.replace("先确认识别，再运行独立审查；Finding 不投票、不打总分，人工决定是否进入修改闭环。", "先确认抽取内容，再按步骤完成预检、AI 专项审查、人工裁决和导出。系统不投票、不打总分，接受的 Finding 才能进入修改闭环。")
     shell = shell.replace("先确认识别，再运行独立审查；Finding 不投票、不打总分，人工决定是否进入修改闭环。", "先确认抽取内容，再分别运行本地确定性预检或导入五个独立 AI critic；Finding 不投票、不打总分，人工决定并可修正动作。")
     shell = shell.replace("<h2>运行独立审查</h2><p>每个维度单独保存，保留分歧，不产生总分。</p>", "<h2>运行本地确定性预检</h2><p>这是关键词和结构规则预检，不是专业 AI 审查；每个维度单独保存，保留分歧，不产生总分。</p>")
     shell = shell.replace("运行选中的审查</button>", "运行选中的本地预检</button>")
     shell = shell.replace("act('run_audits'", "act('run_local_prechecks'")
-    shell = shell.replace("+(e.available?'<div class=\"row\">", "+(e.available?'<h3>抽取内容与定位预览</h3><div class=\"quote\">'+(e.blocks||[]).map(b=>'['+esc(b.location&&b.location.block_id||b.block_id)+' · page '+esc(b.location&&b.location.page||'-')+'] '+esc(b.text)).join('\\n\\n')+'</div><div class=\"row\">")
+    shell = shell.replace("+(e.available?'<div class=\"row\">", "+(e.available?'<h3>抽取内容与定位预览</h3><input id=\"extraction-search\" placeholder=\"搜索正文或 block 定位\"><div id=\"extraction-preview\" class=\"quote\">'+(e.blocks||[]).map(b=>'['+esc(b.location&&b.location.block_id||b.block_id)+' · page '+esc(b.location&&b.location.page||'-')+'] '+esc(b.text)).join('\\n\\n')+'</div><div class=\"row\">")
+    shell = shell.replace("const s=state.selected,st=s.state,e=s.extraction,c=s.context;let body='<div class=\"card\">", "const s=state.selected,st=s.state,e=s.extraction,c=s.context,labels={expression_ambiguity:'表达清晰度',execution_feasibility:'执行可行性',compliance_legal_screen:'合规风险筛查',reasonableness_governance:'治理合理性',official_professional_format:'正式规范性'},workflow=s.workflow||[],next=workflow.find(x=>x.status!=='completed'),integrity=(st.read_only||st.integrity_errors&&st.integrity_errors.length)?'<div class=\"card error\"><b>项目已切换为只读</b><p>完整性链或审计产物存在问题。请先查看诊断并恢复可信项目副本；当前不会继续写入正式审查结果。</p></div>':'';let body=integrity+'<div class=\"card\"><div class=\"workflow\">'+workflow.map(x=>'<div class=\"workflow-step '+(x.status==='completed'?'done ': '')+(next&&next.key===x.key?'current':'')+'\"><span>'+esc(x.label)+'</span><b>'+esc(x.detail)+'</b></div>').join('')+'</div><p class=\"next-step\"><b>'+(next?'继续：'+esc(next.label):'本轮流程已完成')+'</b></p></div><div class=\"card\">")
     shell = shell.replace("'<p class=\"row\"><button class=\"secondary open\" data-dir=\"'+esc(p.directory)+'\">打开</button><span>'", "'<p class=\"row\"><button class=\"secondary open\" data-dir=\"'+esc(p.directory)+'\">打开</button><button class=\"danger delete-project\" data-dir=\"'+esc(p.directory)+'\">删除</button><span>'")
     shell = shell.replace("<h3>环境自检</h3>", "<h3>环境自检</h3><p class=\"muted\">缺少 Python 适配器时可一键安装；Tesseract 等系统组件按提示处理。</p><p><button class=\"secondary\" id=\"repair-environment\">一键修复可自动修复项</button></p>")
     shell = shell.replace("state.dependencies.map(d=>'<div class=\"'+(d.available?'ok':'warning')+'\">'+esc(d.name)+'：'+(d.available?'可用':'缺失')+' · '+esc(d.purpose)+(d.install?' · '+esc(d.install):'')+'</div>').join('')", "state.dependencies.map(d=>'<div class=\"'+(d.available?'ok':'warning')+'\"><b>'+esc(d.name)+'</b>：'+(d.available?'可用':'缺失')+' · '+esc(d.purpose)+(d.install?' · '+esc(d.install):'')+(d.available?'':(d.repairable?'<button class=\"secondary repair-dependency\" data-dependency=\"'+esc(d.repair_key)+'\">一键修复</button>':'<div class=\"muted\">'+esc(d.repair_hint||'请按说明处理')+'</div>'))+'</div>').join('')")
-    shell = shell.replace("<h2>'+esc(s.project.title)+'</h2>", "<h2>'+esc(s.project.title)+'</h2><p><button class=\"danger\" id=\"delete-selected\" data-dir=\"'+esc(s.directory||'')+'\">删除本地项目</button></p>")
-    ai_card = "if(s.can_review){body+='<div class=\"card next\"><h2>导出 / 导入独立 AI 审查</h2><p>这里不直接调用模型。严格模式要求模型回显四个绑定字段；多数模型做不到时可选“普通 JSON（人工关联）”，系统会明确记录这是用户把响应关联到当前请求，而不是证明响应确由该 prompt 生成。</p><div class=\"grid\"><div><label>Provider</label><input id=\"ai-provider\" value=\"external\"><label>Model</label><input id=\"ai-model\" placeholder=\"例如 gpt-5\"><button id=\"prepare-ai\">导出五份独立协议</button></div><div><label>已导出的协议</label><select id=\"ai-request\">'+(s.ai_requests||[]).map(r=>'<option value=\"'+esc(r.request_id)+'\">'+esc(r.critic)+' · '+esc(r.provider)+'/'+esc(r.model)+'</option>').join('')+'</select><label>响应绑定方式</label><select id=\"ai-binding-mode\"><option value=\"strict\">严格绑定（要求模型回显字段）</option><option value=\"manual_association\">普通 JSON（人工关联，较弱审计）</option></select><label>模型原始 JSON 响应</label><textarea id=\"ai-response\" placeholder=\"粘贴所选 critic 的 JSON；普通 JSON 模式不要求回显绑定字段\"></textarea><button id=\"import-ai\">导入并校验 AI 审查</button></div></div>'+(s.ai_requests||[]).map(r=>'<details><summary>'+esc(r.critic)+' · prompt '+esc(r.prompt_sha256.slice(0,12))+'</summary><div class=\"block\">'+esc(r.prompt)+'</div></details>').join('')+'<div id=\"err\" class=\"error\"></div></div>';}"
+    shell = shell.replace("<h2>'+esc(s.project.title)+'</h2>", "<div class=\"row\"><button class=\"secondary\" id=\"back-projects\">← 返回项目列表</button><button class=\"danger\" id=\"delete-selected\" data-dir=\"'+esc(s.directory||'')+'\">删除本地项目</button></div><h2>'+esc(s.project.title)+'</h2><p class=\"muted\">原件：'+esc(s.project.source.name)+' · 原始 SHA-256：'+esc(s.project.source.sha256.slice(0,16))+'…</p>")
+    shell = shell.replace("if(s.findings.length){body+='<div class=\"card\"><h2>人工裁决 Finding</h2><p class=\"muted\">不同审查维度不投票合并；每条都保留证据、定位、标准、后果和不确定项。</p></div>'", "if(s.findings.length){body+='<div class=\"card\"><h2>人工裁决队列</h2><div class=\"summary\"><span class=\"pill\">共 '+(s.finding_summary?.total||0)+' 条</span><span class=\"pill\">待处理 '+(s.finding_summary?.open||0)+' 条</span><span class=\"pill\">高/严重 '+((s.finding_summary?.by_severity?.high||0)+(s.finding_summary?.by_severity?.critical||0))+' 条</span></div><div class=\"toolbar\"><label>审查维度<select id=\"finding-critic-filter\"><option value=\"\">全部维度</option>'+Object.entries(labels).map(([key,label])=>'<option value=\"'+key+'\">'+label+'</option>').join('')+'</select></label><label>严重度<select id=\"finding-severity-filter\"><option value=\"\">全部严重度</option><option>critical</option><option>high</option><option>medium</option><option>low</option><option>info</option></select></label><label>状态<select id=\"finding-status-filter\"><option value=\"\">全部状态</option><option value=\"open\">待处理</option><option value=\"accept\">接受</option><option value=\"correct\">修正</option><option value=\"reject\">拒绝</option><option value=\"defer\">暂缓</option></select></label></div></div><div class=\"review-grid\"><div class=\"finding-list\">'")
+    shell = shell.replace("s.findings.map(f=>'<div class=\"card finding\">", "s.findings.map(f=>'<div class=\"card finding finding-card\" id=\"finding-'+esc(f.finding_id)+'\" data-critic=\"'+esc(f.critic)+'\" data-severity=\"'+esc(f.severity)+'\" data-status=\"'+esc(f.status)+'\">")
+    shell = shell.replace("esc(f.critic)+'</span><span class=\"pill\">", "esc(labels[f.critic]||f.critic)+'</span><span class=\"pill\">")
+    shell = shell.replace("+'<input id=\"reason-'+esc(f.finding_id)+'\" placeholder=\"人工决定理由\"><div class=\"row\">", "+'<details><summary>查看完整审查信息</summary><p><b>判断标准：</b>'+esc(f.standard)+'</p><p><b>验证状态：</b>'+esc(f.verification_state)+'</p><p><b>外部依据：</b>'+esc((f.external_basis&&((f.external_basis.source_name||'')+' '+(f.external_basis.locator||'')))||'未提供')+'</p><p><b>尚待确认：</b>'+esc((f.uncertainties||[]).join('；')||'无')+'</p><p><b>建议责任人：</b>'+esc(f.suggested_owner||'未指定')+' · <b>阻断发布/执行：</b>'+((f.blocks_release_or_execution)?'是':'否')+'</p><p><b>需要观察：</b>'+esc(f.required_observation||'无')+'</p>'+(f.competing_readings&&f.competing_readings.length?'<p><b>竞争读法：</b>'+esc(f.competing_readings.join('；'))+'</p>':'')+'</details><input id=\"reason-'+esc(f.finding_id)+'\" placeholder=\"人工决定理由\"><div class=\"row\">")
+    shell = shell.replace("placeholder=\"人工决定理由\"><div class=\"row\">", "placeholder=\"人工决定理由\"><label>人工修正动作（accept/correct 时优先进入修改桥）</label><textarea id=\"action-'+esc(f.finding_id)+'\" placeholder=\"'+esc(f.suggested_action)+'\"></textarea><div class=\"row\">")
+    shell = shell.replace("body+='<div class=\"card\"><button id=\"bridge\">准备进入受约束修改闭环</button> <button id=\"export\">导出审计报告与草稿</button><div id=\"err\" class=\"error\"></div></div>'", "body+='</div><aside class=\"card sticky\"><h3>审查摘要</h3><p>先按维度和严重度筛选，再逐条处理。接受或修正后的 Finding 才会进入修改桥。</p><p><b>待处理：</b>'+(s.finding_summary?.open||0)+' · <b>已处理：</b>'+((s.finding_summary?.accept||0)+(s.finding_summary?.correct||0)+(s.finding_summary?.reject||0)+(s.finding_summary?.defer||0))+'</p><button id=\"bridge\">生成修改任务</button> <button id=\"export\">导出审查结果</button></aside></div><div id=\"err\" class=\"error\"></div>'")
+    shell = shell.replace("root.innerHTML=body;if(document.getElementById('confirm'))", "const exports=s.exports||[];if(exports.length){body+='<div class=\"card\"><h2>导出中心</h2><p class=\"ok\">导出文件已经生成，点击即可下载。</p>'+exports.map(x=>'<details open><summary>'+esc(x.kind==='revision-bridge'?'修改任务':'审查导出')+' · '+esc(x.export_id)+(x.finding_count?' · '+x.finding_count+' 条 Finding':'')+'</summary><div>'+x.files.map(f=>'<div class=\"export-file\"><span>'+esc(f.label)+' <small>'+esc(f.name)+'</small></span><button class=\"secondary download-file\" data-path=\"'+esc(f.relative_path)+'\">下载</button></div>').join('')+'</div><p><button class=\"secondary open-export-folder\" data-path=\"'+esc(x.files[0]?.relative_path||'')+'\">打开所在文件夹</button></p></details>').join('')+'</div>'}root.innerHTML=body;if(document.getElementById('confirm'))")
+    ai_card = "if(s.can_review){const requests=s.ai_requests||[],done=requests.filter(r=>r.completed).length;body+='<div class=\"card next\"><h2>导出 / 导入独立 AI 审查 <span class=\"pill\">'+done+'/'+(requests.length||5)+' 已导入</span></h2><p>这里不直接调用模型。先导出五份独立协议，再把每个 critic 的结果导回。协议只需要复制一次；导入后会自动记录完成状态。模型来源和版本仅作声明记录。</p><div class=\"summary\">'+requests.map(r=>'<span class=\"pill\">'+(r.completed?'✓ ':'○ ')+esc(labels[r.critic]||r.critic)+'</span>').join('')+'</div><div class=\"grid\"><div><label>模型来源（仅记录）</label><input id=\"ai-provider\" value=\"手动导入\"><label>模型/版本（仅记录）</label><input id=\"ai-model\" value=\"未声明模型\"><button id=\"prepare-ai\">导出五份独立协议</button><p class=\"muted\">如果你暂时不接 API，这里仍然可以用任意模型手动完成；系统不会把它说成直接调用。</p></div><div><label>当前 critic</label><select id=\"ai-request\">'+requests.map(r=>'<option value=\"'+esc(r.request_id)+'\">'+(r.completed?'✓ ':'○ ')+esc(labels[r.critic]||r.critic)+'</option>').join('')+'</select><div class=\"row\"><button class=\"secondary\" id=\"copy-ai\">复制当前协议</button><button class=\"secondary\" id=\"previous-ai\">上一项</button><button class=\"secondary\" id=\"next-ai\">下一项</button></div><label>响应绑定方式</label><select id=\"ai-binding-mode\"><option value=\"strict\">严格绑定（强审计）</option><option value=\"manual_association\">普通 JSON（人工关联，较弱审计）</option></select><label>模型原始 JSON 响应（当前 critic）</label><textarea id=\"ai-response\" placeholder=\"粘贴当前 critic 的 JSON；普通 JSON 模式不要求回显绑定字段\"></textarea><button id=\"import-ai\">导入当前结果</button></div></div>'+(requests.length?requests.map(r=>'<details class=\"ai-protocol\"><summary>'+(r.completed?'✓ ':'○ ')+esc(labels[r.critic]||r.critic)+' · '+esc(r.prompt_sha256.slice(0,12))+'</summary><div class=\"row\"><button class=\"secondary copy-request\" data-request=\"'+esc(r.request_id)+'\">复制这份协议</button></div><div class=\"block\">'+esc(r.prompt)+'</div></details>').join(''):'<p class=\"muted\">还没有协议。点击“导出五份独立协议”开始。</p>')+'<div id=\"err\" class=\"error\"></div></div>';}"
     shell = shell.replace("if(s.findings.length){", ai_card + "if(s.findings.length||['local_precheck_completed','ai_review_imported'].includes(st.review_state)){if(!s.findings.length)body+='<div class=\"card\"><h2>本轮没有产生 Finding</h2><p>零 Finding 结果仍保留审查范围和依据，不代表自动确认合规或质量。</p></div>';" )
     shell = shell.replace("+'<input id=\"reason-'+esc(f.finding_id)+'\" placeholder=\"人工决定理由\"><div class=\"row\"><button class=\"decision\" data-id=\"'+esc(f.finding_id)+'\" data-decision=\"accept\">接受</button>", "+'<input id=\"reason-'+esc(f.finding_id)+'\" placeholder=\"人工决定理由\"><label>人工修正动作（accept/correct 时优先进入修改桥）</label><textarea id=\"action-'+esc(f.finding_id)+'\" placeholder=\"'+esc(f.suggested_action)+'\"></textarea><div class=\"row\"><button class=\"decision\" data-id=\"'+esc(f.finding_id)+'\" data-decision=\"accept\">接受</button><button class=\"decision secondary\" data-id=\"'+esc(f.finding_id)+'\" data-decision=\"correct\">修正后接受</button>")
     shell = shell.replace("document.querySelectorAll('.open').forEach(b=>b.onclick=async()=>{state=await api('/api/open',{directory:b.dataset.dir});render()})", "document.querySelectorAll('.open').forEach(b=>b.onclick=async()=>{state=await api('/api/open',{directory:b.dataset.dir});render()});document.querySelectorAll('.delete-project').forEach(b=>b.onclick=async()=>{if(!confirm('删除后无法恢复，确定删除这个本地项目吗？'))return;state=await api('/api/action',{action:'delete_project',data:{directory:b.dataset.dir}});render()})")
     shell = shell.replace("document.querySelectorAll('.decision').forEach(b=>b.onclick=()=>act('decide_finding',{finding_id:b.dataset.id,decision:b.dataset.decision,reason:document.getElementById('reason-'+b.dataset.id).value}));", "if(document.getElementById('prepare-ai'))document.getElementById('prepare-ai').onclick=()=>act('prepare_ai_audits',{critics:['expression_ambiguity','execution_feasibility','compliance_legal_screen','reasonableness_governance','official_professional_format'],provider:document.getElementById('ai-provider').value,model:document.getElementById('ai-model').value});if(document.getElementById('import-ai'))document.getElementById('import-ai').onclick=()=>{const id=document.getElementById('ai-request').value,r=(s.ai_requests||[]).find(x=>x.request_id===id);if(!r)return alert('请先导出协议');act('import_ai_audit',{request_id:id,critic:r.critic,provider:r.provider,model:r.model,binding_mode:document.getElementById('ai-binding-mode').value,response:document.getElementById('ai-response').value})};if(document.getElementById('repair-environment'))document.getElementById('repair-environment').onclick=()=>act('repair_environment');document.querySelectorAll('.repair-dependency').forEach(b=>b.onclick=()=>act('repair_environment',{names:[b.dataset.dependency]}));if(document.getElementById('delete-selected'))document.getElementById('delete-selected').onclick=async()=>{if(!confirm('删除后无法恢复，确定删除这个本地项目吗？'))return;state=await api('/api/action',{action:'delete_project',data:{directory:document.getElementById('delete-selected').dataset.dir}});render()};document.querySelectorAll('.decision').forEach(b=>b.onclick=()=>act('decide_finding',{finding_id:b.dataset.id,decision:b.dataset.decision,reason:document.getElementById('reason-'+b.dataset.id).value,corrected_action:document.getElementById('action-'+b.dataset.id).value||null}));")
+    shell = shell.replace("if(document.getElementById('replace'))document.getElementById('replace').onclick=()=>act('confirm_extraction',{choice:'replace'});", "if(document.getElementById('replace'))document.getElementById('replace').onclick=()=>act('close_project');")
+    shell = shell.replace("</script></body></html>", ";root.addEventListener('click',async event=>{const button=event.target.closest('button');if(!button)return;if(button.id==='back-projects'){state=await api('/api/action',{action:'close_project'});render()}else if(button.classList.contains('copy-ai')||button.classList.contains('copy-request')){const id=button.dataset.request||document.getElementById('ai-request')?.value,r=(state.selected?.ai_requests||[]).find(x=>x.request_id===id);if(r){try{await navigator.clipboard.writeText(r.prompt);button.textContent='已复制';setTimeout(()=>button.textContent=button.dataset.request?'复制这份协议':'复制当前协议',1200)}catch(error){alert('浏览器未允许复制，请展开协议后手动复制')}}}else if(button.id==='previous-ai'||button.id==='next-ai'){const select=document.getElementById('ai-request');if(select){select.selectedIndex=Math.max(0,Math.min(select.options.length-1,select.selectedIndex+(button.id==='next-ai'?1:-1)));select.dispatchEvent(new Event('change'))}}else if(button.classList.contains('download-file')){const response=await fetch('/api/download?path='+encodeURIComponent(button.dataset.path),{headers:{'X-Document-Review-Token':TOKEN}});if(!response.ok){const error=await response.json();alert(error.error||'下载失败');return}const blob=await response.blob(),link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download=button.dataset.path.split('/').pop();link.click();URL.revokeObjectURL(link.href)}else if(button.classList.contains('open-export-folder')){act('open_export_folder',{relative_path:button.dataset.path})}});root.addEventListener('change',event=>{if(!event.target.id?.startsWith('finding-'))return;const critic=document.getElementById('finding-critic-filter')?.value||'',severity=document.getElementById('finding-severity-filter')?.value||'',status=document.getElementById('finding-status-filter')?.value||'';document.querySelectorAll('.finding-card').forEach(card=>{card.hidden=Boolean((critic&&card.dataset.critic!==critic)||(severity&&card.dataset.severity!==severity)||(status&&card.dataset.status!==status))})});</script></body></html>")
+    shell = shell.replace("</script>", "root.addEventListener('input',event=>{if(event.target.id!=='extraction-search')return;const query=event.target.value.toLowerCase(),blocks=state.selected?.extraction?.blocks||[];document.getElementById('extraction-preview').textContent=blocks.filter(b=>!query||String(b.text||'').toLowerCase().includes(query)||String(b.block_id||'').toLowerCase().includes(query)).map(b=>'['+(b.location?.block_id||b.block_id)+' · page '+(b.location?.page||'-')+'] '+(b.text||'')).join('\\n\\n')});</script>")
     return shell
 
 

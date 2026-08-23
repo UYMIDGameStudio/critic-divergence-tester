@@ -39,7 +39,7 @@ Document Review Studio 当前标记为 **experimental preview**。它支持 Mark
 识别确认由受保护的 extraction decision 产物授权，`state.json` 只是可重建缓存；
 本地索引可发现普通修改/删除，但强回滚仍需要项目外可信检查点或签名。
 
-应用会自动打开本机页面。创建项目后，页面始终只突出一个下一步：导入现有审查报告 → 复制模型无关提示词 → 确认原子发现 → 只为已接受问题生成修改提案 → 逐 hunk 接受、拒绝或手改 → 生成不可变 V2 → 按原标准复查 → 导出。用户不需要打开 JSON 或拼 artifact 路径。
+应用会自动打开本机页面。创建项目后，页面用七步状态条和一个“继续”主提示引导流程：确认识别 → 确认上下文 → 本地预检 → 导出/导入五个独立 AI critic → 逐条人工裁决 → 生成修改任务 → 导出结果。协议支持一键复制、上一项/下一项和 `x/5` 导入进度；导出中心直接提供各文件下载和打开所在文件夹，不要求用户打开 JSON 或拼 artifact 路径。
 
 已有 Reviewed IR 的项目会在同一项目主页显示“专业研究视图”，继续提供 Claim、Rule/Perspective Lens、Citation、版本 lineage 和 Finding Resolution；不同 Lens 的结论保持并列，不做投票合并。快速修订仍是默认入口。
 

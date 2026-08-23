@@ -179,8 +179,27 @@ class DocumentReviewStudioTests(unittest.TestCase):
             self.assertTrue(bridge.is_file())
             export = project.export()
             self.assertTrue((export / "audit.json").is_file())
+            self.assertTrue((export / "audit-package.zip").is_file())
+            export_rows = project.view()["exports"]
+            self.assertTrue(any(row["kind"] == "export" and any(file["name"] == "audit-package.zip" for file in row["files"]) for row in export_rows))
             self.assertIsNone(__import__("json").loads((export / "audit.json").read_text(encoding="utf-8"))["scores"])
             self.assertEqual(project.integrity_errors(), [])
+
+    def test_local_precheck_does_not_treat_negated_terms_as_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="活动.md", content="# 活动方案\n\n但没有负责人、预算依据或验收指标。\n本活动不涉及收费，也没有申诉渠道。\n".encode())
+            project.confirm_extraction("confirm")
+            project.confirm_context(self.context())
+            project.run_local_prechecks(["execution_feasibility", "compliance_legal_screen", "reasonableness_governance"])
+            findings = project.findings()
+            execution_issues = {item.issue for item in findings if item.critic == "execution_feasibility"}
+            self.assertIn("执行模型缺少负责人", execution_issues)
+            self.assertIn("执行模型缺少预算依据", execution_issues)
+            self.assertIn("方案没有可验证的验收指标", execution_issues)
+            self.assertFalse(any(item.critic == "compliance_legal_screen" for item in findings))
+            governance = [item for item in findings if item.critic == "reasonableness_governance"]
+            self.assertTrue(governance)
+            self.assertIn("申诉渠道", governance[0].issue)
 
     def test_decision_chain_uses_sequence_and_previous_hash_not_filename_order(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

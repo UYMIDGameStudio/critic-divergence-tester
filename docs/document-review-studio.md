@@ -23,6 +23,11 @@ accepts a project directory directly inside the configured library; deleting a
 project removes its local source, audit artifacts, receipts, and exports. Copy
 the project directory elsewhere first if it is needed as a backup.
 
+Inside a project, the header shows the seven-stage workflow and one suggested
+next action. The extraction preview can search long documents by text or block
+identifier. Finding review is filtered by critic, severity, and decision state;
+the full Finding contract is available from each card.
+
 The UI flow is intentionally gated:
 
 1. Upload `.md`, `.txt`, `.docx`, or `.pdf`.
@@ -155,6 +160,13 @@ Imports preserve the declared metadata, raw response hash/content, and parsed
 AuditRun/Finding separately. `collect_model_audit` validates the source hash,
 critic identity, Finding contract, and block locations in either mode, and
 validates the request envelope in strict mode.
+
+The browser keeps a per-critic `imported/not imported` count, provides copy and
+previous/next controls for protocol work, and shows every generated export in
+an export center. Exported files can be downloaded individually, and the
+containing folder can be opened from the local desktop. The ZIP is a bundle of
+the generated audit result and normalized editable output; it is not a claim
+that a revised document was produced before the constrained revision loop.
 
 For DOCX inputs, preview exports are named
 `normalized-editable-copy.docx`. They may lose source layout and are not a
