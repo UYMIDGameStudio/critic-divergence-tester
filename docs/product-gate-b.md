@@ -102,3 +102,12 @@ proposals, including four splits and one Claim-level removal. An initially
 invalid structural proposal attempt was retained before the corrected valid
 attempt, exercising immutable failed-attempt history. Every proposal remains
 model-derived and receives no `human_confirmed` status from this preflight.
+
+On the same date the author explicitly adopted both candidate texts. Fresh
+copies of the corresponding V1 workspaces were therefore created as the formal
+private Gate B projects. The adopted bytes were imported as immutable V2
+sources, the valid Raw IR responses were collected again, and fresh structural
+diff and semantic-lineage artifacts were generated against the formal parent
+hashes. Both projects pass `ir verify-project`. Adoption does not imply approval
+of any model-proposed Claim correspondence; formal lineage adjudication remains
+a separate human step.
