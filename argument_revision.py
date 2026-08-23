@@ -336,17 +336,19 @@ def _latest_valid_findings(project_dir: Path | str) -> tuple[Any, Path, dict[str
 
 def current_quick_findings(project_dir: Path | str) -> list[dict[str, Any]]:
     workspace, findings_path, payload = _latest_valid_findings(project_dir)
+    findings_sha256 = sha256_bytes(findings_path.read_bytes())
     decisions: dict[str, dict[str, Any]] = {}
     for path in _regular_files(_quick_root(workspace.root, workspace.version_id) / "finding-decisions", "FD*.json"):
         decision, _ = _read_json(path)
-        decisions[str(decision.get("finding_id"))] = decision
+        if decision.get("source_findings_sha256") == findings_sha256:
+            decisions[str(decision.get("finding_id"))] = decision
     rows = []
     for finding in payload["findings"]:
         decision = decisions.get(finding["finding_id"])
         corrected = dict(finding)
         if decision and isinstance(decision.get("corrections"), dict):
             corrected.update(decision["corrections"])
-        rows.append({**corrected, "decision": None if decision is None else decision["decision"], "decision_id": None if decision is None else decision["decision_id"], "action_id": None if decision is None else decision.get("action_id"), "source_findings_sha256": sha256_bytes(findings_path.read_bytes())})
+        rows.append({**corrected, "decision": None if decision is None else decision["decision"], "decision_id": None if decision is None else decision["decision_id"], "action_id": None if decision is None else decision.get("action_id"), "source_findings_sha256": findings_sha256})
     return rows
 
 
@@ -403,7 +405,7 @@ def prepare_revision_generation(project_dir: Path | str) -> Path:
     allowed = [{key: item.get(key) for key in ("finding_id", "claim_id", "manuscript_quote", "location_kind", "assertion", "criterion", "suggested_action", "evidence_level", "uncertainties", "action_id")} for item in selected]
     contract = {"schema_version": REVISION_SCHEMA_VERSION, "generation_run_id": run_id, "manuscript_version_id": workspace.version_id, "source_sha256": version["source"]["sha256"], "changes": [{"change_id": "CH1", "original_quote": "unique text or empty for insertion", "insertion_anchor": None, "replacement_text": "new text", "finding_ids": [selected[0]["finding_id"]], "action_ids": [selected[0]["action_id"]], "change_kind": "replace", "reason": "why this solves the finding", "uncertainties": [], "fact_change": False, "verification_note": ""}]}
     prompt = ("# Constrained revision proposal\n\nReturn strict JSON only. Change only material required by the accepted findings below. Every change must be independently locatable and linked to allowed finding/action IDs. Do not return a whole rewritten manuscript. For missing content, set original_quote to an empty string and provide a unique insertion_anchor with insert_before or insert_after. Mark any change to quotations, numbers, names, citations, URLs, or factual assertions with fact_change true and a verification_note.\n\n" + f"Contract:\n```json\n{json.dumps(contract, ensure_ascii=False, indent=2)}\n```\n\nAllowed findings/actions:\n```json\n{json.dumps(allowed, ensure_ascii=False, indent=2)}\n```\n\n" + f"Immutable manuscript {workspace.version_id}, SHA-256 {version['source']['sha256']}:\n\n{manuscript}\n").encode()
-    record = {"artifact_type": "revision-generation-run", "schema_version": 1, "generation_run_id": run_id, "manuscript_version_id": workspace.version_id, "source_sha256": version["source"]["sha256"], "finding_ids": [item["finding_id"] for item in selected], "action_ids": [item["action_id"] for item in selected], "finding_bindings": [{"finding_id": item["finding_id"], "manuscript_quote": item["manuscript_quote"], "location_kind": item["location_kind"]} for item in selected], "prompt": {"relative_path": "prompt.md", "sha256": sha256_bytes(prompt)}, "provenance": _provenance("deterministic", "argument-revision"), "lifecycle": "immutable"}
+    record = {"artifact_type": "revision-generation-run", "schema_version": 1, "generation_run_id": run_id, "manuscript_version_id": workspace.version_id, "source_sha256": version["source"]["sha256"], "finding_ids": [item["finding_id"] for item in selected], "action_ids": [item["action_id"] for item in selected], "finding_bindings": [{"finding_id": item["finding_id"], "manuscript_quote": item["manuscript_quote"], "location_kind": item["location_kind"]} for item in selected], "finding_action_bindings": [{"finding_id": item["finding_id"], "action_id": item["action_id"]} for item in selected], "prompt": {"relative_path": "prompt.md", "sha256": sha256_bytes(prompt)}, "provenance": _provenance("deterministic", "argument-revision"), "lifecycle": "immutable"}
     _write_new(run / "prompt.md", prompt); _write_new(run / "record.json", json_bytes(record))
     return run
 
@@ -421,6 +423,20 @@ def _validate_revision(value: object, run: dict[str, Any], manuscript: str) -> t
     ranges: list[tuple[int, int, str]] = []; seen: set[str] = set(); normalized: list[dict[str, Any]] = []
     allowed_findings, allowed_actions = set(run["finding_ids"]), set(run["action_ids"])
     bindings = {item["finding_id"]: item for item in run.get("finding_bindings", []) if isinstance(item, dict)}
+    raw_finding_actions = run.get("finding_action_bindings")
+    finding_actions = {
+        item["finding_id"]: item["action_id"]
+        for item in (raw_finding_actions or [])
+        if isinstance(item, dict)
+        and isinstance(item.get("finding_id"), str)
+        and isinstance(item.get("action_id"), str)
+    }
+    if raw_finding_actions is None and len(run["finding_ids"]) == len(run["action_ids"]):
+        # Schema-v1 runs created before explicit pair bindings preserved both
+        # arrays in the same selected-finding order.
+        finding_actions = dict(zip(run["finding_ids"], run["action_ids"]))
+    elif set(finding_actions) != allowed_findings or set(finding_actions.values()) != allowed_actions:
+        errors.append("generation run Finding–Action bindings are incomplete or inconsistent")
     for number, change in enumerate(changes, 1):
         label = f"changes[{number}]"
         if not isinstance(change, dict) or set(change) != expected: errors.append(f"{label} has unexpected or missing fields"); continue
@@ -432,6 +448,9 @@ def _validate_revision(value: object, run: dict[str, Any], manuscript: str) -> t
         if len(aids) != len(set(aids)): errors.append(f"{label}.action_ids must be unique")
         if not fids or not set(fids).issubset(allowed_findings): errors.append(f"{label}.finding_ids reference unselected findings")
         if not aids or not set(aids).issubset(allowed_actions): errors.append(f"{label}.action_ids reference unselected actions")
+        expected_actions = {finding_actions[finding_id] for finding_id in fids if finding_id in finding_actions}
+        if set(aids) != expected_actions:
+            errors.append(f"{label} Finding–Action bindings do not match")
         if change.get("change_kind") not in CHANGE_KINDS: errors.append(f"{label}.change_kind is invalid")
         for field in ("original_quote", "replacement_text", "reason", "verification_note"):
             if not isinstance(change.get(field), str): errors.append(f"{label}.{field} must be text")
@@ -607,15 +626,101 @@ def collect_resolution_result(project_dir: Path | str, response: str | bytes, *,
     return AttemptResult(attempt_id, not errors, tuple(errors), response_path, repair)
 
 
+def _latest_resolution_proposal(project_dir: Path | str, run: Path | None = None) -> tuple[Path, Path, dict[str, Any]]:
+    root = workspace_paths(project_dir).root
+    selected_run = run or _latest_dir(root / "documents" / "D1" / "resolution-runs", "RR")
+    attempts = selected_run / "attempts"
+    if not attempts.is_dir() or attempts.is_symlink():
+        raise WorkbenchError("no valid resolution proposal exists")
+    for attempt in sorted((path for path in attempts.iterdir() if path.is_dir() and not path.is_symlink()), reverse=True):
+        proposal_path = attempt / "resolution-proposals.json"
+        if proposal_path.is_file() and not proposal_path.is_symlink():
+            return selected_run, proposal_path, _read_json(proposal_path)[0]
+    raise WorkbenchError("no valid resolution proposal exists")
+
+
 def append_resolution_decision(project_dir: Path | str, finding_id: str, *, status: str, reason: str, producer: str = "local-workbench-ui") -> str:
-    root = workspace_paths(project_dir).root; run = _latest_dir(root / "documents" / "D1" / "resolution-runs", "RR"); attempts = run / "attempts"; proposal_path = None
-    for attempt in sorted((p for p in attempts.iterdir() if p.is_dir()), reverse=True):
-        if (attempt / "resolution-proposals.json").is_file(): proposal_path = attempt / "resolution-proposals.json"; break
-    if proposal_path is None: raise WorkbenchError("no valid resolution proposal exists")
-    proposal, _ = _read_json(proposal_path); proposed = {item["finding_id"] for item in proposal["results"]}
+    run, proposal_path, proposal = _latest_resolution_proposal(project_dir)
+    proposed = {item["finding_id"] for item in proposal["results"]}
     if finding_id not in proposed or status not in RESOLUTION_STATUSES or not reason.strip(): raise WorkbenchError("valid finding, status, and reason are required")
     directory = run / "human-decisions"; decision_id = _next_id(directory, "RD")
     value = {"artifact_type": "finding-resolution-decision", "schema_version": 1, "decision_id": decision_id, "finding_id": finding_id, "final_status": status, "reason": reason, "proposal_sha256": sha256_bytes(proposal_path.read_bytes()), "provenance": _provenance("human-confirmed", producer), "lifecycle": "append-only"}; _write_new(directory / f"{decision_id}.json", json_bytes(value)); return decision_id
+
+
+def complete_without_revision(project_dir: Path | str, *, reason: str, producer: str = "local-workbench-ui") -> Path:
+    """Close a workflow without creating a fake V2 when no revision is selected."""
+    if not isinstance(reason, str) or not reason.strip():
+        raise WorkbenchError("a reason is required to complete without revision")
+    workspace, findings_path, findings_payload = _latest_valid_findings(project_dir)
+    findings = current_quick_findings(workspace.root)
+    if any(item["decision"] == "accept" for item in findings):
+        raise WorkbenchError("accepted findings require the constrained revision workflow")
+    if findings and any(item["decision"] is None for item in findings):
+        raise WorkbenchError("every finding must be rejected or deferred before completing without revision")
+
+    findings_sha256 = sha256_bytes(findings_path.read_bytes())
+    completions = _quick_root(workspace.root, workspace.version_id) / "no-revision-completions"
+    for path in reversed(_regular_files(completions, "NC*.json")):
+        existing, _ = _read_json(path)
+        if existing.get("source_findings_sha256") == findings_sha256:
+            export_dir = workspace.root / "exports" / existing["completion_id"]
+            if (export_dir / "audit.json").is_file():
+                return export_dir
+
+    decisions: list[dict[str, Any]] = []
+    decision_sha256s: list[str] = []
+    decision_dir = _quick_root(workspace.root, workspace.version_id) / "finding-decisions"
+    for path in _regular_files(decision_dir, "FD*.json"):
+        decision, raw = _read_json(path)
+        if decision.get("source_findings_sha256") == findings_sha256:
+            decisions.append(decision)
+            decision_sha256s.append(sha256_bytes(raw))
+
+    completion_id = _next_id(completions, "NC")
+    outcome = "no_findings" if not findings else "all_declined"
+    record = {
+        "artifact_type": "no-revision-completion",
+        "schema_version": 1,
+        "completion_id": completion_id,
+        "manuscript_version_id": workspace.version_id,
+        "source_sha256": _source(workspace.root, workspace.version_id)[1]["source"]["sha256"],
+        "source_findings_sha256": findings_sha256,
+        "outcome": outcome,
+        "reason": reason.strip(),
+        "finding_decision_ids": [item["decision_id"] for item in decisions],
+        "finding_decision_sha256s": decision_sha256s,
+        "provenance": _provenance("human-confirmed", producer),
+        "lifecycle": "immutable",
+    }
+    _write_new(completions / f"{completion_id}.json", json_bytes(record))
+
+    _, _, source_bytes, _ = _source(workspace.root, workspace.version_id)
+    export_dir = workspace.root / "exports" / completion_id
+    _write_new(export_dir / f"{workspace.version_id}.md", source_bytes)
+    checklist = [
+        "# Revision checklist",
+        "",
+        f"- Manuscript: `{workspace.version_id}` `{record['source_sha256']}`",
+        f"- Outcome: `{outcome}`",
+        f"- Reason: {record['reason']}",
+        "",
+        "No revised document version was created.",
+        "",
+    ]
+    _write_new(export_dir / "revision-checklist.md", "\n".join(checklist).encode("utf-8"))
+    audit = {
+        "artifact_type": "no-revision-audit-export",
+        "schema_version": 1,
+        "completion": record,
+        "atomic_findings": findings_payload,
+        "atomic_findings_sha256": findings_sha256,
+        "findings": findings,
+        "finding_decisions": decisions,
+        "source_sha256": record["source_sha256"],
+    }
+    _write_new(export_dir / "audit.json", json_bytes(audit))
+    _write_new(export_dir / "audit.md", ("# No-revision audit\n\n" + "\n".join(checklist[2:])).encode("utf-8"))
+    return export_dir
 
 
 def export_revision(project_dir: Path | str, application_id: str | None = None) -> Path:
@@ -629,10 +734,18 @@ def export_revision(project_dir: Path | str, application_id: str | None = None) 
     findings = current_quick_findings(root); resolutions: dict[str, dict[str, Any]] = {}
     runs = root / "documents" / "D1" / "resolution-runs"
     if runs.is_dir():
-        for run in runs.iterdir():
-            directory = run / "human-decisions"
-            for path in _regular_files(directory, "RD*.json"):
-                item, _ = _read_json(path); resolutions[item["finding_id"]] = item
+        matching_runs: list[Path] = []
+        for run in sorted(path for path in runs.iterdir() if path.is_dir() and not path.is_symlink()):
+            record, _ = _read_json(run / "record.json")
+            if record.get("application_id") == application["application_id"]:
+                matching_runs.append(run)
+        if matching_runs:
+            resolution_run, resolution_proposal_path, _ = _latest_resolution_proposal(root, matching_runs[-1])
+            proposal_sha256 = sha256_bytes(resolution_proposal_path.read_bytes())
+            for path in _regular_files(resolution_run / "human-decisions", "RD*.json"):
+                item, _ = _read_json(path)
+                if item.get("proposal_sha256") == proposal_sha256:
+                    resolutions[item["finding_id"]] = item
     lines = ["# Executable revision checklist", "", f"- Base: `{application['base_version_id']}` `{application['base_source_sha256']}`", f"- Output: `{application['output_version_id']}` `{application['output_source_sha256']}`", "", "## Findings", ""]
     for item in findings:
         status = resolutions.get(item["finding_id"], {}).get("final_status", "not_evaluated")
@@ -672,8 +785,19 @@ def workflow_view(project_dir: Path | str) -> dict[str, Any]:
     if valid_findings is None:
         return {**view, "stage": "atomization_result", "next_action": "粘贴 AI 的原子化结果"}
     findings = current_quick_findings(workflow.root); view["findings"] = findings
-    if any(item["decision"] is None for item in findings) or not any(item["decision"] == "accept" for item in findings):
+    findings_sha256 = sha256_bytes(valid_findings.read_bytes())
+    for path in reversed(_regular_files(quick / "no-revision-completions", "NC*.json")):
+        completion, _ = _read_json(path)
+        if completion.get("source_findings_sha256") == findings_sha256:
+            export_dir = workflow.root / "exports" / completion["completion_id"]
+            if (export_dir / "audit.json").is_file():
+                return {**view, "stage": "complete", "next_action": "无修改闭环完成", "completion": completion, "export_path": str(export_dir)}
+    if not findings:
+        return {**view, "stage": "no_revision", "completion_kind": "no_findings", "next_action": "确认无可处理发现并完成"}
+    if any(item["decision"] is None for item in findings):
         return {**view, "stage": "findings_confirm", "next_action": "确认要处理的发现"}
+    if not any(item["decision"] == "accept" for item in findings):
+        return {**view, "stage": "no_revision", "completion_kind": "all_declined", "next_action": "确认本轮不修改并完成"}
     revision_runs = quick / "revision-generation-runs"
     if not revision_runs.is_dir() or not any(item.is_dir() for item in revision_runs.iterdir()):
         return {**view, "stage": "revision_prepare", "next_action": "为已选问题生成修改提示词"}
@@ -704,17 +828,22 @@ def workflow_view(project_dir: Path | str) -> dict[str, Any]:
     if not resolution_runs.is_dir() or not any(item.is_dir() for item in resolution_runs.iterdir()):
         return {**view, "stage": "resolution_prepare", "next_action": "用原审查标准复查 V2"}
     resolution_run = _latest_dir(resolution_runs, "RR"); view["resolution_prompt"] = (resolution_run / "prompt.md").read_text(encoding="utf-8")
-    resolution_proposal = None; resolution_attempts = resolution_run / "attempts"
+    resolution_proposal = None; resolution_proposal_path = None; resolution_attempts = resolution_run / "attempts"
     if resolution_attempts.is_dir():
         rows = sorted((p for p in resolution_attempts.iterdir() if p.is_dir() and not p.is_symlink()))
         if rows:
             latest = rows[-1]; attempt_record, _ = _read_json(latest / "record.json")
             view["resolution_attempt"] = {"attempt_id": latest.name, "valid": attempt_record["valid"], "errors": attempt_record["errors"], "raw": (latest / "response.json").read_text(encoding="utf-8", errors="replace"), "repair_prompt": (latest / "repair-prompt.md").read_text(encoding="utf-8") if (latest / "repair-prompt.md").is_file() else None}
-            if (latest / "resolution-proposals.json").is_file(): resolution_proposal, _ = _read_json(latest / "resolution-proposals.json")
+            if (latest / "resolution-proposals.json").is_file():
+                resolution_proposal_path = latest / "resolution-proposals.json"
+                resolution_proposal, _ = _read_json(resolution_proposal_path)
     if resolution_proposal is None: return {**view, "stage": "resolution_result", "next_action": "粘贴 AI 的复查结果"}
+    proposal_sha256 = sha256_bytes(resolution_proposal_path.read_bytes())
     decisions: dict[str, dict[str, Any]] = {}
     for path in _regular_files(resolution_run / "human-decisions", "RD*.json"):
-        item, _ = _read_json(path); decisions[item["finding_id"]] = item
+        item, _ = _read_json(path)
+        if item.get("proposal_sha256") == proposal_sha256:
+            decisions[item["finding_id"]] = item
     view["resolution_results"] = [{**item, "human_decision": decisions.get(item["finding_id"])} for item in resolution_proposal["results"]]
     if set(decisions) != set(resolution_run_record["finding_ids"] if (resolution_run_record := _read_json(resolution_run / "record.json")[0]) else []):
         return {**view, "stage": "resolution_confirm", "next_action": "确认复查结论"}
@@ -793,6 +922,6 @@ def verify_revision_workflow(project_dir: Path | str) -> list[str]:
 __all__ = [
     "AttemptResult", "append_hunk_decision", "append_quick_finding_decision", "append_resolution_decision",
     "apply_approved_hunks", "collect_atomization_result", "collect_resolution_result", "collect_revision_result",
-    "current_quick_findings", "export_revision", "import_review_report", "prepare_atomization",
+    "complete_without_revision", "current_quick_findings", "export_revision", "import_review_report", "prepare_atomization",
     "prepare_resolution_review", "prepare_revision_generation", "revision_hunks", "verify_revision_workflow", "workflow_view",
 ]

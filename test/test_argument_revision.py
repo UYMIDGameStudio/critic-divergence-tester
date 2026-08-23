@@ -14,6 +14,7 @@ from argument_revision import (
     collect_atomization_result,
     collect_resolution_result,
     collect_revision_result,
+    complete_without_revision,
     current_quick_findings,
     export_revision,
     import_review_report,
@@ -24,7 +25,8 @@ from argument_revision import (
     verify_revision_workflow,
     workflow_view,
 )
-from argument_workbench import initialize_workspace, workspace_paths
+from argument_app import ProductApp, project_state
+from argument_workbench import WorkbenchError, initialize_workspace, workspace_paths
 
 
 class ArgumentRevisionTests(unittest.TestCase):
@@ -32,14 +34,21 @@ class ArgumentRevisionTests(unittest.TestCase):
     REPORT = "# Review\n\nThe claim ‘The bridge works.’ lacks a stated condition.\n"
 
     def project(self, root: Path) -> Path:
+        root.mkdir(parents=True, exist_ok=True)
         source = root / "draft.md"
         source.write_text(self.SOURCE, encoding="utf-8", newline="\n")
         project = root / "draft.argument-workbench"
         initialize_workspace(source, project)
         return project
 
-    def atomize(self, project: Path) -> None:
-        report_id = import_review_report(project, self.REPORT)
+    def atomize_findings(
+        self,
+        project: Path,
+        findings: list[dict[str, object]],
+        *,
+        report: str | None = None,
+    ) -> None:
+        report_id = import_review_report(project, report or self.REPORT)
         run = prepare_atomization(project, report_id)
         record = json.loads((run / "record.json").read_text(encoding="utf-8"))
         response = {
@@ -47,7 +56,13 @@ class ArgumentRevisionTests(unittest.TestCase):
             "run_id": record["run_id"],
             "manuscript_version_id": "V1",
             "source_sha256": record["source_sha256"],
-            "findings": [{
+            "findings": findings,
+        }
+        result = collect_atomization_result(project, json.dumps(response))
+        self.assertTrue(result.valid, result.errors)
+
+    def atomize(self, project: Path) -> None:
+        self.atomize_findings(project, [{
                 "finding_id": "F1",
                 "claim_id": "C1",
                 "report_quote": "lacks a stated condition",
@@ -58,10 +73,7 @@ class ArgumentRevisionTests(unittest.TestCase):
                 "suggested_action": "State the dry-weather condition.",
                 "evidence_level": "unverified",
                 "uncertainties": ["The intended condition is not independently verified."],
-            }],
-        }
-        result = collect_atomization_result(project, json.dumps(response))
-        self.assertTrue(result.valid, result.errors)
+            }])
 
     def proposal(self, project: Path, *, quote: str = "The bridge works.", finding_id: str = "F1"):
         append_quick_finding_decision(project, "F1", decision="accept", reason="Author chooses to qualify")
@@ -171,6 +183,94 @@ class ArgumentRevisionTests(unittest.TestCase):
             newer = collect_revision_result(project, json.dumps(response), run_id=record["generation_run_id"])
             self.assertTrue(newer.valid, newer.errors)
             self.assertIsNone(revision_hunks(project)[0]["decision"])
+
+    def test_new_findings_hash_invalidates_old_finding_decisions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = self.project(Path(temp_dir)); self.atomize(project)
+            append_quick_finding_decision(project, "F1", decision="accept", reason="Accept first finding")
+            first = current_quick_findings(project)[0]
+            self.assertEqual(first["decision"], "accept")
+            self.atomize_findings(
+                project,
+                [{
+                    "finding_id": "F1", "claim_id": "C2",
+                    "report_quote": "separate paragraph is unsupported",
+                    "manuscript_quote": "A separate paragraph stays unchanged.",
+                    "location_kind": "exact_quote",
+                    "assertion": "A completely different criticism.",
+                    "criterion": "Evidence", "suggested_action": "Add support.",
+                    "evidence_level": "unverified", "uncertainties": [],
+                }],
+                report="# New review\n\nThe separate paragraph is unsupported.\n",
+            )
+            second = current_quick_findings(project)[0]
+            self.assertNotEqual(first["source_findings_sha256"], second["source_findings_sha256"])
+            self.assertIsNone(second["decision"])
+            self.assertIsNone(second["action_id"])
+
+    def test_new_resolution_proposal_invalidates_old_human_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = self.project(Path(temp_dir)); self.atomize(project)
+            result, _, _ = self.proposal(project); self.assertTrue(result.valid)
+            append_hunk_decision(project, "CH1", decision="accept", reason="Apply")
+            apply_approved_hunks(project)
+            run = prepare_resolution_review(project)
+            record = json.loads((run / "record.json").read_text(encoding="utf-8"))
+            base = {"schema_version": 1, "resolution_run_id": record["resolution_run_id"], "manuscript_version_id": "V2", "source_sha256": record["source_sha256"]}
+            resolved = {**base, "results": [{"finding_id": "F1", "proposed_status": "resolved", "reason": "First review.", "evidence_quotes": ["in dry weather"], "uncertainties": []}]}
+            self.assertTrue(collect_resolution_result(project, json.dumps(resolved)).valid)
+            append_resolution_decision(project, "F1", status="resolved", reason="Confirm first proposal")
+            unresolved = {**base, "results": [{"finding_id": "F1", "proposed_status": "unresolved", "reason": "New evidence changes the assessment.", "evidence_quotes": ["in dry weather"], "uncertainties": ["condition unsupported"]}]}
+            self.assertTrue(collect_resolution_result(project, json.dumps(unresolved), run_id=record["resolution_run_id"]).valid)
+            state = workflow_view(project)
+            self.assertEqual(state["stage"], "resolution_confirm")
+            self.assertIsNone(state["resolution_results"][0]["human_decision"])
+
+    def test_tampered_workflow_forces_default_app_into_read_only_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = self.project(Path(temp_dir)); self.atomize(project)
+            result, _, _ = self.proposal(project); self.assertTrue(result.valid)
+            proposal = result.response.parent / "revision-patch-proposal.json"
+            value = json.loads(proposal.read_text(encoding="utf-8"))
+            value["changes"][0]["replacement_text"] = "tampered"
+            proposal.write_text(json.dumps(value), encoding="utf-8")
+            state = project_state(project)
+            self.assertEqual(state["stage"], "read_only")
+            self.assertTrue(any("derived proposal mismatch" in error for error in state["errors"]))
+            app = ProductApp(project.parent, "test-token", project)
+            with self.assertRaisesRegex(WorkbenchError, "只能只读打开"):
+                app.act({"action": "decide_hunk", "data": {"change_id": "CH1", "decision": "accept", "reason": "Should be blocked"}})
+
+    def test_revision_action_must_match_every_linked_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = self.project(Path(temp_dir))
+            self.atomize_findings(project, [
+                {"finding_id": "F1", "claim_id": "C1", "report_quote": "first issue", "manuscript_quote": "The bridge works.", "location_kind": "exact_quote", "assertion": "First issue.", "criterion": "Scope", "suggested_action": "Qualify it.", "evidence_level": "unverified", "uncertainties": []},
+                {"finding_id": "F2", "claim_id": "C2", "report_quote": "second issue", "manuscript_quote": "A separate paragraph stays unchanged.", "location_kind": "exact_quote", "assertion": "Second issue.", "criterion": "Evidence", "suggested_action": "Support it.", "evidence_level": "unverified", "uncertainties": []},
+            ], report="# Review\n\nfirst issue\n\nsecond issue\n")
+            append_quick_finding_decision(project, "F1", decision="accept", reason="First")
+            append_quick_finding_decision(project, "F2", decision="accept", reason="Second")
+            run = prepare_revision_generation(project); record = json.loads((run / "record.json").read_text(encoding="utf-8"))
+            response = {"schema_version": 1, "generation_run_id": record["generation_run_id"], "manuscript_version_id": "V1", "source_sha256": record["source_sha256"], "changes": [{"change_id": "CH1", "original_quote": "The bridge works.", "insertion_anchor": None, "replacement_text": "The bridge works conditionally.", "finding_ids": ["F1"], "action_ids": [record["action_ids"][1]], "change_kind": "replace", "reason": "Cross-wired action.", "uncertainties": [], "fact_change": False, "verification_note": ""}]}
+            result = collect_revision_result(project, json.dumps(response))
+            self.assertFalse(result.valid)
+            self.assertTrue(any("Finding–Action" in error for error in result.errors))
+
+    def test_zero_findings_and_all_declined_have_legal_completion_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            zero_project = self.project(Path(temp_dir) / "zero")
+            self.atomize_findings(zero_project, [])
+            self.assertEqual(workflow_view(zero_project)["stage"], "no_revision")
+            export = complete_without_revision(zero_project, reason="No actionable findings")
+            self.assertTrue((export / "audit.json").is_file())
+            self.assertEqual(workflow_view(zero_project)["stage"], "complete")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            declined_project = self.project(Path(temp_dir) / "declined"); self.atomize(declined_project)
+            append_quick_finding_decision(declined_project, "F1", decision="defer", reason="Not in this revision")
+            self.assertEqual(workflow_view(declined_project)["stage"], "no_revision")
+            complete_without_revision(declined_project, reason="All findings deferred")
+            self.assertEqual(workflow_view(declined_project)["stage"], "complete")
 
 
 if __name__ == "__main__":

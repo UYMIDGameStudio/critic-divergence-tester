@@ -29,11 +29,13 @@ from argument_revision import (
     collect_atomization_result,
     collect_resolution_result,
     collect_revision_result,
+    complete_without_revision,
     export_revision,
     import_review_report,
     prepare_atomization,
     prepare_resolution_review,
     prepare_revision_generation,
+    verify_revision_workflow,
     workflow_view,
 )
 from argument_workbench import (
@@ -142,7 +144,15 @@ def create_uploaded_project(
 
 
 def project_state(project_dir: Path) -> dict[str, Any]:
-    errors = verify_project_versions(project_dir)
+    try:
+        errors = verify_project_versions(project_dir)
+    except (OSError, WorkbenchError, KeyError, TypeError, ValueError) as exc:
+        errors = [f"project verification failed: {exc}"]
+    if not errors:
+        try:
+            errors.extend(verify_revision_workflow(project_dir))
+        except (OSError, WorkbenchError, KeyError, TypeError, ValueError) as exc:
+            errors.append(f"revision workflow verification failed: {exc}")
     if errors:
         return {"stage": "read_only", "next_action": "项目校验失败，只读打开", "errors": errors}
     return workflow_view(project_dir)
@@ -224,6 +234,9 @@ class ProductApp:
     def act(self, payload: dict[str, Any]) -> dict[str, Any]:
         if self.project_dir is None:
             raise WorkbenchError("请先创建或打开项目")
+        state = project_state(self.project_dir)
+        if state["stage"] == "read_only":
+            raise WorkbenchError("项目修改链校验失败，当前只能只读打开：" + "; ".join(state["errors"]))
         action = payload.get("action")
         data = payload.get("data")
         if not isinstance(action, str) or not isinstance(data, dict) or set(payload) != {"action", "data"}:
@@ -254,6 +267,8 @@ class ProductApp:
             collect_resolution_result(self.project_dir, data["response"])
         elif action == "decide_resolution":
             append_resolution_decision(self.project_dir, str(data.get("finding_id", "")), status=str(data.get("status", "")), reason=str(data.get("reason", "")))
+        elif action == "complete_without_revision":
+            complete_without_revision(self.project_dir, reason=str(data.get("reason", "")))
         elif action == "export": export_revision(self.project_dir)
         else: raise WorkbenchError("未知操作")
         return self.view()
@@ -266,6 +281,9 @@ class ProductApp:
     def professional_adjudicate(self, payload: dict[str, Any]) -> dict[str, Any]:
         if self.project_dir is None:
             raise WorkbenchError("请先打开专业研究项目")
+        state = project_state(self.project_dir)
+        if state["stage"] == "read_only":
+            raise WorkbenchError("项目修改链校验失败，当前只能只读打开：" + "; ".join(state["errors"]))
         adjudicate_from_ui(self.project_dir, payload)
         return self.professional_view()
 
@@ -379,9 +397,11 @@ function promptPaste(title,prompt,attempt,action){return `<div class="card"><h2>
 function home(){el.innerHTML=`<div class="card"><h2>新建项目</h2><p class="muted">选择 Markdown/TXT 原稿。文件只保存在本机。</p><label>项目标题（可选）</label><input id="title" type="text"><label>原稿</label><input id="file" type="file" accept=".md,.txt,text/plain,text/markdown"><p><button id="create">导入为不可变 V1</button></p><div id="err" class="error"></div></div>${state.projects.length?`<div class="card"><h2>打开已有项目</h2>${state.projects.map(p=>`<p class="row"><button class="secondary open" data-dir="${esc(p.path.split(/[\\/]/).pop())}">打开</button><span>${esc(p.title)} · ${esc(p.current_version||'校验失败')}</span></p>`).join('')}</div>`:''}`;document.getElementById('create').onclick=async()=>{try{const f=document.getElementById('file').files[0];if(!f)throw Error('请选择稿件');state=await api('/api/projects',{filename:f.name,content:await f.text(),title:document.getElementById('title').value});render()}catch(e){document.getElementById('err').textContent=e.message}};document.querySelectorAll('.open').forEach(b=>b.onclick=async()=>{state=await api('/api/open',{directory:b.dataset.dir});render()})}
 function bindPrompt(prompt,attempt,action){document.getElementById('copyPrompt').onclick=()=>copyText(prompt);document.getElementById('submitResponse').onclick=()=>act(action,{response:document.getElementById('response').value});const repair=document.getElementById('copyRepair');if(repair)repair.onclick=()=>copyText(attempt.repair_prompt)}
 function render(){if(!state.selected){home();return}const p=state.selected;let body=`<div class="card"><div class="muted">当前项目 · ${esc(p.current_version)}</div><h2>${esc(p.title)}</h2><p>${esc(p.source_name)} · <code>${esc(p.source_sha256.slice(0,12))}</code></p>${p.professional_available?'<p><a href="/professional">进入专业研究视图（IR、Lens、Citation、lineage）</a></p>':''}</div><div class="card next"><div class="muted">唯一下一步</div><h2>${esc(p.next_action)}</h2><p>V1 永久保留；模型只能提案，决定权在你。</p></div>`;
-if(p.stage==='review_material')body+=`<div class="card"><h2>导入现有审查报告</h2><p class="muted">支持任意格式。原始报告会永久归档。</p><textarea id="report" placeholder="粘贴 AI 审查报告"></textarea><p><button id="importReport">导入并生成原子化提示词</button></p><div id="err" class="error"></div></div>`;
+if(p.stage==='read_only')body+=`<div class="card error"><h2>修改链校验失败</h2><p>项目已强制进入只读状态。修复下列完整性问题前，所有写入操作都会被拒绝。</p><ul>${p.errors.map(e=>`<li>${esc(e)}</li>`).join('')}</ul></div>`;
+else if(p.stage==='review_material')body+=`<div class="card"><h2>导入现有审查报告</h2><p class="muted">支持任意格式。原始报告会永久归档。</p><textarea id="report" placeholder="粘贴 AI 审查报告"></textarea><p><button id="importReport">导入并生成原子化提示词</button></p><div id="err" class="error"></div></div>`;
 else if(p.stage==='atomization_result')body+=promptPaste('把报告拆成可核验的发现',p.atomization_prompt,p.atomization_attempt,'collect_atomization');
 else if(p.stage==='findings_confirm')body+=`<div class="card"><h2>逐条确认发现</h2><p>UNVERIFIED 不会被当成事实。可以直接修正定位、标准和建议动作。</p></div>${p.findings.map(f=>`<div class="card"><div class="row"><span class="pill">${esc(f.finding_id)}</span><span class="pill">${esc(f.claim_id)}</span><span class="pill">${esc(f.evidence_level)}</span></div><label>问题</label><textarea id="assert-${esc(f.finding_id)}">${esc(f.assertion)}</textarea><div class="grid"><div><label>原文定位</label><textarea id="quote-${esc(f.finding_id)}">${esc(f.manuscript_quote||'')}</textarea></div><div><label>审查标准</label><textarea id="criterion-${esc(f.finding_id)}">${esc(f.criterion)}</textarea></div></div><label>建议动作</label><textarea id="action-${esc(f.finding_id)}">${esc(f.suggested_action)}</textarea><label>你的理由</label><input id="reason-${esc(f.finding_id)}" type="text"><div class="row"><button class="finding" data-id="${esc(f.finding_id)}" data-decision="accept">接受处理</button><button class="finding danger" data-id="${esc(f.finding_id)}" data-decision="reject">拒绝</button><button class="finding secondary" data-id="${esc(f.finding_id)}" data-decision="defer">暂缓</button>${f.decision?`<span>当前：${esc(f.decision)}</span>`:''}</div></div>`).join('')}<div id="err" class="error"></div>`;
+else if(p.stage==='no_revision')body+=`<div class="card"><h2>${p.completion_kind==='no_findings'?'本轮没有发现':'本轮没有选中修改项'}</h2><p>${p.completion_kind==='no_findings'?'可以保留零 finding 结果并合法结束，不创建伪造的 V2。':'所有 finding 均已拒绝或暂缓，可以保留决定链并结束本轮。'}</p><label>完成理由</label><input id="noRevisionReason" type="text"><p><button id="completeNoRevision">确认并生成审计包</button></p><div id="err" class="error"></div></div>`;
 else if(p.stage==='revision_prepare')body+=`<div class="card"><h2>只为已接受的问题生成方案</h2><p>拒绝和暂缓的发现不会进入提示词。</p><button id="prepareRevision">生成受约束修改提示词</button><div id="err" class="error"></div></div>`;
 else if(p.stage==='revision_result')body+=promptPaste('获取受约束修改提案',p.revision_prompt,p.revision_attempt,'collect_revision');
 else if(p.stage==='hunk_review')body+=`<div class="card"><h2>逐项审批 diff</h2><p>每一项都显示 Finding、Action、理由和不确定项。</p></div>${p.regeneration_prompt?`<div class="card next"><h2>重新生成指定项</h2><p>复制下面的定向提示词。新提案通过校验后，因 proposal hash 已变化，所有 hunk 都必须重新审批。</p><button id="copyRegen">复制定向提示词</button><textarea id="regenResponse" placeholder="粘贴完整的新提案"></textarea><p><button id="submitRegen">校验新提案</button></p></div>`:''}${p.hunks.map(h=>`<div class="card hunk"><div>${h.finding_ids.map(x=>`<span class="pill">Finding ${esc(x)}</span>`).join('')}${h.action_ids.map(x=>`<span class="pill">Action ${esc(x)}</span>`).join('')}</div><div class="grid"><div><h3>原文</h3><div class="quote original">${esc(h.original_quote||`插入锚点：${h.insertion_anchor}`)}</div></div><div><h3>建议</h3><textarea class="replacement" id="edit-${esc(h.change_id)}">${esc(h.replacement_text)}</textarea></div></div><p>${esc(h.reason)}</p>${h.uncertainties.length?`<p class="warning">未确认：${esc(h.uncertainties.join('；'))}</p>`:''}${h.fact_change?`<p class="warning">事实/引文变化，需核验：${esc(h.verification_note)}</p>`:''}<label>决定理由</label><input id="hreason-${esc(h.change_id)}" type="text"><div class="row"><button class="hunkDecision" data-id="${esc(h.change_id)}" data-decision="accept">接受</button><button class="hunkDecision danger" data-id="${esc(h.change_id)}" data-decision="reject">拒绝</button><button class="hunkDecision secondary" data-id="${esc(h.change_id)}" data-decision="edit">编辑后接受</button><button class="hunkDecision secondary" data-id="${esc(h.change_id)}" data-decision="regenerate">重新生成此项</button>${h.decision?`<span>当前：${esc(h.decision.decision)}</span>`:''}</div></div>`).join('')}<div id="err" class="error"></div>`;
@@ -390,11 +410,12 @@ else if(p.stage==='resolution_prepare')body+=`<div class="card"><h2>复查 V2</h
 else if(p.stage==='resolution_result')body+=promptPaste('用原标准复查 V2',p.resolution_prompt,p.resolution_attempt,'collect_resolution');
 else if(p.stage==='resolution_confirm')body+=`<div class="card"><h2>确认复查结论</h2></div>${p.resolution_results.map(r=>`<div class="card"><span class="pill">${esc(r.finding_id)}</span><h3>${esc(r.proposed_status)}</h3><p>${esc(r.reason)}</p><label>最终状态</label><select id="status-${esc(r.finding_id)}"><option>resolved</option><option>partially_resolved</option><option>unresolved</option><option>not_evaluated</option></select><label>你的确认理由</label><input id="rreason-${esc(r.finding_id)}" type="text"><button class="resolution" data-id="${esc(r.finding_id)}">保存人工结论</button></div>`).join('')}<div id="err" class="error"></div>`;
 else if(p.stage==='export')body+=`<div class="card"><h2>导出文章与审计记录</h2><button id="export">生成导出包</button><div id="err" class="error"></div></div>`;
-else if(p.stage==='complete')body+=`<div class="card"><h2>闭环完成</h2><p>V2、修订清单和完整审计记录已生成。</p><p><code>${esc(p.export_path)}</code></p></div>`;
+else if(p.stage==='complete')body+=`<div class="card"><h2>闭环完成</h2><p>${p.completion?'原稿、无修改结论和完整审计记录已生成；没有创建 V2。':'V2、修订清单和完整审计记录已生成。'}</p><p><code>${esc(p.export_path)}</code></p></div>`;
 el.innerHTML=body+`<div class="card"><p class="muted">本地存储：${esc(state.storage_path)}</p></div>`;
 if(p.stage==='review_material')document.getElementById('importReport').onclick=()=>act('import_report',{report:document.getElementById('report').value,source_name:'pasted-report.md'});
 if(p.stage==='atomization_result')bindPrompt(p.atomization_prompt,p.atomization_attempt,'collect_atomization');
 if(p.stage==='findings_confirm')document.querySelectorAll('.finding').forEach(b=>b.onclick=()=>{const id=b.dataset.id,decision=b.dataset.decision;act('decide_finding',{finding_id:id,decision,reason:document.getElementById('reason-'+id).value,action_text:document.getElementById('action-'+id).value,corrections:{assertion:document.getElementById('assert-'+id).value,manuscript_quote:document.getElementById('quote-'+id).value||null,criterion:document.getElementById('criterion-'+id).value,suggested_action:document.getElementById('action-'+id).value}})});
+if(p.stage==='no_revision')document.getElementById('completeNoRevision').onclick=()=>act('complete_without_revision',{reason:document.getElementById('noRevisionReason').value});
 if(p.stage==='revision_prepare')document.getElementById('prepareRevision').onclick=()=>act('prepare_revision');
 if(p.stage==='revision_result')bindPrompt(p.revision_prompt,p.revision_attempt,'collect_revision');
 if(p.stage==='hunk_review'){document.querySelectorAll('.hunkDecision').forEach(b=>b.onclick=()=>{const id=b.dataset.id,d=b.dataset.decision;act('decide_hunk',{change_id:id,decision:d,reason:document.getElementById('hreason-'+id).value,edited_text:d==='edit'?document.getElementById('edit-'+id).value:null})});if(p.regeneration_prompt){document.getElementById('copyRegen').onclick=()=>copyText(p.regeneration_prompt);document.getElementById('submitRegen').onclick=()=>act('collect_revision',{response:document.getElementById('regenResponse').value})}}
