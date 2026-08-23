@@ -21,6 +21,13 @@ from argument_review import (
     selected_result_attempt,
     verify_reviews,
 )
+from argument_perspective import (
+    PERSPECTIVE_REVIEW_ID_PATTERN,
+    PerspectiveReviewPaths,
+    list_perspective_reviews,
+    selected_perspective_attempt,
+    verify_perspective_reviews,
+)
 from argument_workbench import (
     WorkspacePaths,
     WorkbenchError,
@@ -72,7 +79,7 @@ class FindingEntry:
     path: Path
     value: dict[str, Any]
     data: bytes
-    review: ReviewPaths
+    review: ReviewPaths | PerspectiveReviewPaths
     attempt_id: str
 
 
@@ -82,7 +89,11 @@ def human_review_paths(project_dir: Path | str) -> HumanReviewPaths:
 
 def _all_finding_entries(project_dir: Path | str) -> list[FindingEntry]:
     entries: list[FindingEntry] = []
-    for review in list_rule_reviews(project_dir):
+    reviews: list[ReviewPaths | PerspectiveReviewPaths] = [
+        *list_rule_reviews(project_dir),
+        *list_perspective_reviews(project_dir),
+    ]
+    for review in reviews:
         if not review.derived_dir.exists():
             continue
         for attempt_root in sorted(review.derived_dir.iterdir()):
@@ -115,11 +126,18 @@ def current_finding_entries(
         raise WorkbenchError("Reviewed IR is required before adjudication")
     current_ir_sha256 = sha256_bytes(workspace.reviewed_payload.read_bytes())
     requested = review_id.upper() if review_id is not None else None
-    if requested is not None and REVIEW_ID_PATTERN.fullmatch(requested) is None:
-        raise WorkbenchError("review ID must be RV1..RVn")
+    if requested is not None and not (
+        REVIEW_ID_PATTERN.fullmatch(requested)
+        or PERSPECTIVE_REVIEW_ID_PATTERN.fullmatch(requested)
+    ):
+        raise WorkbenchError("review ID must be RV1..RVn or PV1..PVn")
     matched_reviews = 0
     entries: list[FindingEntry] = []
-    for review in list_rule_reviews(workspace.root):
+    reviews: list[ReviewPaths | PerspectiveReviewPaths] = [
+        *list_rule_reviews(workspace),
+        *list_perspective_reviews(workspace),
+    ]
+    for review in reviews:
         if requested is not None and review.review_id != requested:
             continue
         review_record, _ = _read_json(review.record)
@@ -135,7 +153,10 @@ def current_finding_entries(
                 )
             continue
         try:
-            attempt_dir, attempt, _ = selected_result_attempt(review)
+            if isinstance(review, PerspectiveReviewPaths):
+                attempt_dir, attempt, _ = selected_perspective_attempt(review)
+            else:
+                attempt_dir, attempt, _ = selected_result_attempt(review)
         except WorkbenchError:
             if requested is not None:
                 raise
@@ -152,10 +173,10 @@ def current_finding_entries(
                 FindingEntry(path, value, data, review, attempt_dir.name)
             )
     if requested is not None and matched_reviews == 0:
-        raise WorkbenchError(f"no valid current result for Rule Review {requested}")
+        raise WorkbenchError(f"no valid current result for Review {requested}")
     if requested is None and matched_reviews == 0:
         raise WorkbenchError(
-            "project has no current Rule Review with valid results; run `ir review prepare/collect`"
+            "project has no current Review Lens with valid results"
         )
     seen: set[str] = set()
     for entry in entries:
@@ -210,7 +231,7 @@ def open_finding_entries(
     """Return current Findings in scope that have no human decision."""
     paths = human_review_paths(project_dir)
     findings = filter_finding_entries(
-        current_finding_entries(paths.workspace.root, review_id=review_id),
+        current_finding_entries(paths.workspace, review_id=review_id),
         verdict=verdict,
         claim=claim,
         check_id=check_id,
@@ -376,7 +397,7 @@ def append_finding_decision(
         )
     current = {
         str(entry.value["finding_id"]): entry
-        for entry in current_finding_entries(paths.workspace.root)
+        for entry in current_finding_entries(paths.workspace)
     }
     finding = current.get(finding_id)
     if finding is None:
@@ -459,13 +480,13 @@ def append_finding_decision(
         for action_path, (_, action_bytes) in zip(action_paths, action_values):
             _write_new(action_path, action_bytes)
             written.append(action_path)
-        rebuild_revision_plan(paths.workspace.root)
+        rebuild_revision_plan(paths.workspace)
     except Exception:
         for path in reversed(written):
             path.unlink(missing_ok=True)
         try:
             if paths.plan_record.exists() or paths.plan_markdown.exists():
-                rebuild_revision_plan(paths.workspace.root)
+                rebuild_revision_plan(paths.workspace)
         except Exception:
             pass
         raise
@@ -542,7 +563,7 @@ def _derive_revision_plan(
     project_dir: Path | str,
 ) -> tuple[dict[str, Any], bytes, str, list[tuple[object, bytes]]]:
     paths = human_review_paths(project_dir)
-    findings = current_finding_entries(paths.workspace.root)
+    findings = current_finding_entries(paths.workspace)
     adjudications = list_adjudications(paths)
     actions = list_revision_actions(paths)
     latest = latest_adjudications(adjudications)
@@ -864,7 +885,7 @@ def render_revision_plan(
 
 def rebuild_revision_plan(project_dir: Path | str) -> tuple[Path, bool]:
     paths = human_review_paths(project_dir)
-    _, record_bytes, markdown, _ = _derive_revision_plan(paths.workspace.root)
+    _, record_bytes, markdown, _ = _derive_revision_plan(paths.workspace)
     markdown_bytes = markdown.encode("utf-8")
     changed = False
     paths.plan_dir.mkdir(parents=True, exist_ok=True)
@@ -892,7 +913,7 @@ def rebuild_adjudication_cache(project_dir: Path | str) -> tuple[list[Path], boo
     )
     if not exists:
         return [], False
-    output, changed = rebuild_revision_plan(paths.workspace.root)
+    output, changed = rebuild_revision_plan(paths.workspace)
     return [output], changed
 
 
@@ -907,7 +928,7 @@ def adjudication_status(
 ) -> str:
     paths = human_review_paths(project_dir)
     findings = filter_finding_entries(
-        current_finding_entries(paths.workspace.root, review_id=review_id),
+        current_finding_entries(paths.workspace, review_id=review_id),
         verdict=verdict,
         claim=claim,
         check_id=check_id,
@@ -1036,7 +1057,7 @@ def run_adjudicator(
         )
     output_fn(
         adjudication_status(
-            paths.workspace.root,
+            paths.workspace,
             review_id=review_id,
             verdict=verdict,
             claim=claim,
@@ -1047,7 +1068,7 @@ def run_adjudicator(
     if view_only or summary_only:
         return 0
     findings = filter_finding_entries(
-        current_finding_entries(paths.workspace.root, review_id=review_id),
+        current_finding_entries(paths.workspace, review_id=review_id),
         verdict=verdict,
         claim=claim,
         check_id=check_id,
@@ -1122,7 +1143,7 @@ def run_adjudicator(
                 "Why reject? " if decision == "reject" else "Why defer? ",
             )
         adjudication_path, action_paths = append_finding_decision(
-            paths.workspace.root,
+            paths.workspace,
             finding_id,
             decision=decision,
             reason=reason,
@@ -1132,7 +1153,7 @@ def run_adjudicator(
         output_fn(f"Saved {adjudication_path.name}.")
         for action_path in action_paths:
             output_fn(f"Saved {action_path.name}.")
-    plan_path, _ = rebuild_revision_plan(paths.workspace.root)
+    plan_path, _ = rebuild_revision_plan(paths.workspace)
     output_fn(f"Revision plan: {plan_path}")
     return 0
 
@@ -1145,10 +1166,14 @@ def verify_adjudications(project_dir: Path | str) -> list[str]:
         for path in (paths.adjudications_dir, paths.actions_dir, paths.plan_dir)
     ):
         return errors
-    review_errors = verify_reviews(paths.workspace.root)
+    review_errors = verify_reviews(paths.workspace)
     errors.extend(f"review provenance: {error}" for error in review_errors)
+    perspective_errors = verify_perspective_reviews(paths.workspace)
+    errors.extend(
+        f"Perspective Review provenance: {error}" for error in perspective_errors
+    )
     try:
-        findings = _all_finding_entries(paths.workspace.root)
+        findings = _all_finding_entries(paths.workspace)
         adjudications = list_adjudications(paths)
         actions = list_revision_actions(paths)
     except (OSError, WorkbenchError) as exc:
@@ -1244,6 +1269,23 @@ def verify_adjudications(project_dir: Path | str) -> list[str]:
     bundle_entries: list[tuple[object, bytes]] = [
         (entry.value, entry.data) for entry in findings
     ]
+    perspective_result_hashes: set[str] = set()
+    for entry in findings:
+        if not isinstance(entry.review, PerspectiveReviewPaths):
+            continue
+        response_path = entry.review.attempt_dir(entry.attempt_id) / "response.json"
+        try:
+            result, result_bytes = _read_json(response_path)
+        except (OSError, WorkbenchError) as exc:
+            errors.append(
+                f"{entry.review.review_id}/{entry.attempt_id}: "
+                f"cannot load Perspective result parent: {exc}"
+            )
+            continue
+        digest = sha256_bytes(result_bytes)
+        if digest not in perspective_result_hashes:
+            bundle_entries.append((result, result_bytes))
+            perspective_result_hashes.add(digest)
     bundle_entries.extend((value, data) for _, value, data in adjudications)
     bundle_entries.extend((value, data) for _, value, data in actions)
     if paths.plan_dir.exists():
@@ -1257,7 +1299,7 @@ def verify_adjudications(project_dir: Path | str) -> list[str]:
             try:
                 record, record_bytes = _read_json(paths.plan_record)
                 _, expected_record_bytes, expected_markdown, expected_entries = (
-                    _derive_revision_plan(paths.workspace.root)
+                    _derive_revision_plan(paths.workspace)
                 )
                 if paths.plan_record.read_bytes() != expected_record_bytes:
                     errors.append("revision plan record is not reproducible")

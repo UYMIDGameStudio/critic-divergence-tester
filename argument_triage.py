@@ -159,7 +159,7 @@ def current_status_triage(project_dir: Path | str) -> list[StatusTriageItem]:
     current_ir_hash = sha256_bytes(workspace.reviewed_payload.read_bytes())
     collected: list[StatusTriageItem] = []
     matched = 0
-    for review in list_rule_reviews(workspace.root):
+    for review in list_rule_reviews(workspace):
         record, _ = _read_json(review.record)
         parents = {
             parent.get("role"): parent
@@ -461,7 +461,7 @@ def current_triage_indexes(
     workspace = workspace_paths(project_dir)
     current_ir_hash = sha256_bytes(workspace.reviewed_payload.read_bytes())
     outputs: list[tuple[StatusTriageItem, dict[str, Any], bytes]] = []
-    for review in list_rule_reviews(workspace.root):
+    for review in list_rule_reviews(workspace):
         record, _ = _read_json(review.record)
         parents = {
             parent.get("role"): parent
@@ -484,7 +484,7 @@ def current_triage_indexes(
                 f"{review.review_id}/{attempt_id} status triage index is missing"
             )
         index, index_bytes = _read_json(index_path)
-        selected_item = current_status_triage(workspace.root)
+        selected_item = current_status_triage(workspace)
         representative = next(
             item
             for item in selected_item

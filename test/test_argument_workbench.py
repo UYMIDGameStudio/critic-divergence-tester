@@ -141,6 +141,79 @@ class ArgumentWorkbenchTests(unittest.TestCase):
             with self.assertRaisesRegex(workbench.WorkbenchError, "different manuscript bytes"):
                 workbench.initialize_workspace(other, paths.root)
 
+    def test_import_version_is_immutable_parent_bound_and_becomes_current(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            v1 = self.make_project(root)
+            self.collect_fixture(v1)
+            workbench.rebuild_workspace(v1)
+            v1_version_bytes = v1.version.read_bytes()
+            v1_source = (FIXTURE / "manuscript.md").read_bytes()
+
+            manuscript_v2 = root / "manuscript-v2.md"
+            manuscript_v2.write_bytes(v1_source + "\n新增一段现实修订。\n".encode("utf-8"))
+            v2 = workbench.import_document_version(v1.root, manuscript_v2)
+            self.assertEqual(v2.version_id, "V2")
+            self.assertEqual(workbench.workspace_paths(v1.root).version_id, "V2")
+            self.assertEqual(v1.version.read_bytes(), v1_version_bytes)
+            version = json.loads(v2.version.read_text(encoding="utf-8"))
+            self.assertEqual(version["parent_version"], "V1")
+            parent = next(
+                item for item in version["parents"] if item["role"] == "parent-version"
+            )
+            self.assertEqual(parent["sha256"], workbench.sha256_bytes(v1_version_bytes))
+
+            raw = json.loads((FIXTURE / "raw-ir.json").read_text(encoding="utf-8"))
+            raw["source"] = {
+                "name": manuscript_v2.name,
+                "sha256": workbench.sha256_bytes(manuscript_v2.read_bytes()),
+            }
+            raw_bytes = (
+                json.dumps(raw, ensure_ascii=False, indent=2) + "\n"
+            ).encode("utf-8")
+            _, attempt = workbench.collect_raw_attempt(
+                v2,
+                raw_bytes,
+                method="file",
+                source_name="raw-v2.json",
+                producer_label="fixture-v2-model",
+            )
+            self.assertEqual(attempt["version_id"], "V2")
+            workbench.rebuild_workspace(v2)
+            self.assertEqual(workbench.verify_project_versions(v1.root), [])
+
+            with self.assertRaisesRegex(workbench.WorkbenchError, "must differ"):
+                workbench.import_document_version(v1.root, manuscript_v2)
+
+    def test_import_version_cli_preserves_v1_and_prepares_v2_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = self.make_project(root)
+            manuscript_v2 = root / "new draft.md"
+            manuscript_v2.write_text("A genuinely revised manuscript.\n", encoding="utf-8")
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(
+                    critic_runner.main(
+                        [
+                            "ir",
+                            "import-version",
+                            str(paths.root),
+                            str(manuscript_v2),
+                        ]
+                    ),
+                    0,
+                )
+                self.assertEqual(
+                    critic_runner.main(["ir", "verify-project", str(paths.root)]),
+                    0,
+                )
+            self.assertIn("DocumentVersion: V2", stdout.getvalue())
+            current = workbench.workspace_paths(paths.root)
+            self.assertEqual(current.version_id, "V2")
+            self.assertTrue(current.prompt.is_file())
+            self.assertTrue(paths.version.is_file())
+
     def test_invalid_attempt_is_preserved_and_next_valid_attempt_is_selected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             paths = self.make_project(Path(temporary))

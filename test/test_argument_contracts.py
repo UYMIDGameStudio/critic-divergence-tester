@@ -440,6 +440,245 @@ class ArgumentContractTests(unittest.TestCase):
             )
         )
 
+    def test_perspective_lens_contracts_preserve_framework_and_normalize_findings(self) -> None:
+        protocol = {
+            **base(
+                "perspective-lens-protocol",
+                "methodological-individualism-v1",
+                "immutable",
+                "deterministic",
+            ),
+            "lens": {"kind": "perspective", "id": "methodological-individualism"},
+            "legacy_protocol": "critic-individualist",
+            "protocol": {
+                "relative_path": "critic-individualist.md",
+                "sha256": "3" * 64,
+            },
+        }
+        self.assertEqual(contracts.validate_perspective_lens_protocol(protocol), [])
+
+        plan = {
+            **base(
+                "perspective-review-plan",
+                "PV1-plan",
+                "immutable",
+                "deterministic",
+                parents=[
+                    {
+                        "role": "target-ir",
+                        "artifact": "argument-ir",
+                        "sha256": "2" * 64,
+                    },
+                    parent("protocol", "perspective-lens-protocol", protocol),
+                ],
+            ),
+            "review_id": "PV1",
+            "lens": {
+                "kind": "perspective",
+                "id": "methodological-individualism",
+                "protocol_sha256": "3" * 64,
+            },
+            "review_scope": {
+                "kind": "thesis-chain",
+                "claim_ids": [],
+                "selected_claim_ids": ["C1"],
+            },
+        }
+        self.assertEqual(contracts.validate_perspective_review_plan(plan), [])
+
+        review = {
+            **base(
+                "perspective-review-run",
+                "PV1",
+                "immutable",
+                "deterministic",
+                parents=[
+                    {
+                        "role": "reviewed-ir",
+                        "artifact": "reviewed-argument-ir",
+                        "sha256": "1" * 64,
+                    },
+                    {
+                        "role": "target-ir",
+                        "artifact": "argument-ir",
+                        "sha256": "2" * 64,
+                    },
+                    parent("protocol", "perspective-lens-protocol", protocol),
+                    parent("plan", "perspective-review-plan", plan),
+                ],
+            ),
+            "review_id": "PV1",
+            "project_id": "P1",
+            "document_id": "D1",
+            "version_id": "V1",
+            "lens": {
+                "kind": "perspective",
+                "id": "methodological-individualism",
+                "protocol_sha256": "3" * 64,
+            },
+            "review_scope": {
+                "kind": "thesis-chain",
+                "claim_ids": [],
+                "selected_claim_ids": ["C1"],
+            },
+            "reviewed_ir_record": {
+                "relative_path": "reviewed-ir-record.json",
+                "sha256": "1" * 64,
+            },
+            "target_ir": {
+                "relative_path": "target-argument-ir.json",
+                "sha256": "2" * 64,
+            },
+            "protocol_record": {
+                "relative_path": "perspective-lens-protocol.json",
+                "sha256": contracts.sha256_bytes(encoded(protocol)),
+            },
+            "protocol": {
+                "relative_path": "critic-individualist.md",
+                "sha256": "3" * 64,
+            },
+            "plan": {
+                "relative_path": "perspective-review-plan.json",
+                "sha256": contracts.sha256_bytes(encoded(plan)),
+            },
+            "prompt": {"relative_path": "review-prompt.md", "sha256": "4" * 64},
+        }
+        self.assertEqual(contracts.validate_perspective_review_run(review), [])
+
+        attempt = {
+            **base(
+                "perspective-result-attempt",
+                "PV1-attempt-0001",
+                "immutable",
+                "model-derived",
+                parents=[parent("review-run", "perspective-review-run", review)],
+            ),
+            "review_id": "PV1",
+            "attempt_id": "attempt-0001",
+            "collection": {
+                "method": "file",
+                "source_name": "results.json",
+                "producer_label": "test-model",
+            },
+            "response": {"relative_path": "response.json", "sha256": "5" * 64},
+            "validation": {"status": "valid", "errors": []},
+        }
+        self.assertEqual(contracts.validate_perspective_result_attempt(attempt), [])
+
+        results = {
+            "schema_version": 1,
+            "artifact": "perspective-lens-results",
+            "source": {
+                "plan_sha256": contracts.sha256_bytes(encoded(plan)),
+                "target_ir_sha256": "2" * 64,
+                "protocol_sha256": "3" * 64,
+            },
+            "status": "complete",
+            "unverified": [],
+            "results": [
+                {
+                    "result_id": "P1",
+                    "target_claim": "C1",
+                    "verdict": "fail",
+                    "reason": "The explanation ends at an aggregate structure.",
+                    "basis_refs": ["C1", "E1"],
+                    "framework_analysis": "No actor-level transition reconstructs the outcome.",
+                    "consequence": "The causal bearer remains unspecified.",
+                }
+            ],
+        }
+        self.assertEqual(contracts.validate_perspective_lens_results(results), [])
+
+        finding = {
+            **base(
+                "argument-finding",
+                "V1-PV1-attempt-0001-F0001",
+                "immutable",
+                "model-derived",
+                parents=[
+                    {
+                        "role": "target-ir",
+                        "artifact": "argument-ir",
+                        "sha256": "2" * 64,
+                    },
+                    parent("lens-result", "perspective-lens-results", results),
+                ],
+            ),
+            "finding_id": "V1-PV1-attempt-0001-F0001",
+            "target_claim": "V1:C1",
+            "lens": {
+                "kind": "perspective",
+                "id": "methodological-individualism",
+                "check_id": None,
+            },
+            "verdict": "fail",
+            "reason": "The explanation ends at an aggregate structure.",
+            "evidence_refs": ["V1:C1", "V1:E1"],
+            "status": "open",
+        }
+        self.assertEqual(contracts.validate_argument_finding(finding), [])
+        wrong_parent = copy.deepcopy(finding)
+        wrong_parent["parents"][1]["artifact"] = "argument-check-results"
+        self.assertTrue(
+            any("perspective-lens-results" in error for error in contracts.validate_argument_finding(wrong_parent))
+        )
+
+        index = {
+            **base(
+                "perspective-review-index",
+                "PV1-attempt-0001-perspective-review",
+                "derived-replaceable",
+                "deterministic",
+                parents=[
+                    parent("review-run", "perspective-review-run", review),
+                    parent("result-attempt", "perspective-result-attempt", attempt),
+                    parent("lens-result", "perspective-lens-results", results),
+                    parent("finding-0001", "argument-finding", finding),
+                ],
+            ),
+            "review_id": "PV1",
+            "attempt_id": "attempt-0001",
+            "version_id": "V1",
+            "lens": review["lens"],
+            "run_status": "complete",
+            "unverified": [],
+            "summary": {"pass": 0, "fail": 1, "uncertain": 0},
+            "outcomes": [
+                {
+                    "result_id": "P1",
+                    "target_claim": "V1:C1",
+                    "verdict": "fail",
+                    "reason": "The explanation ends at an aggregate structure.",
+                    "basis_refs": ["V1:C1", "V1:E1"],
+                    "framework_analysis": "No actor-level transition reconstructs the outcome.",
+                    "consequence": "The causal bearer remains unspecified.",
+                    "finding_id": finding["finding_id"],
+                }
+            ],
+            "view": {"relative_path": "perspective-review.md", "sha256": "6" * 64},
+            "field_provenance": {
+                "outcomes": {"origin": "model-derived", "source": "lens-result"},
+                "run_status": {"origin": "model-derived", "source": "lens-result"},
+                "unverified": {"origin": "model-derived", "source": "lens-result"},
+                "finding_id": {"origin": "deterministic", "source": "review"},
+                "summary": {"origin": "deterministic", "source": "review"},
+                "view": {"origin": "deterministic", "source": "review"},
+            },
+        }
+        self.assertEqual(contracts.validate_perspective_review_index(index), [])
+
+        duplicate_target = copy.deepcopy(results)
+        duplicate_target["results"].append(copy.deepcopy(results["results"][0]))
+        duplicate_target["results"][1]["result_id"] = "P2"
+        self.assertTrue(
+            any("at most one" in error for error in contracts.validate_perspective_lens_results(duplicate_target))
+        )
+        missing_target_basis = copy.deepcopy(results)
+        missing_target_basis["results"][0]["basis_refs"] = ["E1"]
+        self.assertTrue(
+            any("include target_claim" in error for error in contracts.validate_perspective_lens_results(missing_target_basis))
+        )
+
     def test_all_validators_tolerate_malformed_shapes(self) -> None:
         for value in (None, 1, "x", [], {}, {"artifact": "unknown"}):
             with self.subTest(value=value):

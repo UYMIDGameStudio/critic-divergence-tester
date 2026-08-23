@@ -42,6 +42,7 @@ from argument_workbench import (
     _read_json,
     _write_new,
     correction_entries,
+    document_version_chain,
     json_bytes,
     list_attempts,
     parse_json_strict,
@@ -249,7 +250,7 @@ def prepare_rule_review(
         plan, plan_sha256=sha256_bytes(plan_bytes)
     ).encode("utf-8")
 
-    for existing in list_rule_reviews(workspace.root):
+    for existing in list_rule_reviews(workspace):
         try:
             record, _ = _read_json(existing.record)
         except (OSError, WorkbenchError):
@@ -270,7 +271,7 @@ def prepare_rule_review(
         ):
             return existing, False
 
-    review_id = _next_review_id(workspace.root)
+    review_id = _next_review_id(workspace)
     paths = ReviewPaths(workspace, review_id)
     version_id = str(reviewed_record["version_id"])
     created_at = utc_now()
@@ -434,6 +435,9 @@ def collect_review_results(
         raise
     if status == "valid":
         rebuild_review_attempt(paths, attempt_id)
+        from argument_adjudication import rebuild_adjudication_cache
+
+        rebuild_adjudication_cache(paths.workspace)
     return attempt_dir, record
 
 
@@ -1063,7 +1067,7 @@ def verify_reviews(project_dir: Path | str) -> list[str]:
     if reviews_dir.is_symlink() or not reviews_dir.is_dir():
         return ["reviews must be a regular non-symlink directory"]
     try:
-        reviews = list_rule_reviews(workspace.root)
+        reviews = list_rule_reviews(workspace)
     except (OSError, WorkbenchError) as exc:
         return [str(exc)]
     known_review_names = {review.review_id for review in reviews}
@@ -1078,8 +1082,9 @@ def verify_reviews(project_dir: Path | str) -> list[str]:
         errors.append("Rule Review IDs must be continuous from RV1")
     base_entries: list[tuple[object, bytes]] = []
     try:
-        for path in (workspace.project, workspace.document, workspace.version):
+        for path in (workspace.project, workspace.document):
             base_entries.append(_read_json(path))
+        base_entries.extend(document_version_chain(workspace))
         base_entries.extend(
             (value, data) for _, value, data in list_attempts(workspace)
         )

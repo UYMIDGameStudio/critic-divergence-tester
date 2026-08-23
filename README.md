@@ -13,8 +13,10 @@ flowchart LR
     A["Manuscript"] --> B["Raw Argument IR"]
     B --> C["Human Corrections"]
     C --> D["Reviewed IR"]
-    D --> E["Scoped Rule Review"]
+    D --> E["Scoped Rule Lens"]
+    D --> P["Perspective Lenses"]
     E --> F["Claim Findings"]
+    P --> F
     F --> G["Human Adjudication"]
     G --> H["Revision Plan"]
 ```
@@ -46,6 +48,13 @@ py -3 critic_runner.py ir review show .\draft.argument-workbench
 py -3 critic_runner.py ir review triage .\draft.argument-workbench
 py -3 critic_runner.py ir adjudicate .\draft.argument-workbench
 py -3 critic_runner.py ir revision-plan .\draft.argument-workbench --show
+
+# 7. Gate A 通过后可分别运行完整方法论 Perspective Lens；结果不投票或合并
+py -3 critic_runner.py ir review prepare-perspective .\draft.argument-workbench `
+  --lens methodological-individualism
+py -3 critic_runner.py ir review collect-perspective .\draft.argument-workbench `
+  --file .\individualist-results.json --producer-label "模型标签"
+py -3 critic_runner.py ir review show-perspective .\draft.argument-workbench
 
 # 随时验证完整 hash/provenance 链
 py -3 critic_runner.py ir verify-project .\draft.argument-workbench
@@ -302,6 +311,9 @@ py -3 critic_runner.py ir collect $project --paste --producer-label "你使用�
 # 3. 浏览并校正 Claim / Evidence / Assumption / Citation / relation
 py -3 critic_runner.py ir inspect $project
 
+# V2 Reviewed IR 完成后生成精确 source/IR structural diff
+py -3 critic_runner.py ir diff-versions $project
+
 # 4. 随时复核全部父哈希和确定性派生产物
 py -3 critic_runner.py ir verify-project $project
 ```
@@ -330,7 +342,7 @@ py -3 critic_runner.py ir collect .\demo.argument-workbench --file .\test\fixtur
 py -3 critic_runner.py ir inspect .\demo.argument-workbench
 ```
 
-这个 fixture 包含“总会”式过强主张、漏 Claim、错 Evidence 绑定、显式 Assumption 和 Citation，可用于体验校正。Workbench 当前只支持单 Project / D1 / V1；跨版本 lineage、resolution、citation verification 和 GUI 尚未实现。五篇已发表论文已完成模型侧 engineering pre-run，但真正需要作者修改稿件的人工 Product Gate A 尚未完成。
+这个 fixture 包含“总会”式过强主张、漏 Claim、错 Evidence 绑定、显式 Assumption 和 Citation，可用于体验校正。Workbench 当前支持单 Project / D1 下的线性多版本历史与模型提出的 semantic Claim lineage；人工 lineage 确认、Finding resolution、citation verification 和 GUI 尚未实现。Product Gate A 已由作者在三篇真实稿件上作出 human-confirmed `pass`，但 P1 的高负担、P2/P3 的整稿接受、尚未记录实际修改等限制仍保留在 Gate 证据中，不能被“通过”抹掉。
 
 完整 artifact lifecycle、parent hash 和 field provenance 约定见 [`docs/artifact-contracts.md`](docs/artifact-contracts.md)。
 
@@ -452,9 +464,9 @@ documents/D1/versions/V1/
 
 为避免同一 Claim 的同一修改动作因逐 Finding provenance 而重复几十次，Markdown 会确定性生成 `Consolidated Revision Actions`：按 Claim、action type 和完整文本聚合展示，并列出覆盖的 Finding IDs 与全部底层 RevisionAction IDs。聚合只改变可读 cache；每个 adjudication/action artifact、父哈希和 `record.json` item 都保持独立，不能借展示合并抹掉方法论分歧或人工历史。
 
-### Product Gate A：先用真实文章验证，再进入 Phase 4
+### Product Gate A：已由作者通过，限制继续保留
 
-Phase 3 完成后不能直接增加 Perspective Lens。`ir gate-a` 把 3–5 篇真实稿件的 Phase 1–3 结果固定为一个私有、本地 evidence corpus。它只保存 workspace locator 与精确哈希，不复制稿件正文；建议输出目录使用 `*.product-gate-a/`，该模式默认不进 Git。
+Phase 3 完成后不能仅凭工程测试增加 Perspective Lens。`ir gate-a` 把 3–5 篇真实稿件的 Phase 1–3 结果固定为一个私有、本地 evidence corpus。当前作者已作出 human-confirmed `pass`，从而解除 Phase 4 产品门；详细 hash 和未消除的可用性限制记录在 [`docs/product-gate-a.md`](docs/product-gate-a.md)。Gate 工具只保存 workspace locator 与精确哈希，不复制稿件正文；建议输出目录使用 `*.product-gate-a/`，该模式默认不进 Git。
 
 ```powershell
 # 用同一协议生成全文内嵌 prompt；已有文件不会被覆盖
@@ -512,7 +524,100 @@ py -3 critic_runner.py ir gate-a verify $gate
 py -3 critic_runner.py ir gate-a decide $gate pass --reason "真实语料上的控制性与校正成本达到进入 Phase 4 的要求"
 ```
 
-`pass` 前强制要求 3–5 个互不相同的 source、每个 workspace 的全部 hash 仍与捕获时一致、所有 Finding 已 adjudicate、所有非实质执行状态已完成人工 triage、每篇都有人工 assessment 和至少一个 regression anchor。报告只给出 Claims、corrections、accepted/rejected/deferred/open Findings、抽取错误和人工成本等计数，不生成质量分数。详细协议见 [`docs/product-gate-a.md`](docs/product-gate-a.md)。仓库中的 synthetic/现实结构 fixture 只测试工具机制，不能充当 Gate A 的真实文章，也不能证明 Gate 已通过。
+`pass` 前强制要求 3–5 个互不相同的 source、每个 workspace 的全部 hash 仍与捕获时一致、所有 Finding 已 adjudicate、所有非实质执行状态已完成人工 triage、每篇都有人工 assessment 和至少一个 regression anchor。报告只给出 Claims、corrections、accepted/rejected/deferred/open Findings、抽取错误和人工成本等计数，不生成质量分数。仓库中的 synthetic/现实结构 fixture 只测试工具机制；当前 Gate 通过来自仓库外的私有真实稿件 corpus，而不是 fixture。
+
+### Phase 4：Perspective Lenses
+
+Phase 4 首先接入两种保持完整框架承诺的 Review Lens：`methodological-individualism`（兼容旧名 `critic-individualist`）与 `contrastive-explanation`（兼容旧名 `critic-contrastivist`）。它们不是 Rule Lens，不会被拆成 check × Claim 的任务矩阵。每个 Lens 对每条入选 Claim 最多形成一个整体判断，不产生分数、投票或自动综合。
+
+```powershell
+# 方法论个人主义：默认 thesis-chain，也可用 claim/claims/all
+py -3 critic_runner.py ir review prepare-perspective $project `
+  --lens methodological-individualism
+
+# 把生成的 review-prompt.md 交给任意模型，原样回收纯 JSON
+py -3 critic_runner.py ir review collect-perspective $project `
+  --file .\individualist-results.json --producer-label "模型标签"
+
+# 查看该 Lens；可加 --claim C4
+py -3 critic_runner.py ir review show-perspective $project
+
+# 另一 Perspective Lens 单独准备、单独归档、单独显示
+py -3 critic_runner.py ir review prepare-perspective $project `
+  --lens contrastive-explanation
+
+# 从同一 Claim 并列查看所有当前 Rule/Perspective Lens，不做综合
+py -3 critic_runner.py ir review show-claim-lenses $project --claim C7
+```
+
+每个 `PVn` 冻结完整 critic Markdown、Reviewed IR、非循环的 `perspective-review-plan.json`、prompt 和每次模型原始返回。`complete` 结果必须按 scope 对每条 Claim 恰好判断一次；FAIL / 实质 UNCERTAIN 确定性转成统一 `argument-finding`，PASS 留在可读 index 但不产生待办。Perspective Finding 直接进入现有 `ir adjudicate` 和 RevisionAction 流程，人工可以 accept / reject / defer；模型不能自动接受自己的批评。
+
+```text
+perspective-reviews/PV1/
+├── perspective-lens-protocol.json
+├── perspective-lens.md
+├── perspective-review-plan.json
+├── review-run.json
+├── reviewed-ir-record.json
+├── target-argument-ir.json
+├── review-prompt.md
+├── results/attempt-0001/{response.json,record.json}
+└── derived/attempt-0001/
+    ├── perspective-review-index.json
+    ├── perspective-review.md
+    └── findings/F0001.json ...
+```
+
+同一 Claim 可以同时显示 Social Science FAIL、Individualism FAIL 和 Contrastivism PASS；系统不会把它们压成 `66% confidence`。《结构的替身》C7 已完成一次真实 vertical-slice 运行，artifact hashes、框架分歧和暴露出的 cache lifecycle 修复记录在 [`docs/phase4-perspective-demo.md`](docs/phase4-perspective-demo.md)。Phase 4 当前仍不包含跨版本 lineage、Finding resolution、Citation verification 或 GUI。
+
+### Phase 5：导入新的 DocumentVersion
+
+修改稿不覆盖 V1。把新稿导入同一个项目后，程序创建连续的 `V2`、`V3`……，每个版本保存自己的 source、extraction prompt、Raw IR、corrections、Reviewed IR、reviews 和人工历史：
+
+```powershell
+py -3 critic_runner.py ir import-version $project .\draft-v2.md
+
+# 普通 IR 命令默认作用于最新版本，此时是 V2
+py -3 critic_runner.py ir collect $project --file .\argument-ir-v2.json `
+  --producer-label "模型标签"
+py -3 critic_runner.py ir inspect $project
+
+# verify-project 会验证 V1..当前版本，而不只检查最新目录
+py -3 critic_runner.py ir verify-project $project
+```
+
+新版本必须与当前 parent 的原稿精确字节不同，并通过 `parent-version` SHA-256 绑定前一份 `document-version.json`。当前产品只允许线性 `V1 → V2 → V3`，尚不开放分支版本；这避免在 lineage 与 Finding resolution contract 稳定前暗中引入未定义的合并语义。导入只创建版本和 source-bound extraction prompt，不会复制 V1 的 Claim ID，也不会声称新旧 Claim 相同。
+
+`diff-versions` 逐行比较 source bytes，并以排除版本局部 ID/位置的精确内容 fingerprint 比较 Claims、Evidence、Assumptions、Citations 和 relations。它只报告 exact unchanged、相同文字锚点下的字段变化、removed 和 added；文本改变的 `V1:C4` 与 `V2:C7` 在这里仍显示为 removed + added。这个结果明确标为 deterministic structural comparison，不会越权宣布 semantic identity。可读结果位于 `documents/D1/version-diffs/V1--V2/structural-diff.md`。
+
+结构 diff 完成后，可以让任意模型提出 semantic Claim lineage。模型只负责 proposal，不能确认跨版本身份：
+
+```powershell
+# 冻结两版 Reviewed IR、structural diff 与 lineage prompt；相同输入不会重复建 run
+py -3 critic_runner.py ir lineage prepare $project
+
+# 保存每一次模型原始返回；无效结果同样保留且不产生派生 lineage
+py -3 critic_runner.py ir lineage collect $project --file .\lineage-proposals.json `
+  --producer-label "模型标签"
+
+# 不打开 JSON，查看 unchanged / modified / split / merged / removed / new / uncertain
+py -3 critic_runner.py ir lineage show $project
+
+# 逐条确认或拒绝；每次判断都是新的 human-confirmed artifact
+py -3 critic_runner.py ir lineage adjudicate $project --proposal LP1 `
+  --decision confirm --reason "两版确实是同一主张的收窄"
+
+# 确实逐条看完后也可批量确认；expected-count 防止误操作到数量已变化的队列
+py -3 critic_runner.py ir lineage adjudicate $project --all --expected-count 3 `
+  --decision confirm --reason "已逐条核对全部三项"
+
+# 同屏查看模型原提议和当前人工判断
+py -3 critic_runner.py ir lineage history $project
+```
+
+每次 analysis 都保存两版 Reviewed IR、确定性 structural diff、完整 prompt 和 exact response。派生的 `claim-lineage` 使用 `V1:C4 → V2:C7` 这类版本限定引用，原生支持一对多 split 与多对一 merged；semantic changes、reason 和 uncertainty 均明确标记为 `model-derived`。`complete` proposal 必须覆盖两侧全部 Claims，但允许复杂关系重叠。
+
+人工 `confirm`、`reject`、`correct` 都追加新的 schema-v3 `claim-lineage`，不会修改模型 proposal。`correct` 可用 `--from-claim`、`--to-claim`、`--relation`、`--semantic-change`、`--lineage-reason` 和 `--basis-ref` 从命令行正式改正关系，无需打开 JSON。再次判断同一 proposal 时，新事件通过 `supersedes` 绑定上一判断，完整历史仍然保留。
 
 ### 兼容的低层 Argument IR 流程
 

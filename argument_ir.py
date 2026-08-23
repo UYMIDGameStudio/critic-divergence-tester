@@ -655,7 +655,7 @@ def _node_registry(ir: dict[str, Any]) -> dict[str, tuple[str, dict[str, Any]]]:
     return nodes
 
 
-def _selected_review_claim_ids(
+def select_review_claim_ids(
     ir: dict[str, Any], review_scope: str, claim_ids: list[str]
 ) -> list[str]:
     known_ids = [str(claim["id"]) for claim in ir["claims"]]
@@ -735,7 +735,7 @@ def build_check_plan(
         review_scope != "all" or requested_claim_ids
     ):
         raise ArgumentIRError("legacy v1 check libraries support only all-Claim scope")
-    selected_claim_ids = _selected_review_claim_ids(
+    selected_claim_ids = select_review_claim_ids(
         ir, review_scope, requested_claim_ids
     )
     selected_claim_id_set = set(selected_claim_ids)
@@ -912,7 +912,7 @@ def validate_check_plan(value: object) -> list[str]:
                 and kind in REVIEW_SCOPES
             ):
                 try:
-                    expected_selected = _selected_review_claim_ids(
+                    expected_selected = select_review_claim_ids(
                         argument, str(kind), requested
                     )
                 except ArgumentIRError as exc:

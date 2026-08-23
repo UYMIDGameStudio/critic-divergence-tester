@@ -33,6 +33,17 @@ Parent hashes always cover the exact file bytes on disk. Artifact objects do not
 | `rule-review-run` | immutable | One Reviewed IR snapshot, Rule Lens library, deterministic check plan, and execution prompt |
 | `review-result-attempt` | immutable | One exact model response to a Rule Review plan and its reproducible validation outcome |
 | `claim-review-index` | derived-replaceable | Claim-grouped substantive verdicts and auditable execution/routing states plus exact links to actionable Findings |
+| `perspective-lens-protocol` | immutable | Exact snapshot of one Perspective Lens's complete framework commitments and compatible legacy critic identity |
+| `perspective-review-plan` | immutable | Non-circular binding of one Perspective Lens, target IR, and deterministic Claim scope |
+| `perspective-review-run` | immutable | One Reviewed IR snapshot, complete Perspective Lens protocol, target scope, and execution prompt |
+| `perspective-result-attempt` | immutable | One exact model response to a Perspective Lens run and its reproducible validation outcome |
+| `perspective-lens-results` | immutable model payload | At most one holistic framework judgment per selected Claim, with model-derived basis and analysis |
+| `perspective-review-index` | derived-replaceable | Claim-grouped Perspective Lens outcomes and exact links to normalized actionable Findings |
+| `structural-version-diff` | derived-replaceable | Exact source-line, node-content, and relation-fingerprint changes between adjacent Reviewed IR versions; never semantic identity |
+| `lineage-analysis-run` | immutable | Exact snapshots of two Reviewed IRs, their deterministic structural diff, and the model-neutral semantic lineage prompt |
+| `lineage-proposal-attempt` | immutable | One exact model response plus reproducible validation; unusable attempts remain archived |
+| `claim-lineage-proposals` | immutable model payload | Unconfirmed many-to-many semantic correspondence proposals with reasons, basis refs, changes, and uncertainty |
+| `claim-lineage-index` | derived-replaceable | Reproducible proposal projection and readable Markdown bound to every derived `claim-lineage` artifact |
 | `review-status-triage` | append-only | One human acknowledgement or rejection of a model-proposed non-evaluated status, with an explicit follow-up action |
 | `review-status-triage-index` | derived-replaceable | Reproducible open/acknowledged/rejected execution-status queue binding every triage event |
 | `direct-review-baseline` | immutable | Exact direct-chat prompt/response, manuscript binding, provider/model identity, declared session conditions, and elapsed-time evidence for Gate A comparison |
@@ -49,7 +60,13 @@ Parent hashes always cover the exact file bytes on disk. Artifact objects do not
 | `product-gate-a-report` | derived-replaceable | Reproducible gate evidence counts and Markdown, never an automatic score or decision |
 | `claim-lineage` | immutable | Proposed or human-confirmed many-to-many correspondence between version-qualified Claims |
 
-An accepted adjudication is incomplete unless the same validated bundle contains at least one RevisionAction linked to its exact hash. ClaimLineage uses arrays on both sides so split and merge are native rather than encoded as fake one-to-one identities. A model proposal is an immutable `status=proposed` artifact; a human confirmation or rejection is a second artifact that binds the exact proposal hash. Human-originated lineage may be confirmed directly but is still marked `proposed_by=human`.
+An accepted adjudication is incomplete unless the same validated bundle contains at least one RevisionAction linked to its exact hash. ClaimLineage uses arrays on both sides so split and merge are native rather than encoded as fake one-to-one identities. A model proposal is an immutable schema-v2 `status=proposed` artifact. Human confirm/reject/correct creates a second schema-v3 `claim-lineage` with `provenance.origin=human-confirmed`, binding the exact proposal hash; a later reconsideration additionally binds the previous human decision through `supersedes`. Neither operation edits or silently replaces the model artifact.
+
+DocumentVersion IDs are version-local sequence labels, not Claim identity. `V1` binds the immutable Document; each later version additionally binds the exact previous `document-version.json` bytes through a `parent-version` parent and records the corresponding `parent_version` ID. The Phase 5 application currently enforces a continuous linear chain and rejects identical adjacent source bytes. Every version owns an independent Raw/Correction/Reviewed/Review lifecycle; selecting the latest version never relocates or rewrites an earlier directory.
+
+`structural-version-diff` binds both DocumentVersion records, both Reviewed IR records, and both compatible Argument IR payloads. Source hunks come from exact line comparison. Node matching first uses exact content excluding only local ID and normalized position, then an exact `kind + text + source_quote` anchor to expose changed classification fields. Relations use their type plus exact endpoint anchor fingerprints. These comparisons are deterministic equality tests, not Claim correspondence proposals: changed wording remains removed + added until a separate semantic lineage artifact is proposed and confirmed.
+
+Semantic lineage uses a second, explicitly non-deterministic layer. `lineage-analysis-run` snapshots the two Reviewed records/payloads, the structural diff, and prompt bytes so later IR corrections cannot rewrite an earlier analysis. Every collected response is an immutable `lineage-proposal-attempt`; invalid JSON, wrong-version references, unknown nodes, or incomplete `status=complete` coverage are retained as unusable attempts and cannot produce derived lineage. A valid response derives schema-v2 `claim-lineage` artifacts whose exact parents include both relevant IR snapshots, the proposal attempt, and the raw proposal payload. These artifacts remain `status=proposed` and `provenance.origin=model-derived`; the readable index does not turn them into facts.
 
 ## Field provenance in Reviewed IR
 
@@ -77,6 +94,16 @@ Result v2 first records `execution_status`. Only `evaluated` tasks may carry `pa
 Non-evaluated statuses never become manuscript Findings, but they no longer disappear from human workflow. Each current status remains open until a `review-status-triage` event acknowledges or rejects it. Routing mismatches point to IR correction/rerun actions, missing context points to context/evidence actions, and not-applicable requires explicit acknowledgement or rejection. Reconsideration appends another event binding the prior event; the derived triage index binds the entire exact-byte history. Open triage blocks Gate capture.
 
 For valid evaluated results, each FAIL or substantive UNCERTAIN becomes an immutable `argument-finding` with a version-qualified `target_claim`, Rule Lens/check identity, `status=open`, and exact parents for the target IR and model result. PASS and non-evaluated statuses remain visible without creating actionable Findings. Deterministic packaging never turns model judgments into deterministic facts.
+
+## Perspective Lens provenance
+
+Perspective Lenses preserve a framework commitment rather than converting it into a machine-rule checklist. Phase 4 initially recognizes `methodological-individualism` and `contrastive-explanation`, while retaining `critic-individualist` and `critic-contrastivist` as compatible legacy protocol names. A `perspective-lens-protocol` snapshots the complete Markdown protocol bytes. An immutable `perspective-review-plan` binds that protocol, the target IR, and the explicit Claim scope before prompt rendering; both prompt and model response can therefore cite its exact hash without a circular self-hash. A `perspective-review-run` then binds the plan, complete protocol, exact Reviewed IR, target IR, and execution prompt.
+
+The normalized model payload permits at most one holistic judgment from one Perspective Lens for each selected Claim. `framework_analysis` records how the framework reaches the judgment, `basis_refs` records the manuscript nodes considered, and `consequence` records the specific argumentative consequence of FAIL or substantive UNCERTAIN. This envelope is not a checklist score and does not claim that every framework commitment can be evaluated independently.
+
+PASS remains visible in the derived Perspective index but creates no Finding. FAIL and substantive UNCERTAIN become the same immutable `argument-finding` envelope used by Rule Lenses, with `lens.kind=perspective`, `check_id=null`, and an exact `perspective-lens-results` parent. Rule Findings must continue to bind `argument-check-results`; validators reject swapping the two result types.
+
+Different Perspective and Rule Lens outcomes remain separate Claim-level observations. The contract defines no vote, confidence average, winner, or automatic synthesis. A Claim may therefore simultaneously carry, for example, a Social Science failure, an Individualist failure, and a Contrastivist pass without contradiction being erased.
 
 ## Human adjudication and revision-plan provenance
 
