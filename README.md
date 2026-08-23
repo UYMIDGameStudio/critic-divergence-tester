@@ -700,6 +700,8 @@ py -3 critic_runner.py ir verify-project $project
 
 派生的 `evidence-provenance.md` 按 Citation 展示四维结果、来源、人工决定，并沿 Reviewed IR 的 `cites`、`supports`、`qualifies` 路径列出下游 Evidence 和 Claims。只要 Citation 尚未得到四维人工确认，下游显示 `depends_on_unverified_evidence`；这不等于 `claim_false`，也不会产生论文总分。无效模型返回仍保存在新的 attempt 中，不会生成派生事实或覆盖旧结果。
 
+一条作者 V2 Citation 已完成从外部原文、模型四维提案、人工确认到下游依赖更新的真实 vertical slice；公开哈希、来源、结果和限制见 [`docs/phase7-citation-demo.md`](docs/phase7-citation-demo.md)。该演示证明工作流可运行，不代表两篇稿件的全部 Citation 已核完。
+
 ### 兼容的低层 Argument IR 流程
 
 先让工具为原稿生成一份**抽取提示词**：
