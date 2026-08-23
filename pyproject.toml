@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68,<81"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "critic-divergence-tester"
+version = "0.1.0"
+description = "Local-first, model-neutral argument and document review workbench"
+requires-python = ">=3.10,<3.15"
+license = {text = "MIT"}
+dependencies = []
+
+[project.optional-dependencies]
+# Kept optional so the existing Markdown/TXT workflow remains zero-install.
+# The adapters report their state through `critic_runner.py doctor`.
+pdf = [
+  "pypdf>=5.0,<7.0",
+  "pymupdf>=1.24,<2.0",
+]
+ocr = [
+  "pytesseract>=0.3.10,<0.4",
+  "pillow>=10.0,<13.0",
+]
+all = [
+  "pypdf>=5.0,<7.0",
+  "pymupdf>=1.24,<2.0",
+  "pytesseract>=0.3.10,<0.4",
+  "pillow>=10.0,<13.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+python_files = ["test_*.py"]
