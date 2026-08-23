@@ -1506,6 +1506,15 @@ def verify_project_versions(project_dir: WorkspacePaths | Path | str) -> list[st
         )
     except ImportError as exc:
         errors.append(f"version diffs: cannot load verifier: {exc}")
+    try:
+        from argument_lineage import verify_lineage_analyses
+
+        errors.extend(
+            f"claim lineage: {error}"
+            for error in verify_lineage_analyses(root_paths)
+        )
+    except ImportError as exc:
+        errors.append(f"claim lineage: cannot load verifier: {exc}")
     return errors
 
 

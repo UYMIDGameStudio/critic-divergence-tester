@@ -47,6 +47,21 @@ PERSPECTIVE_LENSES = (
     "contrastive-explanation",
 )
 PERSPECTIVE_RESULT_STATUSES = ("complete", "partial", "blocked")
+LINEAGE_RUN_STATUSES = ("complete", "partial", "blocked")
+SEMANTIC_CHANGE_TYPES = (
+    "scope_narrowed",
+    "scope_broadened",
+    "causal_strength_reduced",
+    "causal_strength_increased",
+    "qualification_added",
+    "qualification_removed",
+    "evidence_changed",
+    "concept_reframed",
+    "argument_role_changed",
+    "wording_only",
+    "other",
+    "uncertain",
+)
 REVIEW_DEPTHS = ("core", "full")
 REVIEW_SCOPES = ("thesis-chain", "claim", "claims", "all")
 REVIEW_EXECUTION_STATUSES = (
@@ -1544,6 +1559,355 @@ def validate_structural_version_diff(value: object) -> list[str]:
             _strict_keys(entry, {"origin", "source"}, f"field_provenance.{field}", errors)
             if entry.get("origin") != "deterministic":
                 errors.append(f"field_provenance.{field}.origin must be deterministic")
+            if not _nonempty(entry.get("source")):
+                errors.append(f"field_provenance.{field}.source must be non-empty")
+    return errors
+
+
+def validate_lineage_analysis_run(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="lineage-analysis-run",
+        lifecycle="immutable",
+        extra_keys={
+            "lineage_id",
+            "document_id",
+            "from_version",
+            "to_version",
+            "from_reviewed_record",
+            "to_reviewed_record",
+            "from_ir",
+            "to_ir",
+            "structural_diff",
+            "prompt",
+        },
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"deterministic"}, "lineage-analysis-run", errors)
+    roles = {
+        "from-reviewed": "reviewed-argument-ir",
+        "to-reviewed": "reviewed-argument-ir",
+        "from-ir": "argument-ir",
+        "to-ir": "argument-ir",
+        "structural-diff": "structural-version-diff",
+    }
+    _require_parent_roles(item, set(roles), errors)
+    _require_parent_artifacts(item, roles, errors)
+    from_version = item.get("from_version")
+    to_version = item.get("to_version")
+    for field, version in (("from_version", from_version), ("to_version", to_version)):
+        if not isinstance(version, str) or re.fullmatch(r"V[1-9][0-9]*", version) is None:
+            errors.append(f"{field} must be V1..Vn")
+    if item.get("lineage_id") != f"{from_version}--{to_version}":
+        errors.append("lineage_id must be <from_version>--<to_version>")
+    if not _nonempty(item.get("document_id")):
+        errors.append("document_id must be non-empty")
+    for field in (
+        "from_reviewed_record",
+        "to_reviewed_record",
+        "from_ir",
+        "to_ir",
+        "structural_diff",
+        "prompt",
+    ):
+        _validate_bound_file(item.get(field), field, errors)
+    return errors
+
+
+def validate_lineage_proposal_attempt(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="lineage-proposal-attempt",
+        lifecycle="immutable",
+        extra_keys={"lineage_id", "attempt_id", "collection", "response", "validation"},
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"model-derived"}, "lineage-proposal-attempt", errors)
+    _require_parent_roles(item, {"analysis-run"}, errors)
+    _require_parent_artifacts(item, {"analysis-run": "lineage-analysis-run"}, errors)
+    if not isinstance(item.get("lineage_id"), str) or re.fullmatch(
+        r"V[1-9][0-9]*--V[1-9][0-9]*", str(item.get("lineage_id"))
+    ) is None:
+        errors.append("lineage_id must be Vn--Vm")
+    if not isinstance(item.get("attempt_id"), str) or re.fullmatch(
+        r"attempt-[0-9]{4}", str(item.get("attempt_id"))
+    ) is None:
+        errors.append("attempt_id must be attempt-NNNN")
+    collection = item.get("collection")
+    if not isinstance(collection, dict):
+        errors.append("collection must be an object")
+    else:
+        _strict_keys(
+            collection,
+            {"method", "source_name", "producer_label"},
+            "collection",
+            errors,
+        )
+        if collection.get("method") not in {"file", "terminal-paste"}:
+            errors.append("collection.method must be file or terminal-paste")
+        if not _safe_basename(collection.get("source_name")):
+            errors.append("collection.source_name must be a safe basename")
+        producer = collection.get("producer_label")
+        if producer is not None and not _nonempty(producer):
+            errors.append("collection.producer_label must be null or non-empty")
+    _validate_bound_file(item.get("response"), "response", errors)
+    validation = item.get("validation")
+    if not isinstance(validation, dict):
+        errors.append("validation must be an object")
+    else:
+        _strict_keys(validation, {"status", "errors"}, "validation", errors)
+        if validation.get("status") not in REVIEW_RESULT_STATUSES:
+            errors.append(f"validation.status must be one of {REVIEW_RESULT_STATUSES}")
+        validation_errors = _string_list(
+            validation.get("errors"), "validation.errors", errors
+        )
+        if validation.get("status") == "valid" and validation_errors:
+            errors.append("valid lineage proposal requires validation.errors=[]")
+        if validation.get("status") == "unusable" and not validation_errors:
+            errors.append("unusable lineage proposal requires concrete errors")
+    return errors
+
+
+def _validate_lineage_relation_shape(
+    relation: object,
+    from_claims: list[str],
+    to_claims: list[str],
+    label: str,
+    errors: list[str],
+) -> None:
+    if relation not in LINEAGE_RELATIONS:
+        errors.append(f"{label}.relation must be one of {LINEAGE_RELATIONS}")
+        return
+    if relation in {"unchanged", "modified"} and (
+        len(from_claims) != 1 or len(to_claims) != 1
+    ):
+        errors.append(f"{label}.{relation} requires one Claim on each side")
+    if relation == "split" and (len(from_claims) != 1 or len(to_claims) < 2):
+        errors.append(f"{label}.split requires one source and at least two descendants")
+    if relation == "merged" and (len(from_claims) < 2 or len(to_claims) != 1):
+        errors.append(f"{label}.merged requires at least two sources and one descendant")
+    if relation == "removed" and (not from_claims or to_claims):
+        errors.append(f"{label}.removed requires from_claims only")
+    if relation == "new" and (from_claims or not to_claims):
+        errors.append(f"{label}.new requires to_claims only")
+    if relation == "uncertain" and not (from_claims or to_claims):
+        errors.append(f"{label}.uncertain requires at least one Claim")
+
+
+def validate_claim_lineage_proposals(value: object) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(value, dict):
+        return ["claim-lineage-proposals must be a JSON object"]
+    _strict_keys(
+        value,
+        {"schema_version", "artifact", "source", "status", "unverified", "proposals"},
+        "claim-lineage-proposals",
+        errors,
+    )
+    if value.get("schema_version") != 1:
+        errors.append("schema_version must be 1")
+    if value.get("artifact") != "claim-lineage-proposals":
+        errors.append("artifact must be claim-lineage-proposals")
+    source = value.get("source")
+    if not isinstance(source, dict):
+        errors.append("source must be an object")
+    else:
+        _strict_keys(
+            source,
+            {"structural_diff_sha256", "from_ir_sha256", "to_ir_sha256"},
+            "source",
+            errors,
+        )
+        for field in ("structural_diff_sha256", "from_ir_sha256", "to_ir_sha256"):
+            if not _digest(source.get(field)):
+                errors.append(f"source.{field} must be a SHA-256 digest")
+    status = value.get("status")
+    if status not in LINEAGE_RUN_STATUSES:
+        errors.append(f"status must be one of {LINEAGE_RUN_STATUSES}")
+    unverified = _string_list(value.get("unverified"), "unverified", errors)
+    if status == "complete" and unverified:
+        errors.append("complete lineage proposal requires unverified=[]")
+    if status in {"partial", "blocked"} and not unverified:
+        errors.append(f"{status} lineage proposal requires unverified items")
+    proposals = value.get("proposals")
+    if not isinstance(proposals, list):
+        errors.append("proposals must be an array")
+        return errors
+    if status == "blocked" and proposals:
+        errors.append("blocked lineage proposal must not contain proposals")
+    expected_keys = {
+        "proposal_id",
+        "from_claims",
+        "to_claims",
+        "relation",
+        "semantic_changes",
+        "reason",
+        "basis_refs",
+        "uncertainty",
+    }
+    proposal_ids: list[str] = []
+    for index, proposal in enumerate(proposals):
+        label = f"proposals[{index}]"
+        if not isinstance(proposal, dict):
+            errors.append(f"{label} must be an object")
+            continue
+        _strict_keys(proposal, expected_keys, label, errors)
+        expected_id = f"LP{index + 1}"
+        if proposal.get("proposal_id") != expected_id:
+            errors.append(f"{label}.proposal_id must be {expected_id}")
+        proposal_ids.append(str(proposal.get("proposal_id")))
+        from_claims = _string_list(proposal.get("from_claims"), f"{label}.from_claims", errors)
+        to_claims = _string_list(proposal.get("to_claims"), f"{label}.to_claims", errors)
+        for field, claims in (("from_claims", from_claims), ("to_claims", to_claims)):
+            if len(claims) != len(set(claims)):
+                errors.append(f"{label}.{field} must not repeat Claims")
+            for claim in claims:
+                if _VERSIONED_CLAIM.fullmatch(claim) is None:
+                    errors.append(f"{label}.{field} contains invalid Claim {claim!r}")
+        relation = proposal.get("relation")
+        _validate_lineage_relation_shape(relation, from_claims, to_claims, label, errors)
+        semantic_changes = _string_list(
+            proposal.get("semantic_changes"),
+            f"{label}.semantic_changes",
+            errors,
+        )
+        unknown_changes = sorted(set(semantic_changes) - set(SEMANTIC_CHANGE_TYPES))
+        if unknown_changes:
+            errors.append(f"{label}.semantic_changes contains unknown values: {unknown_changes}")
+        if relation == "unchanged" and semantic_changes:
+            errors.append(f"{label}.unchanged requires semantic_changes=[]")
+        if relation in {"modified", "split", "merged"} and not semantic_changes:
+            errors.append(f"{label}.{relation} requires semantic_changes")
+        if not _nonempty(proposal.get("reason")):
+            errors.append(f"{label}.reason must be non-empty")
+        basis_refs = _string_list(
+            proposal.get("basis_refs"), f"{label}.basis_refs", errors, allow_empty=False
+        )
+        for reference in basis_refs:
+            if re.fullmatch(r"V[1-9][0-9]*:[CEAZ][1-9][0-9]*", reference) is None:
+                errors.append(f"{label}.basis_refs contains invalid node {reference!r}")
+        if not set(from_claims + to_claims).issubset(set(basis_refs)):
+            errors.append(f"{label}.basis_refs must include every linked Claim")
+        if not isinstance(proposal.get("uncertainty"), str):
+            errors.append(f"{label}.uncertainty must be a string")
+    if len(proposal_ids) != len(set(proposal_ids)):
+        errors.append("proposal IDs must not repeat")
+    return errors
+
+
+def validate_claim_lineage_index(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="claim-lineage-index",
+        lifecycle="derived-replaceable",
+        extra_keys={
+            "lineage_id",
+            "attempt_id",
+            "from_version",
+            "to_version",
+            "run_status",
+            "unverified",
+            "summary",
+            "proposals",
+            "payload",
+            "field_provenance",
+        },
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"deterministic"}, "claim-lineage-index", errors)
+    parents = item.get("parents")
+    roles = {"analysis-run", "proposal-attempt", "proposal-result"}
+    if isinstance(parents, list):
+        roles.update(
+            str(parent.get("role"))
+            for parent in parents
+            if isinstance(parent, dict)
+            and str(parent.get("role", "")).startswith("lineage-")
+        )
+    artifacts = {
+        "analysis-run": "lineage-analysis-run",
+        "proposal-attempt": "lineage-proposal-attempt",
+        "proposal-result": "claim-lineage-proposals",
+        **{role: "claim-lineage" for role in roles if role.startswith("lineage-")},
+    }
+    _require_parent_roles(item, roles, errors)
+    _require_parent_artifacts(item, artifacts, errors)
+    if not isinstance(item.get("lineage_id"), str) or re.fullmatch(
+        r"V[1-9][0-9]*--V[1-9][0-9]*", str(item.get("lineage_id"))
+    ) is None:
+        errors.append("lineage_id must be Vn--Vm")
+    if not isinstance(item.get("attempt_id"), str) or re.fullmatch(
+        r"attempt-[0-9]{4}", str(item.get("attempt_id"))
+    ) is None:
+        errors.append("attempt_id must be attempt-NNNN")
+    if item.get("run_status") not in LINEAGE_RUN_STATUSES:
+        errors.append(f"run_status must be one of {LINEAGE_RUN_STATUSES}")
+    _string_list(item.get("unverified"), "unverified", errors)
+    proposals = item.get("proposals")
+    if not isinstance(proposals, list):
+        errors.append("proposals must be an array")
+        proposal_count = 0
+    else:
+        proposal_count = len(proposals)
+        expected_keys = {
+            "proposal_id",
+            "lineage_artifact_id",
+            "from_claims",
+            "to_claims",
+            "relation",
+            "semantic_changes",
+            "reason",
+            "basis_refs",
+            "uncertainty",
+        }
+        for index, proposal in enumerate(proposals):
+            label = f"proposals[{index}]"
+            if not isinstance(proposal, dict):
+                errors.append(f"{label} must be an object")
+                continue
+            _strict_keys(proposal, expected_keys, label, errors)
+            if proposal.get("proposal_id") != f"LP{index + 1}":
+                errors.append(f"{label}.proposal_id must be LP{index + 1}")
+            if not _nonempty(proposal.get("lineage_artifact_id")):
+                errors.append(f"{label}.lineage_artifact_id must be non-empty")
+    summary = item.get("summary")
+    expected_summary = {relation: 0 for relation in LINEAGE_RELATIONS}
+    if isinstance(proposals, list):
+        for proposal in proposals:
+            if isinstance(proposal, dict) and proposal.get("relation") in expected_summary:
+                expected_summary[str(proposal["relation"])] += 1
+    expected_summary["total"] = proposal_count
+    if not isinstance(summary, dict):
+        errors.append("summary must be an object")
+    else:
+        _strict_keys(summary, set(expected_summary), "summary", errors)
+        if summary != expected_summary:
+            errors.append("summary must equal proposal relation counts")
+    _validate_bound_file(item.get("payload"), "payload", errors)
+    provenance = item.get("field_provenance")
+    expected_origins = {
+        "proposals": "model-derived",
+        "run_status": "model-derived",
+        "unverified": "model-derived",
+        "lineage_artifact_id": "deterministic",
+        "summary": "deterministic",
+        "payload": "deterministic",
+    }
+    if not isinstance(provenance, dict):
+        errors.append("field_provenance must be an object")
+    else:
+        _strict_keys(provenance, set(expected_origins), "field_provenance", errors)
+        for field, origin in expected_origins.items():
+            entry = provenance.get(field)
+            if not isinstance(entry, dict):
+                errors.append(f"field_provenance.{field} must be an object")
+                continue
+            _strict_keys(entry, {"origin", "source"}, f"field_provenance.{field}", errors)
+            if entry.get("origin") != origin:
+                errors.append(f"field_provenance.{field}.origin must be {origin}")
             if not _nonempty(entry.get("source")):
                 errors.append(f"field_provenance.{field}.source must be non-empty")
     return errors
@@ -3482,19 +3846,26 @@ def validate_gate_a_report(value: object) -> list[str]:
 
 
 def validate_claim_lineage(value: object) -> list[str]:
+    schema_version = value.get("schema_version") if isinstance(value, dict) else None
+    extra_keys = {
+        "lineage_id",
+        "from_claims",
+        "to_claims",
+        "relation",
+        "proposed_by",
+        "proposal_sha256",
+        "status",
+    }
+    if schema_version == 2:
+        extra_keys.update(
+            {"semantic_changes", "reason", "basis_refs", "uncertainty"}
+        )
     errors, item = _validate_base(
         value,
         artifact="claim-lineage",
         lifecycle="immutable",
-        extra_keys={
-            "lineage_id",
-            "from_claims",
-            "to_claims",
-            "relation",
-            "proposed_by",
-            "proposal_sha256",
-            "status",
-        },
+        extra_keys=extra_keys,
+        schema_versions=(1, 2),
     )
     if item is None:
         return errors
@@ -3519,6 +3890,31 @@ def validate_claim_lineage(value: object) -> list[str]:
         errors.append("split lineage requires one source and at least two descendants")
     if relation == "merged" and (len(from_claims) < 2 or len(to_claims) != 1):
         errors.append("merged lineage requires at least two sources and one descendant")
+    if schema_version == 2:
+        semantic_changes = _string_list(
+            item.get("semantic_changes"), "semantic_changes", errors
+        )
+        unknown_changes = sorted(set(semantic_changes) - set(SEMANTIC_CHANGE_TYPES))
+        if unknown_changes:
+            errors.append(
+                f"semantic_changes contains unknown values: {unknown_changes}"
+            )
+        if relation == "unchanged" and semantic_changes:
+            errors.append("unchanged lineage requires semantic_changes=[]")
+        if relation in {"modified", "split", "merged"} and not semantic_changes:
+            errors.append(f"{relation} lineage requires semantic_changes")
+        if not _nonempty(item.get("reason")):
+            errors.append("reason must be non-empty")
+        basis_refs = _string_list(
+            item.get("basis_refs"), "basis_refs", errors, allow_empty=False
+        )
+        for reference in basis_refs:
+            if re.fullmatch(r"V[1-9][0-9]*:[CEAZ][1-9][0-9]*", reference) is None:
+                errors.append(f"basis_refs contains invalid node: {reference}")
+        if not set(from_claims + to_claims).issubset(set(basis_refs)):
+            errors.append("basis_refs must include every linked Claim")
+        if not isinstance(item.get("uncertainty"), str):
+            errors.append("uncertainty must be a string")
     if item.get("status") not in LINEAGE_STATUSES:
         errors.append(f"status must be one of {LINEAGE_STATUSES}")
     provenance = item.get("provenance")
@@ -3540,12 +3936,27 @@ def validate_claim_lineage(value: object) -> list[str]:
         if relation == "removed"
         else {"from-version", "to-version"}
     )
+    if schema_version == 2 and status == "proposed":
+        required_parent_roles.update({"proposal-attempt", "proposal-result"})
     if status in {"human_confirmed", "rejected"} and proposed_by == "model":
         required_parent_roles.add("proposal")
     if set(parent_by_role) != required_parent_roles:
         errors.append(
             f"claim-lineage parent roles must be exactly {sorted(required_parent_roles)}"
         )
+    expected_parent_artifacts = {
+        role: (
+            "claim-lineage"
+            if role == "proposal"
+            else "lineage-proposal-attempt"
+            if role == "proposal-attempt"
+            else "claim-lineage-proposals"
+            if role == "proposal-result"
+            else "argument-ir"
+        )
+        for role in required_parent_roles
+    }
+    _require_parent_artifacts(item, expected_parent_artifacts, errors)
     if status == "proposed":
         if proposed_by != "model":
             errors.append("proposed lineage status is reserved for model proposals")
@@ -3585,6 +3996,10 @@ VALIDATORS: dict[str, Callable[[object], list[str]]] = {
     "perspective-lens-results": validate_perspective_lens_results,
     "perspective-review-index": validate_perspective_review_index,
     "structural-version-diff": validate_structural_version_diff,
+    "lineage-analysis-run": validate_lineage_analysis_run,
+    "lineage-proposal-attempt": validate_lineage_proposal_attempt,
+    "claim-lineage-proposals": validate_claim_lineage_proposals,
+    "claim-lineage-index": validate_claim_lineage_index,
     "direct-review-baseline": validate_direct_review_baseline,
     "gate-a-session-start": validate_gate_a_session_start,
     "gate-a-work-session": validate_gate_a_work_session,

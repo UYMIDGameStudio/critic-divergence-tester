@@ -40,6 +40,10 @@ Parent hashes always cover the exact file bytes on disk. Artifact objects do not
 | `perspective-lens-results` | immutable model payload | At most one holistic framework judgment per selected Claim, with model-derived basis and analysis |
 | `perspective-review-index` | derived-replaceable | Claim-grouped Perspective Lens outcomes and exact links to normalized actionable Findings |
 | `structural-version-diff` | derived-replaceable | Exact source-line, node-content, and relation-fingerprint changes between adjacent Reviewed IR versions; never semantic identity |
+| `lineage-analysis-run` | immutable | Exact snapshots of two Reviewed IRs, their deterministic structural diff, and the model-neutral semantic lineage prompt |
+| `lineage-proposal-attempt` | immutable | One exact model response plus reproducible validation; unusable attempts remain archived |
+| `claim-lineage-proposals` | immutable model payload | Unconfirmed many-to-many semantic correspondence proposals with reasons, basis refs, changes, and uncertainty |
+| `claim-lineage-index` | derived-replaceable | Reproducible proposal projection and readable Markdown bound to every derived `claim-lineage` artifact |
 | `review-status-triage` | append-only | One human acknowledgement or rejection of a model-proposed non-evaluated status, with an explicit follow-up action |
 | `review-status-triage-index` | derived-replaceable | Reproducible open/acknowledged/rejected execution-status queue binding every triage event |
 | `direct-review-baseline` | immutable | Exact direct-chat prompt/response, manuscript binding, provider/model identity, declared session conditions, and elapsed-time evidence for Gate A comparison |
@@ -61,6 +65,8 @@ An accepted adjudication is incomplete unless the same validated bundle contains
 DocumentVersion IDs are version-local sequence labels, not Claim identity. `V1` binds the immutable Document; each later version additionally binds the exact previous `document-version.json` bytes through a `parent-version` parent and records the corresponding `parent_version` ID. The Phase 5 application currently enforces a continuous linear chain and rejects identical adjacent source bytes. Every version owns an independent Raw/Correction/Reviewed/Review lifecycle; selecting the latest version never relocates or rewrites an earlier directory.
 
 `structural-version-diff` binds both DocumentVersion records, both Reviewed IR records, and both compatible Argument IR payloads. Source hunks come from exact line comparison. Node matching first uses exact content excluding only local ID and normalized position, then an exact `kind + text + source_quote` anchor to expose changed classification fields. Relations use their type plus exact endpoint anchor fingerprints. These comparisons are deterministic equality tests, not Claim correspondence proposals: changed wording remains removed + added until a separate semantic lineage artifact is proposed and confirmed.
+
+Semantic lineage uses a second, explicitly non-deterministic layer. `lineage-analysis-run` snapshots the two Reviewed records/payloads, the structural diff, and prompt bytes so later IR corrections cannot rewrite an earlier analysis. Every collected response is an immutable `lineage-proposal-attempt`; invalid JSON, wrong-version references, unknown nodes, or incomplete `status=complete` coverage are retained as unusable attempts and cannot produce derived lineage. A valid response derives schema-v2 `claim-lineage` artifacts whose exact parents include both relevant IR snapshots, the proposal attempt, and the raw proposal payload. These artifacts remain `status=proposed` and `provenance.origin=model-derived`; the readable index does not turn them into facts.
 
 ## Field provenance in Reviewed IR
 

@@ -342,7 +342,7 @@ py -3 critic_runner.py ir collect .\demo.argument-workbench --file .\test\fixtur
 py -3 critic_runner.py ir inspect .\demo.argument-workbench
 ```
 
-这个 fixture 包含“总会”式过强主张、漏 Claim、错 Evidence 绑定、显式 Assumption 和 Citation，可用于体验校正。Workbench 当前只支持单 Project / D1 / V1；跨版本 lineage、resolution、citation verification 和 GUI 尚未实现。Product Gate A 已由作者在三篇真实稿件上作出 human-confirmed `pass`，但 P1 的高负担、P2/P3 的整稿接受、尚未记录实际修改等限制仍保留在 Gate 证据中，不能被“通过”抹掉。
+这个 fixture 包含“总会”式过强主张、漏 Claim、错 Evidence 绑定、显式 Assumption 和 Citation，可用于体验校正。Workbench 当前支持单 Project / D1 下的线性多版本历史与模型提出的 semantic Claim lineage；人工 lineage 确认、Finding resolution、citation verification 和 GUI 尚未实现。Product Gate A 已由作者在三篇真实稿件上作出 human-confirmed `pass`，但 P1 的高负担、P2/P3 的整稿接受、尚未记录实际修改等限制仍保留在 Gate 证据中，不能被“通过”抹掉。
 
 完整 artifact lifecycle、parent hash 和 field provenance 约定见 [`docs/artifact-contracts.md`](docs/artifact-contracts.md)。
 
@@ -588,7 +588,23 @@ py -3 critic_runner.py ir verify-project $project
 
 新版本必须与当前 parent 的原稿精确字节不同，并通过 `parent-version` SHA-256 绑定前一份 `document-version.json`。当前产品只允许线性 `V1 → V2 → V3`，尚不开放分支版本；这避免在 lineage 与 Finding resolution contract 稳定前暗中引入未定义的合并语义。导入只创建版本和 source-bound extraction prompt，不会复制 V1 的 Claim ID，也不会声称新旧 Claim 相同。
 
-`diff-versions` 逐行比较 source bytes，并以排除版本局部 ID/位置的精确内容 fingerprint 比较 Claims、Evidence、Assumptions、Citations 和 relations。它只报告 exact unchanged、相同文字锚点下的字段变化、removed 和 added；文本改变的 `V1:C4` 与 `V2:C7` 在此阶段仍显示为 removed + added。这个结果明确标为 deterministic structural comparison，不会越权宣布 semantic identity。可读结果位于 `documents/D1/version-diffs/V1--V2/structural-diff.md`。模型 lineage proposal 和人工确认在后续 Phase 5 增量中生成。
+`diff-versions` 逐行比较 source bytes，并以排除版本局部 ID/位置的精确内容 fingerprint 比较 Claims、Evidence、Assumptions、Citations 和 relations。它只报告 exact unchanged、相同文字锚点下的字段变化、removed 和 added；文本改变的 `V1:C4` 与 `V2:C7` 在这里仍显示为 removed + added。这个结果明确标为 deterministic structural comparison，不会越权宣布 semantic identity。可读结果位于 `documents/D1/version-diffs/V1--V2/structural-diff.md`。
+
+结构 diff 完成后，可以让任意模型提出 semantic Claim lineage。模型只负责 proposal，不能确认跨版本身份：
+
+```powershell
+# 冻结两版 Reviewed IR、structural diff 与 lineage prompt；相同输入不会重复建 run
+py -3 critic_runner.py ir lineage prepare $project
+
+# 保存每一次模型原始返回；无效结果同样保留且不产生派生 lineage
+py -3 critic_runner.py ir lineage collect $project --file .\lineage-proposals.json `
+  --producer-label "模型标签"
+
+# 不打开 JSON，查看 unchanged / modified / split / merged / removed / new / uncertain
+py -3 critic_runner.py ir lineage show $project
+```
+
+每次 analysis 都保存两版 Reviewed IR、确定性 structural diff、完整 prompt 和 exact response。派生的 `claim-lineage` 使用 `V1:C4 → V2:C7` 这类版本限定引用，原生支持一对多 split 与多对一 merged；semantic changes、reason 和 uncertainty 均明确标记为 `model-derived`。`complete` proposal 必须覆盖两侧全部 Claims，但允许复杂关系重叠。当前这些工件的状态始终是 `proposed`；下一增量才提供逐条 human confirm / reject / correct。
 
 ### 兼容的低层 Argument IR 流程
 

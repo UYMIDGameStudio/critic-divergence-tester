@@ -67,6 +67,12 @@ from argument_versioning import (
     build_structural_diff,
     rebuild_structural_diffs,
 )
+from argument_lineage import (
+    collect_lineage_proposals,
+    prepare_lineage_analysis,
+    rebuild_lineage_analyses,
+    show_lineage,
+)
 from argument_adjudication import (
     append_claim_bundle_decisions,
     claim_bundle_status,
@@ -3030,6 +3036,59 @@ def ir_diff_versions_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def ir_lineage_prepare_command(args: argparse.Namespace) -> int:
+    paths, created = prepare_lineage_analysis(
+        args.project,
+        from_version=args.from_version,
+        to_version=args.to_version,
+    )
+    print(f"Lineage analysis: {paths.record}")
+    print(f"Model prompt: {paths.prompt}")
+    print("Lineage analysis prepared." if created else "Matching immutable analysis already exists.")
+    return 0
+
+
+def ir_lineage_collect_command(args: argparse.Namespace) -> int:
+    if args.paste:
+        response_bytes = _read_review_paste_bytes()
+        method = "terminal-paste"
+        source_name = "pasted-claim-lineage-proposals.json"
+    else:
+        response_path = Path(args.file).resolve()
+        if response_path.is_symlink() or not response_path.is_file():
+            raise WorkbenchError("lineage proposal input must be a regular non-symlink file")
+        response_bytes = response_path.read_bytes()
+        method = "file"
+        source_name = response_path.name
+    attempt_path, record = collect_lineage_proposals(
+        args.project,
+        response_bytes,
+        from_version=args.from_version,
+        to_version=args.to_version,
+        analysis_id=args.analysis_id,
+        method=method,
+        source_name=source_name,
+        producer_label=args.producer_label,
+    )
+    print(f"Lineage proposal attempt: {attempt_path}")
+    print(f"Validation status: {record['validation']['status']}")
+    for error in record["validation"]["errors"]:
+        print(f"  - {error}")
+    return 0 if record["validation"]["status"] == "valid" else EXIT_INVALID_WORKFLOW
+
+
+def ir_lineage_show_command(args: argparse.Namespace) -> int:
+    rendered, path = show_lineage(
+        args.project,
+        from_version=args.from_version,
+        to_version=args.to_version,
+        analysis_id=args.analysis_id,
+    )
+    print(rendered, end="" if rendered.endswith("\n") else "\n")
+    print(f"Readable lineage: {path}")
+    return 0
+
+
 def _read_ir_paste_bytes() -> bytes:
     print(
         "Paste the model's pure Argument IR JSON. On a new line enter "
@@ -3124,6 +3183,7 @@ def ir_rebuild_command(args: argparse.Namespace) -> int:
         args.project
     )
     diff_outputs, diffs_changed = rebuild_structural_diffs(args.project)
+    lineage_outputs, lineages_changed = rebuild_lineage_analyses(args.project)
     triage_outputs, triage_changed = rebuild_status_triages(args.project)
     adjudication_outputs, adjudications_changed = rebuild_adjudication_cache(
         args.project
@@ -3135,6 +3195,8 @@ def ir_rebuild_command(args: argparse.Namespace) -> int:
         print(f"Perspective review: {output}")
     for output in diff_outputs:
         print(f"Structural diff: {output}")
+    for output in lineage_outputs:
+        print(f"Claim lineage: {output}")
     for output in triage_outputs:
         print(f"Status triage: {output}")
     for output in adjudication_outputs:
@@ -3145,6 +3207,7 @@ def ir_rebuild_command(args: argparse.Namespace) -> int:
         or reviews_changed
         or perspectives_changed
         or diffs_changed
+        or lineages_changed
         or triage_changed
         or adjudications_changed
         else "Derived artifacts already current."
@@ -4512,6 +4575,43 @@ def parser() -> argparse.ArgumentParser:
         "--to-version", help="descendant Version ID (default: latest)"
     )
     ir_diff_versions_parser.set_defaults(func=ir_diff_versions_command)
+
+    ir_lineage_parser = ir_sub.add_parser(
+        "lineage",
+        help="prepare, collect, and inspect semantic Claim lineage proposals",
+    )
+    ir_lineage_sub = ir_lineage_parser.add_subparsers(
+        dest="ir_lineage_command", required=True
+    )
+    ir_lineage_prepare_parser = ir_lineage_sub.add_parser(
+        "prepare", help="snapshot two Reviewed IRs and prepare a model-neutral lineage prompt"
+    )
+    ir_lineage_prepare_parser.add_argument("project", help="Argument Workbench project directory")
+    ir_lineage_prepare_parser.add_argument("--from-version")
+    ir_lineage_prepare_parser.add_argument("--to-version")
+    ir_lineage_prepare_parser.set_defaults(func=ir_lineage_prepare_command)
+
+    ir_lineage_collect_parser = ir_lineage_sub.add_parser(
+        "collect", help="immutably collect a model's semantic lineage proposal"
+    )
+    ir_lineage_collect_parser.add_argument("project", help="Argument Workbench project directory")
+    ir_lineage_collect_source = ir_lineage_collect_parser.add_mutually_exclusive_group(required=True)
+    ir_lineage_collect_source.add_argument("--paste", action="store_true")
+    ir_lineage_collect_source.add_argument("--file")
+    ir_lineage_collect_parser.add_argument("--from-version")
+    ir_lineage_collect_parser.add_argument("--to-version")
+    ir_lineage_collect_parser.add_argument("--analysis-id")
+    ir_lineage_collect_parser.add_argument("--producer-label")
+    ir_lineage_collect_parser.set_defaults(func=ir_lineage_collect_command)
+
+    ir_lineage_show_parser = ir_lineage_sub.add_parser(
+        "show", help="show the latest valid semantic lineage proposal without opening JSON"
+    )
+    ir_lineage_show_parser.add_argument("project", help="Argument Workbench project directory")
+    ir_lineage_show_parser.add_argument("--from-version")
+    ir_lineage_show_parser.add_argument("--to-version")
+    ir_lineage_show_parser.add_argument("--analysis-id")
+    ir_lineage_show_parser.set_defaults(func=ir_lineage_show_command)
 
     ir_collect_parser = ir_sub.add_parser(
         "collect",
