@@ -136,10 +136,15 @@ The deterministic resolution mapping currently proposes:
 | Knowledge systems | 10 | 1 | 2 | 0 |
 | **Total** | **17** | **1** | **5** | **0** |
 
-The unresolved proposals preserve gaps concerning algorithmic evidence,
+The unresolved outcomes preserve gaps concerning algorithmic evidence,
 audience cognition, causal pathways, independent qualitative material, and an
-evaluation baseline. The partially resolved proposal records a split outcome:
-one descendant passes the original sampling check while another still fails.
-These statuses are deterministic proposals derived from model-produced retest
-verdicts. They are not human-confirmed Finding Resolution decisions yet and do
-not complete Product Gate B.
+evaluation baseline. The partially resolved outcome records a split result: one
+descendant passes the original sampling check while another still fails.
+
+The author subsequently confirmed all 23 proposals. Each confirmation is an
+append-only `finding-resolution-decision` artifact bound to the retained result
+attempt and deterministic proposal; no original Finding, model retest, or prior
+human decision was overwritten. Both complete projects pass
+`ir verify-project` after these decisions. This satisfies the Gate B requirement
+for real original-Lens Finding Resolution evidence, but the gate still requires
+per-project usability assessments and an explicit final human gate decision.
