@@ -111,3 +111,35 @@ diff and semantic-lineage artifacts were generated against the formal parent
 hashes. Both projects pass `ir verify-project`. Adoption does not imply approval
 of any model-proposed Claim correspondence; formal lineage adjudication remains
 a separate human step.
+
+The author subsequently confirmed every formal lineage proposal for both
+projects. The structural-stand-in project now has 13 append-only human lineage
+decisions, including five confirmed one-to-many splits. The knowledge-systems
+project has 12 append-only human lineage decisions, including four confirmed
+splits and one confirmed removal. No cross-version Claim ID stability was
+assumed, and both complete projects still pass `ir verify-project` after the
+human decisions.
+
+## Original-Lens retest checkpoint
+
+Phase 6 retests were then prepared for a representative set of accepted V1
+Findings, using each Finding's original Rule or Perspective Lens against its
+human-confirmed V2 descendants. Ten resolution runs were completed for the
+structural-stand-in project and thirteen for the knowledge-systems project.
+All 23 model result attempts validate and are retained immutably.
+
+The deterministic resolution mapping currently proposes:
+
+| Project | Resolved | Partially resolved | Unresolved | Uncertain |
+|---|---:|---:|---:|---:|
+| Structural stand-in | 7 | 0 | 3 | 0 |
+| Knowledge systems | 10 | 1 | 2 | 0 |
+| **Total** | **17** | **1** | **5** | **0** |
+
+The unresolved proposals preserve gaps concerning algorithmic evidence,
+audience cognition, causal pathways, independent qualitative material, and an
+evaluation baseline. The partially resolved proposal records a split outcome:
+one descendant passes the original sampling check while another still fails.
+These statuses are deterministic proposals derived from model-produced retest
+verdicts. They are not human-confirmed Finding Resolution decisions yet and do
+not complete Product Gate B.
