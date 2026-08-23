@@ -32,6 +32,8 @@ Document Review Studio 当前标记为 **experimental preview**。它支持 Mark
 字节与 SHA-256 永不覆盖，解析警告、页码/表格单元格定位、人工裁决和导出
 审计包都保存在本地项目中。详细限制和环境要求见
 [`docs/document-review-studio.md`](docs/document-review-studio.md)。
+独立 AI 导入要求原始响应回显所选请求的 `request_id`、`prompt_sha256`、provider
+和 model；人工导入只记录 `declared_model_metadata`，不冒充直接模型调用。
 
 应用会自动打开本机页面。创建项目后，页面始终只突出一个下一步：导入现有审查报告 → 复制模型无关提示词 → 确认原子发现 → 只为已接受问题生成修改提案 → 逐 hunk 接受、拒绝或手改 → 生成不可变 V2 → 按原标准复查 → 导出。用户不需要打开 JSON 或拼 artifact 路径。
 

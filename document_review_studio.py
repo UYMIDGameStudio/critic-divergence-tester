@@ -47,6 +47,7 @@ STUDIO_SCHEMA_VERSION = 1
 MAX_TEXT_CORRECTION_BYTES = 8 * 1024 * 1024
 INTEGRITY_POLICY_NAME = "integrity-policy.json"
 INTEGRITY_RECEIPT_DIR = ".integrity"
+INTEGRITY_INDEX_NAME = "integrity-index.json"
 
 
 CRITIC_PROTOCOLS: dict[str, dict[str, Any]] = {
@@ -146,6 +147,10 @@ def _integrity_policy_path(root: Path) -> Path:
     return root / INTEGRITY_POLICY_NAME
 
 
+def _integrity_index_path(root: Path) -> Path:
+    return root / INTEGRITY_INDEX_NAME
+
+
 def _integrity_receipt_path(path: Path) -> Path:
     return path.parent / INTEGRITY_RECEIPT_DIR / f"{path.name}.json"
 
@@ -206,14 +211,77 @@ def _integrity_receipt(root: Path, path: Path, data: bytes, *, parents: Iterable
     })
 
 
-def _write_tracked(root: Path, path: Path, data: bytes, *, parents: Iterable[Mapping[str, Any]] = (), provenance: str = "deterministic") -> None:
+def _integrity_index_entry_hash(entry: Mapping[str, Any]) -> str:
+    value = {key: item for key, item in entry.items() if key != "entry_sha256"}
+    return _sha256(canonical_json(value))
+
+
+def _write_integrity_index(root: Path, index: Mapping[str, Any], *, new: bool) -> None:
+    index_path = _integrity_index_path(root)
+    data = canonical_json(index)
+    receipt = _integrity_receipt(root, index_path, data, provenance="system-integrity-index")
+    if new:
+        _write_new(index_path, data)
+        _write_new(_integrity_receipt_path(index_path), receipt)
+    else:
+        _atomic_write(index_path, data)
+        _atomic_write(_integrity_receipt_path(index_path), receipt)
+
+
+def _initialize_integrity_index(root: Path) -> None:
+    index = {
+        "artifact_type": "document-review-integrity-index",
+        "schema_version": 1,
+        "index_id": stable_id("IDX", root.name, _now(), secrets.token_hex(4)),
+        "entries": [],
+        "head_sha256": None,
+        "next_sequence": 1,
+        "lifecycle": "append-only",
+    }
+    _write_integrity_index(root, index, new=True)
+
+
+def _append_integrity_index(root: Path, path: Path, data: bytes, *, artifact_type: str) -> None:
+    index_path = _integrity_index_path(root)
+    index = _read_json(index_path)
+    entries = index.get("entries")
+    if not isinstance(entries, list) or not isinstance(index.get("next_sequence"), int):
+        raise ReviewStudioError("integrity-index.json: index is not appendable")
+    sequence = index["next_sequence"]
+    previous_head = index.get("head_sha256")
+    relative_path = str(path.relative_to(root)).replace("\\", "/")
+    receipt_path = _integrity_receipt_path(path)
+    if not receipt_path.is_file() or receipt_path.is_symlink():
+        raise ReviewStudioError(f"{relative_path}: integrity receipt missing before index registration")
+    entry = {
+        "artifact_id": stable_id("ART", relative_path, _sha256(data), str(sequence), _now(), secrets.token_hex(4)),
+        "relative_path": relative_path,
+        "sha256": _sha256(data),
+        "receipt_relative_path": str(receipt_path.relative_to(root)).replace("\\", "/"),
+        "receipt_sha256": _sha256(receipt_path.read_bytes()),
+        "artifact_type": artifact_type,
+        "sequence": sequence,
+        "previous_index_head_sha256": previous_head,
+        "created_at": _now(),
+    }
+    entry["entry_sha256"] = _integrity_index_entry_hash(entry)
+    updated = dict(index)
+    updated["entries"] = [*entries, entry]
+    updated["head_sha256"] = entry["entry_sha256"]
+    updated["next_sequence"] = sequence + 1
+    _write_integrity_index(root, updated, new=False)
+
+
+def _write_tracked(root: Path, path: Path, data: bytes, *, parents: Iterable[Mapping[str, Any]] = (), provenance: str = "deterministic", artifact_type: str | None = None) -> None:
     _write_new(path, data)
     _write_new(_integrity_receipt_path(path), _integrity_receipt(root, path, data, parents=parents, provenance=provenance))
+    _append_integrity_index(root, path, data, artifact_type=artifact_type or provenance)
 
 
-def _replace_tracked(root: Path, path: Path, data: bytes, *, parents: Iterable[Mapping[str, Any]] = (), provenance: str = "deterministic") -> None:
+def _replace_tracked(root: Path, path: Path, data: bytes, *, parents: Iterable[Mapping[str, Any]] = (), provenance: str = "deterministic", artifact_type: str | None = None) -> None:
     _atomic_write(path, data)
     _atomic_write(_integrity_receipt_path(path), _integrity_receipt(root, path, data, parents=parents, provenance=provenance))
+    _append_integrity_index(root, path, data, artifact_type=artifact_type or provenance)
 
 
 class DocumentReviewProject:
@@ -270,6 +338,7 @@ class DocumentReviewProject:
             return project
         target.mkdir()
         _ensure_integrity_policy(target, create=True)
+        _initialize_integrity_index(target)
         source_dir = target / "source"
         source_dir.mkdir()
         source_path = source_dir / safe_name
@@ -316,6 +385,15 @@ class DocumentReviewProject:
                 errors.append(str(exc))
                 return errors
             policy_hash = _sha256(_integrity_policy_path(self.root).read_bytes())
+            index_path = _integrity_index_path(self.root)
+            integrity_index: dict[str, Any] | None = None
+            if index_path.is_symlink() or not index_path.is_file():
+                errors.append("integrity-index.json: project artifact register missing")
+            else:
+                try:
+                    integrity_index = _read_json(index_path)
+                except (OSError, ValueError, ReviewStudioError) as exc:
+                    errors.append(f"integrity-index.json: invalid project artifact register: {exc}")
             manifest = self.manifest()
             source = manifest.get("source", {})
             relative = str(source.get("relative_path", ""))
@@ -329,7 +407,7 @@ class DocumentReviewProject:
                 if len(raw) != source.get("bytes"):
                     errors.append("原始文件字节数不匹配")
             protected: set[Path] = set()
-            for name in ("project.json", "context.json"):
+            for name in ("project.json", "context.json", INTEGRITY_INDEX_NAME):
                 path = self.root / name
                 if path.exists() or path.is_symlink():
                     protected.add(path)
@@ -379,6 +457,68 @@ class DocumentReviewProject:
                             errors.append(f"{relative_path}: parent artifact hash mismatch: {parent.get('relative_path')}")
                 except (OSError, ValueError, KeyError, TypeError, ReviewStudioError) as exc:
                     errors.append(f"{relative_path}: invalid integrity receipt: {exc}")
+            latest_index_entries: dict[str, dict[str, Any]] = {}
+            if integrity_index is not None:
+                expected_index_fields = {"artifact_type", "schema_version", "index_id", "entries", "head_sha256", "next_sequence", "lifecycle"}
+                if set(integrity_index) != expected_index_fields or integrity_index.get("artifact_type") != "document-review-integrity-index" or integrity_index.get("schema_version") != 1 or integrity_index.get("lifecycle") != "append-only" or not isinstance(integrity_index.get("index_id"), str):
+                    errors.append("integrity-index.json: invalid index fields")
+                entries = integrity_index.get("entries")
+                if not isinstance(entries, list):
+                    errors.append("integrity-index.json: entries must be an array")
+                    entries = []
+                expected_entry_fields = {"artifact_id", "relative_path", "sha256", "receipt_relative_path", "receipt_sha256", "artifact_type", "sequence", "previous_index_head_sha256", "created_at", "entry_sha256"}
+                previous_head: str | None = None
+                for expected_sequence, entry in enumerate(entries, start=1):
+                    if not isinstance(entry, dict) or set(entry) != expected_entry_fields:
+                        errors.append(f"integrity-index.json: invalid entry at sequence {expected_sequence}")
+                        continue
+                    if entry.get("sequence") != expected_sequence:
+                        errors.append(f"integrity-index.json: sequence gap at {expected_sequence}")
+                    if entry.get("previous_index_head_sha256") != previous_head:
+                        errors.append(f"integrity-index.json: previous head mismatch at sequence {expected_sequence}")
+                    if _integrity_index_entry_hash(entry) != entry.get("entry_sha256"):
+                        errors.append(f"integrity-index.json: entry hash mismatch at sequence {expected_sequence}")
+                    relative_entry_path = entry.get("relative_path")
+                    receipt_entry_path = entry.get("receipt_relative_path")
+                    if not isinstance(relative_entry_path, str) or not isinstance(receipt_entry_path, str) or not isinstance(entry.get("artifact_id"), str) or not isinstance(entry.get("artifact_type"), str) or not isinstance(entry.get("created_at"), str):
+                        errors.append(f"integrity-index.json: entry types invalid at sequence {expected_sequence}")
+                        continue
+                    try:
+                        artifact_entry_path = _safe_child(self.root, relative_entry_path)
+                        expected_receipt_path = _integrity_receipt_path(artifact_entry_path)
+                        if str(expected_receipt_path.relative_to(self.root)).replace("\\", "/") != receipt_entry_path:
+                            errors.append(f"integrity-index.json: receipt path mismatch at sequence {expected_sequence}")
+                    except (OSError, ValueError, ReviewStudioError) as exc:
+                        errors.append(f"integrity-index.json: unsafe entry path at sequence {expected_sequence}: {exc}")
+                        continue
+                    latest_index_entries[relative_entry_path] = entry
+                    previous_head = entry.get("entry_sha256")
+                if integrity_index.get("head_sha256") != previous_head:
+                    errors.append("integrity-index.json: head hash mismatch")
+                if integrity_index.get("next_sequence") != len(entries) + 1:
+                    errors.append("integrity-index.json: next sequence mismatch")
+                current_artifacts = {
+                    str(path.relative_to(self.root)).replace("\\", "/")
+                    for path in protected
+                    if path != index_path
+                }
+                expected_artifacts = set(latest_index_entries)
+                for relative_entry_path in sorted(expected_artifacts - current_artifacts):
+                    errors.append(f"integrity index artifact missing: {relative_entry_path}")
+                for relative_path in sorted(current_artifacts - expected_artifacts):
+                    errors.append(f"unregistered integrity artifact: {relative_path}")
+                for relative_entry_path, entry in latest_index_entries.items():
+                    try:
+                        artifact_path = _safe_child(self.root, relative_entry_path)
+                        if artifact_path.is_symlink() or not artifact_path.is_file():
+                            continue
+                        if _sha256(artifact_path.read_bytes()) != entry.get("sha256"):
+                            errors.append(f"integrity-index artifact hash mismatch: {relative_entry_path}")
+                        receipt_path = _integrity_receipt_path(artifact_path)
+                        if receipt_path.is_file() and not receipt_path.is_symlink() and _sha256(receipt_path.read_bytes()) != entry.get("receipt_sha256"):
+                            errors.append(f"integrity-index receipt hash mismatch: {relative_entry_path}")
+                    except (OSError, ValueError, ReviewStudioError) as exc:
+                        errors.append(f"integrity-index artifact validation failed: {relative_entry_path}: {exc}")
             for receipt_dir in self.root.rglob(INTEGRITY_RECEIPT_DIR):
                 if receipt_dir.is_symlink() or not receipt_dir.is_dir():
                     errors.append(f"{receipt_dir}: integrity receipt directory invalid")
@@ -563,6 +703,7 @@ class DocumentReviewProject:
             "source_sha256": document.source.sha256,
             "document_type": context.document_type,
             "required_finding_fields": ["finding_id", "critic", "document_type", "location", "evidence", "issue", "standard", "consequence", "severity", "verification_state", "external_basis", "uncertainties", "suggested_action", "suggested_owner", "blocks_release_or_execution"],
+            "required_response_envelope": ["request_id", "prompt_sha256", "provider", "model"],
             "rules": {"independent": True, "do_not_vote_or_score": True, "location_must_use_block_or_page": True, "legal_screen_never_claims_counsel": True},
         }
         return "# Document Review Studio independent AI review\n\nYou are exactly one independent critic. Return strict JSON only. Do not run another critic, merge dimensions, vote, score, or infer external facts without a source.\n\n## Contract and critic-specific protocol\n```json\n" + json.dumps(contract, ensure_ascii=False, indent=2) + "\n```\n\n## Confirmed review context\n```json\n" + json.dumps(context.to_dict(), ensure_ascii=False, indent=2) + "\n```\n\n## Internal document blocks\n```json\n" + json.dumps([block.to_dict() for block in document.blocks], ensure_ascii=False, indent=2) + "\n```\n"
@@ -609,12 +750,17 @@ class DocumentReviewProject:
         parents = [_parent_ref(self.root, self.document_path, role="structured-document"), _parent_ref(self.root, self.root / "context.json", role="review-context")]
         rows: list[dict[str, Any]] = []
         for critic in selected:
-            prompt = self.prompt(critic).encode("utf-8")
-            request_id = stable_id("AIR", critic, _sha256(prompt), provider, model, _now(), secrets.token_hex(4))
+            base_prompt = self.prompt(critic).encode("utf-8")
+            prompt_sha256 = _sha256(base_prompt)
+            normalized_provider = provider.strip()
+            normalized_model = model.strip()
+            request_id = stable_id("AIR", critic, prompt_sha256, normalized_provider, normalized_model, _now(), secrets.token_hex(4))
+            envelope = {"request_id": request_id, "prompt_sha256": prompt_sha256, "provider": normalized_provider, "model": normalized_model}
+            prompt = base_prompt + ("\n## Required response envelope\nReturn these four fields exactly as shown, in addition to the review result:\n```json\n" + json.dumps(envelope, ensure_ascii=False, indent=2) + "\n```\nDo not omit or alter any envelope value.\n").encode("utf-8")
             directory = self.root / "ai-requests" / request_id
             prompt_path = directory / "prompt.md"
             _write_tracked(self.root, prompt_path, prompt, parents=parents, provenance="deterministic-ai-protocol")
-            request = {"artifact_type": "independent-ai-review-request", "schema_version": 1, "request_id": request_id, "critic": critic, "provider": provider.strip(), "model": model.strip(), "prompt_sha256": _sha256(prompt), "source_sha256": self.document().source.sha256, "created_at": _now(), "lifecycle": "immutable"}
+            request = {"artifact_type": "independent-ai-review-request", "schema_version": 1, "request_id": request_id, "critic": critic, "provider": normalized_provider, "model": normalized_model, "prompt_sha256": prompt_sha256, "prompt_file_sha256": _sha256(prompt), "source_sha256": self.document().source.sha256, "created_at": _now(), "lifecycle": "immutable"}
             request_path = directory / "request.json"
             _write_tracked(self.root, request_path, canonical_json(request), parents=[*parents, _parent_ref(self.root, prompt_path, role="critic-prompt")], provenance="deterministic-ai-request")
             rows.append({**request, "prompt": prompt.decode("utf-8"), "relative_path": str(prompt_path.relative_to(self.root)).replace("\\", "/")})
@@ -656,7 +802,7 @@ class DocumentReviewProject:
         if request.get("provider") != provider or request.get("model") != model:
             raise ReviewStudioError("导入结果的 provider/model 与已导出协议不一致")
         prompt_path = request_path.parent / "prompt.md"
-        if _sha256(prompt_path.read_bytes()) != request.get("prompt_sha256"):
+        if _sha256(prompt_path.read_bytes()) != request.get("prompt_file_sha256"):
             raise ReviewStudioError("AI 审查 prompt hash 不匹配")
         raw = response.encode("utf-8") if isinstance(response, str) else response
         if not isinstance(raw, bytes) or not raw:
@@ -676,6 +822,15 @@ class DocumentReviewProject:
             raise ReviewStudioError(f"模型审查返回不是严格 JSON：{exc}") from exc
         if not isinstance(parsed, dict):
             raise ReviewStudioError("模型审查返回必须是 JSON 对象")
+        expected_envelope = {
+            "request_id": request.get("request_id"),
+            "prompt_sha256": request.get("prompt_sha256"),
+            "provider": request.get("provider"),
+            "model": request.get("model"),
+        }
+        for field, expected in expected_envelope.items():
+            if parsed.get(field) != expected:
+                raise ReviewStudioError(f"模型返回的 {field} 未与已导出请求逐项匹配")
         if parsed.get("critic") != critic:
             raise ReviewStudioError("模型返回的 critic 与提交维度不一致")
         if parsed.get("source_sha256") != document.source.sha256:
@@ -698,16 +853,16 @@ class DocumentReviewProject:
             finding = _finding_from_dict(item)
             finding.origin = "model-derived"
             findings.append(finding)
-        run = AuditRun(stable_id("RUN", document.source.sha256, critic, _now(), secrets.token_hex(4)), critic, document.document_id, document.source.sha256, context, findings, list(parsed.get("observations", [])) if isinstance(parsed.get("observations", []), list) else [], list(parsed.get("zero_finding_basis", [])) if isinstance(parsed.get("zero_finding_basis", []), list) else [], f"{provider}/{model}", _now())
+        run = AuditRun(stable_id("RUN", document.source.sha256, critic, _now(), secrets.token_hex(4)), critic, document.document_id, document.source.sha256, context, findings, list(parsed.get("observations", [])) if isinstance(parsed.get("observations", []), list) else [], list(parsed.get("zero_finding_basis", [])) if isinstance(parsed.get("zero_finding_basis", []), list) else [], f"manual-import:{provider}/{model}", _now())
         directory = self.root / "audits" / critic
         raw_path = directory / f"{run.run_id}.raw-response.json.txt"
         response_parents = [_parent_ref(self.root, prompt_path, role="critic-prompt"), _parent_ref(self.root, request_path, role="ai-review-request")]
         _write_tracked(self.root, raw_path, raw, parents=response_parents, provenance="model-raw-response")
         run_value = run.to_dict()
-        run_value["model_invocation"] = {"provider": provider, "model": model, "request_id": request["request_id"], "prompt_sha256": request["prompt_sha256"], "raw_response_sha256": _sha256(raw)}
+        run_value["declared_model_metadata"] = {"provider": provider, "model": model, "request_id": request["request_id"], "prompt_sha256": request["prompt_sha256"], "prompt_file_sha256": request["prompt_file_sha256"], "raw_response_sha256": _sha256(raw), "import_mode": "manual"}
         run_path = directory / f"{run.run_id}.json"
         _write_tracked(self.root, run_path, canonical_json(run_value), parents=[*response_parents, _parent_ref(self.root, raw_path, role="raw-model-response")], provenance="model-parsed-audit")
-        self._append_event("model_audit_collected", {"run_id": run.run_id, "critic": critic, "provider": provider, "model": model, "prompt_sha256": request["prompt_sha256"], "raw_response_sha256": _sha256(raw), "finding_ids": [finding.finding_id for finding in findings]})
+        self._append_event("model_audit_imported", {"run_id": run.run_id, "critic": critic, "declared_model_metadata": run_value["declared_model_metadata"], "finding_ids": [finding.finding_id for finding in findings]})
         self._update_state(review_state="ai_review_imported", ai_review_state="imported", last_audit_at=_now())
         return run
 

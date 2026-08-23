@@ -45,16 +45,21 @@ Each project is a `.document-review-studio` directory containing:
 - `audits/<critic>/`: raw model responses and parsed immutable runs;
 - `finding-decisions/`: append-only human decisions;
 - `exports/`: audit reports, drafts, DOCX output, and the revision bridge;
+- `integrity-index.json`: append-only project register of every tracked artifact,
+  its receipt, content hash, sequence, and predecessor index head;
 - `audit-log.jsonl`: local workflow events.
 
 Every protected artifact has a receipt binding its content SHA-256, parent
 artifact hashes, provenance, and the immutable `integrity-policy.json` marker.
-The chain covers the source, structured extraction/corrections, context,
-critic prompt, raw response, parsed run/Finding, sequenced human decision,
-revision bridge, and export. Missing receipts, changed parents, broken decision
-sequences, and deletion of the policy marker force read-only mode. This detects
-ordinary local tampering; it is not a keyed signature against an attacker who
-can rewrite the entire project and every receipt.
+The append-only index is the expected artifact set, so deleting an artifact and
+its receipt together cannot make the project silently fall back to an earlier
+decision or an earlier audit state. The chain covers the source, structured
+extraction/corrections, context, critic prompt, raw response, parsed
+run/Finding, sequenced human decision, revision bridge, and export. Missing
+index entries, receipts, changed parents, broken decision sequences, and
+deletion of the policy marker force read-only mode. This detects ordinary local
+tampering; it is not a keyed signature against an attacker who can rewrite the
+entire project and every receipt/index entry.
 
 ## Parser limits
 
@@ -103,9 +108,15 @@ python critic_runner.py studio-protocols <project> --provider <provider> --model
 python critic_runner.py studio-import-ai <project> <critic> <response.json> --provider <provider> --model <model> --request-id <request-id>
 ```
 
-Imports preserve provider, model, prompt hash, raw response hash/content, and
-the parsed AuditRun/Finding separately. `collect_model_audit` validates source
-hash, critic identity, Finding contract, and block locations.
+The exported prompt includes a required response envelope containing the exact
+`request_id`, `prompt_sha256`, provider, and model. Imports reject a response
+unless all four values echo the selected request. `prompt_sha256` identifies
+the protocol payload; `prompt_file_sha256` separately binds the rendered prompt
+file. The current browser/CLI flow is a manual import, so parsed runs store
+`declared_model_metadata` rather than claiming a direct `model_invocation`.
+Imports preserve the declared metadata, raw response hash/content, and parsed
+AuditRun/Finding separately. `collect_model_audit` validates the request
+envelope, source hash, critic identity, Finding contract, and block locations.
 
 For DOCX inputs, preview exports are named
 `normalized-editable-copy.docx`. They may lose source layout and are not a

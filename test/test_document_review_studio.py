@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
 import tempfile
 import unittest
 import zipfile
@@ -81,6 +82,7 @@ class DocumentReviewStudioTests(unittest.TestCase):
         shell = render_studio_shell("test-token")
         self.assertIn("experimental preview", shell)
         self.assertIn("运行选中的本地预检", shell)
+        self.assertIn("导出 / 导入独立 AI 审查", shell)
         self.assertIn("导出五份独立协议", shell)
         self.assertIn("模型原始 JSON 响应", shell)
         self.assertIn("抽取内容与定位预览", shell)
@@ -225,6 +227,57 @@ class DocumentReviewStudioTests(unittest.TestCase):
                 with self.assertRaises(ReviewStudioError):
                     project.decide_finding(finding.finding_id, "reject", reason="must not write")
 
+    def _delete_artifact_and_receipt(self, project: DocumentReviewProject, path: Path) -> None:
+        path.unlink()
+        receipt = path.parent / ".integrity" / f"{path.name}.json"
+        receipt.unlink()
+
+    def test_integrity_index_prevents_paired_deletion_from_rolling_back_history(self) -> None:
+        for target in ("decision", "audit", "raw-response", "bridge", "export"):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as temp_dir:
+                project = DocumentReviewProject.create(temp_dir, filename="draft.md", content="# 活动\n\n相关人员适时报名。\n".encode())
+                project.confirm_extraction("confirm")
+                project.confirm_context(self.context())
+                project.run_local_prechecks(["expression_ambiguity"])
+                finding = project.findings()[0]
+                if target == "decision":
+                    project.decide_finding(finding.finding_id, "accept", reason="round 1")
+                    project.decide_finding(finding.finding_id, "reject", reason="round 2")
+                    decision_paths = list((project.root / "finding-decisions").glob("*.json"))
+                    latest = max(decision_paths, key=lambda path: json.loads(path.read_text(encoding="utf-8"))["sequence"])
+                    self._delete_artifact_and_receipt(project, latest)
+                elif target == "audit":
+                    audit_path = next((project.root / "audits" / "expression_ambiguity").glob("*.json"))
+                    protocol_path = next((project.root / "audits" / "expression_ambiguity").glob("*.local-precheck-protocol.md"))
+                    self._delete_artifact_and_receipt(project, audit_path)
+                    self._delete_artifact_and_receipt(project, protocol_path)
+                elif target == "raw-response":
+                    request = project.prepare_ai_audits(["expression_ambiguity"], provider="example-provider", model="example-model")[0]
+                    payload = {"request_id": request["request_id"], "prompt_sha256": request["prompt_sha256"], "provider": request["provider"], "model": request["model"], "critic": request["critic"], "source_sha256": project.document().source.sha256, "findings": [], "zero_finding_basis": ["independent pass"]}
+                    run = project.collect_model_audit(request["critic"], json.dumps(payload), provider=request["provider"], model=request["model"], request_id=request["request_id"])
+                    raw_path = project.root / "audits" / request["critic"] / f"{run.run_id}.raw-response.json.txt"
+                    self._delete_artifact_and_receipt(project, raw_path)
+                elif target == "bridge":
+                    project.decide_finding(finding.finding_id, "accept", reason="bridge")
+                    self._delete_artifact_and_receipt(project, project.prepare_revision_bridge())
+                else:
+                    output = project.export()
+                    shutil.rmtree(output)
+                view = project.view()
+                self.assertTrue(view["state"]["read_only"])
+                self.assertTrue(any("integrity index artifact missing" in error for error in view["state"].get("integrity_errors", [])))
+
+    def test_ai_response_requires_request_envelope_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="draft.txt", content=b"Draft text\n")
+            project.confirm_extraction("confirm")
+            project.confirm_context(self.context())
+            request = project.prepare_ai_audits(["expression_ambiguity"], provider="example-provider", model="example-model")[0]
+            payload = {"critic": request["critic"], "source_sha256": project.document().source.sha256, "findings": []}
+            with self.assertRaises(ReviewStudioError):
+                project.collect_model_audit(request["critic"], json.dumps(payload), provider=request["provider"], model=request["model"], request_id=request["request_id"])
+            self.assertFalse(list((project.root / "audits" / request["critic"]).glob("*.json")))
+
     def test_independent_ai_protocol_export_and_import_preserve_invocation_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             project = DocumentReviewProject.create(temp_dir, filename="draft.txt", content=b"Draft text\n")
@@ -235,12 +288,14 @@ class DocumentReviewStudioTests(unittest.TestCase):
             self.assertEqual(len({row["prompt_sha256"] for row in requests}), 5)
             self.assertTrue(all(row["provider"] == "example-provider" and row["model"] == "example-model" for row in requests))
             selected = requests[0]
-            payload = {"critic": selected["critic"], "source_sha256": project.document().source.sha256, "findings": [], "zero_finding_basis": ["independent pass"]}
+            payload = {"request_id": selected["request_id"], "prompt_sha256": selected["prompt_sha256"], "provider": selected["provider"], "model": selected["model"], "critic": selected["critic"], "source_sha256": project.document().source.sha256, "findings": [], "zero_finding_basis": ["independent pass"]}
             run = project.collect_model_audit(selected["critic"], json.dumps(payload), provider="example-provider", model="example-model", request_id=selected["request_id"])
             run_path = project.root / "audits" / selected["critic"] / f"{run.run_id}.json"
             saved = json.loads(run_path.read_text(encoding="utf-8"))
-            self.assertEqual(saved["model_invocation"]["prompt_sha256"], selected["prompt_sha256"])
-            self.assertEqual(saved["model_invocation"]["provider"], "example-provider")
+            self.assertEqual(saved["declared_model_metadata"]["prompt_sha256"], selected["prompt_sha256"])
+            self.assertEqual(saved["declared_model_metadata"]["provider"], "example-provider")
+            self.assertEqual(saved["declared_model_metadata"]["import_mode"], "manual")
+            self.assertNotIn("model_invocation", saved)
             self.assertTrue((run_path.parent / f"{run.run_id}.raw-response.json.txt").is_file())
             self.assertEqual(project.integrity_errors(), [])
 
@@ -271,7 +326,12 @@ class DocumentReviewStudioTests(unittest.TestCase):
             project.confirm_extraction("confirm")
             project.confirm_context(self.context())
             block = project.document().blocks[0]
+            request = project.prepare_ai_audits(["expression_ambiguity"], provider="example-provider", model="example-model")[0]
             payload = {
+                "request_id": request["request_id"],
+                "prompt_sha256": request["prompt_sha256"],
+                "provider": request["provider"],
+                "model": request["model"],
                 "critic": "expression_ambiguity",
                 "source_sha256": project.document().source.sha256,
                 "findings": [{
@@ -292,7 +352,7 @@ class DocumentReviewStudioTests(unittest.TestCase):
                     "blocks_release_or_execution": False,
                 }],
             }
-            run = project.collect_model_audit("expression_ambiguity", json.dumps(payload, ensure_ascii=False))
+            run = project.collect_model_audit("expression_ambiguity", json.dumps(payload, ensure_ascii=False), provider="example-provider", model="example-model", request_id=request["request_id"])
             self.assertEqual(len(run.findings), 1)
             source = project.root / "source" / "draft.txt"
             source.write_bytes(b"tampered\n")
