@@ -759,6 +759,176 @@ class ArgumentContractTests(unittest.TestCase):
                 for validator in contracts.VALIDATORS.values():
                     validator(value)
 
+    def test_citation_provenance_contracts_separate_model_human_and_dependencies(self) -> None:
+        results = {
+            "schema_version": 1,
+            "artifact": "citation-audit-results",
+            "source": {
+                "audit_context_sha256": "1" * 64,
+                "reviewed_ir_sha256": "2" * 64,
+                "source_sha256": "3" * 64,
+            },
+            "status": "complete",
+            "sources": [
+                {
+                    "source_id": "S1",
+                    "kind": "repository",
+                    "title": "Exact archived source",
+                    "locator": "https://example.test/source",
+                    "accessed_at": STAMP,
+                    "dimensions": [
+                        "bibliographic_existence",
+                        "exact_source_located",
+                        "content_support",
+                        "context_preserved",
+                    ],
+                    "note": "The exact source and surrounding passage were inspected.",
+                }
+            ],
+            "outcomes": [
+                {
+                    "citation_id": "Z1",
+                    "bibliographic_existence": "verified",
+                    "exact_source_located": "verified",
+                    "content_support": "supports",
+                    "context_preserved": "yes",
+                    "reason": "The cited passage supports the manuscript wording in context.",
+                    "source_refs": ["S1"],
+                    "uncertainty": "",
+                }
+            ],
+            "unverified": [],
+        }
+        self.assertEqual(contracts.validate_citation_audit_results(results), [])
+
+        run = {
+            **base(
+                "citation-audit-run",
+                "CA1",
+                "immutable",
+                "deterministic",
+                parents=[
+                    {"role": "document-version", "artifact": "document-version", "sha256": "4" * 64},
+                    {"role": "reviewed-record", "artifact": "reviewed-argument-ir", "sha256": "5" * 64},
+                    {"role": "reviewed-ir", "artifact": "argument-ir", "sha256": "2" * 64},
+                ],
+            ),
+            "audit_id": "CA1",
+            "document_id": "D1",
+            "version_id": "V1",
+            "selected_citations": ["Z1"],
+            "context": {"relative_path": "citation-audit-context.json", "sha256": "1" * 64},
+            "reviewed_ir": {"relative_path": "reviewed-argument-ir.json", "sha256": "2" * 64},
+            "prompt": {"relative_path": "citation-audit-prompt.md", "sha256": "6" * 64},
+        }
+        attempt = {
+            **base(
+                "citation-result-attempt",
+                "CA1-attempt-0001",
+                "immutable",
+                "model-derived",
+                parents=[parent("citation-audit-run", "citation-audit-run", run)],
+            ),
+            "audit_id": "CA1",
+            "attempt_id": "attempt-0001",
+            "collection": {"method": "file", "source_name": "results.json", "producer_label": "model"},
+            "response": {"relative_path": "response.json", "sha256": contracts.sha256_bytes(encoded(results))},
+            "validation": {"status": "valid", "errors": []},
+        }
+        decision = {
+            **base(
+                "citation-verification-decision",
+                "CD0001",
+                "immutable",
+                "human-confirmed",
+                parents=[
+                    parent("citation-audit-run", "citation-audit-run", run),
+                    parent("result-attempt", "citation-result-attempt", attempt),
+                    parent("audit-results", "citation-audit-results", results),
+                ],
+            ),
+            "decision_id": "CD0001",
+            "audit_id": "CA1",
+            "citation_id": "Z1",
+            "attempt_id": "attempt-0001",
+            "decision": "confirm",
+            "reason": "The human checked the exact source and confirms the proposal.",
+            "final_outcome": None,
+            "supersedes": None,
+        }
+        index = {
+            **base(
+                "citation-provenance-index",
+                "CA1-index",
+                "derived-replaceable",
+                "deterministic",
+                parents=[
+                    parent("citation-audit-run", "citation-audit-run", run),
+                    parent("result-attempt", "citation-result-attempt", attempt),
+                    parent("audit-results", "citation-audit-results", results),
+                    parent("decision-0001", "citation-verification-decision", decision),
+                ],
+            ),
+            "audit_id": "CA1",
+            "version_id": "V1",
+            "selected_attempt_id": "attempt-0001",
+            "citations": [
+                {
+                    "citation_id": "Z1",
+                    "citation_text": "Example, 2026",
+                    "proposal": {key: results["outcomes"][0][key] for key in (
+                        "bibliographic_existence", "exact_source_located", "content_support", "context_preserved", "uncertainty"
+                    )},
+                    "human_decision": "confirm",
+                    "final_outcome": {key: results["outcomes"][0][key] for key in (
+                        "bibliographic_existence", "exact_source_located", "content_support", "context_preserved", "uncertainty"
+                    )},
+                    "current_status": "human_confirmed",
+                    "verification_state": "verified",
+                    "source_refs": ["S1"],
+                }
+            ],
+            "evidence_dependencies": [
+                {"node_id": "E1", "citation_ids": ["Z1"], "status": "citation_verified"}
+            ],
+            "claim_dependencies": [
+                {"node_id": "C1", "citation_ids": ["Z1"], "evidence_ids": ["E1"], "status": "citation_verified"}
+            ],
+            "summary": {
+                "citations_total": 1,
+                "verified": 1,
+                "unverified": 0,
+                "human_confirmed": 1,
+                "human_pending": 0,
+                "proposal_rejected": 0,
+                "evidence_depending_on_unverified_citations": 0,
+                "claims_depending_on_unverified_evidence": 0,
+            },
+            "report": {"relative_path": "evidence-provenance.md", "sha256": "7" * 64},
+            "field_provenance": {
+                "model_outcomes": {"origin": "model-derived", "source": "citation-audit-results"},
+                "human_decisions": {"origin": "human-confirmed", "source": "citation-verification-decision"},
+                "dependency_graph": {"origin": "deterministic", "source": "Reviewed Argument IR cites/supports paths"},
+                "verification_state": {"origin": "deterministic", "source": "human decision plus four-dimension policy"},
+            },
+        }
+        self.assertEqual(contracts.validate_artifact(run), [])
+        self.assertEqual(contracts.validate_artifact(attempt), [])
+        self.assertEqual(contracts.validate_artifact(decision), [])
+        self.assertEqual(contracts.validate_artifact(index), [])
+        self.assertNotIn("claim_false", json.dumps(index))
+
+        no_exact_source = copy.deepcopy(results)
+        no_exact_source["outcomes"][0]["exact_source_located"] = "not_verified"
+        self.assertTrue(
+            any("content_support must be uncertain" in error for error in contracts.validate_citation_audit_results(no_exact_source))
+        )
+        no_primary = copy.deepcopy(results)
+        no_primary["sources"][0]["kind"] = "secondary"
+        self.assertTrue(
+            any("primary-source" in error for error in contracts.validate_citation_audit_results(no_primary))
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

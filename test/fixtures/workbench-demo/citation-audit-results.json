@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "artifact": "citation-audit-results",
+  "source": {
+    "audit_context_sha256": "5ced54e3fe70cbfde080bd613eea99958e30d9bbe891dc8b69d0d9d37e983b70",
+    "reviewed_ir_sha256": "1ec253fdfab1f4ad286ad7720ccf673ce5deac69a5500a8d4a1a3ae47819e658",
+    "source_sha256": "1acca00c9796e9f144c2ff7059a81152fd6aca7348887db278eb07f55e6df1ee"
+  },
+  "status": "partial",
+  "sources": [],
+  "outcomes": [
+    {
+      "citation_id": "Z1",
+      "bibliographic_existence": "uncertain",
+      "exact_source_located": "uncertain",
+      "content_support": "uncertain",
+      "context_preserved": "uncertain",
+      "reason": "The fixture deliberately supplies no external source and therefore makes no substantive verification claim.",
+      "source_refs": [],
+      "uncertainty": "Bibliographic identity, exact edition, supporting passage, and surrounding context remain unverified."
+    }
+  ],
+  "unverified": [
+    "No external source was consulted in this offline regression fixture."
+  ]
+}

@@ -83,6 +83,13 @@ from argument_resolution import (
     rebuild_resolutions,
     render_resolution,
 )
+from argument_citations import (
+    append_citation_decision,
+    collect_citation_results,
+    prepare_citation_audit,
+    rebuild_citation_audits,
+    render_citation_audit,
+)
 from argument_adjudication import (
     append_claim_bundle_decisions,
     claim_bundle_status,
@@ -135,6 +142,10 @@ from argument_contracts import (
     GATE_B_CLARITIES,
     GATE_B_DECISIONS,
     GATE_B_JUDGMENTS,
+    CITATION_BIBLIOGRAPHIC_STATUSES,
+    CITATION_CONTENT_SUPPORT_STATUSES,
+    CITATION_CONTEXT_STATUSES,
+    CITATION_SOURCE_LOCATION_STATUSES,
     LINEAGE_RELATIONS,
     RESOLUTION_STATUSES,
     REVISION_ACTION_TYPES,
@@ -3184,6 +3195,100 @@ def ir_resolve_show_command(args: argparse.Namespace) -> int:
     print(render_resolution(args.project, args.resolution_id), end=""); return 0
 
 
+def ir_citations_prepare_command(args: argparse.Namespace) -> int:
+    paths, created = prepare_citation_audit(
+        args.project, citation_ids=args.citation, version_id=args.version
+    )
+    print(f"Citation Audit: {paths.audit_id}")
+    print(f"Citation audit prompt: {paths.prompt}")
+    print("Citation audit prepared." if created else "Matching Citation Audit already exists; reused.")
+    return 0
+
+
+def ir_citations_collect_command(args: argparse.Namespace) -> int:
+    if args.paste:
+        response_bytes = _read_review_paste_bytes()
+        method = "terminal-paste"
+        source_name = "pasted-citation-audit.json"
+    else:
+        response_path = Path(args.file).resolve()
+        if response_path.is_symlink() or not response_path.is_file():
+            raise WorkbenchError("Citation Audit input must be a regular file")
+        response_bytes = response_path.read_bytes()
+        method = "file"
+        source_name = response_path.name
+    path, record = collect_citation_results(
+        args.project,
+        response_bytes,
+        audit_id=args.audit_id,
+        version_id=args.version,
+        method=method,
+        source_name=source_name,
+        producer_label=args.producer_label,
+    )
+    print(f"Citation result attempt: {path}")
+    print(f"Validation status: {record['validation']['status']}")
+    for error in record["validation"]["errors"]:
+        print(f"  - {error}")
+    return 0 if record["validation"]["status"] == "valid" else EXIT_INVALID_WORKFLOW
+
+
+def ir_citations_decide_command(args: argparse.Namespace) -> int:
+    final_outcome = None
+    if args.decision == "correct":
+        missing = [
+            option
+            for option, value in (
+                ("--bibliographic-existence", args.bibliographic_existence),
+                ("--exact-source-located", args.exact_source_located),
+                ("--content-support", args.content_support),
+                ("--context-preserved", args.context_preserved),
+            )
+            if value is None
+        ]
+        if missing:
+            raise WorkbenchError(
+                "decision=correct requires " + ", ".join(missing)
+            )
+        final_outcome = {
+            "bibliographic_existence": args.bibliographic_existence,
+            "exact_source_located": args.exact_source_located,
+            "content_support": args.content_support,
+            "context_preserved": args.context_preserved,
+            "uncertainty": args.uncertainty,
+        }
+    output = append_citation_decision(
+        args.project,
+        audit_id=args.audit_id,
+        version_id=args.version,
+        citation_id=args.citation,
+        decision=args.decision,
+        reason=args.reason,
+        final_outcome=final_outcome,
+        producer=args.producer_label or "local-user",
+    )
+    print(f"Human Citation decision: {output}")
+    return 0
+
+
+def ir_citations_show_command(args: argparse.Namespace) -> int:
+    print(
+        render_citation_audit(
+            args.project, audit_id=args.audit_id, version_id=args.version
+        ),
+        end="",
+    )
+    return 0
+
+
+def ir_citations_rebuild_command(args: argparse.Namespace) -> int:
+    outputs, changed = rebuild_citation_audits(args.project)
+    for output in outputs:
+        print(f"Citation provenance: {output}")
+    print("Citation provenance rebuilt." if changed else "Citation provenance already current.")
+    return 0
+
+
 def ir_gate_b_init_command(args: argparse.Namespace) -> int:
     paths = initialize_gate_b(args.output, args.projects)
     print(f"Product Gate B evidence: {paths.root}")
@@ -3318,6 +3423,7 @@ def ir_rebuild_command(args: argparse.Namespace) -> int:
     diff_outputs, diffs_changed = rebuild_structural_diffs(args.project)
     lineage_outputs, lineages_changed = rebuild_lineage_analyses(args.project)
     resolution_outputs, resolutions_changed = rebuild_resolutions(args.project)
+    citation_outputs, citations_changed = rebuild_citation_audits(args.project)
     triage_outputs, triage_changed = rebuild_status_triages(args.project)
     adjudication_outputs, adjudications_changed = rebuild_adjudication_cache(
         args.project
@@ -3333,6 +3439,8 @@ def ir_rebuild_command(args: argparse.Namespace) -> int:
         print(f"Claim lineage: {output}")
     for output in resolution_outputs:
         print(f"Finding resolution: {output}")
+    for output in citation_outputs:
+        print(f"Citation provenance: {output}")
     for output in triage_outputs:
         print(f"Status triage: {output}")
     for output in adjudication_outputs:
@@ -3345,6 +3453,7 @@ def ir_rebuild_command(args: argparse.Namespace) -> int:
         or diffs_changed
         or lineages_changed
         or resolutions_changed
+        or citations_changed
         or triage_changed
         or adjudications_changed
         else "Derived artifacts already current."
@@ -4798,6 +4907,78 @@ def parser() -> argparse.ArgumentParser:
     ir_resolve_decide_parser.add_argument("--final-status", choices=RESOLUTION_STATUSES); ir_resolve_decide_parser.set_defaults(func=ir_resolve_decide_command)
     ir_resolve_show_parser = ir_resolve_sub.add_parser("show", help="show the full Finding Resolution chain")
     ir_resolve_show_parser.add_argument("project"); ir_resolve_show_parser.add_argument("--resolution-id"); ir_resolve_show_parser.set_defaults(func=ir_resolve_show_command)
+
+    ir_citations_parser = ir_sub.add_parser(
+        "citations",
+        help="verify Citation -> Evidence -> Claim provenance without declaring Claims false",
+    )
+    ir_citations_sub = ir_citations_parser.add_subparsers(
+        dest="ir_citations_command", required=True
+    )
+    ir_citations_prepare = ir_citations_sub.add_parser(
+        "prepare", help="prepare a substantive Citation verification prompt"
+    )
+    ir_citations_prepare.add_argument("project")
+    ir_citations_prepare.add_argument("--version")
+    ir_citations_prepare.add_argument(
+        "--citation",
+        action="append",
+        help="repeatable Citation ID such as Z1 (default: every Citation in the version)",
+    )
+    ir_citations_prepare.set_defaults(func=ir_citations_prepare_command)
+
+    ir_citations_collect = ir_citations_sub.add_parser(
+        "collect", help="immutably collect a model Citation verification result"
+    )
+    ir_citations_collect.add_argument("project")
+    citation_source = ir_citations_collect.add_mutually_exclusive_group(required=True)
+    citation_source.add_argument("--paste", action="store_true")
+    citation_source.add_argument("--file")
+    ir_citations_collect.add_argument("--version")
+    ir_citations_collect.add_argument("--audit-id")
+    ir_citations_collect.add_argument("--producer-label")
+    ir_citations_collect.set_defaults(func=ir_citations_collect_command)
+
+    ir_citations_decide = ir_citations_sub.add_parser(
+        "decide", help="confirm, reject, or correct one Citation proposal"
+    )
+    ir_citations_decide.add_argument("project")
+    ir_citations_decide.add_argument("--version")
+    ir_citations_decide.add_argument("--audit-id")
+    ir_citations_decide.add_argument("--citation", required=True)
+    ir_citations_decide.add_argument(
+        "--decision", choices=("confirm", "reject", "correct"), required=True
+    )
+    ir_citations_decide.add_argument("--reason", required=True)
+    ir_citations_decide.add_argument(
+        "--bibliographic-existence", choices=CITATION_BIBLIOGRAPHIC_STATUSES
+    )
+    ir_citations_decide.add_argument(
+        "--exact-source-located", choices=CITATION_SOURCE_LOCATION_STATUSES
+    )
+    ir_citations_decide.add_argument(
+        "--content-support", choices=CITATION_CONTENT_SUPPORT_STATUSES
+    )
+    ir_citations_decide.add_argument(
+        "--context-preserved", choices=CITATION_CONTEXT_STATUSES
+    )
+    ir_citations_decide.add_argument("--uncertainty", default="")
+    ir_citations_decide.add_argument("--producer-label")
+    ir_citations_decide.set_defaults(func=ir_citations_decide_command)
+
+    ir_citations_show = ir_citations_sub.add_parser(
+        "show", help="show Citation outcomes and downstream dependency flags"
+    )
+    ir_citations_show.add_argument("project")
+    ir_citations_show.add_argument("--version")
+    ir_citations_show.add_argument("--audit-id")
+    ir_citations_show.set_defaults(func=ir_citations_show_command)
+
+    ir_citations_rebuild = ir_citations_sub.add_parser(
+        "rebuild", help="rebuild Citation provenance indexes and Markdown"
+    )
+    ir_citations_rebuild.add_argument("project")
+    ir_citations_rebuild.set_defaults(func=ir_citations_rebuild_command)
 
     ir_gate_b_parser = ir_sub.add_parser(
         "gate-b", help="capture human Product Gate B evidence for real multi-version writing"

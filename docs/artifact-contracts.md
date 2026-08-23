@@ -49,6 +49,12 @@ Parent hashes always cover the exact file bytes on disk. Artifact objects do not
 | `resolution-retest-results` | immutable model payload | Per-descendant verdicts from the original Lens; never a direct generic “resolved?” judgment |
 | `finding-resolution-proposal` | derived-replaceable | Deterministic mapping from descendant retest verdicts to resolved/partial/unresolved/obsolete/uncertain |
 | `finding-resolution-decision` | immutable | Human confirmation, rejection, or correction of a proposed resolution; reconsideration uses `supersedes` |
+| `citation-audit-context` | immutable deterministic payload | Exact version, Citation selection, Reviewed IR hash, and manuscript source hash supplied to a Citation audit without a self-hash cycle |
+| `citation-audit-run` | immutable | Exact context, Reviewed IR snapshot, selected Citations, and provider-neutral substantive-verification prompt |
+| `citation-result-attempt` | immutable | One exact model response plus reproducible validation; invalid and blocked attempts remain archived |
+| `citation-audit-results` | immutable model payload | Separate bibliographic-existence, exact-source, content-support, and context-preservation proposals with inspectable source locators |
+| `citation-verification-decision` | immutable | Human confirmation, rejection, or correction of one Citation proposal; reconsideration uses a per-Citation `supersedes` chain |
+| `citation-provenance-index` | derived-replaceable | Current Citation state plus deterministic Citation→Evidence→Claim dependencies and a readable evidence-provenance report |
 | `product-gate-b-corpus` | immutable | Human-selected local references and exact hashes for 2–3 real multi-version projects; manuscript bytes are not copied |
 | `product-gate-b-assessment` | immutable | Per-project human observations on lineage burden, split/merge, Finding inheritance/persistence, and revision rationale |
 | `product-gate-b-decision` | immutable | Human pass/fail/defer decision; pass is rejected until the explicit Gate B evidence conditions hold |
@@ -78,6 +84,44 @@ DocumentVersion IDs are version-local sequence labels, not Claim identity. `V1` 
 Semantic lineage uses a second, explicitly non-deterministic layer. `lineage-analysis-run` snapshots the two Reviewed records/payloads, the structural diff, and prompt bytes so later IR corrections cannot rewrite an earlier analysis. Every collected response is an immutable `lineage-proposal-attempt`; invalid JSON, wrong-version references, unknown nodes, or incomplete `status=complete` coverage are retained as unusable attempts and cannot produce derived lineage. A valid response derives schema-v2 `claim-lineage` artifacts whose exact parents include both relevant IR snapshots, the proposal attempt, and the raw proposal payload. These artifacts remain `status=proposed` and `provenance.origin=model-derived`; the readable index does not turn them into facts.
 
 Finding Resolution never asks a generic model to decide whether revision succeeded. A `resolution-retest-run` requires an accepted Finding, at least one exact RevisionAction, one human-confirmed ClaimLineage, the descendant IR, and the original Lens protocol/content. The model only re-executes that Lens against every descendant Claim. Rule-Lens PASS retains the original `evidence_policy` and exact relation-aware `support_paths`; Perspective Lens retests preserve the complete protocol and do not invent checklist support. The derived proposal maps all-pass to `resolved`, all-fail to `unresolved`, mixed pass/fail to `partially_resolved`, any substantive uncertainty to `uncertain`, and a confirmed removal with no descendant to `obsolete` without a fake model run. This mapping is deterministic but its input verdicts remain model-derived. Only `finding-resolution-decision` can make the status human-confirmed.
+
+## Evidence and Citation provenance
+
+Citation verification is version-local and never upgrades the Argument IR's
+model-extracted `Citation` node into a verified fact. `citation-audit-context`
+first freezes the exact Citation selection, Reviewed IR hash, and source hash.
+The prompt binds that context; `citation-result-attempt` then binds the exact
+`citation-audit-run` and raw response bytes. This extra context payload avoids a
+self-hash cycle while retaining exact-file SHA-256 on every provenance edge.
+
+The model payload keeps four questions separate:
+
+- whether the bibliographic item exists;
+- whether the exact source was located;
+- whether its content supports the manuscript's wording; and
+- whether the surrounding context was preserved.
+
+Definitive judgments require explicit `source_refs`. Exact-source and content
+judgments additionally require a primary or repository source. If the exact
+source was not located, the validator forces content support and context to
+remain `uncertain`; model memory cannot fill the gap. `complete` is rejected
+while any dimension remains unverified, and `partial`/`blocked` must explain
+what remains unknown.
+
+Even an all-positive model outcome remains `model_proposed` and therefore
+unverified until a person confirms it. Human `confirm`, `reject`, and `correct`
+events append independently per Citation; correction supplies all four final
+dimensions without editing the model response. Only a human-confirmed outcome
+of bibliographic `verified`, exact source `verified`, content `supports`, and
+context `yes` becomes `citation_verified`.
+
+The derived index follows only Argument IR `cites` edges and downstream
+`supports`/`qualifies` paths. It therefore computes which Evidence and Claims
+depend on each audited Citation without inventing a semantic relation. Any
+pending, rejected, negative, partial, or uncertain Citation gives the dependent
+node the explicit status `depends_on_unverified_evidence`. That status never
+means `claim_false`, never becomes a manuscript score, and never substitutes a
+human judgment about the Claim.
 
 ## Field provenance in Reviewed IR
 
