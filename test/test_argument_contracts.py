@@ -457,6 +457,35 @@ class ArgumentContractTests(unittest.TestCase):
         }
         self.assertEqual(contracts.validate_perspective_lens_protocol(protocol), [])
 
+        plan = {
+            **base(
+                "perspective-review-plan",
+                "PV1-plan",
+                "immutable",
+                "deterministic",
+                parents=[
+                    {
+                        "role": "target-ir",
+                        "artifact": "argument-ir",
+                        "sha256": "2" * 64,
+                    },
+                    parent("protocol", "perspective-lens-protocol", protocol),
+                ],
+            ),
+            "review_id": "PV1",
+            "lens": {
+                "kind": "perspective",
+                "id": "methodological-individualism",
+                "protocol_sha256": "3" * 64,
+            },
+            "review_scope": {
+                "kind": "thesis-chain",
+                "claim_ids": [],
+                "selected_claim_ids": ["C1"],
+            },
+        }
+        self.assertEqual(contracts.validate_perspective_review_plan(plan), [])
+
         review = {
             **base(
                 "perspective-review-run",
@@ -475,6 +504,7 @@ class ArgumentContractTests(unittest.TestCase):
                         "sha256": "2" * 64,
                     },
                     parent("protocol", "perspective-lens-protocol", protocol),
+                    parent("plan", "perspective-review-plan", plan),
                 ],
             ),
             "review_id": "PV1",
@@ -507,6 +537,10 @@ class ArgumentContractTests(unittest.TestCase):
                 "relative_path": "critic-individualist.md",
                 "sha256": "3" * 64,
             },
+            "plan": {
+                "relative_path": "perspective-review-plan.json",
+                "sha256": contracts.sha256_bytes(encoded(plan)),
+            },
             "prompt": {"relative_path": "review-prompt.md", "sha256": "4" * 64},
         }
         self.assertEqual(contracts.validate_perspective_review_run(review), [])
@@ -535,7 +569,7 @@ class ArgumentContractTests(unittest.TestCase):
             "schema_version": 1,
             "artifact": "perspective-lens-results",
             "source": {
-                "review_sha256": contracts.sha256_bytes(encoded(review)),
+                "plan_sha256": contracts.sha256_bytes(encoded(plan)),
                 "target_ir_sha256": "2" * 64,
                 "protocol_sha256": "3" * 64,
             },

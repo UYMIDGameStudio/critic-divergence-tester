@@ -34,6 +34,7 @@ Parent hashes always cover the exact file bytes on disk. Artifact objects do not
 | `review-result-attempt` | immutable | One exact model response to a Rule Review plan and its reproducible validation outcome |
 | `claim-review-index` | derived-replaceable | Claim-grouped substantive verdicts and auditable execution/routing states plus exact links to actionable Findings |
 | `perspective-lens-protocol` | immutable | Exact snapshot of one Perspective Lens's complete framework commitments and compatible legacy critic identity |
+| `perspective-review-plan` | immutable | Non-circular binding of one Perspective Lens, target IR, and deterministic Claim scope |
 | `perspective-review-run` | immutable | One Reviewed IR snapshot, complete Perspective Lens protocol, target scope, and execution prompt |
 | `perspective-result-attempt` | immutable | One exact model response to a Perspective Lens run and its reproducible validation outcome |
 | `perspective-lens-results` | immutable model payload | At most one holistic framework judgment per selected Claim, with model-derived basis and analysis |
@@ -85,7 +86,7 @@ For valid evaluated results, each FAIL or substantive UNCERTAIN becomes an immut
 
 ## Perspective Lens provenance
 
-Perspective Lenses preserve a framework commitment rather than converting it into a machine-rule checklist. Phase 4 initially recognizes `methodological-individualism` and `contrastive-explanation`, while retaining `critic-individualist` and `critic-contrastivist` as compatible legacy protocol names. A `perspective-lens-protocol` snapshots the complete Markdown protocol bytes; a `perspective-review-run` binds that snapshot, the exact Reviewed IR, the target IR, and an explicit Claim scope.
+Perspective Lenses preserve a framework commitment rather than converting it into a machine-rule checklist. Phase 4 initially recognizes `methodological-individualism` and `contrastive-explanation`, while retaining `critic-individualist` and `critic-contrastivist` as compatible legacy protocol names. A `perspective-lens-protocol` snapshots the complete Markdown protocol bytes. An immutable `perspective-review-plan` binds that protocol, the target IR, and the explicit Claim scope before prompt rendering; both prompt and model response can therefore cite its exact hash without a circular self-hash. A `perspective-review-run` then binds the plan, complete protocol, exact Reviewed IR, target IR, and execution prompt.
 
 The normalized model payload permits at most one holistic judgment from one Perspective Lens for each selected Claim. `framework_analysis` records how the framework reaches the judgment, `basis_refs` records the manuscript nodes considered, and `consequence` records the specific argumentative consequence of FAIL or substantive UNCERTAIN. This envelope is not a checklist score and does not claim that every framework commitment can be evaluated independently.
 

@@ -878,19 +878,23 @@ def validate_perspective_review_run(value: object) -> list[str]:
             "target_ir",
             "protocol_record",
             "protocol",
+            "plan",
             "prompt",
         },
     )
     if item is None:
         return errors
     _require_origin(item, {"deterministic"}, "perspective-review-run", errors)
-    _require_parent_roles(item, {"reviewed-ir", "target-ir", "protocol"}, errors)
+    _require_parent_roles(
+        item, {"reviewed-ir", "target-ir", "protocol", "plan"}, errors
+    )
     _require_parent_artifacts(
         item,
         {
             "reviewed-ir": "reviewed-argument-ir",
             "target-ir": "argument-ir",
             "protocol": "perspective-lens-protocol",
+            "plan": "perspective-review-plan",
         },
         errors,
     )
@@ -912,6 +916,7 @@ def validate_perspective_review_run(value: object) -> list[str]:
         "target_ir",
         "protocol_record",
         "protocol",
+        "plan",
         "prompt",
     ):
         _validate_bound_file(item.get(field), field, errors)
@@ -923,6 +928,34 @@ def validate_perspective_review_run(value: object) -> list[str]:
         and lens.get("protocol_sha256") != protocol.get("sha256")
     ):
         errors.append("lens.protocol_sha256 must equal protocol.sha256")
+    return errors
+
+
+def validate_perspective_review_plan(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="perspective-review-plan",
+        lifecycle="immutable",
+        extra_keys={"review_id", "lens", "review_scope"},
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"deterministic"}, "perspective-review-plan", errors)
+    _require_parent_roles(item, {"target-ir", "protocol"}, errors)
+    _require_parent_artifacts(
+        item,
+        {
+            "target-ir": "argument-ir",
+            "protocol": "perspective-lens-protocol",
+        },
+        errors,
+    )
+    if not isinstance(item.get("review_id"), str) or re.fullmatch(
+        r"PV[1-9][0-9]*", str(item.get("review_id"))
+    ) is None:
+        errors.append("review_id must be PV1..PVn")
+    _validate_perspective_lens(item.get("lens"), "lens", errors)
+    _validate_review_scope(item.get("review_scope"), "review_scope", errors)
     return errors
 
 
@@ -1007,11 +1040,11 @@ def validate_perspective_lens_results(value: object) -> list[str]:
     else:
         _strict_keys(
             source,
-            {"review_sha256", "target_ir_sha256", "protocol_sha256"},
+            {"plan_sha256", "target_ir_sha256", "protocol_sha256"},
             "source",
             errors,
         )
-        for field in ("review_sha256", "target_ir_sha256", "protocol_sha256"):
+        for field in ("plan_sha256", "target_ir_sha256", "protocol_sha256"):
             if not _digest(source.get(field)):
                 errors.append(f"source.{field} must be a lowercase SHA-256 digest")
     status = value.get("status")
@@ -1141,7 +1174,13 @@ def validate_perspective_review_index(value: object) -> list[str]:
     _validate_perspective_lens(item.get("lens"), "lens", errors)
     if item.get("run_status") not in PERSPECTIVE_RESULT_STATUSES:
         errors.append(f"run_status must be one of {PERSPECTIVE_RESULT_STATUSES}")
-    _string_list(item.get("unverified"), "unverified", errors)
+    unverified = _string_list(item.get("unverified"), "unverified", errors)
+    if item.get("run_status") == "complete" and unverified:
+        errors.append("complete Perspective Review requires unverified=[]")
+    if item.get("run_status") in {"partial", "blocked"} and not unverified:
+        errors.append(
+            f"{item.get('run_status')} Perspective Review requires unverified items"
+        )
     summary = item.get("summary")
     if not isinstance(summary, dict):
         errors.append("summary must be an object")
@@ -1174,9 +1213,11 @@ def validate_perspective_review_index(value: object) -> list[str]:
                 errors.append(f"{label} must be an object")
                 continue
             _strict_keys(outcome, expected_keys, label, errors)
-            for field in ("result_id", "reason", "framework_analysis"):
+            for field in ("reason", "framework_analysis"):
                 if not _nonempty(outcome.get(field)):
                     errors.append(f"{label}.{field} must be non-empty")
+            if outcome.get("result_id") != f"P{index + 1}":
+                errors.append(f"{label}.result_id must be P{index + 1}")
             target = outcome.get("target_claim")
             if not isinstance(target, str) or _VERSIONED_CLAIM.fullmatch(target) is None:
                 errors.append(f"{label}.target_claim must be version-qualified")
@@ -1190,8 +1231,15 @@ def validate_perspective_review_index(value: object) -> list[str]:
             )
             if any(re.fullmatch(r"V[1-9][0-9]*:[CEAZ][1-9][0-9]*", ref) is None for ref in refs):
                 errors.append(f"{label}.basis_refs must be version-qualified node IDs")
-            if not isinstance(outcome.get("consequence"), str):
+            if isinstance(target, str) and target not in refs:
+                errors.append(f"{label}.basis_refs must include target_claim")
+            consequence = outcome.get("consequence")
+            if not isinstance(consequence, str):
                 errors.append(f"{label}.consequence must be a string")
+            elif verdict in {"fail", "uncertain"} and not consequence.strip():
+                errors.append(f"{label}.actionable verdict requires a consequence")
+            elif verdict == "pass" and consequence:
+                errors.append(f"{label}.pass requires an empty consequence")
             finding_id = outcome.get("finding_id")
             if verdict == "pass" and finding_id is not None:
                 errors.append(f"{label}.finding_id must be null for pass")
@@ -1202,6 +1250,8 @@ def validate_perspective_review_index(value: object) -> list[str]:
                     finding_ids.append(str(finding_id))
     if isinstance(summary, dict) and summary != counted:
         errors.append("summary must equal outcomes")
+    if item.get("run_status") == "blocked" and outcomes:
+        errors.append("blocked Perspective Review must not contain outcomes")
     if len(finding_ids) != len(set(finding_ids)):
         errors.append("finding IDs must not contain duplicates")
     _validate_bound_file(item.get("view"), "view", errors)
@@ -3263,6 +3313,7 @@ VALIDATORS: dict[str, Callable[[object], list[str]]] = {
     "rule-review-run": validate_rule_review_run,
     "review-result-attempt": validate_review_result_attempt,
     "perspective-lens-protocol": validate_perspective_lens_protocol,
+    "perspective-review-plan": validate_perspective_review_plan,
     "perspective-review-run": validate_perspective_review_run,
     "perspective-result-attempt": validate_perspective_result_attempt,
     "perspective-lens-results": validate_perspective_lens_results,

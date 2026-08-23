@@ -1210,6 +1210,15 @@ def verify_workspace(
     except ImportError as exc:
         errors.append(f"reviews: cannot load review verifier: {exc}")
     try:
+        from argument_perspective import verify_perspective_reviews
+
+        errors.extend(
+            f"perspective reviews: {error}"
+            for error in verify_perspective_reviews(paths.root)
+        )
+    except ImportError as exc:
+        errors.append(f"perspective reviews: cannot load verifier: {exc}")
+    try:
         from argument_adjudication import verify_adjudications
 
         errors.extend(

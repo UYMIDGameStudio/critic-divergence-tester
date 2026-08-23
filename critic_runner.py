@@ -54,6 +54,12 @@ from argument_review import (
     rebuild_reviews,
     show_claim_review,
 )
+from argument_perspective import (
+    collect_perspective_results,
+    prepare_perspective_review,
+    rebuild_perspective_reviews,
+    show_perspective_review,
+)
 from argument_adjudication import (
     append_claim_bundle_decisions,
     claim_bundle_status,
@@ -3082,6 +3088,9 @@ def ir_inspect_command(args: argparse.Namespace) -> int:
 def ir_rebuild_command(args: argparse.Namespace) -> int:
     map_path, changed = rebuild_workspace(args.project)
     review_outputs, reviews_changed = rebuild_reviews(args.project)
+    perspective_outputs, perspectives_changed = rebuild_perspective_reviews(
+        args.project
+    )
     triage_outputs, triage_changed = rebuild_status_triages(args.project)
     adjudication_outputs, adjudications_changed = rebuild_adjudication_cache(
         args.project
@@ -3089,13 +3098,19 @@ def ir_rebuild_command(args: argparse.Namespace) -> int:
     print(f"Argument map: {map_path}")
     for output in review_outputs:
         print(f"Claim review: {output}")
+    for output in perspective_outputs:
+        print(f"Perspective review: {output}")
     for output in triage_outputs:
         print(f"Status triage: {output}")
     for output in adjudication_outputs:
         print(f"Revision plan: {output}")
     print(
         "Derived artifacts rebuilt."
-        if changed or reviews_changed or triage_changed or adjudications_changed
+        if changed
+        or reviews_changed
+        or perspectives_changed
+        or triage_changed
+        or adjudications_changed
         else "Derived artifacts already current."
     )
     return 0
@@ -3123,7 +3138,7 @@ def ir_review_prepare_command(args: argparse.Namespace) -> int:
 
 def _read_review_paste_bytes() -> bytes:
     print(
-        "Paste the model's pure argument-check-results JSON. On a new line enter "
+        "Paste the model's pure Review Lens results JSON. On a new line enter "
         f"{IR_PASTE_END_MARKER} to finish."
     )
     lines: list[str] = []
@@ -3200,6 +3215,80 @@ def ir_review_show_command(args: argparse.Namespace) -> int:
     )
     print(rendered, end="" if rendered.endswith("\n") else "\n")
     print(f"Full claim review: {view_path}")
+    return 0
+
+
+def ir_review_prepare_perspective_command(args: argparse.Namespace) -> int:
+    paths, created = prepare_perspective_review(
+        args.project,
+        lens_id=args.lens,
+        review_scope=args.scope,
+        claim_ids=args.claim,
+    )
+    print(f"Perspective Review: {paths.review_id}")
+    print(f"Lens: {args.lens}")
+    print(f"Review prompt: {paths.prompt}")
+    print(f"Perspective plan: {paths.plan}")
+    print("Review prepared." if created else "Matching review already exists; reused.")
+    return 0
+
+
+def ir_review_collect_perspective_command(args: argparse.Namespace) -> int:
+    if args.paste:
+        response_bytes = _read_review_paste_bytes()
+        method = "terminal-paste"
+        source_name = "pasted-perspective-results.json"
+    else:
+        raw_file = Path(args.file)
+        if raw_file.is_symlink():
+            raise WorkbenchError("Perspective result input must not be a symbolic link")
+        response_path = raw_file.resolve()
+        if not response_path.is_file():
+            raise WorkbenchError(
+                f"Perspective result file does not exist: {response_path}"
+            )
+        response_bytes = response_path.read_bytes()
+        if len(response_bytes) > DEFAULT_MAX_OUTPUT_BYTES:
+            raise WorkbenchError(
+                f"Perspective result input exceeds {DEFAULT_MAX_OUTPUT_BYTES} bytes"
+            )
+        method = "file"
+        source_name = response_path.name
+    attempt_path, record = collect_perspective_results(
+        args.project,
+        response_bytes,
+        review_id=args.review_id,
+        method=method,
+        source_name=source_name,
+        producer_label=args.producer_label,
+    )
+    status = record["validation"]["status"]
+    print(f"Perspective result attempt: {attempt_path}")
+    print(f"Validation status: {status}")
+    for error in record["validation"]["errors"]:
+        print(f"  - {error}")
+    if status != "valid":
+        print("The attempt was preserved; collect a corrected result.")
+        return EXIT_INVALID_WORKFLOW
+    rendered, view_path = show_perspective_review(
+        args.project,
+        review_id=str(record["review_id"]),
+        claim_id=None,
+    )
+    actionable = rendered.count(" — FAIL ") + rendered.count(" — UNCERTAIN ")
+    print(f"Perspective review: {view_path}")
+    print(f"Open Findings: {actionable}")
+    return 0
+
+
+def ir_review_show_perspective_command(args: argparse.Namespace) -> int:
+    rendered, view_path = show_perspective_review(
+        args.project,
+        review_id=args.review_id,
+        claim_id=args.claim,
+    )
+    print(rendered, end="" if rendered.endswith("\n") else "\n")
+    print(f"Full Perspective review: {view_path}")
     return 0
 
 
@@ -4465,6 +4554,66 @@ def parser() -> argparse.ArgumentParser:
     )
     ir_review_collect_parser.set_defaults(func=ir_review_collect_command)
 
+    ir_review_prepare_perspective_parser = ir_review_sub.add_parser(
+        "prepare-perspective",
+        help="prepare a holistic Perspective Lens review against Reviewed IR",
+    )
+    ir_review_prepare_perspective_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    ir_review_prepare_perspective_parser.add_argument(
+        "--lens",
+        choices=("methodological-individualism", "contrastive-explanation"),
+        required=True,
+        help="complete methodological framework to apply",
+    )
+    ir_review_prepare_perspective_parser.add_argument(
+        "--scope",
+        choices=("thesis-chain", "claim", "claims", "all"),
+        default="thesis-chain",
+        help="Claims to review (default: conclusion/intermediate support chain)",
+    )
+    ir_review_prepare_perspective_parser.add_argument(
+        "--claim",
+        action="append",
+        default=[],
+        help="Claim ID used by claim/claims scope, or pinned into thesis-chain",
+    )
+    ir_review_prepare_perspective_parser.set_defaults(
+        func=ir_review_prepare_perspective_command
+    )
+
+    ir_review_collect_perspective_parser = ir_review_sub.add_parser(
+        "collect-perspective",
+        help="immutably collect and normalize a Perspective Lens model result",
+    )
+    ir_review_collect_perspective_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    perspective_source = (
+        ir_review_collect_perspective_parser.add_mutually_exclusive_group(
+            required=True
+        )
+    )
+    perspective_source.add_argument(
+        "--paste",
+        action="store_true",
+        help=f"paste JSON until {IR_PASTE_END_MARKER}",
+    )
+    perspective_source.add_argument(
+        "--file", help="existing perspective-lens-results JSON file"
+    )
+    ir_review_collect_perspective_parser.add_argument(
+        "--review-id",
+        help="Perspective Review ID (default: most recently prepared review)",
+    )
+    ir_review_collect_perspective_parser.add_argument(
+        "--producer-label", help="opaque model/executor label for provenance"
+    )
+    ir_review_collect_perspective_parser.set_defaults(
+        func=ir_review_collect_perspective_command
+    )
+
     ir_review_show_parser = ir_review_sub.add_parser(
         "show",
         help="show every check outcome and open Finding for a Claim",
@@ -4481,6 +4630,24 @@ def parser() -> argparse.ArgumentParser:
         help="Claim ID such as C4 or V1:C4 (default: show all reviewed Claims)",
     )
     ir_review_show_parser.set_defaults(func=ir_review_show_command)
+
+    ir_review_show_perspective_parser = ir_review_sub.add_parser(
+        "show-perspective",
+        help="show one holistic Perspective Lens outcome per selected Claim",
+    )
+    ir_review_show_perspective_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    ir_review_show_perspective_parser.add_argument(
+        "--review-id",
+        help="Perspective Review ID (default: most recent valid result)",
+    )
+    ir_review_show_perspective_parser.add_argument(
+        "--claim", help="Claim ID such as C4 or V1:C4"
+    )
+    ir_review_show_perspective_parser.set_defaults(
+        func=ir_review_show_perspective_command
+    )
 
     ir_review_triage_parser = ir_review_sub.add_parser(
         "triage",
@@ -4527,7 +4694,7 @@ def parser() -> argparse.ArgumentParser:
     )
     ir_adjudicate_parser.add_argument(
         "--review-id",
-        help="limit decisions to one current Rule Review",
+        help="limit decisions to one current Rule or Perspective Review",
     )
     ir_adjudicate_parser.add_argument(
         "--review-all",
