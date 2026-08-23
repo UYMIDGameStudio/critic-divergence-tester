@@ -33,6 +33,11 @@ Parent hashes always cover the exact file bytes on disk. Artifact objects do not
 | `rule-review-run` | immutable | One Reviewed IR snapshot, Rule Lens library, deterministic check plan, and execution prompt |
 | `review-result-attempt` | immutable | One exact model response to a Rule Review plan and its reproducible validation outcome |
 | `claim-review-index` | derived-replaceable | Claim-grouped substantive verdicts and auditable execution/routing states plus exact links to actionable Findings |
+| `perspective-lens-protocol` | immutable | Exact snapshot of one Perspective Lens's complete framework commitments and compatible legacy critic identity |
+| `perspective-review-run` | immutable | One Reviewed IR snapshot, complete Perspective Lens protocol, target scope, and execution prompt |
+| `perspective-result-attempt` | immutable | One exact model response to a Perspective Lens run and its reproducible validation outcome |
+| `perspective-lens-results` | immutable model payload | At most one holistic framework judgment per selected Claim, with model-derived basis and analysis |
+| `perspective-review-index` | derived-replaceable | Claim-grouped Perspective Lens outcomes and exact links to normalized actionable Findings |
 | `review-status-triage` | append-only | One human acknowledgement or rejection of a model-proposed non-evaluated status, with an explicit follow-up action |
 | `review-status-triage-index` | derived-replaceable | Reproducible open/acknowledged/rejected execution-status queue binding every triage event |
 | `direct-review-baseline` | immutable | Exact direct-chat prompt/response, manuscript binding, provider/model identity, declared session conditions, and elapsed-time evidence for Gate A comparison |
@@ -77,6 +82,16 @@ Result v2 first records `execution_status`. Only `evaluated` tasks may carry `pa
 Non-evaluated statuses never become manuscript Findings, but they no longer disappear from human workflow. Each current status remains open until a `review-status-triage` event acknowledges or rejects it. Routing mismatches point to IR correction/rerun actions, missing context points to context/evidence actions, and not-applicable requires explicit acknowledgement or rejection. Reconsideration appends another event binding the prior event; the derived triage index binds the entire exact-byte history. Open triage blocks Gate capture.
 
 For valid evaluated results, each FAIL or substantive UNCERTAIN becomes an immutable `argument-finding` with a version-qualified `target_claim`, Rule Lens/check identity, `status=open`, and exact parents for the target IR and model result. PASS and non-evaluated statuses remain visible without creating actionable Findings. Deterministic packaging never turns model judgments into deterministic facts.
+
+## Perspective Lens provenance
+
+Perspective Lenses preserve a framework commitment rather than converting it into a machine-rule checklist. Phase 4 initially recognizes `methodological-individualism` and `contrastive-explanation`, while retaining `critic-individualist` and `critic-contrastivist` as compatible legacy protocol names. A `perspective-lens-protocol` snapshots the complete Markdown protocol bytes; a `perspective-review-run` binds that snapshot, the exact Reviewed IR, the target IR, and an explicit Claim scope.
+
+The normalized model payload permits at most one holistic judgment from one Perspective Lens for each selected Claim. `framework_analysis` records how the framework reaches the judgment, `basis_refs` records the manuscript nodes considered, and `consequence` records the specific argumentative consequence of FAIL or substantive UNCERTAIN. This envelope is not a checklist score and does not claim that every framework commitment can be evaluated independently.
+
+PASS remains visible in the derived Perspective index but creates no Finding. FAIL and substantive UNCERTAIN become the same immutable `argument-finding` envelope used by Rule Lenses, with `lens.kind=perspective`, `check_id=null`, and an exact `perspective-lens-results` parent. Rule Findings must continue to bind `argument-check-results`; validators reject swapping the two result types.
+
+Different Perspective and Rule Lens outcomes remain separate Claim-level observations. The contract defines no vote, confidence average, winner, or automatic synthesis. A Claim may therefore simultaneously carry, for example, a Social Science failure, an Individualist failure, and a Contrastivist pass without contradiction being erased.
 
 ## Human adjudication and revision-plan provenance
 

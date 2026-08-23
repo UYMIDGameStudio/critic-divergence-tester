@@ -42,6 +42,11 @@ LINEAGE_RELATIONS = (
 LINEAGE_STATUSES = ("proposed", "human_confirmed", "rejected")
 FINDING_VERDICTS = ("pass", "fail", "uncertain")
 LENS_KINDS = ("rule", "perspective")
+PERSPECTIVE_LENSES = (
+    "methodological-individualism",
+    "contrastive-explanation",
+)
+PERSPECTIVE_RESULT_STATUSES = ("complete", "partial", "blocked")
 REVIEW_DEPTHS = ("core", "full")
 REVIEW_SCOPES = ("thesis-chain", "claim", "claims", "all")
 REVIEW_EXECUTION_STATUSES = (
@@ -630,6 +635,47 @@ def _validate_rule_lens(value: object, label: str, errors: list[str]) -> None:
         errors.append(f"{label}.library_sha256 must be a lowercase SHA-256 digest")
 
 
+def _validate_perspective_lens(
+    value: object, label: str, errors: list[str]
+) -> None:
+    if not isinstance(value, dict):
+        errors.append(f"{label} must be an object")
+        return
+    _strict_keys(value, {"kind", "id", "protocol_sha256"}, label, errors)
+    if value.get("kind") != "perspective":
+        errors.append(f"{label}.kind must be perspective")
+    if value.get("id") not in PERSPECTIVE_LENSES:
+        errors.append(f"{label}.id must be one of {PERSPECTIVE_LENSES}")
+    if not _digest(value.get("protocol_sha256")):
+        errors.append(f"{label}.protocol_sha256 must be a lowercase SHA-256 digest")
+
+
+def _validate_review_scope(value: object, label: str, errors: list[str]) -> None:
+    if not isinstance(value, dict):
+        errors.append(f"{label} must be an object")
+        return
+    _strict_keys(
+        value,
+        {"kind", "claim_ids", "selected_claim_ids"},
+        label,
+        errors,
+    )
+    if value.get("kind") not in REVIEW_SCOPES:
+        errors.append(f"{label}.kind must be one of {REVIEW_SCOPES}")
+    _string_list(value.get("claim_ids"), f"{label}.claim_ids", errors)
+    selected = _string_list(
+        value.get("selected_claim_ids"),
+        f"{label}.selected_claim_ids",
+        errors,
+        allow_empty=False,
+    )
+    for index, claim_id in enumerate(selected):
+        if re.fullmatch(r"C[1-9][0-9]*", claim_id) is None:
+            errors.append(
+                f"{label}.selected_claim_ids[{index}] must be an unversioned Claim ID"
+            )
+
+
 def validate_rule_review_run(value: object) -> list[str]:
     schema_version = value.get("schema_version") if isinstance(value, dict) else None
     extra_keys = {
@@ -774,6 +820,416 @@ def validate_review_result_attempt(value: object) -> list[str]:
             errors.append("valid review results require an empty validation.errors array")
         if validation.get("status") == "unusable" and not validation_errors:
             errors.append("unusable review results require concrete validation errors")
+    return errors
+
+
+def validate_perspective_lens_protocol(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="perspective-lens-protocol",
+        lifecycle="immutable",
+        extra_keys={"lens", "legacy_protocol", "protocol"},
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"deterministic"}, "perspective-lens-protocol", errors)
+    _require_parent_roles(item, set(), errors)
+    lens = item.get("lens")
+    if not isinstance(lens, dict):
+        errors.append("lens must be an object")
+    else:
+        _strict_keys(lens, {"kind", "id"}, "lens", errors)
+        if lens.get("kind") != "perspective":
+            errors.append("lens.kind must be perspective")
+        if lens.get("id") not in PERSPECTIVE_LENSES:
+            errors.append(f"lens.id must be one of {PERSPECTIVE_LENSES}")
+    if item.get("legacy_protocol") not in {
+        "critic-individualist",
+        "critic-contrastivist",
+    }:
+        errors.append(
+            "legacy_protocol must be critic-individualist or critic-contrastivist"
+        )
+    expected_protocol = {
+        "methodological-individualism": "critic-individualist",
+        "contrastive-explanation": "critic-contrastivist",
+    }
+    if isinstance(lens, dict) and expected_protocol.get(str(lens.get("id"))) != item.get(
+        "legacy_protocol"
+    ):
+        errors.append("lens.id and legacy_protocol must identify the same framework")
+    _validate_bound_file(item.get("protocol"), "protocol", errors)
+    return errors
+
+
+def validate_perspective_review_run(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="perspective-review-run",
+        lifecycle="immutable",
+        extra_keys={
+            "review_id",
+            "project_id",
+            "document_id",
+            "version_id",
+            "lens",
+            "review_scope",
+            "reviewed_ir_record",
+            "target_ir",
+            "protocol_record",
+            "protocol",
+            "prompt",
+        },
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"deterministic"}, "perspective-review-run", errors)
+    _require_parent_roles(item, {"reviewed-ir", "target-ir", "protocol"}, errors)
+    _require_parent_artifacts(
+        item,
+        {
+            "reviewed-ir": "reviewed-argument-ir",
+            "target-ir": "argument-ir",
+            "protocol": "perspective-lens-protocol",
+        },
+        errors,
+    )
+    if not isinstance(item.get("review_id"), str) or re.fullmatch(
+        r"PV[1-9][0-9]*", str(item.get("review_id"))
+    ) is None:
+        errors.append("review_id must be PV1..PVn")
+    for field in ("project_id", "document_id"):
+        if not _nonempty(item.get(field)):
+            errors.append(f"{field} must be a non-empty string")
+    if not isinstance(item.get("version_id"), str) or re.fullmatch(
+        r"V[1-9][0-9]*", str(item.get("version_id"))
+    ) is None:
+        errors.append("version_id must be V1..Vn")
+    _validate_perspective_lens(item.get("lens"), "lens", errors)
+    _validate_review_scope(item.get("review_scope"), "review_scope", errors)
+    for field in (
+        "reviewed_ir_record",
+        "target_ir",
+        "protocol_record",
+        "protocol",
+        "prompt",
+    ):
+        _validate_bound_file(item.get(field), field, errors)
+    lens = item.get("lens")
+    protocol = item.get("protocol")
+    if (
+        isinstance(lens, dict)
+        and isinstance(protocol, dict)
+        and lens.get("protocol_sha256") != protocol.get("sha256")
+    ):
+        errors.append("lens.protocol_sha256 must equal protocol.sha256")
+    return errors
+
+
+def validate_perspective_result_attempt(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="perspective-result-attempt",
+        lifecycle="immutable",
+        extra_keys={
+            "review_id",
+            "attempt_id",
+            "collection",
+            "response",
+            "validation",
+        },
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"model-derived"}, "perspective-result-attempt", errors)
+    _require_parent_roles(item, {"review-run"}, errors)
+    _require_parent_artifacts(item, {"review-run": "perspective-review-run"}, errors)
+    if not isinstance(item.get("review_id"), str) or re.fullmatch(
+        r"PV[1-9][0-9]*", str(item.get("review_id"))
+    ) is None:
+        errors.append("review_id must be PV1..PVn")
+    if not isinstance(item.get("attempt_id"), str) or re.fullmatch(
+        r"attempt-[0-9]{4}", str(item.get("attempt_id"))
+    ) is None:
+        errors.append("attempt_id must be attempt-NNNN")
+    collection = item.get("collection")
+    if not isinstance(collection, dict):
+        errors.append("collection must be an object")
+    else:
+        _strict_keys(
+            collection,
+            {"method", "source_name", "producer_label"},
+            "collection",
+            errors,
+        )
+        if collection.get("method") not in {"file", "terminal-paste"}:
+            errors.append("collection.method must be file or terminal-paste")
+        if not _safe_basename(collection.get("source_name")):
+            errors.append("collection.source_name must be a safe basename")
+        producer = collection.get("producer_label")
+        if producer is not None and not _nonempty(producer):
+            errors.append("collection.producer_label must be null or non-empty")
+    _validate_bound_file(item.get("response"), "response", errors)
+    validation = item.get("validation")
+    if not isinstance(validation, dict):
+        errors.append("validation must be an object")
+    else:
+        _strict_keys(validation, {"status", "errors"}, "validation", errors)
+        if validation.get("status") not in REVIEW_RESULT_STATUSES:
+            errors.append(f"validation.status must be one of {REVIEW_RESULT_STATUSES}")
+        validation_errors = _string_list(
+            validation.get("errors"), "validation.errors", errors
+        )
+        if validation.get("status") == "valid" and validation_errors:
+            errors.append("valid perspective results require no validation errors")
+        if validation.get("status") == "unusable" and not validation_errors:
+            errors.append("unusable perspective results require concrete errors")
+    return errors
+
+
+def validate_perspective_lens_results(value: object) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(value, dict):
+        return ["perspective-lens-results must be a JSON object"]
+    _strict_keys(
+        value,
+        {"schema_version", "artifact", "source", "status", "unverified", "results"},
+        "perspective-lens-results",
+        errors,
+    )
+    if value.get("schema_version") != 1:
+        errors.append("schema_version must be 1")
+    if value.get("artifact") != "perspective-lens-results":
+        errors.append("artifact must be perspective-lens-results")
+    source = value.get("source")
+    if not isinstance(source, dict):
+        errors.append("source must be an object")
+    else:
+        _strict_keys(
+            source,
+            {"review_sha256", "target_ir_sha256", "protocol_sha256"},
+            "source",
+            errors,
+        )
+        for field in ("review_sha256", "target_ir_sha256", "protocol_sha256"):
+            if not _digest(source.get(field)):
+                errors.append(f"source.{field} must be a lowercase SHA-256 digest")
+    status = value.get("status")
+    if status not in PERSPECTIVE_RESULT_STATUSES:
+        errors.append(f"status must be one of {PERSPECTIVE_RESULT_STATUSES}")
+    unverified = _string_list(value.get("unverified"), "unverified", errors)
+    if status == "complete" and unverified:
+        errors.append("complete perspective results require unverified=[]")
+    if status in {"partial", "blocked"} and not unverified:
+        errors.append(f"{status} perspective results require concrete unverified items")
+    results = value.get("results")
+    if not isinstance(results, list):
+        errors.append("results must be an array")
+        return errors
+    result_ids: list[str] = []
+    targets: list[str] = []
+    expected_keys = {
+        "result_id",
+        "target_claim",
+        "verdict",
+        "reason",
+        "basis_refs",
+        "framework_analysis",
+        "consequence",
+    }
+    for index, result in enumerate(results):
+        label = f"results[{index}]"
+        if not isinstance(result, dict):
+            errors.append(f"{label} must be an object")
+            continue
+        _strict_keys(result, expected_keys, label, errors)
+        expected_id = f"P{index + 1}"
+        if result.get("result_id") != expected_id:
+            errors.append(f"{label}.result_id must be {expected_id}")
+        result_ids.append(str(result.get("result_id")))
+        target = result.get("target_claim")
+        if not isinstance(target, str) or re.fullmatch(r"C[1-9][0-9]*", target) is None:
+            errors.append(f"{label}.target_claim must be an unversioned Claim ID")
+        else:
+            targets.append(target)
+        if result.get("verdict") not in FINDING_VERDICTS:
+            errors.append(f"{label}.verdict must be one of {FINDING_VERDICTS}")
+        for field in ("reason", "framework_analysis"):
+            if not _nonempty(result.get(field)):
+                errors.append(f"{label}.{field} must be a non-empty string")
+        basis_refs = _string_list(
+            result.get("basis_refs"), f"{label}.basis_refs", errors, allow_empty=False
+        )
+        for basis_index, reference in enumerate(basis_refs):
+            if re.fullmatch(r"[CEAZ][1-9][0-9]*", reference) is None:
+                errors.append(
+                    f"{label}.basis_refs[{basis_index}] must identify a Claim, Evidence, Assumption, or Citation"
+                )
+        if isinstance(target, str) and target not in basis_refs:
+            errors.append(f"{label}.basis_refs must include target_claim")
+        consequence = result.get("consequence")
+        if not isinstance(consequence, str):
+            errors.append(f"{label}.consequence must be a string")
+        elif result.get("verdict") in {"fail", "uncertain"} and not consequence.strip():
+            errors.append(f"{label}.actionable verdict requires a consequence")
+        elif result.get("verdict") == "pass" and consequence:
+            errors.append(f"{label}.pass requires an empty consequence")
+    if len(result_ids) != len(set(result_ids)):
+        errors.append("result IDs must not contain duplicates")
+    if len(targets) != len(set(targets)):
+        errors.append("perspective results allow at most one judgment per target Claim")
+    return errors
+
+
+def validate_perspective_review_index(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="perspective-review-index",
+        lifecycle="derived-replaceable",
+        extra_keys={
+            "review_id",
+            "attempt_id",
+            "version_id",
+            "lens",
+            "run_status",
+            "unverified",
+            "summary",
+            "outcomes",
+            "view",
+            "field_provenance",
+        },
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"deterministic"}, "perspective-review-index", errors)
+    parents = item.get("parents")
+    expected_roles = {"review-run", "result-attempt", "lens-result"}
+    if isinstance(parents, list):
+        expected_roles.update(
+            str(parent.get("role"))
+            for parent in parents
+            if isinstance(parent, dict)
+            and isinstance(parent.get("role"), str)
+            and str(parent.get("role")).startswith("finding-")
+        )
+    _require_parent_roles(item, expected_roles, errors)
+    parent_artifacts = {
+        "review-run": "perspective-review-run",
+        "result-attempt": "perspective-result-attempt",
+        "lens-result": "perspective-lens-results",
+    }
+    parent_artifacts.update(
+        {
+            role: "argument-finding"
+            for role in expected_roles
+            if role.startswith("finding-")
+        }
+    )
+    _require_parent_artifacts(item, parent_artifacts, errors)
+    if not isinstance(item.get("review_id"), str) or re.fullmatch(
+        r"PV[1-9][0-9]*", str(item.get("review_id"))
+    ) is None:
+        errors.append("review_id must be PV1..PVn")
+    if not isinstance(item.get("attempt_id"), str) or re.fullmatch(
+        r"attempt-[0-9]{4}", str(item.get("attempt_id"))
+    ) is None:
+        errors.append("attempt_id must be attempt-NNNN")
+    if not isinstance(item.get("version_id"), str) or re.fullmatch(
+        r"V[1-9][0-9]*", str(item.get("version_id"))
+    ) is None:
+        errors.append("version_id must be V1..Vn")
+    _validate_perspective_lens(item.get("lens"), "lens", errors)
+    if item.get("run_status") not in PERSPECTIVE_RESULT_STATUSES:
+        errors.append(f"run_status must be one of {PERSPECTIVE_RESULT_STATUSES}")
+    _string_list(item.get("unverified"), "unverified", errors)
+    summary = item.get("summary")
+    if not isinstance(summary, dict):
+        errors.append("summary must be an object")
+    else:
+        _strict_keys(summary, set(FINDING_VERDICTS), "summary", errors)
+        if any(
+            not isinstance(summary.get(key), int) or summary.get(key) < 0
+            for key in FINDING_VERDICTS
+        ):
+            errors.append("summary counts must be non-negative integers")
+    outcomes = item.get("outcomes")
+    counted = {key: 0 for key in FINDING_VERDICTS}
+    finding_ids: list[str] = []
+    if not isinstance(outcomes, list):
+        errors.append("outcomes must be an array")
+    else:
+        expected_keys = {
+            "result_id",
+            "target_claim",
+            "verdict",
+            "reason",
+            "basis_refs",
+            "framework_analysis",
+            "consequence",
+            "finding_id",
+        }
+        for index, outcome in enumerate(outcomes):
+            label = f"outcomes[{index}]"
+            if not isinstance(outcome, dict):
+                errors.append(f"{label} must be an object")
+                continue
+            _strict_keys(outcome, expected_keys, label, errors)
+            for field in ("result_id", "reason", "framework_analysis"):
+                if not _nonempty(outcome.get(field)):
+                    errors.append(f"{label}.{field} must be non-empty")
+            target = outcome.get("target_claim")
+            if not isinstance(target, str) or _VERSIONED_CLAIM.fullmatch(target) is None:
+                errors.append(f"{label}.target_claim must be version-qualified")
+            verdict = outcome.get("verdict")
+            if verdict not in FINDING_VERDICTS:
+                errors.append(f"{label}.verdict must be one of {FINDING_VERDICTS}")
+            else:
+                counted[str(verdict)] += 1
+            refs = _string_list(
+                outcome.get("basis_refs"), f"{label}.basis_refs", errors, allow_empty=False
+            )
+            if any(re.fullmatch(r"V[1-9][0-9]*:[CEAZ][1-9][0-9]*", ref) is None for ref in refs):
+                errors.append(f"{label}.basis_refs must be version-qualified node IDs")
+            if not isinstance(outcome.get("consequence"), str):
+                errors.append(f"{label}.consequence must be a string")
+            finding_id = outcome.get("finding_id")
+            if verdict == "pass" and finding_id is not None:
+                errors.append(f"{label}.finding_id must be null for pass")
+            if verdict in {"fail", "uncertain"}:
+                if not _nonempty(finding_id):
+                    errors.append(f"{label}.finding_id is required for actionable verdicts")
+                else:
+                    finding_ids.append(str(finding_id))
+    if isinstance(summary, dict) and summary != counted:
+        errors.append("summary must equal outcomes")
+    if len(finding_ids) != len(set(finding_ids)):
+        errors.append("finding IDs must not contain duplicates")
+    _validate_bound_file(item.get("view"), "view", errors)
+    provenance = item.get("field_provenance")
+    expected_provenance = {
+        "outcomes": "model-derived",
+        "run_status": "model-derived",
+        "unverified": "model-derived",
+        "finding_id": "deterministic",
+        "summary": "deterministic",
+        "view": "deterministic",
+    }
+    if not isinstance(provenance, dict):
+        errors.append("field_provenance must be an object")
+    else:
+        _strict_keys(
+            provenance, set(expected_provenance), "field_provenance", errors
+        )
+        for field, origin in expected_provenance.items():
+            entry = provenance.get(field)
+            if not isinstance(entry, dict):
+                errors.append(f"field_provenance.{field} must be an object")
+                continue
+            _strict_keys(entry, {"origin", "source"}, f"field_provenance.{field}", errors)
+            if entry.get("origin") != origin:
+                errors.append(f"field_provenance.{field}.origin must be {origin}")
+            if not _nonempty(entry.get("source")):
+                errors.append(f"field_provenance.{field}.source must be non-empty")
     return errors
 
 
@@ -1772,14 +2228,6 @@ def validate_argument_finding(value: object) -> list[str]:
         item, {"deterministic", "model-derived"}, "argument-finding", errors
     )
     _require_parent_roles(item, {"target-ir", "lens-result"}, errors)
-    _require_parent_artifacts(
-        item,
-        {
-            "target-ir": "argument-ir",
-            "lens-result": "argument-check-results",
-        },
-        errors,
-    )
     if not _nonempty(item.get("finding_id")):
         errors.append("finding_id must be a non-empty string")
     if not isinstance(item.get("target_claim"), str) or _VERSIONED_CLAIM.fullmatch(
@@ -1800,6 +2248,19 @@ def validate_argument_finding(value: object) -> list[str]:
             errors.append("rule lenses require lens.check_id")
         if lens.get("kind") == "perspective" and check_id is not None:
             errors.append("perspective lenses require lens.check_id=null")
+    lens_result_artifact = (
+        "perspective-lens-results"
+        if isinstance(lens, dict) and lens.get("kind") == "perspective"
+        else "argument-check-results"
+    )
+    _require_parent_artifacts(
+        item,
+        {
+            "target-ir": "argument-ir",
+            "lens-result": lens_result_artifact,
+        },
+        errors,
+    )
     if item.get("verdict") not in FINDING_VERDICTS:
         errors.append(f"verdict must be one of {FINDING_VERDICTS}")
     if not _nonempty(item.get("reason")):
@@ -2801,6 +3262,11 @@ VALIDATORS: dict[str, Callable[[object], list[str]]] = {
     "reviewed-argument-ir": validate_reviewed_ir_record,
     "rule-review-run": validate_rule_review_run,
     "review-result-attempt": validate_review_result_attempt,
+    "perspective-lens-protocol": validate_perspective_lens_protocol,
+    "perspective-review-run": validate_perspective_review_run,
+    "perspective-result-attempt": validate_perspective_result_attempt,
+    "perspective-lens-results": validate_perspective_lens_results,
+    "perspective-review-index": validate_perspective_review_index,
     "direct-review-baseline": validate_direct_review_baseline,
     "gate-a-session-start": validate_gate_a_session_start,
     "gate-a-work-session": validate_gate_a_work_session,
