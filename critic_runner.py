@@ -68,9 +68,12 @@ from argument_versioning import (
     rebuild_structural_diffs,
 )
 from argument_lineage import (
+    append_lineage_decision,
     collect_lineage_proposals,
+    lineage_proposal_ids,
     prepare_lineage_analysis,
     rebuild_lineage_analyses,
+    render_lineage_history,
     show_lineage,
 )
 from argument_adjudication import (
@@ -115,6 +118,7 @@ from argument_contracts import (
     GATE_A_COMPARISONS,
     GATE_A_DECISIONS,
     GATE_A_WORK_ACTIVITIES,
+    LINEAGE_RELATIONS,
     REVISION_ACTION_TYPES,
 )
 from critic_execution import ExecutorResult, execute_with_limits
@@ -3089,6 +3093,46 @@ def ir_lineage_show_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def ir_lineage_adjudicate_command(args: argparse.Namespace) -> int:
+    proposal_ids = lineage_proposal_ids(
+        args.project, from_version=args.from_version,
+        to_version=args.to_version, analysis_id=args.analysis_id,
+    )
+    selected = proposal_ids if args.all else list(args.proposal or [])
+    if args.all and args.expected_count != len(proposal_ids):
+        raise WorkbenchError(
+            f"--expected-count {args.expected_count} does not match {len(proposal_ids)} proposals"
+        )
+    correction = None
+    if args.decision == "correct":
+        correction = {
+            "from_claims": list(args.from_claim or []),
+            "to_claims": list(args.to_claim or []),
+            "relation": args.relation,
+            "semantic_changes": list(args.semantic_change or []),
+            "reason": args.lineage_reason,
+            "basis_refs": list(args.basis_ref or []),
+            "uncertainty": args.uncertainty,
+        }
+    outputs = append_lineage_decision(
+        args.project, proposal_ids=selected, decision=args.decision,
+        human_note=args.reason, from_version=args.from_version,
+        to_version=args.to_version, analysis_id=args.analysis_id,
+        correction=correction,
+    )
+    for output in outputs:
+        print(f"Human lineage decision: {output}")
+    return 0
+
+
+def ir_lineage_history_command(args: argparse.Namespace) -> int:
+    print(render_lineage_history(
+        args.project, from_version=args.from_version,
+        to_version=args.to_version, analysis_id=args.analysis_id,
+    ))
+    return 0
+
+
 def _read_ir_paste_bytes() -> bytes:
     print(
         "Paste the model's pure Argument IR JSON. On a new line enter "
@@ -4612,6 +4656,37 @@ def parser() -> argparse.ArgumentParser:
     ir_lineage_show_parser.add_argument("--to-version")
     ir_lineage_show_parser.add_argument("--analysis-id")
     ir_lineage_show_parser.set_defaults(func=ir_lineage_show_command)
+
+    ir_lineage_adjudicate_parser = ir_lineage_sub.add_parser(
+        "adjudicate", help="append human confirm/reject/correct decisions without editing JSON"
+    )
+    ir_lineage_adjudicate_parser.add_argument("project", help="Argument Workbench project directory")
+    lineage_targets = ir_lineage_adjudicate_parser.add_mutually_exclusive_group(required=True)
+    lineage_targets.add_argument("--proposal", action="append", help="proposal ID such as LP1; repeatable")
+    lineage_targets.add_argument("--all", action="store_true", help="apply one confirm/reject decision to every proposal")
+    ir_lineage_adjudicate_parser.add_argument("--expected-count", type=int, help="required safety count with --all")
+    ir_lineage_adjudicate_parser.add_argument("--decision", choices=("confirm", "reject", "correct"), required=True)
+    ir_lineage_adjudicate_parser.add_argument("--reason", required=True, help="human decision reason")
+    ir_lineage_adjudicate_parser.add_argument("--from-version")
+    ir_lineage_adjudicate_parser.add_argument("--to-version")
+    ir_lineage_adjudicate_parser.add_argument("--analysis-id")
+    ir_lineage_adjudicate_parser.add_argument("--from-claim", action="append")
+    ir_lineage_adjudicate_parser.add_argument("--to-claim", action="append")
+    ir_lineage_adjudicate_parser.add_argument("--relation", choices=LINEAGE_RELATIONS)
+    ir_lineage_adjudicate_parser.add_argument("--semantic-change", action="append")
+    ir_lineage_adjudicate_parser.add_argument("--lineage-reason")
+    ir_lineage_adjudicate_parser.add_argument("--basis-ref", action="append")
+    ir_lineage_adjudicate_parser.add_argument("--uncertainty", default="")
+    ir_lineage_adjudicate_parser.set_defaults(func=ir_lineage_adjudicate_command)
+
+    ir_lineage_history_parser = ir_lineage_sub.add_parser(
+        "history", help="show model proposals and current human decisions together"
+    )
+    ir_lineage_history_parser.add_argument("project", help="Argument Workbench project directory")
+    ir_lineage_history_parser.add_argument("--from-version")
+    ir_lineage_history_parser.add_argument("--to-version")
+    ir_lineage_history_parser.add_argument("--analysis-id")
+    ir_lineage_history_parser.set_defaults(func=ir_lineage_history_command)
 
     ir_collect_parser = ir_sub.add_parser(
         "collect",

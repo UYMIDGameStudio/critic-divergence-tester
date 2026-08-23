@@ -135,6 +135,76 @@ class ArgumentLineageTests(unittest.TestCase):
             self.assertTrue(changed)
             self.assertEqual(lineage.verify_lineage_analyses(v2.root), [])
 
+    def test_human_decisions_are_append_only_and_corrections_do_not_edit_proposals(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            _, v2 = self.make_two_versions(Path(temporary))
+            paths, _ = lineage.prepare_lineage_analysis(v2.root)
+            lineage.collect_lineage_proposals(
+                v2.root, workbench.json_bytes(self.proposal(paths)),
+                method="file", source_name="lineage.json", producer_label="model",
+            )
+            proposal_path = paths.derived_dir("attempt-0001") / "lineages" / "L0001.json"
+            original = proposal_path.read_bytes()
+            first = lineage.append_lineage_decision(
+                v2.root, proposal_ids=["LP1"], decision="confirm",
+                human_note="The correspondence is right.",
+            )[0]
+            corrected = lineage.append_lineage_decision(
+                v2.root, proposal_ids=["LP1"], decision="correct",
+                human_note="The descendant is C1, not C2.",
+                correction={
+                    "from_claims": ["V1:C1"], "to_claims": ["V2:C1"],
+                    "relation": "modified", "semantic_changes": ["concept_reframed"],
+                    "reason": "Human-corrected semantic correspondence.",
+                    "basis_refs": ["V1:C1", "V2:C1"], "uncertainty": "",
+                },
+            )[0]
+            self.assertEqual(proposal_path.read_bytes(), original)
+            first_value = json.loads(first.read_text(encoding="utf-8"))
+            corrected_value = json.loads(corrected.read_text(encoding="utf-8"))
+            self.assertEqual(corrected_value["supersedes_sha256"], contracts.sha256_bytes(first.read_bytes()))
+            self.assertEqual(corrected_value["provenance"]["origin"], "human-confirmed")
+            self.assertEqual(corrected_value["review_action"], "correct")
+            self.assertEqual(first_value["status"], "human_confirmed")
+            history = lineage.render_lineage_history(v2.root)
+            self.assertIn("human_confirmed (correct)", history)
+            self.assertIn("Human correction", history)
+            self.assertEqual(lineage.verify_lineage_analyses(v2.root), [])
+
+    def test_cli_batch_decision_has_an_expected_count_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            _, v2 = self.make_two_versions(Path(temporary))
+            paths, _ = lineage.prepare_lineage_analysis(v2.root)
+            lineage.collect_lineage_proposals(
+                v2.root, workbench.json_bytes(self.proposal(paths)),
+                method="file", source_name="lineage.json", producer_label="model",
+            )
+            self.assertNotEqual(
+                critic_runner.main([
+                    "ir", "lineage", "adjudicate", str(v2.root), "--all",
+                    "--expected-count", "2", "--decision", "confirm",
+                    "--reason", "Reviewed together.",
+                ]),
+                0,
+            )
+            self.assertEqual(lineage.list_lineage_decisions(paths), [])
+            self.assertEqual(
+                critic_runner.main([
+                    "ir", "lineage", "adjudicate", str(v2.root), "--all",
+                    "--expected-count", "3", "--decision", "confirm",
+                    "--reason", "Reviewed all three proposals.",
+                ]),
+                0,
+            )
+            self.assertEqual(len(lineage.list_lineage_decisions(paths)), 3)
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(
+                    critic_runner.main(["ir", "lineage", "history", str(v2.root)]), 0
+                )
+            self.assertIn("human_confirmed (confirm)", output.getvalue())
+            self.assertEqual(lineage.verify_lineage_analyses(v2.root), [])
+
 
 if __name__ == "__main__":
     unittest.main()

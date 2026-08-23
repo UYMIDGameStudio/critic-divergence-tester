@@ -602,9 +602,22 @@ py -3 critic_runner.py ir lineage collect $project --file .\lineage-proposals.js
 
 # 不打开 JSON，查看 unchanged / modified / split / merged / removed / new / uncertain
 py -3 critic_runner.py ir lineage show $project
+
+# 逐条确认或拒绝；每次判断都是新的 human-confirmed artifact
+py -3 critic_runner.py ir lineage adjudicate $project --proposal LP1 `
+  --decision confirm --reason "两版确实是同一主张的收窄"
+
+# 确实逐条看完后也可批量确认；expected-count 防止误操作到数量已变化的队列
+py -3 critic_runner.py ir lineage adjudicate $project --all --expected-count 3 `
+  --decision confirm --reason "已逐条核对全部三项"
+
+# 同屏查看模型原提议和当前人工判断
+py -3 critic_runner.py ir lineage history $project
 ```
 
-每次 analysis 都保存两版 Reviewed IR、确定性 structural diff、完整 prompt 和 exact response。派生的 `claim-lineage` 使用 `V1:C4 → V2:C7` 这类版本限定引用，原生支持一对多 split 与多对一 merged；semantic changes、reason 和 uncertainty 均明确标记为 `model-derived`。`complete` proposal 必须覆盖两侧全部 Claims，但允许复杂关系重叠。当前这些工件的状态始终是 `proposed`；下一增量才提供逐条 human confirm / reject / correct。
+每次 analysis 都保存两版 Reviewed IR、确定性 structural diff、完整 prompt 和 exact response。派生的 `claim-lineage` 使用 `V1:C4 → V2:C7` 这类版本限定引用，原生支持一对多 split 与多对一 merged；semantic changes、reason 和 uncertainty 均明确标记为 `model-derived`。`complete` proposal 必须覆盖两侧全部 Claims，但允许复杂关系重叠。
+
+人工 `confirm`、`reject`、`correct` 都追加新的 schema-v3 `claim-lineage`，不会修改模型 proposal。`correct` 可用 `--from-claim`、`--to-claim`、`--relation`、`--semantic-change`、`--lineage-reason` 和 `--basis-ref` 从命令行正式改正关系，无需打开 JSON。再次判断同一 proposal 时，新事件通过 `supersedes` 绑定上一判断，完整历史仍然保留。
 
 ### 兼容的低层 Argument IR 流程
 

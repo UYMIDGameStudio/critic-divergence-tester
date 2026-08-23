@@ -100,6 +100,10 @@ class LineageAnalysisPaths:
     def derived_dir(self, attempt_id: str) -> Path:
         return self.root / "derived" / attempt_id
 
+    @property
+    def decisions_dir(self) -> Path:
+        return self.root / "human-decisions"
+
 
 def _normalize_version(value: str) -> str:
     normalized = value.strip().upper()
@@ -262,6 +266,7 @@ def prepare_lineage_analysis(project_dir: Path | str, *, from_version: str | Non
             _write_new(temporary / relative, data)
         (temporary / "proposals").mkdir()
         (temporary / "derived").mkdir()
+        (temporary / "human-decisions").mkdir()
         os.replace(temporary, paths.root)
     except Exception:
         if temporary.exists():
@@ -465,6 +470,168 @@ def show_lineage(project_dir: Path | str, *, from_version: str | None = None, to
     view, _ = rebuild_lineage_attempt(paths, valid[-1]); return view.read_text(encoding="utf-8"), view
 
 
+def _selected_proposal_set(
+    paths: LineageAnalysisPaths,
+) -> tuple[str, dict[str, Any], list[tuple[dict[str, Any], bytes]]]:
+    valid: list[str] = []
+    for attempt_dir in sorted(paths.attempts_dir.iterdir()):
+        if attempt_dir.is_dir() and ATTEMPT_PATTERN.fullmatch(attempt_dir.name):
+            attempt, _ = _read_json(attempt_dir / "record.json")
+            if attempt.get("validation", {}).get("status") == "valid":
+                valid.append(attempt_dir.name)
+    if not valid:
+        raise WorkbenchError("lineage analysis has no valid model proposal")
+    attempt_id = valid[-1]
+    index, _ = _read_json(paths.derived_dir(attempt_id) / "claim-lineage-index.json")
+    lineages: list[tuple[dict[str, Any], bytes]] = []
+    for number in range(1, len(index["proposals"]) + 1):
+        lineages.append(
+            _read_json(paths.derived_dir(attempt_id) / "lineages" / f"L{number:04d}.json")
+        )
+    return attempt_id, index, lineages
+
+
+def lineage_proposal_ids(
+    project_dir: Path | str,
+    *, from_version: str | None = None, to_version: str | None = None, analysis_id: str | None = None,
+) -> list[str]:
+    paths = selected_lineage_analysis(project_dir, from_version=from_version, to_version=to_version, analysis_id=analysis_id)
+    _, index, _ = _selected_proposal_set(paths)
+    return [str(item["proposal_id"]) for item in index["proposals"]]
+
+
+def list_lineage_decisions(
+    paths: LineageAnalysisPaths,
+) -> list[tuple[Path, dict[str, Any], bytes]]:
+    if not paths.decisions_dir.exists():
+        return []
+    if paths.decisions_dir.is_symlink() or not paths.decisions_dir.is_dir():
+        raise WorkbenchError("human-decisions must be a regular directory")
+    results: list[tuple[Path, dict[str, Any], bytes]] = []
+    for path in sorted(paths.decisions_dir.iterdir()):
+        if path.is_symlink() or not path.is_file() or re.fullmatch(r"LD[0-9]{4}\.json", path.name) is None:
+            raise WorkbenchError(f"unexpected lineage decision entry: {path.name}")
+        value, data = _read_json(path)
+        results.append((path, value, data))
+    if [path.name for path, _, _ in results] != [f"LD{i:04d}.json" for i in range(1, len(results) + 1)]:
+        raise WorkbenchError("lineage decision IDs must be continuous")
+    return results
+
+
+def _current_decisions(
+    paths: LineageAnalysisPaths,
+) -> dict[str, tuple[dict[str, Any], bytes]]:
+    current: dict[str, tuple[dict[str, Any], bytes]] = {}
+    for _, decision, data in list_lineage_decisions(paths):
+        proposal_hash = str(decision["proposal_sha256"])
+        previous = current.get(proposal_hash)
+        expected = sha256_bytes(previous[1]) if previous is not None else None
+        if decision.get("supersedes_sha256") != expected:
+            raise WorkbenchError(
+                f"decision {decision.get('artifact_id')} does not supersede the current decision"
+            )
+        current[proposal_hash] = (decision, data)
+    return current
+
+
+def append_lineage_decision(
+    project_dir: Path | str,
+    *,
+    proposal_ids: list[str],
+    decision: str,
+    human_note: str,
+    from_version: str | None = None,
+    to_version: str | None = None,
+    analysis_id: str | None = None,
+    correction: dict[str, Any] | None = None,
+) -> list[Path]:
+    if decision not in {"confirm", "reject", "correct"}:
+        raise WorkbenchError("decision must be confirm, reject, or correct")
+    if not human_note.strip():
+        raise WorkbenchError("human decision requires a reason")
+    paths = selected_lineage_analysis(project_dir, from_version=from_version, to_version=to_version, analysis_id=analysis_id)
+    _, index, model_lineages = _selected_proposal_set(paths)
+    by_id = {
+        str(summary["proposal_id"]): model_lineages[position]
+        for position, summary in enumerate(index["proposals"])
+    }
+    normalized = [value.strip().upper() for value in proposal_ids]
+    if not normalized or len(normalized) != len(set(normalized)):
+        raise WorkbenchError("proposal IDs must be a non-empty unique list")
+    unknown = [value for value in normalized if value not in by_id]
+    if unknown:
+        raise WorkbenchError(f"unknown lineage proposals: {unknown}")
+    if decision == "correct" and (len(normalized) != 1 or correction is None):
+        raise WorkbenchError("correct requires exactly one proposal and corrected fields")
+    if decision != "correct" and correction is not None:
+        raise WorkbenchError("corrected fields are only valid with decision=correct")
+    current = _current_decisions(paths)
+    _, from_ir_bytes = _read_json(paths.from_ir)
+    _, to_ir_bytes = _read_json(paths.to_ir)
+    paths.decisions_dir.mkdir(parents=True, exist_ok=True)
+    outputs: list[Path] = []
+    next_number = len(list_lineage_decisions(paths)) + 1
+    for proposal_id in normalized:
+        proposal, proposal_bytes = by_id[proposal_id]
+        fields = {
+            key: proposal[key]
+            for key in ("from_claims", "to_claims", "relation", "semantic_changes", "reason", "basis_refs", "uncertainty")
+        }
+        if correction is not None:
+            fields.update(correction)
+        previous = current.get(sha256_bytes(proposal_bytes))
+        parents = []
+        if fields["from_claims"]:
+            parents.append(_parent("from-version", "argument-ir", from_ir_bytes))
+        if fields["to_claims"]:
+            parents.append(_parent("to-version", "argument-ir", to_ir_bytes))
+        parents.append(_parent("proposal", "claim-lineage", proposal_bytes))
+        supersedes_sha256 = None
+        if previous is not None:
+            supersedes_sha256 = sha256_bytes(previous[1])
+            parents.append(_parent("supersedes", "claim-lineage", previous[1]))
+        artifact_id = f"{paths.lineage_id}-{paths.analysis_id}-LD{next_number:04d}"
+        artifact = {
+            "schema_version": 3, "artifact": "claim-lineage", "artifact_id": artifact_id,
+            "lifecycle": "immutable", "provenance": _provenance("human-confirmed", utc_now(), "local-user"),
+            "parents": parents, "lineage_id": paths.lineage_id,
+            **fields, "proposed_by": "model", "proposal_sha256": sha256_bytes(proposal_bytes),
+            "status": "rejected" if decision == "reject" else "human_confirmed",
+            "review_action": decision, "human_note": human_note.strip(), "supersedes_sha256": supersedes_sha256,
+        }
+        errors = validate_artifact(artifact)
+        if errors:
+            raise WorkbenchError("invalid human lineage decision: " + "; ".join(errors))
+        output = paths.decisions_dir / f"LD{next_number:04d}.json"
+        _write_new(output, json_bytes(artifact)); outputs.append(output)
+        current[sha256_bytes(proposal_bytes)] = (artifact, json_bytes(artifact))
+        next_number += 1
+    return outputs
+
+
+def render_lineage_history(
+    project_dir: Path | str,
+    *, from_version: str | None = None, to_version: str | None = None, analysis_id: str | None = None,
+) -> str:
+    paths = selected_lineage_analysis(project_dir, from_version=from_version, to_version=to_version, analysis_id=analysis_id)
+    _, index, model_lineages = _selected_proposal_set(paths)
+    current = _current_decisions(paths)
+    lines = ["# Claim Lineage Human Review", "", f"- Pair: `{paths.lineage_id}`", f"- Analysis: `{paths.analysis_id}`", ""]
+    for summary, (proposal, proposal_bytes) in zip(index["proposals"], model_lineages):
+        state = current.get(sha256_bytes(proposal_bytes))
+        status = "awaiting human judgment" if state is None else f"{state[0]['status']} ({state[0]['review_action']})"
+        left = ", ".join(proposal["from_claims"]) or "new"; right = ", ".join(proposal["to_claims"]) or "removed"
+        lines.extend([f"## {summary['proposal_id']} — {status}", "", f"`{left}` → `{right}` · `{proposal['relation']}` `[model-derived]`", f"- Model reason: {proposal['reason']}"])
+        if state is not None:
+            decision = state[0]
+            if decision["review_action"] == "correct":
+                final_left = ", ".join(decision["from_claims"]) or "new"; final_right = ", ".join(decision["to_claims"]) or "removed"
+                lines.append(f"- Human correction: `{final_left}` → `{final_right}` · `{decision['relation']}`")
+            lines.append(f"- Human reason: {decision['human_note']} `[human-confirmed]`")
+        lines.append("")
+    return "\n".join(lines)
+
+
 def verify_lineage_analyses(project_dir: Path | str) -> list[str]:
     workspace = workspace_paths(project_dir); lineage_root = workspace.document_dir / "lineage"
     if not lineage_root.exists(): return []
@@ -520,6 +687,16 @@ def verify_lineage_analyses(project_dir: Path | str) -> list[str]:
                                 if relative.startswith("lineages/") or relative.endswith("index.json"):
                                     value = parse_json_strict(data); entries.append((value, data))
                     elif paths.derived_dir(attempt_dir.name).exists(): errors.append(f"{prefix}/{attempt_dir.name}: invalid proposal has derived artifacts")
+                try:
+                    _current_decisions(paths)
+                    for decision_path, decision, decision_bytes in list_lineage_decisions(paths):
+                        entries.append((decision, decision_bytes))
+                        errors.extend(
+                            f"{prefix}/{decision_path.name}: {error}"
+                            for error in validate_artifact(decision)
+                        )
+                except WorkbenchError as exc:
+                    errors.append(f"{prefix}: {exc}")
                 errors.extend(f"{prefix}: {e}" for e in validate_contract_bundle(entries))
             except (OSError, WorkbenchError) as exc: errors.append(f"{prefix}: {exc}")
     return errors

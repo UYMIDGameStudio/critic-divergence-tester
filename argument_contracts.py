@@ -3856,16 +3856,20 @@ def validate_claim_lineage(value: object) -> list[str]:
         "proposal_sha256",
         "status",
     }
-    if schema_version == 2:
+    if schema_version in {2, 3}:
         extra_keys.update(
             {"semantic_changes", "reason", "basis_refs", "uncertainty"}
+        )
+    if schema_version == 3:
+        extra_keys.update(
+            {"review_action", "human_note", "supersedes_sha256"}
         )
     errors, item = _validate_base(
         value,
         artifact="claim-lineage",
         lifecycle="immutable",
         extra_keys=extra_keys,
-        schema_versions=(1, 2),
+        schema_versions=(1, 2, 3),
     )
     if item is None:
         return errors
@@ -3890,7 +3894,7 @@ def validate_claim_lineage(value: object) -> list[str]:
         errors.append("split lineage requires one source and at least two descendants")
     if relation == "merged" and (len(from_claims) < 2 or len(to_claims) != 1):
         errors.append("merged lineage requires at least two sources and one descendant")
-    if schema_version == 2:
+    if schema_version in {2, 3}:
         semantic_changes = _string_list(
             item.get("semantic_changes"), "semantic_changes", errors
         )
@@ -3940,6 +3944,21 @@ def validate_claim_lineage(value: object) -> list[str]:
         required_parent_roles.update({"proposal-attempt", "proposal-result"})
     if status in {"human_confirmed", "rejected"} and proposed_by == "model":
         required_parent_roles.add("proposal")
+    if schema_version == 3:
+        review_action = item.get("review_action")
+        if review_action not in {"confirm", "reject", "correct"}:
+            errors.append("review_action must be confirm/reject/correct")
+        if status == "rejected" and review_action != "reject":
+            errors.append("rejected lineage requires review_action=reject")
+        if status == "human_confirmed" and review_action not in {"confirm", "correct"}:
+            errors.append("human_confirmed lineage requires confirm or correct")
+        if not _nonempty(item.get("human_note")):
+            errors.append("human_note must be non-empty")
+        supersedes_sha256 = item.get("supersedes_sha256")
+        if supersedes_sha256 is not None:
+            required_parent_roles.add("supersedes")
+            if not _digest(supersedes_sha256):
+                errors.append("supersedes_sha256 must be null or a SHA-256 digest")
     if set(parent_by_role) != required_parent_roles:
         errors.append(
             f"claim-lineage parent roles must be exactly {sorted(required_parent_roles)}"
@@ -3948,6 +3967,8 @@ def validate_claim_lineage(value: object) -> list[str]:
         role: (
             "claim-lineage"
             if role == "proposal"
+            else "claim-lineage"
+            if role == "supersedes"
             else "lineage-proposal-attempt"
             if role == "proposal-attempt"
             else "claim-lineage-proposals"
@@ -3957,6 +3978,10 @@ def validate_claim_lineage(value: object) -> list[str]:
         for role in required_parent_roles
     }
     _require_parent_artifacts(item, expected_parent_artifacts, errors)
+    if schema_version == 3 and item.get("supersedes_sha256") is not None:
+        supersedes_parent = parent_by_role.get("supersedes")
+        if isinstance(supersedes_parent, dict) and supersedes_parent.get("sha256") != item.get("supersedes_sha256"):
+            errors.append("supersedes parent hash must equal supersedes_sha256")
     if status == "proposed":
         if proposed_by != "model":
             errors.append("proposed lineage status is reserved for model proposals")
