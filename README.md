@@ -542,6 +542,9 @@ py -3 critic_runner.py ir review show-perspective $project
 # 另一 Perspective Lens 单独准备、单独归档、单独显示
 py -3 critic_runner.py ir review prepare-perspective $project `
   --lens contrastive-explanation
+
+# 从同一 Claim 并列查看所有当前 Rule/Perspective Lens，不做综合
+py -3 critic_runner.py ir review show-claim-lenses $project --claim C7
 ```
 
 每个 `PVn` 冻结完整 critic Markdown、Reviewed IR、非循环的 `perspective-review-plan.json`、prompt 和每次模型原始返回。`complete` 结果必须按 scope 对每条 Claim 恰好判断一次；FAIL / 实质 UNCERTAIN 确定性转成统一 `argument-finding`，PASS 留在可读 index 但不产生待办。Perspective Finding 直接进入现有 `ir adjudicate` 和 RevisionAction 流程，人工可以 accept / reject / defer；模型不能自动接受自己的批评。
@@ -562,7 +565,7 @@ perspective-reviews/PV1/
     └── findings/F0001.json ...
 ```
 
-同一 Claim 可以同时显示 Social Science FAIL、Individualism FAIL 和 Contrastivism PASS；系统不会把它们压成 `66% confidence`。Phase 4 当前仍不包含跨版本 lineage、Finding resolution、Citation verification 或 GUI。
+同一 Claim 可以同时显示 Social Science FAIL、Individualism FAIL 和 Contrastivism PASS；系统不会把它们压成 `66% confidence`。《结构的替身》C7 已完成一次真实 vertical-slice 运行，artifact hashes、框架分歧和暴露出的 cache lifecycle 修复记录在 [`docs/phase4-perspective-demo.md`](docs/phase4-perspective-demo.md)。Phase 4 当前仍不包含跨版本 lineage、Finding resolution、Citation verification 或 GUI。
 
 ### 兼容的低层 Argument IR 流程
 

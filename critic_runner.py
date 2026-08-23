@@ -60,6 +60,7 @@ from argument_perspective import (
     rebuild_perspective_reviews,
     show_perspective_review,
 )
+from argument_lens_view import render_claim_lenses
 from argument_adjudication import (
     append_claim_bundle_decisions,
     claim_bundle_status,
@@ -3292,6 +3293,12 @@ def ir_review_show_perspective_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def ir_review_show_claim_lenses_command(args: argparse.Namespace) -> int:
+    rendered = render_claim_lenses(args.project, args.claim)
+    print(rendered, end="" if rendered.endswith("\n") else "\n")
+    return 0
+
+
 def ir_review_triage_command(args: argparse.Namespace) -> int:
     mutation_values = (args.task, args.decision, args.action, args.note)
     if any(value is not None for value in mutation_values):
@@ -4647,6 +4654,20 @@ def parser() -> argparse.ArgumentParser:
     )
     ir_review_show_perspective_parser.set_defaults(
         func=ir_review_show_perspective_command
+    )
+
+    ir_review_show_claim_lenses_parser = ir_review_sub.add_parser(
+        "show-claim-lenses",
+        help="show current Rule and Perspective Lens outcomes without synthesis",
+    )
+    ir_review_show_claim_lenses_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    ir_review_show_claim_lenses_parser.add_argument(
+        "--claim", required=True, help="Claim ID such as C4 or V1:C4"
+    )
+    ir_review_show_claim_lenses_parser.set_defaults(
+        func=ir_review_show_claim_lenses_command
     )
 
     ir_review_triage_parser = ir_review_sub.add_parser(

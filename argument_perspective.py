@@ -600,6 +600,9 @@ def collect_perspective_results(
         raise
     if status == "valid":
         rebuild_perspective_attempt(paths, attempt_id)
+        from argument_adjudication import rebuild_adjudication_cache
+
+        rebuild_adjudication_cache(paths.workspace.root)
     return attempt_dir, record
 
 

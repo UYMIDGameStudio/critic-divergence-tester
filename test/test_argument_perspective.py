@@ -14,7 +14,9 @@ sys.path.insert(0, str(REPO_ROOT))
 
 import argument_contracts as contracts  # noqa: E402
 import argument_adjudication as adjudication  # noqa: E402
+import argument_lens_view as lens_view  # noqa: E402
 import argument_perspective as perspective  # noqa: E402
+import argument_review as rule_review  # noqa: E402
 import argument_workbench as workbench  # noqa: E402
 import critic_runner  # noqa: E402
 
@@ -169,6 +171,28 @@ class PerspectiveReviewTests(unittest.TestCase):
             self.assertTrue(decision_path.is_file())
             self.assertEqual(actions, [])
 
+            later, _ = perspective.prepare_perspective_review(
+                workspace.root,
+                lens_id="contrastive-explanation",
+                review_scope="claim",
+                claim_ids=["C1"],
+            )
+            later_result = self.results(later)
+            later_result["results"][0].update(
+                verdict="pass",
+                reason="The relevant contrast is explicit.",
+                framework_analysis="The complete framework identifies the stated foil.",
+                consequence="",
+            )
+            perspective.collect_perspective_results(
+                workspace.root,
+                self.encoded(later_result),
+                review_id=later.review_id,
+                method="file",
+                source_name="later-result.json",
+                producer_label="perspective-model",
+            )
+
             rendered, view = perspective.show_perspective_review(
                 workspace.root,
                 review_id="PV1",
@@ -280,6 +304,85 @@ class PerspectiveReviewTests(unittest.TestCase):
             self.assertEqual(stderr.getvalue(), "")
             self.assertIn("Perspective Review: PV1", stdout.getvalue())
             self.assertIn("Validation status: valid", stdout.getvalue())
+
+    def test_claim_lens_view_preserves_rule_and_perspective_disagreement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self.make_project(Path(temporary))
+            rule_paths, _ = rule_review.prepare_rule_review(
+                workspace.root,
+                REPO_ROOT / "ir" / "social-science-checks.json",
+                depth="core",
+            )
+            rule_review.collect_review_results(
+                workspace.root,
+                (FIXTURE / "review-results.json").read_bytes(),
+                review_id=rule_paths.review_id,
+                method="file",
+                source_name="review-results.json",
+                producer_label="rule-model",
+            )
+
+            individualist, _ = perspective.prepare_perspective_review(
+                workspace.root,
+                lens_id="methodological-individualism",
+                review_scope="claim",
+                claim_ids=["C1"],
+            )
+            perspective.collect_perspective_results(
+                workspace.root,
+                self.encoded(self.results(individualist)),
+                review_id=individualist.review_id,
+                method="file",
+                source_name="individualist.json",
+                producer_label="perspective-model",
+            )
+
+            contrastive, _ = perspective.prepare_perspective_review(
+                workspace.root,
+                lens_id="contrastive-explanation",
+                review_scope="claim",
+                claim_ids=["C1"],
+            )
+            contrastive_result = self.results(contrastive)
+            contrastive_result["results"][0].update(
+                verdict="pass",
+                reason="The Claim states the relevant contrast class.",
+                framework_analysis="The complete contrastive framework finds the foil explicit.",
+                consequence="",
+            )
+            perspective.collect_perspective_results(
+                workspace.root,
+                self.encoded(contrastive_result),
+                review_id=contrastive.review_id,
+                method="file",
+                source_name="contrastive.json",
+                producer_label="perspective-model",
+            )
+
+            rendered = lens_view.render_claim_lenses(workspace.root, "C1")
+            self.assertIn("social-science — Rule Lens", rendered)
+            self.assertIn("methodological-individualism — Perspective Lens", rendered)
+            self.assertIn("contrastive-explanation — Perspective Lens", rendered)
+            self.assertIn("### FAIL", rendered)
+            self.assertIn("### PASS", rendered)
+            self.assertIn("No vote, average, winner", rendered)
+
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(
+                    critic_runner.main(
+                        [
+                            "ir",
+                            "review",
+                            "show-claim-lenses",
+                            str(workspace.root),
+                            "--claim",
+                            "C1",
+                        ]
+                    ),
+                    0,
+                )
+            self.assertIn("Review Lenses — V1:C1", stdout.getvalue())
 
 
 if __name__ == "__main__":
