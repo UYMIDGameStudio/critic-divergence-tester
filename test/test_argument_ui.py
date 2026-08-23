@@ -90,6 +90,11 @@ class ArgumentUITests(unittest.TestCase):
             finding = next(item for item in view["findings"] if item["finding_id"] == finding_id)
             self.assertEqual(finding["decision"], "accept")
             self.assertEqual(finding["actions"][0]["action_type"], "narrow_claim")
+            trace = finding["provenance_trace"]
+            self.assertEqual(len(trace["source_sha256"]), 64)
+            self.assertEqual(len(trace["model_result_sha256"]), 64)
+            self.assertEqual(len(trace["adjudication_sha256"]), 64)
+            self.assertEqual(len(trace["action_sha256s"]), 1)
             paths = adjudication.human_review_paths(workspace)
             decision = json.loads(
                 next(paths.adjudications_dir.glob("AD*.json")).read_text(encoding="utf-8")
@@ -117,6 +122,44 @@ class ArgumentUITests(unittest.TestCase):
             self.assertEqual(view["findings"], [])
             self.assertEqual(view["dashboard"]["open_findings"], 0)
             self.assertTrue((workspace.version_dir / "reviews" / "RV1").is_dir())
+
+    def test_argument_history_connects_finding_action_lineage_and_resolution(self) -> None:
+        from test.test_argument_resolution import ArgumentResolutionTests
+        import argument_resolution as resolution
+
+        with tempfile.TemporaryDirectory() as temporary:
+            helper = ArgumentResolutionTests()
+            _, v2, finding_id = helper.make_chain(Path(temporary))
+            paths, _ = resolution.prepare_resolution(
+                v2, finding_id, from_version="V1", to_version="V2"
+            )
+            resolution.collect_resolution_results(
+                v2,
+                workbench.json_bytes(helper.result(paths, verdict="pass")),
+                resolution_id=paths.resolution_id,
+                method="file",
+                source_name="retest.json",
+                producer_label="fixture-retest-model",
+            )
+            resolution.append_resolution_decision(
+                v2,
+                resolution_id=paths.resolution_id,
+                decision="confirm",
+                reason="The original Lens now passes on the descendant Claim.",
+            )
+            view = ui.build_project_view(v2)
+            self.assertEqual(len(view["lineage"]), 1)
+            self.assertTrue(
+                all(
+                    proposal["human_decision"]["decision"] == "confirm"
+                    for proposal in view["lineage"][0]["proposals"]
+                )
+            )
+            history = view["resolutions"][0]
+            self.assertEqual(history["original_finding_id"], finding_id)
+            self.assertEqual(history["revision_actions"][0]["action_type"], "narrow_claim")
+            self.assertEqual(history["proposed_status"], "resolved")
+            self.assertEqual(history["human_decision"]["final_status"], "resolved")
 
     def test_http_api_requires_unpredictable_local_token(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

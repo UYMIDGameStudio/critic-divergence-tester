@@ -193,12 +193,13 @@ def _findings(workspace) -> tuple[list[dict[str, Any]], dict[str, int]]:
     latest = latest_adjudications(list_adjudications(paths))
     action_entries = list_revision_actions(paths)
     actions_by_adjudication: dict[str, list[dict[str, Any]]] = {}
-    for _, action, _ in action_entries:
+    for _, action, action_bytes in action_entries:
         actions_by_adjudication.setdefault(str(action["adjudication_id"]), []).append(
             {
                 "action_id": action["action_id"],
                 "action_type": action["action_type"],
                 "text": action["text"],
+                "sha256": sha256_bytes(action_bytes),
             }
         )
     try:
@@ -213,8 +214,21 @@ def _findings(workspace) -> tuple[list[dict[str, Any]], dict[str, int]]:
         finding_id = str(entry.value["finding_id"])
         adjudication_entry = latest.get(finding_id)
         adjudication = adjudication_entry[1] if adjudication_entry is not None else None
+        adjudication_bytes = adjudication_entry[2] if adjudication_entry is not None else None
         decision = str(adjudication["decision"]) if adjudication is not None else "open"
         counts[decision] += 1
+        version, _ = _read_json(workspace.version)
+        response_path = entry.review.results_dir / entry.attempt_id / "response.json"
+        lens_path = (
+            entry.review.library
+            if hasattr(entry.review, "library")
+            else entry.review.protocol
+        )
+        parent_by_role = {
+            str(parent.get("role")): parent
+            for parent in entry.value.get("parents", [])
+            if isinstance(parent, dict)
+        }
         rows.append(
             {
                 **entry.value,
@@ -226,6 +240,25 @@ def _findings(workspace) -> tuple[list[dict[str, Any]], dict[str, int]]:
                 "actions": []
                 if adjudication is None
                 else actions_by_adjudication.get(str(adjudication["adjudication_id"]), []),
+                "provenance_trace": {
+                    "source_sha256": version["source"]["sha256"],
+                    "reviewed_ir_sha256": parent_by_role.get("target-ir", {}).get("sha256"),
+                    "review_run_sha256": sha256_bytes(entry.review.record.read_bytes()),
+                    "lens_protocol_sha256": sha256_bytes(lens_path.read_bytes()),
+                    "model_result_sha256": sha256_bytes(response_path.read_bytes()),
+                    "finding_sha256": sha256_bytes(entry.data),
+                    "adjudication_sha256": None
+                    if adjudication_bytes is None
+                    else sha256_bytes(adjudication_bytes),
+                    "action_sha256s": []
+                    if adjudication is None
+                    else [
+                        item["sha256"]
+                        for item in actions_by_adjudication.get(
+                            str(adjudication["adjudication_id"]), []
+                        )
+                    ],
+                },
             }
         )
     return rows, counts
@@ -353,6 +386,20 @@ def _resolution_history(root: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for paths in list_resolutions(root):
         run, _ = _read_json(paths.record)
+        original_finding, _ = _read_json(paths.root / run["original_finding"]["relative_path"])
+        accepted_adjudication, _ = _read_json(
+            paths.root / run["accepted_adjudication"]["relative_path"]
+        )
+        revision_actions: list[dict[str, Any]] = []
+        for action_ref in run.get("revision_actions", []):
+            action, _ = _read_json(paths.root / action_ref["relative_path"])
+            revision_actions.append(
+                {
+                    "action_id": action["action_id"],
+                    "action_type": action["action_type"],
+                    "text": action["text"],
+                }
+            )
         proposal: dict[str, Any] | None = None
         derived = paths.root / "derived"
         candidates = sorted(derived.glob("attempt-*/resolution-proposal.json")) if derived.is_dir() else []
@@ -372,6 +419,14 @@ def _resolution_history(root: Path) -> list[dict[str, Any]]:
                 "to_version": paths.to_version,
                 "original_finding_id": run["original_finding_id"],
                 "descendant_claims": run["descendant_claims"],
+                "lens": run["lens"],
+                "original_finding": {
+                    "target_claim": original_finding["target_claim"],
+                    "verdict": original_finding["verdict"],
+                    "reason": original_finding["reason"],
+                },
+                "accepted_reason": accepted_adjudication["reason"],
+                "revision_actions": revision_actions,
                 "proposed_status": None if proposal is None else proposal.get("proposed_status"),
                 "human_decision": decisions[-1] if decisions else None,
             }
@@ -664,7 +719,26 @@ function render(){document.title=state.project.title+' · Argument Workbench';$(
 function renderManuscript(){$('manuscript').innerHTML=state.manuscript.map(l=>`<div class="line ${l.claim_ids.includes(selectedClaim)?'active':''}" data-claims="${l.claim_ids.join(',')}"><span class="ln">${l.number}</span><span>${esc(l.text)}${l.claim_ids.map(id=>`<button class="claim-chip" data-claim="${id}">${id}</button>`).join('')}</span></div>`).join('');document.querySelectorAll('[data-claim]').forEach(b=>b.onclick=()=>selectClaim(b.dataset.claim))}
 function nodeLink(id){const n=state.nodes[id];return n?`<div class="card"><span class="claim-id">${esc(id)}</span> ${esc(n.text)}</div>`:`<div class="card">${esc(id)}</div>`}
 function renderClaims(){$('claims').innerHTML=state.claims.map(c=>`<button class="${c.id===selectedClaim?'active':''}" data-select="${c.id}"><span class="claim-id">${c.id}</span> <span class="badge">${esc(c.role)}</span><div>${esc(c.text)}</div></button>`).join('');document.querySelectorAll('[data-select]').forEach(b=>b.onclick=()=>selectClaim(b.dataset.select));const c=state.claims.find(x=>x.id===selectedClaim);if(!c){$('claimDetail').innerHTML='<div class="empty">尚无 Claim</div>';return}const incoming=c.incoming.map(r=>nodeLink(r.from)+`<div class="relation">${esc(r.id)} · ${esc(r.type)} → ${esc(r.to)}</div>`).join('');const outgoing=c.outgoing.map(r=>nodeLink(r.to)+`<div class="relation">${esc(r.id)} · ${esc(r.from)} → ${esc(r.type)}</div>`).join('');$('claimDetail').innerHTML=`<div class="section"><h3>当前主张</h3><div class="card"><b>${esc(c.source_quote)}</b><p>${esc(c.text)}</p><span class="badge">${esc(c.types.join(' / '))}</span><span class="badge">${esc(c.methods.join(' / '))}</span><p class="muted">${esc(c.position)} · 位置为 deterministic；语义为 model-derived / human-corrected</p></div></div><div class="section"><h3>上游 · Supported by / Assumptions / Citations</h3>${incoming||'<div class="empty">没有上游关系</div>'}</div><div class="section"><h3>下游 · Supports / Qualifies / Contradicts</h3>${outgoing||'<div class="empty">没有下游关系</div>'}</div>`}
-function renderReview(){const lenses=[{id:'all',label:'全部 Lenses'},...state.lenses.map(l=>({id:l.review_id,label:l.id}))];$('lensTabs').innerHTML=lenses.map(l=>`<button data-lens="${esc(l.id)}" class="${l.id===selectedLens?'active':''}">${esc(l.label)}</button>`).join('');document.querySelectorAll('[data-lens]').forEach(b=>b.onclick=()=>{selectedLens=b.dataset.lens;renderReview()});const target=state.project.version_id+':'+selectedClaim;let outcomes=state.outcomes.filter(o=>o.target_claim===target&&(selectedLens==='all'||o.review_id===selectedLens));const findings=new Map(state.findings.map(f=>[f.finding_id,f]));let html=outcomes.map(o=>{const f=o.finding_id?findings.get(o.finding_id):null;const decision=f?.decision||null;const buttons=f&&state.permissions.can_adjudicate?`<div class="decision"><button data-decide="${esc(f.finding_id)}">${decision?'复议':'人工裁决'}</button></div>`:'';const actions=f?.actions?.map(a=>`<li>${esc(a.action_type)} · ${esc(a.text)}</li>`).join('')||'';return `<div class="card verdict-${esc(o.verdict)}"><div><span class="status">${esc(o.verdict)}</span> · <b>${esc(o.lens.id)}</b> ${o.check_id?'· '+esc(o.check_id):''}</div><p>${esc(o.reason)}</p>${o.consequence?`<p class="muted">影响：${esc(o.consequence)}</p>`:''}${f?`<div class="human">人工决定：${decision?esc(decision)+' · '+esc(f.human_reason):'尚未裁决'}</div>${actions?'<ul>'+actions+'</ul>':''}`:''}${buttons}</div>`}).join('');const cite=state.citations.filter(c=>(c.dependent_claims||[]).includes(selectedClaim)||state.relations.some(r=>r.from===c.id&&r.to===selectedClaim)).map(c=>`<div class="card"><b>${esc(c.id)} · ${esc(c.text)}</b><div class="${c.verification_state==='verified'?'deterministic':'model'}">${esc(c.verification_state)}</div></div>`).join('');const history=state.lineage.filter(x=>x.pair.includes(state.project.version_id)).flatMap(x=>x.proposals.filter(p=>(p.from_claims||[]).includes(target)||(p.to_claims||[]).includes(target))).map(p=>`<div class="card"><b>${esc(p.relation)}</b> · ${esc((p.from_claims||[]).join(', ')||'new')} → ${esc((p.to_claims||[]).join(', ')||'removed')}<div class="human">${p.human_decision?'人工：'+esc(p.human_decision.decision):'等待人工确认'}</div></div>`).join('');$('review').innerHTML=(html||'<div class="empty">这个 Claim 在所选 Lens 下没有结果</div>')+`<div class="section"><h3>Citation provenance</h3>${cite||'<div class="empty">没有绑定的 Citation provenance</div>'}</div><div class="section"><h3>Claim history</h3>${history||'<div class="empty">尚无跨版本 Lineage</div>'}</div>`;document.querySelectorAll('[data-decide]').forEach(b=>b.onclick=()=>openDecision(b.dataset.decide))}
+function provenanceTrace(f){const p=f.provenance_trace;const row=(label,value)=>value?`<div class="relation">${label} · ${esc(value)}</div>`:'';return `<details><summary>完整 provenance</summary>${row('Source',p.source_sha256)}${row('Reviewed IR',p.reviewed_ir_sha256)}${row('Review run',p.review_run_sha256)}${row('Lens protocol',p.lens_protocol_sha256)}${row('Model result',p.model_result_sha256)}${row('Finding',p.finding_sha256)}${row('Human decision',p.adjudication_sha256)}${(p.action_sha256s||[]).map((x,i)=>row('RevisionAction '+(i+1),x)).join('')}</details>`}
+function renderReview(){
+  const lenses=[{id:'all',label:'全部 Lenses'},...state.lenses.map(l=>({id:l.review_id,label:l.id}))];
+  $('lensTabs').innerHTML=lenses.map(l=>`<button data-lens="${esc(l.id)}" class="${l.id===selectedLens?'active':''}">${esc(l.label)}</button>`).join('');
+  document.querySelectorAll('[data-lens]').forEach(b=>b.onclick=()=>{selectedLens=b.dataset.lens;renderReview()});
+  const target=state.project.version_id+':'+selectedClaim;
+  const outcomes=state.outcomes.filter(o=>o.target_claim===target&&(selectedLens==='all'||o.review_id===selectedLens));
+  const findings=new Map(state.findings.map(f=>[f.finding_id,f]));
+  const html=outcomes.map(o=>{
+    const f=o.finding_id?findings.get(o.finding_id):null,decision=f?.decision||null;
+    const buttons=f&&state.permissions.can_adjudicate?`<div class="decision"><button data-decide="${esc(f.finding_id)}">${decision?'复议':'人工裁决'}</button></div>`:'';
+    const actions=f?.actions?.map(a=>`<li>${esc(a.action_type)} · ${esc(a.text)}</li>`).join('')||'';
+    return `<div class="card verdict-${esc(o.verdict)}"><div><span class="status">${esc(o.verdict)}</span> · <b>${esc(o.lens.id)}</b> ${o.check_id?'· '+esc(o.check_id):''}</div><p>${esc(o.reason)}</p>${o.basis_refs?`<p class="muted">依据：${esc(o.basis_refs.join(', '))}</p>`:''}${o.consequence?`<p class="muted">影响：${esc(o.consequence)}</p>`:''}${f?`<div class="human">人工决定：${decision?esc(decision)+' · '+esc(f.human_reason):'尚未裁决'}</div>${actions?'<ul>'+actions+'</ul>':''}${provenanceTrace(f)}`:''}${buttons}</div>`
+  }).join('');
+  const cite=state.citations.filter(c=>(c.dependent_claims||[]).includes(selectedClaim)||state.relations.some(r=>r.from===c.id&&r.to===selectedClaim)).map(c=>`<div class="card"><b>${esc(c.id)} · ${esc(c.text)}</b><div class="${c.verification_state==='verified'?'deterministic':'model'}">${esc(c.verification_state)}</div></div>`).join('');
+  const history=state.lineage.filter(x=>x.pair.includes(state.project.version_id)).flatMap(x=>x.proposals.filter(p=>(p.from_claims||[]).includes(target)||(p.to_claims||[]).includes(target))).map(p=>`<div class="card"><b>${esc(p.relation)}</b> · ${esc((p.from_claims||[]).join(', ')||'new')} → ${esc((p.to_claims||[]).join(', ')||'removed')}<div class="human">${p.human_decision?'人工：'+esc(p.human_decision.decision)+' · '+esc(p.human_decision.human_note):'等待人工确认'}</div></div>`).join('');
+  const resolutions=state.resolutions.filter(r=>(r.descendant_claims||[]).includes(target)||r.original_finding.target_claim===target).map(r=>{const final=r.human_decision?.final_status||'等待人工确认';const actions=r.revision_actions.map(a=>`<li>${esc(a.action_type)} · ${esc(a.text)}</li>`).join('');return `<div class="card"><b>${esc(r.resolution_id)} · ${esc(final)}</b><p>原问题：${esc(r.original_finding.reason)}</p><p class="muted">原 Lens：${esc(r.lens.id)}${r.lens.check_id?' · '+esc(r.lens.check_id):''}</p>${actions?'<ul>'+actions+'</ul>':''}<p>${esc((r.descendant_claims||[]).join(', ')||'removed')} · 重测提案 ${esc(r.proposed_status||'pending')}</p>${r.human_decision?`<div class="human">人工确认：${esc(r.human_decision.reason)}</div>`:''}</div>`}).join('');
+  $('review').innerHTML=(html||'<div class="empty">这个 Claim 在所选 Lens 下没有当前结果</div>')+`<div class="section"><h3>Citation provenance</h3>${cite||'<div class="empty">没有绑定的 Citation provenance</div>'}</div><div class="section"><h3>Claim Lineage</h3>${history||'<div class="empty">尚无跨版本 Lineage</div>'}</div><div class="section"><h3>Finding Resolution</h3>${resolutions||'<div class="empty">没有继承的旧 Finding</div>'}</div>`;
+  document.querySelectorAll('[data-decide]').forEach(b=>b.onclick=()=>openDecision(b.dataset.decide));
+}
 function selectClaim(id){selectedClaim=id;renderManuscript();renderClaims();renderReview();document.querySelector(`.line[data-claims*="${CSS.escape(id)}"]`)?.scrollIntoView({behavior:'smooth',block:'center'})}
 function openDecision(id){pendingFinding=id;const f=state.findings.find(x=>x.finding_id===id);$('decisionTitle').textContent=(f?.decision?'复议 ':'裁决 ')+id;$('decisionValue').value=f?.decision||'accept';$('decisionReason').value=f?.human_reason||'';$('actionText').value='';$('decisionError').innerHTML='';toggleAction();$('decisionDialog').showModal()}
 function toggleAction(){$('actionFields').style.display=$('decisionValue').value==='accept'?'block':'none'}$('decisionValue').onchange=toggleAction;$('version').onchange=()=>{selectedClaim=null;load($('version').value).catch(showFatal)};

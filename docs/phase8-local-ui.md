@@ -23,7 +23,9 @@ The default view is three linked panes:
 3. **Review** shows every Rule and Perspective Lens outcome for the Claim,
    preserving PASS/FAIL/UNCERTAIN disagreements. It also shows the current
    human decision, RevisionActions, Citation verification state and Claim
-   Lineage.
+   Lineage. For descendant Claims it reconstructs the complete old Finding →
+   accepted action → confirmed Lineage → original-Lens retest → proposed and
+   human-confirmed resolution chain.
 
 The header is a project dashboard: current draft, Claim count, open/deferred/
 accepted Findings, human-confirmed resolved Findings and unverified Citations.
@@ -35,6 +37,12 @@ revision action. The browser delegates this operation to the existing
 `append_finding_decision` service, producing the same immutable
 `finding-adjudication` and `revision-action` artifacts as the line-oriented
 workflow. The UI has no private alternative database.
+
+Every actionable Finding has an expandable provenance trace containing the
+exact source, Reviewed IR, Review run, Lens protocol, raw model result,
+Finding, human adjudication and RevisionAction SHA-256 values. This is a
+readable projection of existing parent bindings, not a second provenance
+claim.
 
 ## Local security boundary
 
@@ -61,6 +69,8 @@ Automated tests additionally prove that:
 - the projection refuses an invalid project before serving it;
 - model outcomes and human decisions remain separately labelled;
 - a browser adjudication uses the existing append-only contract;
+- a multi-version view connects the original Finding, RevisionAction,
+  human-confirmed Lineage, original-Lens retest and final Resolution;
 - the HTTP API rejects requests without the unpredictable local token;
 - non-loopback listeners are refused; and
 - the application shell contains no quality score.
