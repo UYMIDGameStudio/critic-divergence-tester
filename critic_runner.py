@@ -63,6 +63,10 @@ from argument_perspective import (
     show_perspective_review,
 )
 from argument_lens_view import render_claim_lenses
+from argument_versioning import (
+    build_structural_diff,
+    rebuild_structural_diffs,
+)
 from argument_adjudication import (
     append_claim_bundle_decisions,
     claim_bundle_status,
@@ -3014,6 +3018,18 @@ def ir_import_version_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def ir_diff_versions_command(args: argparse.Namespace) -> int:
+    paths, changed = build_structural_diff(
+        args.project,
+        from_version=args.from_version,
+        to_version=args.to_version,
+    )
+    print(f"Structural diff: {paths.record}")
+    print(f"Readable diff: {paths.markdown}")
+    print("Structural diff generated." if changed else "Structural diff already current.")
+    return 0
+
+
 def _read_ir_paste_bytes() -> bytes:
     print(
         "Paste the model's pure Argument IR JSON. On a new line enter "
@@ -3107,6 +3123,7 @@ def ir_rebuild_command(args: argparse.Namespace) -> int:
     perspective_outputs, perspectives_changed = rebuild_perspective_reviews(
         args.project
     )
+    diff_outputs, diffs_changed = rebuild_structural_diffs(args.project)
     triage_outputs, triage_changed = rebuild_status_triages(args.project)
     adjudication_outputs, adjudications_changed = rebuild_adjudication_cache(
         args.project
@@ -3116,6 +3133,8 @@ def ir_rebuild_command(args: argparse.Namespace) -> int:
         print(f"Claim review: {output}")
     for output in perspective_outputs:
         print(f"Perspective review: {output}")
+    for output in diff_outputs:
+        print(f"Structural diff: {output}")
     for output in triage_outputs:
         print(f"Status triage: {output}")
     for output in adjudication_outputs:
@@ -3125,6 +3144,7 @@ def ir_rebuild_command(args: argparse.Namespace) -> int:
         if changed
         or reviews_changed
         or perspectives_changed
+        or diffs_changed
         or triage_changed
         or adjudications_changed
         else "Derived artifacts already current."
@@ -4477,6 +4497,21 @@ def parser() -> argparse.ArgumentParser:
         help="parent Version ID (default: current latest; branching is not yet supported)",
     )
     ir_import_version_parser.set_defaults(func=ir_import_version_command)
+
+    ir_diff_versions_parser = ir_sub.add_parser(
+        "diff-versions",
+        help="derive exact source/IR structural changes without semantic lineage",
+    )
+    ir_diff_versions_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    ir_diff_versions_parser.add_argument(
+        "--from-version", help="parent Version ID (default: parent of to-version)"
+    )
+    ir_diff_versions_parser.add_argument(
+        "--to-version", help="descendant Version ID (default: latest)"
+    )
+    ir_diff_versions_parser.set_defaults(func=ir_diff_versions_command)
 
     ir_collect_parser = ir_sub.add_parser(
         "collect",

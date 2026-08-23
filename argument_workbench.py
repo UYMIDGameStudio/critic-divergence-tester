@@ -1497,6 +1497,15 @@ def verify_project_versions(project_dir: WorkspacePaths | Path | str) -> list[st
         if previous_source_hash is not None and source_hash == previous_source_hash:
             errors.append(f"{version_id}: source bytes duplicate its parent version")
         previous_source_hash = str(source_hash)
+    try:
+        from argument_versioning import verify_structural_diffs
+
+        errors.extend(
+            f"version diffs: {error}"
+            for error in verify_structural_diffs(root_paths)
+        )
+    except ImportError as exc:
+        errors.append(f"version diffs: cannot load verifier: {exc}")
     return errors
 
 

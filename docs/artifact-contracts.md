@@ -39,6 +39,7 @@ Parent hashes always cover the exact file bytes on disk. Artifact objects do not
 | `perspective-result-attempt` | immutable | One exact model response to a Perspective Lens run and its reproducible validation outcome |
 | `perspective-lens-results` | immutable model payload | At most one holistic framework judgment per selected Claim, with model-derived basis and analysis |
 | `perspective-review-index` | derived-replaceable | Claim-grouped Perspective Lens outcomes and exact links to normalized actionable Findings |
+| `structural-version-diff` | derived-replaceable | Exact source-line, node-content, and relation-fingerprint changes between adjacent Reviewed IR versions; never semantic identity |
 | `review-status-triage` | append-only | One human acknowledgement or rejection of a model-proposed non-evaluated status, with an explicit follow-up action |
 | `review-status-triage-index` | derived-replaceable | Reproducible open/acknowledged/rejected execution-status queue binding every triage event |
 | `direct-review-baseline` | immutable | Exact direct-chat prompt/response, manuscript binding, provider/model identity, declared session conditions, and elapsed-time evidence for Gate A comparison |
@@ -58,6 +59,8 @@ Parent hashes always cover the exact file bytes on disk. Artifact objects do not
 An accepted adjudication is incomplete unless the same validated bundle contains at least one RevisionAction linked to its exact hash. ClaimLineage uses arrays on both sides so split and merge are native rather than encoded as fake one-to-one identities. A model proposal is an immutable `status=proposed` artifact; a human confirmation or rejection is a second artifact that binds the exact proposal hash. Human-originated lineage may be confirmed directly but is still marked `proposed_by=human`.
 
 DocumentVersion IDs are version-local sequence labels, not Claim identity. `V1` binds the immutable Document; each later version additionally binds the exact previous `document-version.json` bytes through a `parent-version` parent and records the corresponding `parent_version` ID. The Phase 5 application currently enforces a continuous linear chain and rejects identical adjacent source bytes. Every version owns an independent Raw/Correction/Reviewed/Review lifecycle; selecting the latest version never relocates or rewrites an earlier directory.
+
+`structural-version-diff` binds both DocumentVersion records, both Reviewed IR records, and both compatible Argument IR payloads. Source hunks come from exact line comparison. Node matching first uses exact content excluding only local ID and normalized position, then an exact `kind + text + source_quote` anchor to expose changed classification fields. Relations use their type plus exact endpoint anchor fingerprints. These comparisons are deterministic equality tests, not Claim correspondence proposals: changed wording remains removed + added until a separate semantic lineage artifact is proposed and confirmed.
 
 ## Field provenance in Reviewed IR
 

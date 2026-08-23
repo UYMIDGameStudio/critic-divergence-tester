@@ -311,6 +311,9 @@ py -3 critic_runner.py ir collect $project --paste --producer-label "你使用�
 # 3. 浏览并校正 Claim / Evidence / Assumption / Citation / relation
 py -3 critic_runner.py ir inspect $project
 
+# V2 Reviewed IR 完成后生成精确 source/IR structural diff
+py -3 critic_runner.py ir diff-versions $project
+
 # 4. 随时复核全部父哈希和确定性派生产物
 py -3 critic_runner.py ir verify-project $project
 ```
@@ -583,7 +586,9 @@ py -3 critic_runner.py ir inspect $project
 py -3 critic_runner.py ir verify-project $project
 ```
 
-新版本必须与当前 parent 的原稿精确字节不同，并通过 `parent-version` SHA-256 绑定前一份 `document-version.json`。当前产品只允许线性 `V1 → V2 → V3`，尚不开放分支版本；这避免在 lineage 与 Finding resolution contract 稳定前暗中引入未定义的合并语义。导入只创建版本和 source-bound extraction prompt，不会复制 V1 的 Claim ID，也不会声称新旧 Claim 相同。Structural Diff、模型 lineage proposal 和人工确认在后续 Phase 5 增量中生成。
+新版本必须与当前 parent 的原稿精确字节不同，并通过 `parent-version` SHA-256 绑定前一份 `document-version.json`。当前产品只允许线性 `V1 → V2 → V3`，尚不开放分支版本；这避免在 lineage 与 Finding resolution contract 稳定前暗中引入未定义的合并语义。导入只创建版本和 source-bound extraction prompt，不会复制 V1 的 Claim ID，也不会声称新旧 Claim 相同。
+
+`diff-versions` 逐行比较 source bytes，并以排除版本局部 ID/位置的精确内容 fingerprint 比较 Claims、Evidence、Assumptions、Citations 和 relations。它只报告 exact unchanged、相同文字锚点下的字段变化、removed 和 added；文本改变的 `V1:C4` 与 `V2:C7` 在此阶段仍显示为 removed + added。这个结果明确标为 deterministic structural comparison，不会越权宣布 semantic identity。可读结果位于 `documents/D1/version-diffs/V1--V2/structural-diff.md`。模型 lineage proposal 和人工确认在后续 Phase 5 增量中生成。
 
 ### 兼容的低层 Argument IR 流程
 

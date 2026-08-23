@@ -1287,6 +1287,268 @@ def validate_perspective_review_index(value: object) -> list[str]:
     return errors
 
 
+def _validate_structural_node_entry(
+    value: object,
+    label: str,
+    errors: list[str],
+    *,
+    status: str,
+) -> None:
+    if not isinstance(value, dict):
+        errors.append(f"{label} must be an object")
+        return
+    if status == "exact_unchanged":
+        keys = {"kind", "from_ref", "to_ref", "fingerprint"}
+    elif status == "literal_anchor_modified":
+        keys = {
+            "kind",
+            "from_ref",
+            "to_ref",
+            "anchor_fingerprint",
+            "changed_fields",
+        }
+    else:
+        keys = {"kind", "ref", "fingerprint"}
+    _strict_keys(value, keys, label, errors)
+    if value.get("kind") not in {"claim", "evidence", "assumption", "citation"}:
+        errors.append(f"{label}.kind must identify an Argument IR node kind")
+    if status in {"exact_unchanged", "literal_anchor_modified"}:
+        for field in ("from_ref", "to_ref"):
+            if not isinstance(value.get(field), str) or re.fullmatch(
+                r"V[1-9][0-9]*:[CEAZ][1-9][0-9]*", str(value.get(field))
+            ) is None:
+                errors.append(f"{label}.{field} must be a version-qualified node")
+        digest_field = (
+            "fingerprint" if status == "exact_unchanged" else "anchor_fingerprint"
+        )
+        if not _digest(value.get(digest_field)):
+            errors.append(f"{label}.{digest_field} must be a SHA-256 digest")
+        if status == "literal_anchor_modified":
+            changed = _string_list(
+                value.get("changed_fields"),
+                f"{label}.changed_fields",
+                errors,
+                allow_empty=False,
+            )
+            if len(changed) != len(set(changed)):
+                errors.append(f"{label}.changed_fields must not repeat fields")
+    else:
+        if not isinstance(value.get("ref"), str) or re.fullmatch(
+            r"V[1-9][0-9]*:[CEAZ][1-9][0-9]*", str(value.get("ref"))
+        ) is None:
+            errors.append(f"{label}.ref must be a version-qualified node")
+        if not _digest(value.get("fingerprint")):
+            errors.append(f"{label}.fingerprint must be a SHA-256 digest")
+
+
+def _validate_structural_relation_entry(
+    value: object,
+    label: str,
+    errors: list[str],
+    *,
+    paired: bool,
+) -> None:
+    if not isinstance(value, dict):
+        errors.append(f"{label} must be an object")
+        return
+    keys = {"from_ref", "to_ref", "fingerprint"} if paired else {"ref", "fingerprint"}
+    _strict_keys(value, keys, label, errors)
+    for field in (("from_ref", "to_ref") if paired else ("ref",)):
+        if not isinstance(value.get(field), str) or re.fullmatch(
+            r"V[1-9][0-9]*:R[1-9][0-9]*", str(value.get(field))
+        ) is None:
+            errors.append(f"{label}.{field} must be a version-qualified relation")
+    if not _digest(value.get("fingerprint")):
+        errors.append(f"{label}.fingerprint must be a SHA-256 digest")
+
+
+def validate_structural_version_diff(value: object) -> list[str]:
+    errors, item = _validate_base(
+        value,
+        artifact="structural-version-diff",
+        lifecycle="derived-replaceable",
+        extra_keys={
+            "diff_id",
+            "document_id",
+            "from_version",
+            "to_version",
+            "source_diff",
+            "node_diff",
+            "relation_diff",
+            "summary",
+            "payload",
+            "field_provenance",
+        },
+    )
+    if item is None:
+        return errors
+    _require_origin(item, {"deterministic"}, "structural-version-diff", errors)
+    roles = {
+        "from-version": "document-version",
+        "to-version": "document-version",
+        "from-reviewed": "reviewed-argument-ir",
+        "to-reviewed": "reviewed-argument-ir",
+        "from-ir": "argument-ir",
+        "to-ir": "argument-ir",
+    }
+    _require_parent_roles(item, set(roles), errors)
+    _require_parent_artifacts(item, roles, errors)
+    from_version = item.get("from_version")
+    to_version = item.get("to_version")
+    for field, version in (("from_version", from_version), ("to_version", to_version)):
+        if not isinstance(version, str) or re.fullmatch(r"V[1-9][0-9]*", version) is None:
+            errors.append(f"{field} must be V1..Vn")
+    if from_version == to_version:
+        errors.append("structural diff versions must be distinct")
+    if item.get("diff_id") != f"{from_version}--{to_version}":
+        errors.append("diff_id must be <from_version>--<to_version>")
+    if not _nonempty(item.get("document_id")):
+        errors.append("document_id must be non-empty")
+
+    source_diff = item.get("source_diff")
+    if not isinstance(source_diff, dict):
+        errors.append("source_diff must be an object")
+    else:
+        _strict_keys(
+            source_diff,
+            {"from_sha256", "to_sha256", "changed", "hunks"},
+            "source_diff",
+            errors,
+        )
+        for field in ("from_sha256", "to_sha256"):
+            if not _digest(source_diff.get(field)):
+                errors.append(f"source_diff.{field} must be a SHA-256 digest")
+        if not isinstance(source_diff.get("changed"), bool):
+            errors.append("source_diff.changed must be boolean")
+        hunks = source_diff.get("hunks")
+        if not isinstance(hunks, list):
+            errors.append("source_diff.hunks must be an array")
+        else:
+            for index, hunk in enumerate(hunks):
+                label = f"source_diff.hunks[{index}]"
+                if not isinstance(hunk, dict):
+                    errors.append(f"{label} must be an object")
+                    continue
+                _strict_keys(
+                    hunk,
+                    {
+                        "tag",
+                        "from_start_index",
+                        "from_end_index",
+                        "to_start_index",
+                        "to_end_index",
+                        "from_lines",
+                        "to_lines",
+                    },
+                    label,
+                    errors,
+                )
+                if hunk.get("tag") not in {"replace", "delete", "insert"}:
+                    errors.append(f"{label}.tag must be replace/delete/insert")
+                for field in (
+                    "from_start_index",
+                    "from_end_index",
+                    "to_start_index",
+                    "to_end_index",
+                ):
+                    raw = hunk.get(field)
+                    if not isinstance(raw, int) or isinstance(raw, bool) or raw < 0:
+                        errors.append(f"{label}.{field} must be a non-negative integer")
+                for field in ("from_lines", "to_lines"):
+                    lines = hunk.get(field)
+                    if not isinstance(lines, list) or any(
+                        not isinstance(line, str) for line in lines
+                    ):
+                        errors.append(f"{label}.{field} must be an array of strings")
+            if source_diff.get("changed") != bool(hunks):
+                errors.append("source_diff.changed must equal whether hunks exist")
+
+    node_diff = item.get("node_diff")
+    node_counts = {
+        "exact_unchanged": 0,
+        "literal_anchor_modified": 0,
+        "removed": 0,
+        "added": 0,
+    }
+    evidence_added = 0
+    if not isinstance(node_diff, dict):
+        errors.append("node_diff must be an object")
+    else:
+        _strict_keys(node_diff, set(node_counts), "node_diff", errors)
+        for status in node_counts:
+            entries = node_diff.get(status)
+            if not isinstance(entries, list):
+                errors.append(f"node_diff.{status} must be an array")
+                continue
+            node_counts[status] = len(entries)
+            for index, entry in enumerate(entries):
+                _validate_structural_node_entry(
+                    entry,
+                    f"node_diff.{status}[{index}]",
+                    errors,
+                    status=status,
+                )
+                if status == "added" and isinstance(entry, dict) and entry.get("kind") == "evidence":
+                    evidence_added += 1
+
+    relation_diff = item.get("relation_diff")
+    relation_counts = {"exact_unchanged": 0, "removed": 0, "added": 0}
+    if not isinstance(relation_diff, dict):
+        errors.append("relation_diff must be an object")
+    else:
+        _strict_keys(relation_diff, set(relation_counts), "relation_diff", errors)
+        for status in relation_counts:
+            entries = relation_diff.get(status)
+            if not isinstance(entries, list):
+                errors.append(f"relation_diff.{status} must be an array")
+                continue
+            relation_counts[status] = len(entries)
+            for index, entry in enumerate(entries):
+                _validate_structural_relation_entry(
+                    entry,
+                    f"relation_diff.{status}[{index}]",
+                    errors,
+                    paired=status == "exact_unchanged",
+                )
+
+    summary = item.get("summary")
+    expected_summary = {
+        "source_hunks": len(source_diff.get("hunks", [])) if isinstance(source_diff, dict) and isinstance(source_diff.get("hunks"), list) else 0,
+        "nodes_exact_unchanged": node_counts["exact_unchanged"],
+        "nodes_literal_anchor_modified": node_counts["literal_anchor_modified"],
+        "nodes_removed": node_counts["removed"],
+        "nodes_added": node_counts["added"],
+        "evidence_added": evidence_added,
+        "relations_exact_unchanged": relation_counts["exact_unchanged"],
+        "relations_removed": relation_counts["removed"],
+        "relations_added": relation_counts["added"],
+    }
+    if not isinstance(summary, dict):
+        errors.append("summary must be an object")
+    else:
+        _strict_keys(summary, set(expected_summary), "summary", errors)
+        if summary != expected_summary:
+            errors.append("summary must equal deterministic diff counts")
+    _validate_bound_file(item.get("payload"), "payload", errors)
+    provenance = item.get("field_provenance")
+    fields = {"source_diff", "node_diff", "relation_diff", "summary", "payload"}
+    if not isinstance(provenance, dict):
+        errors.append("field_provenance must be an object")
+    else:
+        _strict_keys(provenance, fields, "field_provenance", errors)
+        for field in fields:
+            entry = provenance.get(field)
+            if not isinstance(entry, dict):
+                errors.append(f"field_provenance.{field} must be an object")
+                continue
+            _strict_keys(entry, {"origin", "source"}, f"field_provenance.{field}", errors)
+            if entry.get("origin") != "deterministic":
+                errors.append(f"field_provenance.{field}.origin must be deterministic")
+            if not _nonempty(entry.get("source")):
+                errors.append(f"field_provenance.{field}.source must be non-empty")
+    return errors
+
+
 def validate_direct_review_baseline(value: object) -> list[str]:
     schema_version = value.get("schema_version") if isinstance(value, dict) else None
     extra_keys = {
@@ -3322,6 +3584,7 @@ VALIDATORS: dict[str, Callable[[object], list[str]]] = {
     "perspective-result-attempt": validate_perspective_result_attempt,
     "perspective-lens-results": validate_perspective_lens_results,
     "perspective-review-index": validate_perspective_review_index,
+    "structural-version-diff": validate_structural_version_diff,
     "direct-review-baseline": validate_direct_review_baseline,
     "gate-a-session-start": validate_gate_a_session_start,
     "gate-a-work-session": validate_gate_a_work_session,
