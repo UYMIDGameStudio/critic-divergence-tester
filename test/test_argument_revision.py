@@ -260,6 +260,29 @@ class ArgumentRevisionTests(unittest.TestCase):
             action_path.write_text(json.dumps(value), encoding="utf-8")
             self.assertEqual(project_state(project)["stage"], "read_only")
 
+    def test_deleted_integrity_policy_with_receipts_forces_read_only_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = self.project(Path(temp_dir)); self.atomize(project)
+            append_quick_finding_decision(project, "F1", decision="reject", reason="Decline")
+            marker = workspace_paths(project).document_dir / "revision-integrity.json"
+            marker.unlink()
+            errors = verify_revision_workflow(project)
+            self.assertTrue(any("integrity policy missing" in error for error in errors))
+            self.assertEqual(project_state(project)["stage"], "read_only")
+
+    def test_decision_tamper_and_deleted_integrity_policy_cannot_downgrade_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = self.project(Path(temp_dir)); self.atomize(project)
+            decision_id = append_quick_finding_decision(project, "F1", decision="reject", reason="Original reason")
+            decision_path = workspace_paths(project).version_dir / "quick-revision" / "finding-decisions" / f"{decision_id}.json"
+            value = json.loads(decision_path.read_text(encoding="utf-8")); value["reason"] = "Silently rewritten"
+            decision_path.write_text(json.dumps(value), encoding="utf-8")
+            (workspace_paths(project).document_dir / "revision-integrity.json").unlink()
+            self.assertEqual(project_state(project)["stage"], "read_only")
+            with self.assertRaisesRegex(WorkbenchError, "integrity policy missing"):
+                append_quick_finding_decision(project, "F1", decision="defer", reason="Must not recreate marker")
+            self.assertFalse((workspace_paths(project).document_dir / "revision-integrity.json").exists())
+
     def test_tampered_hunk_decision_forces_read_only_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             project = self.project(Path(temp_dir)); self.atomize(project)

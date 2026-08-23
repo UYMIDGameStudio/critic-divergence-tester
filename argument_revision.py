@@ -117,10 +117,19 @@ def _integrity_marker(root: Path) -> Path:
     return root / "documents" / "D1" / "revision-integrity.json"
 
 
+def _integrity_receipts_exist(root: Path) -> bool:
+    """Treat any receipt directory as evidence that integrity tracking was enabled."""
+    return any(path.is_dir() or path.is_symlink() for path in root.rglob(".integrity"))
+
+
 def _ensure_integrity_marker(root: Path) -> dict[str, Any]:
     marker_path = _integrity_marker(root)
     if marker_path.is_file() and not marker_path.is_symlink():
         return _read_json(marker_path)[0]
+    if marker_path.exists() or marker_path.is_symlink():
+        raise WorkbenchError("integrity policy must be a regular file")
+    if _integrity_receipts_exist(root):
+        raise WorkbenchError("integrity policy missing; existing receipts require explicit repair or migration")
     marker = {
         "artifact_type": "revision-integrity-policy",
         "schema_version": 1,
@@ -963,6 +972,10 @@ def verify_revision_workflow(project_dir: Path | str) -> list[str]:
                 errors.append("revision-integrity.json: invalid integrity policy")
         except (OSError, WorkbenchError) as exc:
             errors.append(f"revision-integrity.json: {exc}")
+    elif marker_path.is_symlink():
+        errors.append("revision-integrity.json: integrity policy must be a regular file")
+    elif _integrity_receipts_exist(root):
+        errors.append("revision-integrity.json: integrity policy missing")
 
     for version_id in list_version_ids(root):
         _, version, _, manuscript = _source(root, version_id)
