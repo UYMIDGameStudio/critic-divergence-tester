@@ -2,30 +2,53 @@
 
 [![Tests](https://github.com/UYMIDGameStudio/critic-divergence-tester/actions/workflows/tests.yml/badge.svg)](https://github.com/UYMIDGameStudio/critic-divergence-tester/actions/workflows/tests.yml)
 
-一个 **local-first、模型无关、零第三方依赖的 Argument Workbench / Argument Version Control 研究原型**。它管理的核心不是聊天或 AI report，而是 Raw IR、人工校正、Reviewed IR、Claim Findings、人工裁决与 RevisionAction 的可审计历史。Divergence 和旧 critic runner 仍保留在 Evaluation / Advanced 中，不是默认写作入口。
+一个 **local-first、模型无关、零第三方依赖的论证工作台**：普通 AI 给你一篇“改好了”的文章；Argument Workbench 让每一处修改都能追溯到审查发现、由你逐项批准、可以撤销，并能在不可变新版本上复查。
 
 它不需要 Claude Code 或 API key。网页聊天、CLI、本地模型都只是可替换的提取／审查执行器；模型负责提出结构和 Finding，人负责校正、接受、拒绝或暂缓，确定性程序负责 provenance、hash binding 和可重建派生物。
 
 这个项目也不是“让多个 agent 投票得出正确答案”。它做的是 philosophical pressure-test：让不同前提的敌对读者分别攻击同一份稿件，然后由作者本人判断哪些攻击真的改变论证。
 
+默认入口只有一个：
+
+```powershell
+py -3 critic_runner.py app
+```
+
+也可以直接带入稿件；macOS/Linux 将 `py -3` 换成 `python3`：
+
+```powershell
+py -3 critic_runner.py app ".\结构的替身.md"
+```
+
+应用会自动打开本机页面。创建项目后，页面始终只突出一个下一步：导入现有审查报告 → 复制模型无关提示词 → 确认原子发现 → 只为已接受问题生成修改提案 → 逐 hunk 接受、拒绝或手改 → 生成不可变 V2 → 按原标准复查 → 导出。用户不需要打开 JSON 或拼 artifact 路径。
+
 ```mermaid
 flowchart LR
-    A["Manuscript"] --> B["Raw Argument IR"]
-    B --> C["Human Corrections"]
-    C --> D["Reviewed IR"]
-    D --> E["Scoped Rule Lens"]
-    D --> P["Perspective Lenses"]
-    E --> F["Claim Findings"]
-    P --> F
-    F --> G["Human Adjudication"]
-    G --> H["Revision Plan"]
+    A["V1 原稿"] --> B["审查报告"]
+    B --> C["原子 Findings"]
+    C --> D["人工选择"]
+    D --> E["受约束修改提案"]
+    E --> F["逐 hunk 审批"]
+    F --> G["不可变 V2"]
+    G --> H["原标准复查与导出"]
 ```
 
 所有模型语义都明确标为 model-derived；Raw response 不覆盖，人工 correction 追加保存，Reviewed IR / map / plan 可确定性重建。产品不生成论文总分，也不以 Agent 投票替代作者判断。
 
-## Argument Workbench：第一次使用
+## 第一次使用：完整修稿闭环
 
-下面是默认产品流程。把 `draft.md` 换成你的 UTF-8 稿件路径：
+应用内不绑定模型或 API。需要 AI 时会显示可一键复制的提示词和大文本框；把提示词交给任意 AI，再粘贴返回即可。无效返回仍会保存，并提供可复制的修复提示词。
+
+本地项目库默认位于：
+
+- Windows：`%LOCALAPPDATA%\ArgumentWorkbench\projects`
+- macOS/Linux：`$XDG_DATA_HOME/argument-workbench/projects`，未设置时为 `~/.local/share/argument-workbench/projects`
+
+每个项目都可单独复制备份或删除。正式导出位于项目内的 `exports/<application-id>/`，包含 V2 Markdown、可执行修订清单、审计 Markdown 和机器可读审计记录。
+
+## 专业研究 / 高级 CLI
+
+下面的 IR、Perspective Lens、Citation、lineage 和 Resolution 命令继续保留给研究用户和自动化回归。把 `draft.md` 换成你的 UTF-8 稿件路径：
 
 ```powershell
 # 1. 创建本地工作区和绑定原稿的 IR extraction prompt

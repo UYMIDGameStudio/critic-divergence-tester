@@ -43,7 +43,7 @@ class ArgumentProductAppTests(unittest.TestCase):
                 app.open_project({"directory": "../outside.argument-workbench"})
             shell = render_product_shell(app.token)
             self.assertIn("下一步", shell)
-            self.assertIn("每一处 AI 修改", shell)
+            self.assertIn("每一处修改", shell)
 
     def test_app_cli_is_top_level_and_loopback_only(self) -> None:
         parsed = critic_runner.parser().parse_args(["app", "--no-browser"])

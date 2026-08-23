@@ -46,6 +46,8 @@ jobs:
           argument_resolution.py
           argument_citations.py
           argument_ui.py
+          argument_app.py
+          argument_revision.py
           argument_gate.py
           argument_gate_b.py
           critic_execution.py
@@ -62,12 +64,15 @@ jobs:
           test/test_argument_resolution.py
           test/test_argument_citations.py
           test/test_argument_ui.py
+          test/test_argument_app.py
+          test/test_argument_revision.py
           test/test_argument_gate.py
           test/test_critic_runner.py
 
       - name: Smoke-test CLI
         run: |
           python critic_runner.py doctor
+          python critic_runner.py app --help
           python critic_runner.py list
           python critic_runner.py ir init --help
           python critic_runner.py ir collect --help

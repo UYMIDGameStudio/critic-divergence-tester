@@ -21,6 +21,21 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from argument_contracts import sha256_bytes
+from argument_revision import (
+    append_hunk_decision,
+    append_quick_finding_decision,
+    append_resolution_decision,
+    apply_approved_hunks,
+    collect_atomization_result,
+    collect_resolution_result,
+    collect_revision_result,
+    export_revision,
+    import_review_report,
+    prepare_atomization,
+    prepare_resolution_review,
+    prepare_revision_generation,
+    workflow_view,
+)
 from argument_workbench import (
     WorkbenchError,
     _atomic_write,
@@ -129,11 +144,7 @@ def project_state(project_dir: Path) -> dict[str, Any]:
     errors = verify_project_versions(project_dir)
     if errors:
         return {"stage": "read_only", "next_action": "项目校验失败，只读打开", "errors": errors}
-    current = workspace_paths(project_dir)
-    quick = current.version_dir / "quick-revision"
-    if not quick.exists():
-        return {"stage": "review_material", "next_action": "导入审查报告"}
-    return {"stage": "review_material", "next_action": "继续处理审查报告"}
+    return workflow_view(project_dir)
 
 
 @dataclass(frozen=True)
@@ -207,6 +218,43 @@ class ProductApp:
             raise WorkbenchError("项目校验失败：" + "; ".join(errors))
         return replace(self, project_dir=target)
 
+    def act(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self.project_dir is None:
+            raise WorkbenchError("请先创建或打开项目")
+        action = payload.get("action")
+        data = payload.get("data")
+        if not isinstance(action, str) or not isinstance(data, dict) or set(payload) != {"action", "data"}:
+            raise WorkbenchError("操作请求无效")
+        if action == "import_report":
+            report = data.get("report")
+            source_name = data.get("source_name", "pasted-report.md")
+            if not isinstance(report, str) or not isinstance(source_name, str):
+                raise WorkbenchError("审查报告必须是文本")
+            report_id = import_review_report(self.project_dir, report, source_name=source_name)
+            prepare_atomization(self.project_dir, report_id)
+        elif action == "collect_atomization":
+            if not isinstance(data.get("response"), str): raise WorkbenchError("AI 返回必须是文本")
+            collect_atomization_result(self.project_dir, data["response"])
+        elif action == "decide_finding":
+            append_quick_finding_decision(self.project_dir, str(data.get("finding_id", "")), decision=str(data.get("decision", "")), reason=str(data.get("reason", "")), corrections=data.get("corrections"), action_text=data.get("action_text"))
+        elif action == "prepare_revision": prepare_revision_generation(self.project_dir)
+        elif action == "collect_revision":
+            if not isinstance(data.get("response"), str): raise WorkbenchError("AI 返回必须是文本")
+            collect_revision_result(self.project_dir, data["response"])
+        elif action == "decide_hunk":
+            edited = data.get("edited_text")
+            append_hunk_decision(self.project_dir, str(data.get("change_id", "")), decision=str(data.get("decision", "")), reason=str(data.get("reason", "")), edited_text=edited if isinstance(edited, str) else None)
+        elif action == "apply_revision": apply_approved_hunks(self.project_dir)
+        elif action == "prepare_resolution": prepare_resolution_review(self.project_dir)
+        elif action == "collect_resolution":
+            if not isinstance(data.get("response"), str): raise WorkbenchError("AI 返回必须是文本")
+            collect_resolution_result(self.project_dir, data["response"])
+        elif action == "decide_resolution":
+            append_resolution_decision(self.project_dir, str(data.get("finding_id", "")), status=str(data.get("status", "")), reason=str(data.get("reason", "")))
+        elif action == "export": export_revision(self.project_dir)
+        else: raise WorkbenchError("未知操作")
+        return self.view()
+
 
 class ProductHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
@@ -256,7 +304,7 @@ class ProductRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
-        if path not in {"/api/projects", "/api/open"}:
+        if path not in {"/api/projects", "/api/open", "/api/action"}:
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
         if not self._authorized():
@@ -272,23 +320,61 @@ class ProductRequestHandler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
             if not isinstance(payload, dict):
                 raise WorkbenchError("请求必须是对象")
-            updated = self.server.app.import_manuscript(payload) if path == "/api/projects" else self.server.app.open_project(payload)
-            self.server.app = updated
-            self._json(HTTPStatus.CREATED, updated.view())
+            if path == "/api/projects":
+                self.server.app = self.server.app.import_manuscript(payload)
+                result = self.server.app.view()
+            elif path == "/api/open":
+                self.server.app = self.server.app.open_project(payload)
+                result = self.server.app.view()
+            else:
+                result = self.server.app.act(payload)
+            self._json(HTTPStatus.CREATED, result)
         except (UnicodeDecodeError, json.JSONDecodeError, WorkbenchError, OSError) as exc:
             self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
 
 def render_product_shell(token: str) -> str:
-    token_json = json.dumps(token)
-    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Argument Workbench</title><style>
-body{{margin:0;background:#f4f1eb;color:#23201b;font:16px system-ui,sans-serif}}main{{max-width:900px;margin:auto;padding:48px 24px}}.brand{{font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:#735f3d}}h1{{font:42px Georgia,serif;margin:.3em 0}}.card{{background:#fff;border:1px solid #d9d1c4;border-radius:16px;padding:24px;margin:18px 0;box-shadow:0 8px 24px #352c1d0d}}label{{display:block;margin:12px 0 6px}}input,button{{font:inherit}}input[type=text]{{width:100%;box-sizing:border-box;padding:11px;border:1px solid #bcb3a5;border-radius:8px}}button{{border:0;border-radius:8px;padding:11px 18px;background:#245a48;color:#fff;cursor:pointer}}button.secondary{{background:#e9e3d8;color:#332c22}}.muted{{color:#6e675d}}.error{{color:#9a2f27}}.next{{border-left:5px solid #c28b2c}}.row{{display:flex;gap:12px;align-items:center;flex-wrap:wrap}}code{{background:#eee8dd;padding:2px 5px;border-radius:4px}}</style></head><body><main><div class="brand">Local-first · model-neutral</div><h1>Argument Workbench</h1><p>每一处 AI 修改都可追溯、由你逐项批准，并能在新版本上复查。</p><div id="app"></div></main><script>
-const TOKEN={token_json},el=document.getElementById('app');let state;
-const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
-async function api(path,body){{const r=await fetch(path,{{method:body?'POST':'GET',headers:{{'Content-Type':'application/json','X-Argument-Workbench-Token':TOKEN}},body:body?JSON.stringify(body):undefined}});const j=await r.json();if(!r.ok)throw Error(j.error);return j}}
-function render(){{if(state.selected){{const p=state.selected;el.innerHTML=`<div class="card"><div class="muted">当前项目 · ${{esc(p.current_version)}}</div><h2>${{esc(p.title)}}</h2><p>${{esc(p.source_name)}} · <code>${{esc(p.source_sha256.slice(0,12))}}</code></p></div><div class="card next"><div class="muted">下一步</div><h2>${{esc(p.next_action)}}</h2><p>原稿已作为不可变 V1 保存。后续操作不会覆盖它。</p></div><div class="card"><p class="muted">本地存储：${{esc(state.storage_path)}}</p></div>`;return}}el.innerHTML=`<div class="card"><h2>新建项目</h2><p class="muted">选择 Markdown/TXT 原稿。文件只保存在本机。</p><label>项目标题（可选）</label><input id="title" type="text"><label>原稿</label><input id="file" type="file" accept=".md,.txt,text/plain,text/markdown"><p><button id="create">导入为不可变 V1</button></p><div id="err" class="error"></div></div>${{state.projects.length?`<div class="card"><h2>打开已有项目</h2>${{state.projects.map(p=>`<p class="row"><button class="secondary open" data-dir="${{esc(p.path.split(/[\\/]/).pop())}}">打开</button><span>${{esc(p.title)}} · ${{esc(p.current_version||'校验失败')}}</span></p>`).join('')}}</div>`:''}}`;document.getElementById('create').onclick=async()=>{{try{{const f=document.getElementById('file').files[0];if(!f)throw Error('请选择稿件');state=await api('/api/projects',{{filename:f.name,content:await f.text(),title:document.getElementById('title').value}});render()}}catch(e){{document.getElementById('err').textContent=e.message}}}};document.querySelectorAll('.open').forEach(b=>b.onclick=async()=>{{state=await api('/api/open',{{directory:b.dataset.dir}});render()}})}}
-api('/api/state').then(x=>{{state=x;render()}}).catch(e=>el.innerHTML=`<div class="card error">${{esc(e.message)}}</div>`)
+    shell = r'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Argument Workbench</title><style>
+body{margin:0;background:#f4f1eb;color:#23201b;font:16px system-ui,sans-serif}main{max-width:980px;margin:auto;padding:44px 24px}.brand{font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:#735f3d}h1{font:42px Georgia,serif;margin:.3em 0}.card{background:#fff;border:1px solid #d9d1c4;border-radius:16px;padding:24px;margin:18px 0;box-shadow:0 8px 24px #352c1d0d}.next{border-left:5px solid #c28b2c}.muted{color:#6e675d}.error{color:#9a2f27}.warning{color:#8b5b0c}.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}label{display:block;margin:12px 0 6px;font-weight:600}input,button,textarea,select{font:inherit}input[type=text],textarea,select{width:100%;box-sizing:border-box;padding:11px;border:1px solid #bcb3a5;border-radius:8px}textarea{min-height:150px;resize:vertical}button{border:0;border-radius:8px;padding:11px 18px;background:#245a48;color:#fff;cursor:pointer}button.secondary{background:#e9e3d8;color:#332c22}button.danger{background:#8c352e}code{background:#eee8dd;padding:2px 5px;border-radius:4px}.quote{white-space:pre-wrap;background:#f7f3ec;border-radius:10px;padding:14px}.hunk{border-left:4px solid #557b6c}.original{background:#fff0ed}.replacement{background:#edf7f1}.pill{display:inline-block;border-radius:99px;background:#eee8dd;padding:4px 9px;margin:2px;font-size:13px}.hidden{display:none}@media(max-width:700px){.grid{grid-template-columns:1fr}}
+</style></head><body><main><div class="brand">Local-first · model-neutral</div><h1>Argument Workbench</h1><p>普通 AI 给你一篇“改好了”的文章；这里让每一处修改都可追溯、由你批准，并能复查。</p><div id="app"></div></main><script>
+const TOKEN=__TOKEN__,el=document.getElementById('app');let state;
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function api(path,body){const r=await fetch(path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json','X-Argument-Workbench-Token':TOKEN},body:body?JSON.stringify(body):undefined});const j=await r.json();if(!r.ok)throw Error(j.error);return j}
+async function act(action,data={}){try{state=await api('/api/action',{action,data});render()}catch(e){const x=document.getElementById('err');if(x)x.textContent=e.message;else alert(e.message)}}
+function copyText(value){navigator.clipboard.writeText(value).catch(()=>{});}
+function errors(attempt){return attempt&&!attempt.valid?`<div class="error"><b>这次返回未通过校验，原始内容已保留。</b><ul>${attempt.errors.map(e=>`<li>${esc(e)}</li>`).join('')}</ul>${attempt.repair_prompt?'<button class="secondary" id="copyRepair">复制修复提示词</button>':''}</div>`:''}
+function promptPaste(title,prompt,attempt,action){return `<div class="card"><h2>${esc(title)}</h2><p>复制提示词，到任意 AI 运行，再把完整返回粘贴回来。</p><p><button id="copyPrompt">复制提示词</button></p><textarea id="response" placeholder="在这里粘贴 AI 返回">${esc(attempt&&!attempt.valid?attempt.raw:'')}</textarea><p><button id="submitResponse">校验并保存返回</button></p>${errors(attempt)}<div id="err" class="error"></div></div>`}
+function home(){el.innerHTML=`<div class="card"><h2>新建项目</h2><p class="muted">选择 Markdown/TXT 原稿。文件只保存在本机。</p><label>项目标题（可选）</label><input id="title" type="text"><label>原稿</label><input id="file" type="file" accept=".md,.txt,text/plain,text/markdown"><p><button id="create">导入为不可变 V1</button></p><div id="err" class="error"></div></div>${state.projects.length?`<div class="card"><h2>打开已有项目</h2>${state.projects.map(p=>`<p class="row"><button class="secondary open" data-dir="${esc(p.path.split(/[\\/]/).pop())}">打开</button><span>${esc(p.title)} · ${esc(p.current_version||'校验失败')}</span></p>`).join('')}</div>`:''}`;document.getElementById('create').onclick=async()=>{try{const f=document.getElementById('file').files[0];if(!f)throw Error('请选择稿件');state=await api('/api/projects',{filename:f.name,content:await f.text(),title:document.getElementById('title').value});render()}catch(e){document.getElementById('err').textContent=e.message}};document.querySelectorAll('.open').forEach(b=>b.onclick=async()=>{state=await api('/api/open',{directory:b.dataset.dir});render()})}
+function bindPrompt(prompt,attempt,action){document.getElementById('copyPrompt').onclick=()=>copyText(prompt);document.getElementById('submitResponse').onclick=()=>act(action,{response:document.getElementById('response').value});const repair=document.getElementById('copyRepair');if(repair)repair.onclick=()=>copyText(attempt.repair_prompt)}
+function render(){if(!state.selected){home();return}const p=state.selected;let body=`<div class="card"><div class="muted">当前项目 · ${esc(p.current_version)}</div><h2>${esc(p.title)}</h2><p>${esc(p.source_name)} · <code>${esc(p.source_sha256.slice(0,12))}</code></p></div><div class="card next"><div class="muted">唯一下一步</div><h2>${esc(p.next_action)}</h2><p>V1 永久保留；模型只能提案，决定权在你。</p></div>`;
+if(p.stage==='review_material')body+=`<div class="card"><h2>导入现有审查报告</h2><p class="muted">支持任意格式。原始报告会永久归档。</p><textarea id="report" placeholder="粘贴 AI 审查报告"></textarea><p><button id="importReport">导入并生成原子化提示词</button></p><div id="err" class="error"></div></div>`;
+else if(p.stage==='atomization_result')body+=promptPaste('把报告拆成可核验的发现',p.atomization_prompt,p.atomization_attempt,'collect_atomization');
+else if(p.stage==='findings_confirm')body+=`<div class="card"><h2>逐条确认发现</h2><p>UNVERIFIED 不会被当成事实。可以直接修正定位、标准和建议动作。</p></div>${p.findings.map(f=>`<div class="card"><div class="row"><span class="pill">${esc(f.finding_id)}</span><span class="pill">${esc(f.claim_id)}</span><span class="pill">${esc(f.evidence_level)}</span></div><label>问题</label><textarea id="assert-${esc(f.finding_id)}">${esc(f.assertion)}</textarea><div class="grid"><div><label>原文定位</label><textarea id="quote-${esc(f.finding_id)}">${esc(f.manuscript_quote||'')}</textarea></div><div><label>审查标准</label><textarea id="criterion-${esc(f.finding_id)}">${esc(f.criterion)}</textarea></div></div><label>建议动作</label><textarea id="action-${esc(f.finding_id)}">${esc(f.suggested_action)}</textarea><label>你的理由</label><input id="reason-${esc(f.finding_id)}" type="text"><div class="row"><button class="finding" data-id="${esc(f.finding_id)}" data-decision="accept">接受处理</button><button class="finding danger" data-id="${esc(f.finding_id)}" data-decision="reject">拒绝</button><button class="finding secondary" data-id="${esc(f.finding_id)}" data-decision="defer">暂缓</button>${f.decision?`<span>当前：${esc(f.decision)}</span>`:''}</div></div>`).join('')}<div id="err" class="error"></div>`;
+else if(p.stage==='revision_prepare')body+=`<div class="card"><h2>只为已接受的问题生成方案</h2><p>拒绝和暂缓的发现不会进入提示词。</p><button id="prepareRevision">生成受约束修改提示词</button><div id="err" class="error"></div></div>`;
+else if(p.stage==='revision_result')body+=promptPaste('获取受约束修改提案',p.revision_prompt,p.revision_attempt,'collect_revision');
+else if(p.stage==='hunk_review')body+=`<div class="card"><h2>逐项审批 diff</h2><p>每一项都显示 Finding、Action、理由和不确定项。</p></div>${p.hunks.map(h=>`<div class="card hunk"><div>${h.finding_ids.map(x=>`<span class="pill">Finding ${esc(x)}</span>`).join('')}${h.action_ids.map(x=>`<span class="pill">Action ${esc(x)}</span>`).join('')}</div><div class="grid"><div><h3>原文</h3><div class="quote original">${esc(h.original_quote||`插入锚点：${h.insertion_anchor}`)}</div></div><div><h3>建议</h3><textarea class="replacement" id="edit-${esc(h.change_id)}">${esc(h.replacement_text)}</textarea></div></div><p>${esc(h.reason)}</p>${h.uncertainties.length?`<p class="warning">未确认：${esc(h.uncertainties.join('；'))}</p>`:''}${h.fact_change?`<p class="warning">事实/引文变化，需核验：${esc(h.verification_note)}</p>`:''}<label>决定理由</label><input id="hreason-${esc(h.change_id)}" type="text"><div class="row"><button class="hunkDecision" data-id="${esc(h.change_id)}" data-decision="accept">接受</button><button class="hunkDecision danger" data-id="${esc(h.change_id)}" data-decision="reject">拒绝</button><button class="hunkDecision secondary" data-id="${esc(h.change_id)}" data-decision="edit">编辑后接受</button><button class="hunkDecision secondary" data-id="${esc(h.change_id)}" data-decision="regenerate">重新生成此项</button>${h.decision?`<span>当前：${esc(h.decision.decision)}</span>`:''}</div></div>`).join('')}<div id="err" class="error"></div>`;
+else if(p.stage==='apply_revision')body+=`<div class="card"><h2>生成不可变 V2</h2><p>只应用已批准的 hunks；拒绝项绝不会进入 V2。哈希或范围冲突会安全停止。</p><button id="applyRevision">确定生成 V2</button><div id="err" class="error"></div></div>`;
+else if(p.stage==='resolution_prepare')body+=`<div class="card"><h2>复查 V2</h2><p>复用每条 finding 的原始审查标准，不因“文字变了”就宣称已解决。</p><button id="prepareResolution">生成复查提示词</button><div id="err" class="error"></div></div>`;
+else if(p.stage==='resolution_result')body+=promptPaste('用原标准复查 V2',p.resolution_prompt,p.resolution_attempt,'collect_resolution');
+else if(p.stage==='resolution_confirm')body+=`<div class="card"><h2>确认复查结论</h2></div>${p.resolution_results.map(r=>`<div class="card"><span class="pill">${esc(r.finding_id)}</span><h3>${esc(r.proposed_status)}</h3><p>${esc(r.reason)}</p><label>最终状态</label><select id="status-${esc(r.finding_id)}"><option>resolved</option><option>partially_resolved</option><option>unresolved</option><option>not_evaluated</option></select><label>你的确认理由</label><input id="rreason-${esc(r.finding_id)}" type="text"><button class="resolution" data-id="${esc(r.finding_id)}">保存人工结论</button></div>`).join('')}<div id="err" class="error"></div>`;
+else if(p.stage==='export')body+=`<div class="card"><h2>导出文章与审计记录</h2><button id="export">生成导出包</button><div id="err" class="error"></div></div>`;
+else if(p.stage==='complete')body+=`<div class="card"><h2>闭环完成</h2><p>V2、修订清单和完整审计记录已生成。</p><p><code>${esc(p.export_path)}</code></p></div>`;
+el.innerHTML=body+`<div class="card"><p class="muted">本地存储：${esc(state.storage_path)}</p></div>`;
+if(p.stage==='review_material')document.getElementById('importReport').onclick=()=>act('import_report',{report:document.getElementById('report').value,source_name:'pasted-report.md'});
+if(p.stage==='atomization_result')bindPrompt(p.atomization_prompt,p.atomization_attempt,'collect_atomization');
+if(p.stage==='findings_confirm')document.querySelectorAll('.finding').forEach(b=>b.onclick=()=>{const id=b.dataset.id,decision=b.dataset.decision;act('decide_finding',{finding_id:id,decision,reason:document.getElementById('reason-'+id).value,action_text:document.getElementById('action-'+id).value,corrections:{assertion:document.getElementById('assert-'+id).value,manuscript_quote:document.getElementById('quote-'+id).value||null,criterion:document.getElementById('criterion-'+id).value,suggested_action:document.getElementById('action-'+id).value}})});
+if(p.stage==='revision_prepare')document.getElementById('prepareRevision').onclick=()=>act('prepare_revision');
+if(p.stage==='revision_result')bindPrompt(p.revision_prompt,p.revision_attempt,'collect_revision');
+if(p.stage==='hunk_review')document.querySelectorAll('.hunkDecision').forEach(b=>b.onclick=()=>{const id=b.dataset.id,d=b.dataset.decision;act('decide_hunk',{change_id:id,decision:d,reason:document.getElementById('hreason-'+id).value,edited_text:d==='edit'?document.getElementById('edit-'+id).value:null})});
+if(p.stage==='apply_revision')document.getElementById('applyRevision').onclick=()=>act('apply_revision');
+if(p.stage==='resolution_prepare')document.getElementById('prepareResolution').onclick=()=>act('prepare_resolution');
+if(p.stage==='resolution_result')bindPrompt(p.resolution_prompt,p.resolution_attempt,'collect_resolution');
+if(p.stage==='resolution_confirm')document.querySelectorAll('.resolution').forEach(b=>b.onclick=()=>{const id=b.dataset.id;act('decide_resolution',{finding_id:id,status:document.getElementById('status-'+id).value,reason:document.getElementById('rreason-'+id).value})});
+if(p.stage==='export')document.getElementById('export').onclick=()=>act('export');
+}
+api('/api/state').then(x=>{state=x;render()}).catch(e=>el.innerHTML=`<div class="card error">${esc(e.message)}</div>`)
 </script></body></html>'''
+    return shell.replace("__TOKEN__", json.dumps(token))
 
 
 def serve_product_app(
