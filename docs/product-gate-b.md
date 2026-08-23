@@ -148,3 +148,19 @@ human decision was overwritten. Both complete projects pass
 `ir verify-project` after these decisions. This satisfies the Gate B requirement
 for real original-Lens Finding Resolution evidence, but the gate still requires
 per-project usability assessments and an explicit final human gate decision.
+
+## Human assessment checkpoint
+
+The author completed one assessment for each project. Both assessments record
+zero minutes of lineage correction because every proposal was confirmed without
+correction; review and confirmation are not misreported as correction time. For
+both projects the author judged that lineage was reasonable, split handling
+worked, Findings inherited to the correct descendants, resolved Findings
+stopped reappearing, unresolved Findings persisted, and revision rationales
+remained clear.
+
+The bound private Gate B report now verifies with two assessed projects, 25
+human lineage decisions, and 23 human Finding Resolution decisions. Its
+deterministic readiness result is `ready for a human pass/fail/defer decision`.
+The current gate decision remains `pending`; readiness is not an automatic
+product verdict.
