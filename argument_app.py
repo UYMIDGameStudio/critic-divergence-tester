@@ -45,6 +45,7 @@ from argument_workbench import (
     verify_project_versions,
     workspace_paths,
 )
+from argument_ui import adjudicate_from_ui, build_project_view, render_app_shell
 
 
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
@@ -181,6 +182,8 @@ class ProductApp:
         selected = None
         if self.project_dir is not None:
             selected = {**_source_details(self.project_dir), **project_state(self.project_dir)}
+            current = workspace_paths(self.project_dir)
+            selected["professional_available"] = current.reviewed_payload.is_file() and not current.reviewed_payload.is_symlink()
         return {
             "storage_path": str(self.data_dir),
             "projects": self.projects(),
@@ -255,6 +258,17 @@ class ProductApp:
         else: raise WorkbenchError("未知操作")
         return self.view()
 
+    def professional_view(self, version_id: str | None = None) -> dict[str, Any]:
+        if self.project_dir is None:
+            raise WorkbenchError("请先打开专业研究项目")
+        return build_project_view(self.project_dir, version_id)
+
+    def professional_adjudicate(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self.project_dir is None:
+            raise WorkbenchError("请先打开专业研究项目")
+        adjudicate_from_ui(self.project_dir, payload)
+        return self.professional_view()
+
 
 class ProductHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
@@ -297,14 +311,30 @@ class ProductRequestHandler(BaseHTTPRequestHandler):
         if path == "/":
             self._send(HTTPStatus.OK, render_product_shell(self.server.app.token).encode(), "text/html; charset=utf-8")
             return
+        if path == "/professional":
+            try:
+                self.server.app.professional_view()
+                shell = render_app_shell(self.server.app.token).replace("'/api/view", "'/api/professional/view").replace("'/api/adjudications", "'/api/professional/adjudications")
+                self._send(HTTPStatus.OK, shell.encode(), "text/html; charset=utf-8")
+            except WorkbenchError as exc:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
         if path == "/api/state" and self._authorized():
             self._json(HTTPStatus.OK, self.server.app.view())
+            return
+        if path == "/api/professional/view" and self._authorized():
+            try:
+                from urllib.parse import parse_qs
+                version = parse_qs(urlsplit(self.path).query).get("version", [None])[0]
+                self._json(HTTPStatus.OK, self.server.app.professional_view(version))
+            except WorkbenchError as exc:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             return
         self._json(HTTPStatus.FORBIDDEN if path == "/api/state" else HTTPStatus.NOT_FOUND, {"error": "local UI token required" if path == "/api/state" else "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
-        if path not in {"/api/projects", "/api/open", "/api/action"}:
+        if path not in {"/api/projects", "/api/open", "/api/action", "/api/professional/adjudications"}:
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
         if not self._authorized():
@@ -320,7 +350,9 @@ class ProductRequestHandler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
             if not isinstance(payload, dict):
                 raise WorkbenchError("请求必须是对象")
-            if path == "/api/projects":
+            if path == "/api/professional/adjudications":
+                result = self.server.app.professional_adjudicate(payload)
+            elif path == "/api/projects":
                 self.server.app = self.server.app.import_manuscript(payload)
                 result = self.server.app.view()
             elif path == "/api/open":
@@ -346,7 +378,7 @@ function errors(attempt){return attempt&&!attempt.valid?`<div class="error"><b>�
 function promptPaste(title,prompt,attempt,action){return `<div class="card"><h2>${esc(title)}</h2><p>复制提示词，到任意 AI 运行，再把完整返回粘贴回来。</p><p><button id="copyPrompt">复制提示词</button></p><textarea id="response" placeholder="在这里粘贴 AI 返回">${esc(attempt&&!attempt.valid?attempt.raw:'')}</textarea><p><button id="submitResponse">校验并保存返回</button></p>${errors(attempt)}<div id="err" class="error"></div></div>`}
 function home(){el.innerHTML=`<div class="card"><h2>新建项目</h2><p class="muted">选择 Markdown/TXT 原稿。文件只保存在本机。</p><label>项目标题（可选）</label><input id="title" type="text"><label>原稿</label><input id="file" type="file" accept=".md,.txt,text/plain,text/markdown"><p><button id="create">导入为不可变 V1</button></p><div id="err" class="error"></div></div>${state.projects.length?`<div class="card"><h2>打开已有项目</h2>${state.projects.map(p=>`<p class="row"><button class="secondary open" data-dir="${esc(p.path.split(/[\\/]/).pop())}">打开</button><span>${esc(p.title)} · ${esc(p.current_version||'校验失败')}</span></p>`).join('')}</div>`:''}`;document.getElementById('create').onclick=async()=>{try{const f=document.getElementById('file').files[0];if(!f)throw Error('请选择稿件');state=await api('/api/projects',{filename:f.name,content:await f.text(),title:document.getElementById('title').value});render()}catch(e){document.getElementById('err').textContent=e.message}};document.querySelectorAll('.open').forEach(b=>b.onclick=async()=>{state=await api('/api/open',{directory:b.dataset.dir});render()})}
 function bindPrompt(prompt,attempt,action){document.getElementById('copyPrompt').onclick=()=>copyText(prompt);document.getElementById('submitResponse').onclick=()=>act(action,{response:document.getElementById('response').value});const repair=document.getElementById('copyRepair');if(repair)repair.onclick=()=>copyText(attempt.repair_prompt)}
-function render(){if(!state.selected){home();return}const p=state.selected;let body=`<div class="card"><div class="muted">当前项目 · ${esc(p.current_version)}</div><h2>${esc(p.title)}</h2><p>${esc(p.source_name)} · <code>${esc(p.source_sha256.slice(0,12))}</code></p></div><div class="card next"><div class="muted">唯一下一步</div><h2>${esc(p.next_action)}</h2><p>V1 永久保留；模型只能提案，决定权在你。</p></div>`;
+function render(){if(!state.selected){home();return}const p=state.selected;let body=`<div class="card"><div class="muted">当前项目 · ${esc(p.current_version)}</div><h2>${esc(p.title)}</h2><p>${esc(p.source_name)} · <code>${esc(p.source_sha256.slice(0,12))}</code></p>${p.professional_available?'<p><a href="/professional">进入专业研究视图（IR、Lens、Citation、lineage）</a></p>':''}</div><div class="card next"><div class="muted">唯一下一步</div><h2>${esc(p.next_action)}</h2><p>V1 永久保留；模型只能提案，决定权在你。</p></div>`;
 if(p.stage==='review_material')body+=`<div class="card"><h2>导入现有审查报告</h2><p class="muted">支持任意格式。原始报告会永久归档。</p><textarea id="report" placeholder="粘贴 AI 审查报告"></textarea><p><button id="importReport">导入并生成原子化提示词</button></p><div id="err" class="error"></div></div>`;
 else if(p.stage==='atomization_result')body+=promptPaste('把报告拆成可核验的发现',p.atomization_prompt,p.atomization_attempt,'collect_atomization');
 else if(p.stage==='findings_confirm')body+=`<div class="card"><h2>逐条确认发现</h2><p>UNVERIFIED 不会被当成事实。可以直接修正定位、标准和建议动作。</p></div>${p.findings.map(f=>`<div class="card"><div class="row"><span class="pill">${esc(f.finding_id)}</span><span class="pill">${esc(f.claim_id)}</span><span class="pill">${esc(f.evidence_level)}</span></div><label>问题</label><textarea id="assert-${esc(f.finding_id)}">${esc(f.assertion)}</textarea><div class="grid"><div><label>原文定位</label><textarea id="quote-${esc(f.finding_id)}">${esc(f.manuscript_quote||'')}</textarea></div><div><label>审查标准</label><textarea id="criterion-${esc(f.finding_id)}">${esc(f.criterion)}</textarea></div></div><label>建议动作</label><textarea id="action-${esc(f.finding_id)}">${esc(f.suggested_action)}</textarea><label>你的理由</label><input id="reason-${esc(f.finding_id)}" type="text"><div class="row"><button class="finding" data-id="${esc(f.finding_id)}" data-decision="accept">接受处理</button><button class="finding danger" data-id="${esc(f.finding_id)}" data-decision="reject">拒绝</button><button class="finding secondary" data-id="${esc(f.finding_id)}" data-decision="defer">暂缓</button>${f.decision?`<span>当前：${esc(f.decision)}</span>`:''}</div></div>`).join('')}<div id="err" class="error"></div>`;

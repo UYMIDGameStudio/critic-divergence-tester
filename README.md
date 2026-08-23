@@ -22,6 +22,8 @@ py -3 critic_runner.py app ".\结构的替身.md"
 
 应用会自动打开本机页面。创建项目后，页面始终只突出一个下一步：导入现有审查报告 → 复制模型无关提示词 → 确认原子发现 → 只为已接受问题生成修改提案 → 逐 hunk 接受、拒绝或手改 → 生成不可变 V2 → 按原标准复查 → 导出。用户不需要打开 JSON 或拼 artifact 路径。
 
+已有 Reviewed IR 的项目会在同一项目主页显示“专业研究视图”，继续提供 Claim、Rule/Perspective Lens、Citation、版本 lineage 和 Finding Resolution；不同 Lens 的结论保持并列，不做投票合并。快速修订仍是默认入口。
+
 ```mermaid
 flowchart LR
     A["V1 原稿"] --> B["审查报告"]
