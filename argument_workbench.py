@@ -1515,6 +1515,15 @@ def verify_project_versions(project_dir: WorkspacePaths | Path | str) -> list[st
         )
     except ImportError as exc:
         errors.append(f"claim lineage: cannot load verifier: {exc}")
+    try:
+        from argument_resolution import verify_resolutions
+
+        errors.extend(
+            f"finding resolution: {error}"
+            for error in verify_resolutions(root_paths)
+        )
+    except ImportError as exc:
+        errors.append(f"finding resolution: cannot load verifier: {exc}")
     return errors
 
 

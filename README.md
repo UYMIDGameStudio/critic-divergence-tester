@@ -619,6 +619,29 @@ py -3 critic_runner.py ir lineage history $project
 
 人工 `confirm`、`reject`、`correct` 都追加新的 schema-v3 `claim-lineage`，不会修改模型 proposal。`correct` 可用 `--from-claim`、`--to-claim`、`--relation`、`--semantic-change`、`--lineage-reason` 和 `--basis-ref` 从命令行正式改正关系，无需打开 JSON。再次判断同一 proposal 时，新事件通过 `supersedes` 绑定上一判断，完整历史仍然保留。
 
+### Phase 6：重新运行原始 Lens 并确认 Finding Resolution
+
+Finding 被接受、生成 RevisionAction、导入 V2 并确认 Claim Lineage 后，使用原始 Finding ID 准备重测：
+
+```powershell
+# 冻结旧 Finding、accept、RevisionAction、人工确认 lineage、V2 IR 和原 Lens
+py -3 critic_runner.py ir resolve prepare $project V1-RV1-attempt-0001-F0001 `
+  --from-version V1 --to-version V2
+
+# 把 resolution-retest-prompt.md 交给任意模型；模型只重跑原 Lens
+py -3 critic_runner.py ir resolve collect $project --file .\retest-results.json `
+  --producer-label "模型标签"
+
+# 查看程序根据各后代 PASS/FAIL/UNCERTAIN 得出的确定性 proposal
+py -3 critic_runner.py ir resolve show $project
+
+# 最终状态仍由人确认；也可 reject 或用 --decision correct --final-status ... 改正
+py -3 critic_runner.py ir resolve decide $project --decision confirm `
+  --reason "原 denominator 检查现在确实通过"
+```
+
+系统不会调用 generic model 问“解决了吗”。它要求原 Rule Lens 的同一 `check_id` 或原 Perspective Lens 的完整 protocol 对所有人工确认的后代 Claim 重测。Rule Lens 的 PASS 继续受原 `evidence_policy` 和 relation-aware `support_paths` 约束。全部 PASS → `resolved`，全部 FAIL → `unresolved`，split 后混合结果 → `partially_resolved`，任一实质不确定 → `uncertain`；人工确认删除且没有后代时，不伪造模型运行，确定性提出 `obsolete`。这些都只是 proposal，只有 `ir resolve decide` 会产生 human-confirmed 最终状态。
+
 ### 兼容的低层 Argument IR 流程
 
 先让工具为原稿生成一份**抽取提示词**：

@@ -76,6 +76,13 @@ from argument_lineage import (
     render_lineage_history,
     show_lineage,
 )
+from argument_resolution import (
+    append_resolution_decision,
+    collect_resolution_results,
+    prepare_resolution,
+    rebuild_resolutions,
+    render_resolution,
+)
 from argument_adjudication import (
     append_claim_bundle_decisions,
     claim_bundle_status,
@@ -119,6 +126,7 @@ from argument_contracts import (
     GATE_A_DECISIONS,
     GATE_A_WORK_ACTIVITIES,
     LINEAGE_RELATIONS,
+    RESOLUTION_STATUSES,
     REVISION_ACTION_TYPES,
 )
 from critic_execution import ExecutorResult, execute_with_limits
@@ -3133,6 +3141,39 @@ def ir_lineage_history_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def ir_resolve_prepare_command(args: argparse.Namespace) -> int:
+    paths, created = prepare_resolution(
+        args.project, args.finding_id, from_version=args.from_version,
+        to_version=args.to_version, lineage_decision_id=args.lineage_decision_id,
+    )
+    print(f"Finding Resolution: {paths.record}")
+    print(f"Original-Lens retest prompt: {paths.root / 'resolution-retest-prompt.md'}")
+    print("Resolution retest prepared." if created else "Matching immutable retest already exists.")
+    return 0
+
+
+def ir_resolve_collect_command(args: argparse.Namespace) -> int:
+    if args.paste:
+        response_bytes = _read_review_paste_bytes(); method = "terminal-paste"; source_name = "pasted-resolution-retest.json"
+    else:
+        response_path = Path(args.file).resolve()
+        if response_path.is_symlink() or not response_path.is_file(): raise WorkbenchError("resolution result input must be a regular file")
+        response_bytes = response_path.read_bytes(); method = "file"; source_name = response_path.name
+    path, record = collect_resolution_results(args.project, response_bytes, resolution_id=args.resolution_id, method=method, source_name=source_name, producer_label=args.producer_label)
+    print(f"Resolution retest attempt: {path}"); print(f"Validation status: {record['validation']['status']}")
+    for error in record["validation"]["errors"]: print(f"  - {error}")
+    return 0 if record["validation"]["status"] == "valid" else EXIT_INVALID_WORKFLOW
+
+
+def ir_resolve_decide_command(args: argparse.Namespace) -> int:
+    output = append_resolution_decision(args.project, resolution_id=args.resolution_id, decision=args.decision, reason=args.reason, final_status=args.final_status)
+    print(f"Human resolution decision: {output}"); return 0
+
+
+def ir_resolve_show_command(args: argparse.Namespace) -> int:
+    print(render_resolution(args.project, args.resolution_id), end=""); return 0
+
+
 def _read_ir_paste_bytes() -> bytes:
     print(
         "Paste the model's pure Argument IR JSON. On a new line enter "
@@ -3228,6 +3269,7 @@ def ir_rebuild_command(args: argparse.Namespace) -> int:
     )
     diff_outputs, diffs_changed = rebuild_structural_diffs(args.project)
     lineage_outputs, lineages_changed = rebuild_lineage_analyses(args.project)
+    resolution_outputs, resolutions_changed = rebuild_resolutions(args.project)
     triage_outputs, triage_changed = rebuild_status_triages(args.project)
     adjudication_outputs, adjudications_changed = rebuild_adjudication_cache(
         args.project
@@ -3241,6 +3283,8 @@ def ir_rebuild_command(args: argparse.Namespace) -> int:
         print(f"Structural diff: {output}")
     for output in lineage_outputs:
         print(f"Claim lineage: {output}")
+    for output in resolution_outputs:
+        print(f"Finding resolution: {output}")
     for output in triage_outputs:
         print(f"Status triage: {output}")
     for output in adjudication_outputs:
@@ -3252,6 +3296,7 @@ def ir_rebuild_command(args: argparse.Namespace) -> int:
         or perspectives_changed
         or diffs_changed
         or lineages_changed
+        or resolutions_changed
         or triage_changed
         or adjudications_changed
         else "Derived artifacts already current."
@@ -4687,6 +4732,24 @@ def parser() -> argparse.ArgumentParser:
     ir_lineage_history_parser.add_argument("--to-version")
     ir_lineage_history_parser.add_argument("--analysis-id")
     ir_lineage_history_parser.set_defaults(func=ir_lineage_history_command)
+
+    ir_resolve_parser = ir_sub.add_parser(
+        "resolve", help="retest accepted Findings against descendant Claims with the original Lens"
+    )
+    ir_resolve_sub = ir_resolve_parser.add_subparsers(dest="ir_resolve_command", required=True)
+    ir_resolve_prepare_parser = ir_resolve_sub.add_parser("prepare", help="prepare an exact original-Lens retest")
+    ir_resolve_prepare_parser.add_argument("project"); ir_resolve_prepare_parser.add_argument("finding_id")
+    ir_resolve_prepare_parser.add_argument("--from-version", required=True); ir_resolve_prepare_parser.add_argument("--to-version", required=True)
+    ir_resolve_prepare_parser.add_argument("--lineage-decision-id"); ir_resolve_prepare_parser.set_defaults(func=ir_resolve_prepare_command)
+    ir_resolve_collect_parser = ir_resolve_sub.add_parser("collect", help="collect exact original-Lens retest results")
+    ir_resolve_collect_parser.add_argument("project"); source = ir_resolve_collect_parser.add_mutually_exclusive_group(required=True); source.add_argument("--paste", action="store_true"); source.add_argument("--file")
+    ir_resolve_collect_parser.add_argument("--resolution-id"); ir_resolve_collect_parser.add_argument("--producer-label"); ir_resolve_collect_parser.set_defaults(func=ir_resolve_collect_command)
+    ir_resolve_decide_parser = ir_resolve_sub.add_parser("decide", help="human-confirm or correct the proposed resolution")
+    ir_resolve_decide_parser.add_argument("project"); ir_resolve_decide_parser.add_argument("--resolution-id")
+    ir_resolve_decide_parser.add_argument("--decision", choices=("confirm", "reject", "correct"), required=True); ir_resolve_decide_parser.add_argument("--reason", required=True)
+    ir_resolve_decide_parser.add_argument("--final-status", choices=RESOLUTION_STATUSES); ir_resolve_decide_parser.set_defaults(func=ir_resolve_decide_command)
+    ir_resolve_show_parser = ir_resolve_sub.add_parser("show", help="show the full Finding Resolution chain")
+    ir_resolve_show_parser.add_argument("project"); ir_resolve_show_parser.add_argument("--resolution-id"); ir_resolve_show_parser.set_defaults(func=ir_resolve_show_command)
 
     ir_collect_parser = ir_sub.add_parser(
         "collect",

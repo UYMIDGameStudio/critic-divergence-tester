@@ -1932,6 +1932,7 @@ def validate_resolution_retest_run(value: object) -> list[str]:
             "original_finding_id", "descendant_claims", "lens",
             "original_finding", "accepted_adjudication", "revision_actions",
             "confirmed_lineage", "target_ir", "lens_protocol", "prompt",
+            "lens_content",
         },
     )
     if item is None:
@@ -1983,6 +1984,7 @@ def validate_resolution_retest_run(value: object) -> list[str]:
     for field in (
         "original_finding", "accepted_adjudication", "confirmed_lineage",
         "target_ir", "lens_protocol", "prompt",
+        "lens_content",
     ):
         _validate_bound_file(item.get(field), field, errors)
     roles = {
@@ -2061,8 +2063,8 @@ def validate_resolution_retest_results(value: object) -> list[str]:
     if not isinstance(source, dict):
         errors.append("source must be an object")
     else:
-        _strict_keys(source, {"retest_run_sha256", "target_ir_sha256", "lens_protocol_sha256"}, "source", errors)
-        for field in ("retest_run_sha256", "target_ir_sha256", "lens_protocol_sha256"):
+        _strict_keys(source, {"original_finding_sha256", "target_ir_sha256", "lens_protocol_sha256"}, "source", errors)
+        for field in ("original_finding_sha256", "target_ir_sha256", "lens_protocol_sha256"):
             if not _digest(source.get(field)):
                 errors.append(f"source.{field} must be a SHA-256 digest")
     status = value.get("status")
@@ -2082,7 +2084,7 @@ def validate_resolution_retest_results(value: object) -> list[str]:
         if not isinstance(result, dict):
             errors.append(f"{label} must be an object")
             continue
-        _strict_keys(result, {"target_claim", "verdict", "reason", "basis_refs", "analysis"}, label, errors)
+        _strict_keys(result, {"target_claim", "verdict", "reason", "basis_refs", "support_refs", "support_paths", "analysis"}, label, errors)
         if not isinstance(result.get("target_claim"), str) or _VERSIONED_CLAIM.fullmatch(str(result.get("target_claim"))) is None:
             errors.append(f"{label}.target_claim must be version-qualified")
         if result.get("verdict") not in FINDING_VERDICTS:
@@ -2090,23 +2092,49 @@ def validate_resolution_retest_results(value: object) -> list[str]:
         if not _nonempty(result.get("reason")):
             errors.append(f"{label}.reason must be non-empty")
         _string_list(result.get("basis_refs"), f"{label}.basis_refs", errors, allow_empty=False)
+        support_refs = _string_list(result.get("support_refs"), f"{label}.support_refs", errors)
+        support_paths = result.get("support_paths")
+        if not isinstance(support_paths, list):
+            errors.append(f"{label}.support_paths must be an array")
+        else:
+            for path_index, support_path in enumerate(support_paths):
+                path_label = f"{label}.support_paths[{path_index}]"
+                if not isinstance(support_path, dict):
+                    errors.append(f"{path_label} must be an object")
+                    continue
+                _strict_keys(support_path, {"support_ref", "relation_ids"}, path_label, errors)
+                if not isinstance(support_path.get("support_ref"), str):
+                    errors.append(f"{path_label}.support_ref must be a string")
+                _string_list(support_path.get("relation_ids"), f"{path_label}.relation_ids", errors, allow_empty=False)
+            mapped = [path.get("support_ref") for path in support_paths if isinstance(path, dict)]
+            if mapped != support_refs:
+                errors.append(f"{label}.support_paths must map one-to-one to support_refs")
+        if result.get("verdict") != "pass" and (support_refs or support_paths):
+            errors.append(f"{label}.support_refs/support_paths are reserved for PASS")
         if not isinstance(result.get("analysis"), str):
             errors.append(f"{label}.analysis must be a string")
     return errors
 
 
 def validate_finding_resolution_proposal(value: object) -> list[str]:
+    schema_version = value.get("schema_version") if isinstance(value, dict) else None
     errors, item = _validate_base(
         value,
         artifact="finding-resolution-proposal",
         lifecycle="derived-replaceable",
         extra_keys={"resolution_id", "original_finding_id", "descendant_claims", "proposed_status", "mapping_reason", "retest_summary", "field_provenance"},
+        schema_versions=(1, 2),
     )
     if item is None:
         return errors
     _require_origin(item, {"deterministic"}, "finding-resolution-proposal", errors)
-    _require_parent_roles(item, {"retest-run", "result-attempt", "retest-results"}, errors)
-    _require_parent_artifacts(item, {"retest-run": "resolution-retest-run", "result-attempt": "resolution-result-attempt", "retest-results": "resolution-retest-results"}, errors)
+    parent_artifacts = (
+        {"retest-run": "resolution-retest-run"}
+        if schema_version == 2
+        else {"retest-run": "resolution-retest-run", "result-attempt": "resolution-result-attempt", "retest-results": "resolution-retest-results"}
+    )
+    _require_parent_roles(item, set(parent_artifacts), errors)
+    _require_parent_artifacts(item, parent_artifacts, errors)
     for field in ("resolution_id", "original_finding_id", "mapping_reason"):
         if not _nonempty(item.get(field)):
             errors.append(f"{field} must be non-empty")
@@ -2115,6 +2143,10 @@ def validate_finding_resolution_proposal(value: object) -> list[str]:
         errors.append("descendant_claims must be version-qualified")
     if item.get("proposed_status") not in RESOLUTION_STATUSES:
         errors.append(f"proposed_status must be one of {RESOLUTION_STATUSES}")
+    if schema_version == 2 and (item.get("proposed_status") != "obsolete" or descendants):
+        errors.append("schema v2 resolution proposal is reserved for removed Claims with no descendants")
+    if schema_version == 1 and item.get("proposed_status") == "obsolete":
+        errors.append("retest-derived schema v1 proposal cannot be obsolete")
     summary = item.get("retest_summary")
     if not isinstance(summary, dict):
         errors.append("retest_summary must be an object")

@@ -260,6 +260,7 @@ class ArgumentContractTests(unittest.TestCase):
             "confirmed_lineage": bound("confirmed-lineage.json", "4"),
             "target_ir": bound("target-argument-ir.json", "5"),
             "lens_protocol": bound("lens-protocol.json", "6"),
+            "lens_content": bound("lens-content.txt", "b"),
             "prompt": bound("resolution-retest-prompt.md", "7"),
         }
         self.assertEqual(contracts.validate_resolution_retest_run(run), [])
@@ -270,9 +271,9 @@ class ArgumentContractTests(unittest.TestCase):
 
         results = {
             "schema_version": 1, "artifact": "resolution-retest-results",
-            "source": {"retest_run_sha256": "8" * 64, "target_ir_sha256": "5" * 64, "lens_protocol_sha256": "6" * 64},
+            "source": {"original_finding_sha256": "1" * 64, "target_ir_sha256": "5" * 64, "lens_protocol_sha256": "6" * 64},
             "status": "complete", "unverified": [],
-            "results": [{"target_claim": "V2:C7", "verdict": "pass", "reason": "A denominator was added.", "basis_refs": ["V2:C7", "V2:E4"], "analysis": "The original check now passes."}],
+            "results": [{"target_claim": "V2:C7", "verdict": "pass", "reason": "A denominator was added.", "basis_refs": ["V2:C7", "V2:E4"], "support_refs": ["V2:E4"], "support_paths": [{"support_ref": "V2:E4", "relation_ids": ["V2:R2"]}], "analysis": "The original check now passes."}],
         }
         self.assertEqual(contracts.validate_resolution_retest_results(results), [])
         proposal = {
