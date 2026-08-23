@@ -94,3 +94,11 @@ deterministically generated a Reviewed IR and structural diff, and passed
 proves that the candidates are technically importable; it does not turn a model
 draft into an author version. The preflight copies are excluded from the Gate B
 corpus unless and until the author explicitly adopts the corresponding text.
+
+Semantic-lineage preflight also completed without assuming stable Claim IDs.
+The structural-stand-in candidate produced 13 valid proposals, including five
+one-to-many splits; the knowledge-systems candidate produced 12 valid
+proposals, including four splits and one Claim-level removal. An initially
+invalid structural proposal attempt was retained before the corrected valid
+attempt, exercising immutable failed-attempt history. Every proposal remains
+model-derived and receives no `human_confirmed` status from this preflight.
