@@ -646,6 +646,9 @@ py -3 critic_runner.py ir resolve decide $project --decision confirm `
 
 Phase 7 前必须用 2–3 个作者真实继续修改的多版本项目建立 Gate B。工具只保存本地 locator 与 exact hashes，不复制稿件，也不会根据计数自动宣布通过：
 
+真实语料的纳入标准、已审计的作者仓库历史和当前排除理由见
+[`docs/product-gate-b.md`](docs/product-gate-b.md)。元数据、SEO 或纯格式变化不能冒充论证版本；接受 RevisionAction 也不等于授权系统代写 V2。
+
 ```powershell
 py -3 critic_runner.py ir gate-b init .\private-gate-b $project1 $project2
 
