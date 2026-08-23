@@ -49,6 +49,10 @@ Parent hashes always cover the exact file bytes on disk. Artifact objects do not
 | `resolution-retest-results` | immutable model payload | Per-descendant verdicts from the original Lens; never a direct generic “resolved?” judgment |
 | `finding-resolution-proposal` | derived-replaceable | Deterministic mapping from descendant retest verdicts to resolved/partial/unresolved/obsolete/uncertain |
 | `finding-resolution-decision` | immutable | Human confirmation, rejection, or correction of a proposed resolution; reconsideration uses `supersedes` |
+| `product-gate-b-corpus` | immutable | Human-selected local references and exact hashes for 2–3 real multi-version projects; manuscript bytes are not copied |
+| `product-gate-b-assessment` | immutable | Per-project human observations on lineage burden, split/merge, Finding inheritance/persistence, and revision rationale |
+| `product-gate-b-decision` | immutable | Human pass/fail/defer decision; pass is rejected until the explicit Gate B evidence conditions hold |
+| `product-gate-b-report` | derived-replaceable | Reproducible evidence counts and readiness issues without a score or automatic product verdict |
 | `review-status-triage` | append-only | One human acknowledgement or rejection of a model-proposed non-evaluated status, with an explicit follow-up action |
 | `review-status-triage-index` | derived-replaceable | Reproducible open/acknowledged/rejected execution-status queue binding every triage event |
 | `direct-review-baseline` | immutable | Exact direct-chat prompt/response, manuscript binding, provider/model identity, declared session conditions, and elapsed-time evidence for Gate A comparison |

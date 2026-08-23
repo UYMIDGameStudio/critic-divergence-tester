@@ -117,6 +117,13 @@ from argument_gate import (
     render_gate_readiness,
     verify_gate,
 )
+from argument_gate_b import (
+    append_gate_b_assessment,
+    append_gate_b_decision,
+    initialize_gate_b,
+    rebuild_gate_b_report,
+    verify_gate_b,
+)
 from argument_contracts import (
     BASELINE_INTERACTION_MODES,
     BASELINE_MANUSCRIPT_DELIVERY,
@@ -125,6 +132,9 @@ from argument_contracts import (
     GATE_A_COMPARISONS,
     GATE_A_DECISIONS,
     GATE_A_WORK_ACTIVITIES,
+    GATE_B_CLARITIES,
+    GATE_B_DECISIONS,
+    GATE_B_JUDGMENTS,
     LINEAGE_RELATIONS,
     RESOLUTION_STATUSES,
     REVISION_ACTION_TYPES,
@@ -3174,6 +3184,44 @@ def ir_resolve_show_command(args: argparse.Namespace) -> int:
     print(render_resolution(args.project, args.resolution_id), end=""); return 0
 
 
+def ir_gate_b_init_command(args: argparse.Namespace) -> int:
+    paths = initialize_gate_b(args.output, args.projects)
+    print(f"Product Gate B evidence: {paths.root}")
+    return 0
+
+
+def ir_gate_b_assess_command(args: argparse.Namespace) -> int:
+    output = append_gate_b_assessment(
+        args.gate, args.project,
+        lineage_correction_minutes=args.lineage_correction_minutes,
+        lineage_reasonable=args.lineage_reasonable,
+        split_merge_worked=args.split_merge_worked,
+        finding_inheritance_correct=args.finding_inheritance_correct,
+        resolved_stopped_reappearing=args.resolved_stopped_reappearing,
+        unresolved_persisted=args.unresolved_persisted,
+        revision_rationale_clarity=args.revision_rationale_clarity,
+        notes=args.notes,
+    )
+    print(f"Gate B assessment: {output}")
+    return 0
+
+
+def ir_gate_b_report_command(args: argparse.Namespace) -> int:
+    output, _ = rebuild_gate_b_report(args.gate)
+    print(output.read_text(encoding="utf-8"), end="") if args.show else print(f"Gate B report: {output}")
+    return 0
+
+
+def ir_gate_b_decide_command(args: argparse.Namespace) -> int:
+    output = append_gate_b_decision(args.gate, args.decision, args.reason)
+    print(f"Gate B decision: {output}")
+    return 0
+
+
+def ir_gate_b_verify_command(args: argparse.Namespace) -> int:
+    return _ir_print_validation("product-gate-b", verify_gate_b(args.gate))
+
+
 def _read_ir_paste_bytes() -> bytes:
     print(
         "Paste the model's pure Argument IR JSON. On a new line enter "
@@ -4750,6 +4798,24 @@ def parser() -> argparse.ArgumentParser:
     ir_resolve_decide_parser.add_argument("--final-status", choices=RESOLUTION_STATUSES); ir_resolve_decide_parser.set_defaults(func=ir_resolve_decide_command)
     ir_resolve_show_parser = ir_resolve_sub.add_parser("show", help="show the full Finding Resolution chain")
     ir_resolve_show_parser.add_argument("project"); ir_resolve_show_parser.add_argument("--resolution-id"); ir_resolve_show_parser.set_defaults(func=ir_resolve_show_command)
+
+    ir_gate_b_parser = ir_sub.add_parser(
+        "gate-b", help="capture human Product Gate B evidence for real multi-version writing"
+    )
+    ir_gate_b_sub = ir_gate_b_parser.add_subparsers(dest="ir_gate_b_command", required=True)
+    gate_b_init = ir_gate_b_sub.add_parser("init", help="bind 2-3 completed real multi-version projects")
+    gate_b_init.add_argument("output"); gate_b_init.add_argument("projects", nargs="+"); gate_b_init.set_defaults(func=ir_gate_b_init_command)
+    gate_b_assess = ir_gate_b_sub.add_parser("assess", help="append one human multi-version usability assessment")
+    gate_b_assess.add_argument("gate"); gate_b_assess.add_argument("project"); gate_b_assess.add_argument("--lineage-correction-minutes", type=int, required=True)
+    for field in ("lineage-reasonable", "split-merge-worked", "finding-inheritance-correct", "resolved-stopped-reappearing", "unresolved-persisted"):
+        gate_b_assess.add_argument("--" + field, choices=GATE_B_JUDGMENTS, required=True)
+    gate_b_assess.add_argument("--revision-rationale-clarity", choices=GATE_B_CLARITIES, required=True); gate_b_assess.add_argument("--notes", default=""); gate_b_assess.set_defaults(func=ir_gate_b_assess_command)
+    gate_b_report = ir_gate_b_sub.add_parser("report", help="rebuild deterministic Gate B report")
+    gate_b_report.add_argument("gate"); gate_b_report.add_argument("--show", action="store_true"); gate_b_report.set_defaults(func=ir_gate_b_report_command)
+    gate_b_decide = ir_gate_b_sub.add_parser("decide", help="append a human Gate B pass/fail/defer decision")
+    gate_b_decide.add_argument("gate"); gate_b_decide.add_argument("decision", choices=GATE_B_DECISIONS); gate_b_decide.add_argument("--reason", required=True); gate_b_decide.set_defaults(func=ir_gate_b_decide_command)
+    gate_b_verify = ir_gate_b_sub.add_parser("verify", help="verify Gate B bindings and report bytes")
+    gate_b_verify.add_argument("gate"); gate_b_verify.set_defaults(func=ir_gate_b_verify_command)
 
     ir_collect_parser = ir_sub.add_parser(
         "collect",

@@ -642,6 +642,29 @@ py -3 critic_runner.py ir resolve decide $project --decision confirm `
 
 系统不会调用 generic model 问“解决了吗”。它要求原 Rule Lens 的同一 `check_id` 或原 Perspective Lens 的完整 protocol 对所有人工确认的后代 Claim 重测。Rule Lens 的 PASS 继续受原 `evidence_policy` 和 relation-aware `support_paths` 约束。全部 PASS → `resolved`，全部 FAIL → `unresolved`，split 后混合结果 → `partially_resolved`，任一实质不确定 → `uncertain`；人工确认删除且没有后代时，不伪造模型运行，确定性提出 `obsolete`。这些都只是 proposal，只有 `ir resolve decide` 会产生 human-confirmed 最终状态。
 
+### Product Gate B：真实多版本写作验证
+
+Phase 7 前必须用 2–3 个作者真实继续修改的多版本项目建立 Gate B。工具只保存本地 locator 与 exact hashes，不复制稿件，也不会根据计数自动宣布通过：
+
+```powershell
+py -3 critic_runner.py ir gate-b init .\private-gate-b $project1 $project2
+
+py -3 critic_runner.py ir gate-b assess .\private-gate-b P1 `
+  --lineage-correction-minutes 12 `
+  --lineage-reasonable yes --split-merge-worked yes `
+  --finding-inheritance-correct yes `
+  --resolved-stopped-reappearing yes `
+  --unresolved-persisted not_observed `
+  --revision-rationale-clarity clear
+
+py -3 critic_runner.py ir gate-b report .\private-gate-b --show
+py -3 critic_runner.py ir gate-b decide .\private-gate-b pass `
+  --reason "作者完成真实 V1→V2 工作流并确认 lineage/resolution 可理解"
+py -3 critic_runner.py ir gate-b verify .\private-gate-b
+```
+
+Gate B 要求每个项目至少两版、每个相邻版本都有人工 lineage 决定、语料整体实际出现过 human-confirmed split/merge，并至少保存一条人工 Finding Resolution。人工 assessment 还必须分别说明 lineage 是否合理、Finding 是否正确继承、resolved 是否停止骚扰、unresolved 是否持续追踪、修改理由是否仍可理解。若证据不齐，`pass` 会被拒绝；`fail` 或 `defer` 始终可以诚实记录。
+
 ### 兼容的低层 Argument IR 流程
 
 先让工具为原稿生成一份**抽取提示词**：
