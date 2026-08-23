@@ -500,9 +500,12 @@ def _latest_proposal(project_dir: Path | str) -> tuple[Any, Path, dict[str, Any]
 def revision_hunks(project_dir: Path | str) -> list[dict[str, Any]]:
     workspace, proposal_path, proposal = _latest_proposal(project_dir); decisions: dict[str, dict[str, Any]] = {}
     run = proposal_path.parents[2]
+    proposal_sha256 = sha256_bytes(proposal_path.read_bytes())
     for path in _regular_files(run / "hunk-decisions", "HD*.json"):
-        row, _ = _read_json(path); decisions[row["change_id"]] = row
-    return [{**change, "decision": decisions.get(change["change_id"]), "proposal_sha256": sha256_bytes(proposal_path.read_bytes())} for change in proposal["changes"]]
+        row, _ = _read_json(path)
+        if row.get("proposal_sha256") == proposal_sha256:
+            decisions[row["change_id"]] = row
+    return [{**change, "decision": decisions.get(change["change_id"]), "proposal_sha256": proposal_sha256} for change in proposal["changes"]]
 
 
 def append_hunk_decision(project_dir: Path | str, change_id: str, *, decision: str, reason: str, edited_text: str | None = None, producer: str = "local-workbench-ui") -> str:
@@ -512,7 +515,22 @@ def append_hunk_decision(project_dir: Path | str, change_id: str, *, decision: s
     if decision != "edit" and edited_text is not None: raise WorkbenchError("edited_text is only allowed for edit")
     directory = proposal_path.parents[2] / "hunk-decisions"; decision_id = _next_id(directory, "HD")
     manual_fact_signal = decision == "edit" and bool(re.search(r"\d|https?://|[“”‘’\"']", edited_text or "")) and edited_text != changes[change_id]["replacement_text"]
-    record = {"artifact_type": "revision-hunk-decision", "schema_version": 1, "decision_id": decision_id, "change_id": change_id, "decision": decision, "reason": reason, "edited_text": edited_text, "fact_change": bool(changes[change_id]["fact_change"] or manual_fact_signal), "verification_note": changes[change_id]["verification_note"] or ("UNVERIFIED: human-edited text contains a number, quotation, or link." if manual_fact_signal else ""), "proposal_sha256": sha256_bytes(proposal_path.read_bytes()), "provenance": _provenance("human-confirmed", producer), "lifecycle": "append-only"}
+    regeneration_ref = None
+    if decision == "regenerate":
+        prompt = (
+            "# Regenerate one revision hunk\n\n"
+            f"Regenerate only `{change_id}`. Return the complete strict revision proposal object, "
+            "preserving every unrelated change byte-for-byte. The full response will be revalidated, "
+            "and every hunk will require a new human decision because the proposal hash changes.\n\n"
+            "## Current validated proposal\n\n```json\n"
+            + json.dumps(proposal, ensure_ascii=False, indent=2)
+            + "\n```\n\n## Original generation protocol\n\n"
+            + (proposal_path.parents[2] / "prompt.md").read_text(encoding="utf-8")
+        ).encode("utf-8")
+        prompt_path = directory / f"{decision_id}-regeneration-prompt.md"
+        _write_new(prompt_path, prompt)
+        regeneration_ref = {"relative_path": prompt_path.name, "sha256": sha256_bytes(prompt)}
+    record = {"artifact_type": "revision-hunk-decision", "schema_version": 1, "decision_id": decision_id, "change_id": change_id, "decision": decision, "reason": reason, "edited_text": edited_text, "fact_change": bool(changes[change_id]["fact_change"] or manual_fact_signal), "verification_note": changes[change_id]["verification_note"] or ("UNVERIFIED: human-edited text contains a number, quotation, or link." if manual_fact_signal else ""), "regeneration_prompt": regeneration_ref, "proposal_sha256": sha256_bytes(proposal_path.read_bytes()), "provenance": _provenance("human-confirmed", producer), "lifecycle": "append-only"}
     _write_new(directory / f"{decision_id}.json", json_bytes(record)); return decision_id
 
 
@@ -670,6 +688,11 @@ def workflow_view(project_dir: Path | str) -> dict[str, Any]:
     if proposal is None: return {**view, "stage": "revision_result", "next_action": "粘贴 AI 的受约束修改提案"}
     hunks = revision_hunks(workflow.root); view["hunks"] = hunks
     if any(item["decision"] is None or item["decision"]["decision"] == "regenerate" for item in hunks):
+        regenerations = [item["decision"] for item in hunks if item["decision"] and item["decision"]["decision"] == "regenerate"]
+        if regenerations:
+            ref = regenerations[-1].get("regeneration_prompt")
+            if isinstance(ref, dict):
+                view["regeneration_prompt"] = (proposal.parents[2] / "hunk-decisions" / ref["relative_path"]).read_text(encoding="utf-8")
         return {**view, "stage": "hunk_review", "next_action": "逐项审批修改"}
     applications = workflow.document_dir / "revision-applications"; application = None
     if applications.is_dir():

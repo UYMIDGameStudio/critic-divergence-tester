@@ -47,8 +47,8 @@
     },
     "revision-hunk-decision": {
       "type": "object", "additionalProperties": false,
-      "required": ["artifact_type", "schema_version", "decision_id", "change_id", "decision", "reason", "edited_text", "fact_change", "verification_note", "proposal_sha256", "provenance", "lifecycle"],
-      "properties": {"artifact_type": {"const": "revision-hunk-decision"}, "schema_version": {"const": 1}, "decision_id": {"$ref": "#/$defs/id"}, "change_id": {"$ref": "#/$defs/id"}, "decision": {"enum": ["accept", "reject", "edit", "regenerate"]}, "reason": {"type": "string", "minLength": 1}, "edited_text": {"type": ["string", "null"]}, "fact_change": {"type": "boolean"}, "verification_note": {"type": "string"}, "proposal_sha256": {"$ref": "#/$defs/digest"}, "provenance": {"$ref": "#/$defs/provenance"}, "lifecycle": {"const": "append-only"}}
+      "required": ["artifact_type", "schema_version", "decision_id", "change_id", "decision", "reason", "edited_text", "fact_change", "verification_note", "regeneration_prompt", "proposal_sha256", "provenance", "lifecycle"],
+      "properties": {"artifact_type": {"const": "revision-hunk-decision"}, "schema_version": {"const": 1}, "decision_id": {"$ref": "#/$defs/id"}, "change_id": {"$ref": "#/$defs/id"}, "decision": {"enum": ["accept", "reject", "edit", "regenerate"]}, "reason": {"type": "string", "minLength": 1}, "edited_text": {"type": ["string", "null"]}, "fact_change": {"type": "boolean"}, "verification_note": {"type": "string"}, "regeneration_prompt": {"type": ["object", "null"]}, "proposal_sha256": {"$ref": "#/$defs/digest"}, "provenance": {"$ref": "#/$defs/provenance"}, "lifecycle": {"const": "append-only"}}
     },
     "revision-application-record": {
       "type": "object", "additionalProperties": false,

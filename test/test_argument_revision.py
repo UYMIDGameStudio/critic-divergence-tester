@@ -159,6 +159,19 @@ class ArgumentRevisionTests(unittest.TestCase):
             append_hunk_decision(project, "CH1", decision="reject", reason="Do not adopt")
             self.assertEqual(revision_hunks(project)[0]["decision"]["decision"], "reject")
 
+    def test_regeneration_prompt_is_scoped_and_new_proposal_requires_reapproval(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = self.project(Path(temp_dir)); self.atomize(project)
+            result, record, response = self.proposal(project)
+            self.assertTrue(result.valid)
+            append_hunk_decision(project, "CH1", decision="regenerate", reason="Try a clearer qualification")
+            state = workflow_view(project)
+            self.assertIn("Regenerate only `CH1`", state["regeneration_prompt"])
+            response["changes"][0]["replacement_text"] = "The bridge works whenever the deck remains dry."
+            newer = collect_revision_result(project, json.dumps(response), run_id=record["generation_run_id"])
+            self.assertTrue(newer.valid, newer.errors)
+            self.assertIsNone(revision_hunks(project)[0]["decision"])
+
 
 if __name__ == "__main__":
     unittest.main()
