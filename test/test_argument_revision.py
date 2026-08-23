@@ -128,6 +128,7 @@ class ArgumentRevisionTests(unittest.TestCase):
             checklist = (exported / "revision-checklist.md").read_text(encoding="utf-8")
             self.assertIn("partially_resolved", checklist)
             self.assertIn("UNVERIFIED", checklist)
+            self.assertEqual(verify_revision_workflow(project), [])
 
     def test_invalid_attempts_are_retained_and_cannot_reach_hunk_review(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -241,6 +242,68 @@ class ArgumentRevisionTests(unittest.TestCase):
             with self.assertRaisesRegex(WorkbenchError, "只能只读打开"):
                 app.act({"action": "decide_hunk", "data": {"change_id": "CH1", "decision": "accept", "reason": "Should be blocked"}})
 
+    def test_tampered_finding_decision_forces_read_only_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = self.project(Path(temp_dir)); self.atomize(project)
+            decision_id = append_quick_finding_decision(project, "F1", decision="accept", reason="Accept")
+            path = workspace_paths(project).version_dir / "quick-revision" / "finding-decisions" / f"{decision_id}.json"
+            value = json.loads(path.read_text(encoding="utf-8")); value["decision"] = "reject"
+            path.write_text(json.dumps(value), encoding="utf-8")
+            self.assertEqual(project_state(project)["stage"], "read_only")
+
+    def test_tampered_revision_action_forces_read_only_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = self.project(Path(temp_dir)); self.atomize(project)
+            append_quick_finding_decision(project, "F1", decision="accept", reason="Accept")
+            action_path = next((workspace_paths(project).version_dir / "quick-revision" / "revision-actions").glob("QA*.json"))
+            value = json.loads(action_path.read_text(encoding="utf-8")); value["text"] = "Tampered action"
+            action_path.write_text(json.dumps(value), encoding="utf-8")
+            self.assertEqual(project_state(project)["stage"], "read_only")
+
+    def test_tampered_hunk_decision_forces_read_only_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = self.project(Path(temp_dir)); self.atomize(project)
+            result, _, _ = self.proposal(project); self.assertTrue(result.valid)
+            decision_id = append_hunk_decision(project, "CH1", decision="accept", reason="Accept")
+            proposal_path = result.response.parent / "revision-patch-proposal.json"
+            path = proposal_path.parents[2] / "hunk-decisions" / f"{decision_id}.json"
+            value = json.loads(path.read_text(encoding="utf-8")); value["decision"] = "reject"
+            path.write_text(json.dumps(value), encoding="utf-8")
+            self.assertEqual(project_state(project)["stage"], "read_only")
+
+    def test_tampered_resolution_decision_forces_read_only_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = self.project(Path(temp_dir)); self.atomize(project)
+            result, _, _ = self.proposal(project); self.assertTrue(result.valid)
+            append_hunk_decision(project, "CH1", decision="accept", reason="Apply")
+            apply_approved_hunks(project)
+            run = prepare_resolution_review(project); record = json.loads((run / "record.json").read_text(encoding="utf-8"))
+            response = {"schema_version": 1, "resolution_run_id": record["resolution_run_id"], "manuscript_version_id": "V2", "source_sha256": record["source_sha256"], "results": [{"finding_id": "F1", "proposed_status": "resolved", "reason": "Condition added.", "evidence_quotes": ["in dry weather"], "uncertainties": []}]}
+            self.assertTrue(collect_resolution_result(project, json.dumps(response)).valid)
+            decision_id = append_resolution_decision(project, "F1", status="resolved", reason="Confirm")
+            path = run / "human-decisions" / f"{decision_id}.json"
+            value = json.loads(path.read_text(encoding="utf-8")); value["final_status"] = "unresolved"
+            path.write_text(json.dumps(value), encoding="utf-8")
+            self.assertEqual(project_state(project)["stage"], "read_only")
+
+    def test_tampered_application_record_forces_read_only_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = self.project(Path(temp_dir)); self.atomize(project)
+            result, _, _ = self.proposal(project); self.assertTrue(result.valid)
+            append_hunk_decision(project, "CH1", decision="accept", reason="Apply")
+            application = apply_approved_hunks(project)
+            path = workspace_paths(project).document_dir / "revision-applications" / f"{application['application_id']}.json"
+            value = json.loads(path.read_text(encoding="utf-8")); value["applied_changes"] = []
+            path.write_text(json.dumps(value), encoding="utf-8")
+            self.assertEqual(project_state(project)["stage"], "read_only")
+
+    def test_tampered_no_revision_export_forces_read_only_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = self.project(Path(temp_dir)); self.atomize_findings(project, [])
+            export = complete_without_revision(project, reason="No findings")
+            (export / "V1.md").write_text("tampered", encoding="utf-8")
+            self.assertEqual(project_state(project)["stage"], "read_only")
+
     def test_revision_action_must_match_every_linked_finding(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             project = self.project(Path(temp_dir))
@@ -264,6 +327,7 @@ class ArgumentRevisionTests(unittest.TestCase):
             export = complete_without_revision(zero_project, reason="No actionable findings")
             self.assertTrue((export / "audit.json").is_file())
             self.assertEqual(workflow_view(zero_project)["stage"], "complete")
+            self.assertEqual(verify_revision_workflow(zero_project), [])
 
         with tempfile.TemporaryDirectory() as temp_dir:
             declined_project = self.project(Path(temp_dir) / "declined"); self.atomize(declined_project)
@@ -271,6 +335,7 @@ class ArgumentRevisionTests(unittest.TestCase):
             self.assertEqual(workflow_view(declined_project)["stage"], "no_revision")
             complete_without_revision(declined_project, reason="All findings deferred")
             self.assertEqual(workflow_view(declined_project)["stage"], "complete")
+            self.assertEqual(verify_revision_workflow(declined_project), [])
 
 
 if __name__ == "__main__":

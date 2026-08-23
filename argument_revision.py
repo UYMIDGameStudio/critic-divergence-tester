@@ -113,6 +113,71 @@ def _regular_files(directory: Path, pattern: str) -> list[Path]:
     return rows
 
 
+def _integrity_marker(root: Path) -> Path:
+    return root / "documents" / "D1" / "revision-integrity.json"
+
+
+def _ensure_integrity_marker(root: Path) -> dict[str, Any]:
+    marker_path = _integrity_marker(root)
+    if marker_path.is_file() and not marker_path.is_symlink():
+        return _read_json(marker_path)[0]
+    marker = {
+        "artifact_type": "revision-integrity-policy",
+        "schema_version": 1,
+        "enabled_at": utc_now(),
+        "producer": "argument-revision",
+        "lifecycle": "immutable",
+    }
+    _write_new(marker_path, json_bytes(marker))
+    return marker
+
+
+def _write_tracked(root: Path, path: Path, data: bytes) -> None:
+    """Write an append-only artifact plus an independently checked digest receipt."""
+    marker = _ensure_integrity_marker(root)
+    _write_new(path, data)
+    receipt = {
+        "artifact_type": "revision-artifact-integrity",
+        "schema_version": 1,
+        "artifact_relative_path": str(path.relative_to(root)).replace("\\", "/"),
+        "artifact_sha256": sha256_bytes(data),
+        "policy_enabled_at": marker["enabled_at"],
+        "provenance": _provenance("deterministic", "argument-revision"),
+        "lifecycle": "immutable",
+    }
+    _write_new(path.parent / ".integrity" / path.name, json_bytes(receipt))
+
+
+def _verify_tracked(root: Path, path: Path, value: dict[str, Any], errors: list[str]) -> None:
+    """Verify receipts for artifacts created after integrity tracking was enabled."""
+    marker_path = _integrity_marker(root)
+    if not marker_path.is_file() or marker_path.is_symlink():
+        return
+    marker, _ = _read_json(marker_path)
+    enabled_at = marker.get("enabled_at")
+    created_at = value.get("provenance", {}).get("created_at") if isinstance(value.get("provenance"), dict) else None
+    receipt_path = path.parent / ".integrity" / path.name
+    receipt_required = isinstance(enabled_at, str) and isinstance(created_at, str) and created_at >= enabled_at
+    if not receipt_path.is_file() or receipt_path.is_symlink():
+        if receipt_required:
+            errors.append(f"{path.name}: integrity receipt missing")
+        return
+    try:
+        receipt, _ = _read_json(receipt_path)
+        expected_fields = {"artifact_type", "schema_version", "artifact_relative_path", "artifact_sha256", "policy_enabled_at", "provenance", "lifecycle"}
+        if set(receipt) != expected_fields or receipt.get("artifact_type") != "revision-artifact-integrity" or receipt.get("schema_version") != 1 or receipt.get("lifecycle") != "immutable":
+            errors.append(f"{path.name}: invalid integrity receipt fields")
+        expected_path = str(path.relative_to(root)).replace("\\", "/")
+        if receipt.get("artifact_relative_path") != expected_path:
+            errors.append(f"{path.name}: integrity receipt path mismatch")
+        if receipt.get("artifact_sha256") != sha256_bytes(path.read_bytes()):
+            errors.append(f"{path.name}: integrity receipt hash mismatch")
+        if receipt.get("policy_enabled_at") != enabled_at:
+            errors.append(f"{path.name}: integrity policy binding mismatch")
+    except (OSError, WorkbenchError, KeyError, TypeError) as exc:
+        errors.append(f"{path.name}: invalid integrity receipt: {exc}")
+
+
 @dataclass(frozen=True)
 class AttemptResult:
     attempt_id: str
@@ -378,6 +443,7 @@ def append_quick_finding_decision(project_dir: Path | str, finding_id: str, *, d
             raise WorkbenchError("corrected exact manuscript quote must occur exactly once")
     elif quote is not None:
         raise WorkbenchError("non-exact finding must not carry a manuscript quote")
+    _ensure_integrity_marker(workspace.root)
     decisions = _quick_root(workspace.root, workspace.version_id) / "finding-decisions"
     decision_id = _next_id(decisions, "FD")
     action_id = None
@@ -385,9 +451,9 @@ def append_quick_finding_decision(project_dir: Path | str, finding_id: str, *, d
         actions = _quick_root(workspace.root, workspace.version_id) / "revision-actions"
         action_id = _next_id(actions, "QA")
         action = {"artifact_type": "quick-revision-action", "schema_version": 1, "action_id": action_id, "finding_id": finding_id, "text": action_text or str(corrections.get("suggested_action", findings[finding_id]["suggested_action"])), "provenance": _provenance("human-confirmed", producer), "lifecycle": "append-only"}
-        _write_new(actions / f"{action_id}.json", json_bytes(action))
+        _write_tracked(workspace.root, actions / f"{action_id}.json", json_bytes(action))
     record = {"artifact_type": "quick-finding-decision", "schema_version": 1, "decision_id": decision_id, "finding_id": finding_id, "decision": decision, "reason": reason, "corrections": corrections, "action_id": action_id, "source_findings_sha256": sha256_bytes(findings_path.read_bytes()), "provenance": _provenance("human-confirmed", producer), "lifecycle": "append-only"}
-    _write_new(decisions / f"{decision_id}.json", json_bytes(record))
+    _write_tracked(workspace.root, decisions / f"{decision_id}.json", json_bytes(record))
     return decision_id
 
 
@@ -528,10 +594,11 @@ def revision_hunks(project_dir: Path | str) -> list[dict[str, Any]]:
 
 
 def append_hunk_decision(project_dir: Path | str, change_id: str, *, decision: str, reason: str, edited_text: str | None = None, producer: str = "local-workbench-ui") -> str:
-    _, proposal_path, proposal = _latest_proposal(project_dir); changes = {item["change_id"]: item for item in proposal["changes"]}; change_ids = set(changes)
+    workspace, proposal_path, proposal = _latest_proposal(project_dir); changes = {item["change_id"]: item for item in proposal["changes"]}; change_ids = set(changes)
     if change_id not in change_ids or decision not in HUNK_DECISIONS or not reason.strip(): raise WorkbenchError("valid change_id, decision, and reason are required")
     if decision == "edit" and edited_text is None: raise WorkbenchError("edited_text is required for edit")
     if decision != "edit" and edited_text is not None: raise WorkbenchError("edited_text is only allowed for edit")
+    _ensure_integrity_marker(workspace.root)
     directory = proposal_path.parents[2] / "hunk-decisions"; decision_id = _next_id(directory, "HD")
     manual_fact_signal = decision == "edit" and bool(re.search(r"\d|https?://|[“”‘’\"']", edited_text or "")) and edited_text != changes[change_id]["replacement_text"]
     regeneration_ref = None
@@ -550,7 +617,7 @@ def append_hunk_decision(project_dir: Path | str, change_id: str, *, decision: s
         _write_new(prompt_path, prompt)
         regeneration_ref = {"relative_path": prompt_path.name, "sha256": sha256_bytes(prompt)}
     record = {"artifact_type": "revision-hunk-decision", "schema_version": 1, "decision_id": decision_id, "change_id": change_id, "decision": decision, "reason": reason, "edited_text": edited_text, "fact_change": bool(changes[change_id]["fact_change"] or manual_fact_signal), "verification_note": changes[change_id]["verification_note"] or ("UNVERIFIED: human-edited text contains a number, quotation, or link." if manual_fact_signal else ""), "regeneration_prompt": regeneration_ref, "proposal_sha256": sha256_bytes(proposal_path.read_bytes()), "provenance": _provenance("human-confirmed", producer), "lifecycle": "append-only"}
-    _write_new(directory / f"{decision_id}.json", json_bytes(record)); return decision_id
+    _write_tracked(workspace.root, directory / f"{decision_id}.json", json_bytes(record)); return decision_id
 
 
 def apply_approved_hunks(project_dir: Path | str, *, producer: str = "local-workbench-ui") -> dict[str, Any]:
@@ -565,6 +632,7 @@ def apply_approved_hunks(project_dir: Path | str, *, producer: str = "local-work
     for path in _regular_files(applications, "AP*.json"):
         existing, _ = _read_json(path)
         if existing.get("decision_fingerprint") == fingerprint: return existing
+    _ensure_integrity_marker(workspace.root)
     edits: list[tuple[int, int, str, dict[str, Any]]] = []
     for item in hunks:
         decision = item["decision"]; choice = decision["decision"]
@@ -583,7 +651,7 @@ def apply_approved_hunks(project_dir: Path | str, *, producer: str = "local-work
     try: new_workspace = import_document_version(workspace.root, staging, parent_version=workspace.version_id)
     finally: staging.unlink(missing_ok=True)
     record = {"artifact_type": "revision-application-record", "schema_version": 1, "application_id": application_id, "generation_run_id": proposal["generation_run_id"], "proposal_sha256": proposal_hash, "decision_fingerprint": fingerprint, "base_version_id": workspace.version_id, "base_source_sha256": proposal["source_sha256"], "output_version_id": new_workspace.version_id, "output_source_sha256": sha256_bytes(output_bytes), "applied_changes": [{"change_id": item[3]["change_id"], "decision_id": decisions[item[3]["change_id"]]["decision_id"], "finding_ids": item[3]["finding_ids"], "action_ids": item[3]["action_ids"], "fact_change": decisions[item[3]["change_id"]].get("fact_change", item[3]["fact_change"]), "verification_note": decisions[item[3]["change_id"]].get("verification_note", item[3]["verification_note"])} for item in sorted(edits, key=lambda item: (item[0], item[1]))], "rejected_changes": [item["change_id"] for item in hunks if item["decision"]["decision"] == "reject"], "decision_sha256s": decision_hashes, "provenance": _provenance("deterministic", producer), "lifecycle": "immutable"}
-    _write_new(applications / f"{application_id}.json", json_bytes(record)); return record
+    _write_tracked(workspace.root, applications / f"{application_id}.json", json_bytes(record)); return record
 
 
 def prepare_resolution_review(project_dir: Path | str, application_id: str | None = None) -> Path:
@@ -598,26 +666,50 @@ def prepare_resolution_review(project_dir: Path | str, application_id: str | Non
     _write_new(run / "prompt.md", prompt); _write_new(run / "record.json", json_bytes(record)); return run
 
 
+def _validate_resolution(value: object, record: dict[str, Any], manuscript: str) -> tuple[list[str], list[dict[str, Any]]]:
+    errors: list[str] = []
+    if not isinstance(value, dict):
+        return ["response must be an object"], []
+    if set(value) != {"schema_version", "resolution_run_id", "manuscript_version_id", "source_sha256", "results"}:
+        errors.append("response has unexpected or missing fields")
+    if value.get("schema_version") != RESOLUTION_SCHEMA_VERSION:
+        errors.append("unsupported resolution schema_version")
+    for field in ("resolution_run_id", "manuscript_version_id", "source_sha256"):
+        if value.get(field) != record.get(field):
+            errors.append(f"{field} does not match resolution run")
+    finding_ids = record.get("finding_ids")
+    results = value.get("results")
+    if (
+        not isinstance(finding_ids, list)
+        or not isinstance(results, list)
+        or len(results) != len(finding_ids)
+        or {item.get("finding_id") for item in results if isinstance(item, dict)} != set(finding_ids)
+    ):
+        return errors + ["results must cover every selected finding exactly once"], []
+    expected = {"finding_id", "proposed_status", "reason", "evidence_quotes", "uncertainties"}
+    normalized: list[dict[str, Any]] = []
+    for item in results:
+        if not isinstance(item, dict) or set(item) != expected or item.get("proposed_status") not in RESOLUTION_STATUSES or not isinstance(item.get("reason"), str):
+            errors.append("resolution result item is invalid")
+            continue
+        evidence_quotes = _string_list(item.get("evidence_quotes"), "evidence_quotes", errors)
+        _string_list(item.get("uncertainties"), "uncertainties", errors)
+        for quote in evidence_quotes:
+            if manuscript.count(quote) != 1:
+                errors.append(f"resolution evidence quote for {item.get('finding_id')} must occur exactly once in V2")
+        normalized.append(item)
+    return errors, normalized
+
+
 def collect_resolution_result(project_dir: Path | str, response: str | bytes, *, run_id: str | None = None, producer: str = "manual-model-bridge") -> AttemptResult:
     root = workspace_paths(project_dir).root; runs = root / "documents" / "D1" / "resolution-runs"; run = runs / run_id if run_id else _latest_dir(runs, "RR"); record, _ = _read_json(run / "record.json")
-    raw = response.encode() if isinstance(response, str) else response; attempts = run / "attempts"; attempt_id = _next_id(attempts, "attempt-", ""); target = attempts / attempt_id; errors: list[str] = []
-    try: value = parse_json_strict(raw)
-    except WorkbenchError as exc: value = None; errors.append(str(exc))
-    if isinstance(value, dict):
-        if set(value) != {"schema_version", "resolution_run_id", "manuscript_version_id", "source_sha256", "results"}: errors.append("response has unexpected or missing fields")
-        for field in ("resolution_run_id", "manuscript_version_id", "source_sha256"):
-            if value.get(field) != record.get(field): errors.append(f"{field} does not match resolution run")
-        results = value.get("results")
-        if not isinstance(results, list) or len(results) != len(record["finding_ids"]) or {item.get("finding_id") for item in results if isinstance(item, dict)} != set(record["finding_ids"]): errors.append("results must cover every selected finding exactly once")
-        else:
-            expected = {"finding_id", "proposed_status", "reason", "evidence_quotes", "uncertainties"}
-            for item in results:
-                if set(item) != expected or item.get("proposed_status") not in RESOLUTION_STATUSES or not isinstance(item.get("reason"), str): errors.append("resolution result item is invalid"); continue
-                evidence_quotes = _string_list(item.get("evidence_quotes"), "evidence_quotes", errors); _string_list(item.get("uncertainties"), "uncertainties", errors)
-                _, _, _, manuscript = _source(root, record["manuscript_version_id"])
-                for quote in evidence_quotes:
-                    if manuscript.count(quote) != 1: errors.append(f"resolution evidence quote for {item.get('finding_id')} must occur exactly once in V2")
-    elif value is not None: errors.append("response must be an object")
+    raw = response.encode() if isinstance(response, str) else response; attempts = run / "attempts"; attempt_id = _next_id(attempts, "attempt-", ""); target = attempts / attempt_id
+    try:
+        value = parse_json_strict(raw)
+        _, _, _, manuscript = _source(root, record["manuscript_version_id"])
+        errors, _ = _validate_resolution(value, record, manuscript)
+    except (WorkbenchError, KeyError) as exc:
+        value = None; errors = [str(exc)]
     response_path = target / "response.json"; _write_new(response_path, raw); repair = None
     attempt = {"artifact_type": "resolution-result-attempt", "schema_version": 1, "attempt_id": attempt_id, "resolution_run_id": run.name, "valid": not errors, "errors": errors, "response_sha256": sha256_bytes(raw), "provenance": _provenance("model-derived", producer), "lifecycle": "immutable"}; _write_new(target / "record.json", json_bytes(attempt))
     if errors: repair = target / "repair-prompt.md"; _write_new(repair, _repair_prompt("resolution", errors, raw, (run / "prompt.md").read_bytes()))
@@ -640,11 +732,13 @@ def _latest_resolution_proposal(project_dir: Path | str, run: Path | None = None
 
 
 def append_resolution_decision(project_dir: Path | str, finding_id: str, *, status: str, reason: str, producer: str = "local-workbench-ui") -> str:
+    root = workspace_paths(project_dir).root
     run, proposal_path, proposal = _latest_resolution_proposal(project_dir)
     proposed = {item["finding_id"] for item in proposal["results"]}
     if finding_id not in proposed or status not in RESOLUTION_STATUSES or not reason.strip(): raise WorkbenchError("valid finding, status, and reason are required")
+    _ensure_integrity_marker(root)
     directory = run / "human-decisions"; decision_id = _next_id(directory, "RD")
-    value = {"artifact_type": "finding-resolution-decision", "schema_version": 1, "decision_id": decision_id, "finding_id": finding_id, "final_status": status, "reason": reason, "proposal_sha256": sha256_bytes(proposal_path.read_bytes()), "provenance": _provenance("human-confirmed", producer), "lifecycle": "append-only"}; _write_new(directory / f"{decision_id}.json", json_bytes(value)); return decision_id
+    value = {"artifact_type": "finding-resolution-decision", "schema_version": 1, "decision_id": decision_id, "finding_id": finding_id, "final_status": status, "reason": reason, "proposal_sha256": sha256_bytes(proposal_path.read_bytes()), "provenance": _provenance("human-confirmed", producer), "lifecycle": "append-only"}; _write_tracked(root, directory / f"{decision_id}.json", json_bytes(value)); return decision_id
 
 
 def complete_without_revision(project_dir: Path | str, *, reason: str, producer: str = "local-workbench-ui") -> Path:
@@ -666,6 +760,8 @@ def complete_without_revision(project_dir: Path | str, *, reason: str, producer:
             export_dir = workspace.root / "exports" / existing["completion_id"]
             if (export_dir / "audit.json").is_file():
                 return export_dir
+
+    _ensure_integrity_marker(workspace.root)
 
     decisions: list[dict[str, Any]] = []
     decision_sha256s: list[str] = []
@@ -692,7 +788,7 @@ def complete_without_revision(project_dir: Path | str, *, reason: str, producer:
         "provenance": _provenance("human-confirmed", producer),
         "lifecycle": "immutable",
     }
-    _write_new(completions / f"{completion_id}.json", json_bytes(record))
+    _write_tracked(workspace.root, completions / f"{completion_id}.json", json_bytes(record))
 
     _, _, source_bytes, _ = _source(workspace.root, workspace.version_id)
     export_dir = workspace.root / "exports" / completion_id
@@ -853,69 +949,388 @@ def workflow_view(project_dir: Path | str) -> dict[str, Any]:
 
 
 def verify_revision_workflow(project_dir: Path | str) -> list[str]:
-    """Recompute revision bindings and report tampering without changing files."""
-    root = workspace_paths(project_dir).root; errors: list[str] = []
+    """Recompute every revision artifact and human-decision binding."""
+    root = workspace_paths(project_dir).root
+    errors: list[str] = []
+    proposals: dict[str, tuple[Path, dict[str, Any]]] = {}
+    hunk_decisions: dict[str, tuple[Path, dict[str, Any]]] = {}
+
+    marker_path = _integrity_marker(root)
+    if marker_path.exists():
+        try:
+            marker, _ = _read_json(marker_path)
+            if set(marker) != {"artifact_type", "schema_version", "enabled_at", "producer", "lifecycle"} or marker.get("artifact_type") != "revision-integrity-policy" or marker.get("schema_version") != 1 or marker.get("producer") != "argument-revision" or marker.get("lifecycle") != "immutable" or not isinstance(marker.get("enabled_at"), str):
+                errors.append("revision-integrity.json: invalid integrity policy")
+        except (OSError, WorkbenchError) as exc:
+            errors.append(f"revision-integrity.json: {exc}")
+
     for version_id in list_version_ids(root):
-        workspace, version, _, manuscript = _source(root, version_id)
+        _, version, _, manuscript = _source(root, version_id)
         quick = _quick_root(root, version_id)
-        if not quick.exists(): continue
+        if not quick.exists():
+            continue
         reports: dict[str, tuple[dict[str, Any], str]] = {}
+        findings_by_hash: dict[str, dict[str, Any]] = {}
+        decisions_by_hash: dict[str, tuple[Path, dict[str, Any]]] = {}
+        actions: dict[str, tuple[Path, dict[str, Any]]] = {}
+        referenced_actions: set[str] = set()
+
         report_dir = quick / "reports"
         if report_dir.is_dir():
-            for item in sorted(p for p in report_dir.iterdir() if p.is_dir()):
+            for item in sorted(path for path in report_dir.iterdir() if path.is_dir() and not path.is_symlink()):
                 try:
-                    record, _ = _read_json(item / "record.json"); data = (item / "report.md").read_bytes()
-                    if sha256_bytes(data) != record.get("report", {}).get("sha256"): errors.append(f"{item.name}: report hash mismatch")
-                    if record.get("source_sha256") != version["source"]["sha256"]: errors.append(f"{item.name}: source hash mismatch")
+                    record, _ = _read_json(item / "record.json")
+                    data = (item / "report.md").read_bytes()
+                    if sha256_bytes(data) != record.get("report", {}).get("sha256"):
+                        errors.append(f"{item.name}: report hash mismatch")
+                    if record.get("source_sha256") != version["source"]["sha256"]:
+                        errors.append(f"{item.name}: source hash mismatch")
                     reports[item.name] = (record, data.decode("utf-8-sig"))
-                except (OSError, WorkbenchError, UnicodeDecodeError) as exc: errors.append(f"{item.name}: {exc}")
+                except (OSError, WorkbenchError, UnicodeDecodeError) as exc:
+                    errors.append(f"{item.name}: {exc}")
+
         atom_runs = quick / "atomization-runs"
         if atom_runs.is_dir():
-            for run_dir in sorted(p for p in atom_runs.iterdir() if p.is_dir()):
+            for run_dir in sorted(path for path in atom_runs.iterdir() if path.is_dir() and not path.is_symlink()):
                 try:
-                    run, _ = _read_json(run_dir / "record.json"); prompt = (run_dir / "prompt.md").read_bytes()
-                    if sha256_bytes(prompt) != run.get("prompt", {}).get("sha256"): errors.append(f"{run_dir.name}: prompt hash mismatch")
+                    run, _ = _read_json(run_dir / "record.json")
+                    prompt = (run_dir / "prompt.md").read_bytes()
+                    if sha256_bytes(prompt) != run.get("prompt", {}).get("sha256"):
+                        errors.append(f"{run_dir.name}: prompt hash mismatch")
+                    if run.get("source_sha256") != version["source"]["sha256"]:
+                        errors.append(f"{run_dir.name}: atomization source mismatch")
                     report = reports.get(run.get("report_id"), ({}, ""))[1]
                     attempts = run_dir / "attempts"
                     if attempts.is_dir():
-                        for attempt in sorted(p for p in attempts.iterdir() if p.is_dir()):
-                            record, _ = _read_json(attempt / "record.json"); raw = (attempt / "response.json").read_bytes()
-                            if sha256_bytes(raw) != record.get("response_sha256"): errors.append(f"{run_dir.name}/{attempt.name}: response hash mismatch")
-                            try: value = parse_json_strict(raw); fresh, _ = _validate_atomization(value, run, manuscript, report)
-                            except WorkbenchError as exc: fresh = [str(exc)]
-                            if (not fresh) != bool(record.get("valid")) or fresh != record.get("errors"): errors.append(f"{run_dir.name}/{attempt.name}: validation record mismatch")
-                except (OSError, WorkbenchError) as exc: errors.append(f"{run_dir.name}: {exc}")
+                        for attempt in sorted(path for path in attempts.iterdir() if path.is_dir() and not path.is_symlink()):
+                            record, _ = _read_json(attempt / "record.json")
+                            raw = (attempt / "response.json").read_bytes()
+                            if sha256_bytes(raw) != record.get("response_sha256"):
+                                errors.append(f"{run_dir.name}/{attempt.name}: response hash mismatch")
+                            try:
+                                value = parse_json_strict(raw)
+                                fresh, normalized = _validate_atomization(value, run, manuscript, report)
+                            except WorkbenchError as exc:
+                                fresh, normalized = [str(exc)], []
+                            if (not fresh) != bool(record.get("valid")) or fresh != record.get("errors"):
+                                errors.append(f"{run_dir.name}/{attempt.name}: validation record mismatch")
+                            findings_path = attempt / "findings.json"
+                            if findings_path.is_file() and not findings_path.is_symlink():
+                                derived, _ = _read_json(findings_path)
+                                if fresh or derived.get("findings") != normalized:
+                                    errors.append(f"{run_dir.name}/{attempt.name}: derived findings mismatch")
+                                else:
+                                    digest = sha256_bytes(findings_path.read_bytes())
+                                    findings_by_hash[digest] = derived
+                            elif record.get("valid"):
+                                errors.append(f"{run_dir.name}/{attempt.name}: valid attempt is missing derived findings")
+                except (OSError, WorkbenchError, KeyError, TypeError) as exc:
+                    errors.append(f"{run_dir.name}: {exc}")
+
+        for action_path in _regular_files(quick / "revision-actions", "QA*.json"):
+            try:
+                action, _ = _read_json(action_path)
+                _verify_tracked(root, action_path, action, errors)
+                expected = {"artifact_type", "schema_version", "action_id", "finding_id", "text", "provenance", "lifecycle"}
+                if set(action) != expected or action.get("artifact_type") != "quick-revision-action" or action.get("schema_version") != 1 or action.get("lifecycle") != "append-only":
+                    errors.append(f"{action_path.name}: invalid RevisionAction fields")
+                if action.get("action_id") != action_path.stem or not isinstance(action.get("finding_id"), str) or not isinstance(action.get("text"), str) or not action.get("text", "").strip():
+                    errors.append(f"{action_path.name}: invalid RevisionAction content")
+                actions[str(action.get("action_id"))] = (action_path, action)
+            except (OSError, WorkbenchError, KeyError, TypeError) as exc:
+                errors.append(f"{action_path.name}: {exc}")
+
+        allowed_corrections = {"claim_id", "manuscript_quote", "location_kind", "assertion", "criterion", "suggested_action", "evidence_level", "uncertainties"}
+        for decision_path in _regular_files(quick / "finding-decisions", "FD*.json"):
+            try:
+                decision, raw = _read_json(decision_path)
+                _verify_tracked(root, decision_path, decision, errors)
+                digest = sha256_bytes(raw)
+                decisions_by_hash[digest] = (decision_path, decision)
+                expected = {"artifact_type", "schema_version", "decision_id", "finding_id", "decision", "reason", "corrections", "action_id", "source_findings_sha256", "provenance", "lifecycle"}
+                if set(decision) != expected or decision.get("artifact_type") != "quick-finding-decision" or decision.get("schema_version") != 1 or decision.get("lifecycle") != "append-only":
+                    errors.append(f"{decision_path.name}: invalid finding decision fields")
+                if decision.get("decision_id") != decision_path.stem or decision.get("decision") not in FINDING_DECISIONS or not isinstance(decision.get("reason"), str) or not decision.get("reason", "").strip():
+                    errors.append(f"{decision_path.name}: invalid finding decision content")
+                source_hash = decision.get("source_findings_sha256")
+                source_payload = findings_by_hash.get(str(source_hash))
+                source_findings = {item.get("finding_id"): item for item in source_payload.get("findings", []) if isinstance(item, dict)} if source_payload else {}
+                finding = source_findings.get(decision.get("finding_id"))
+                if finding is None:
+                    errors.append(f"{decision_path.name}: findings binding mismatch")
+                corrections = decision.get("corrections")
+                if not isinstance(corrections, dict) or not set(corrections).issubset(allowed_corrections):
+                    errors.append(f"{decision_path.name}: invalid finding corrections")
+                    corrections = {}
+                if finding is not None:
+                    candidate = dict(finding); candidate.update(corrections)
+                    for field in ("claim_id", "assertion", "criterion", "suggested_action"):
+                        if not isinstance(candidate.get(field), str) or not candidate[field].strip():
+                            errors.append(f"{decision_path.name}: corrected {field} is invalid")
+                    if candidate.get("location_kind") not in LOCATION_KINDS or candidate.get("evidence_level") not in EVIDENCE_LEVELS:
+                        errors.append(f"{decision_path.name}: corrected location/evidence is invalid")
+                    if not isinstance(candidate.get("uncertainties"), list) or any(not isinstance(item, str) for item in candidate.get("uncertainties", [])):
+                        errors.append(f"{decision_path.name}: corrected uncertainties are invalid")
+                    quote = candidate.get("manuscript_quote")
+                    if candidate.get("location_kind") == "exact_quote" and (not isinstance(quote, str) or not quote or manuscript.count(quote) != 1):
+                        errors.append(f"{decision_path.name}: corrected quote binding mismatch")
+                    if candidate.get("location_kind") != "exact_quote" and quote is not None:
+                        errors.append(f"{decision_path.name}: non-exact finding carries a quote")
+                action_id = decision.get("action_id")
+                if decision.get("decision") == "accept":
+                    action_entry = actions.get(str(action_id))
+                    if action_entry is None or action_entry[1].get("finding_id") != decision.get("finding_id"):
+                        errors.append(f"{decision_path.name}: RevisionAction binding mismatch")
+                    else:
+                        referenced_actions.add(str(action_id))
+                elif action_id is not None:
+                    errors.append(f"{decision_path.name}: non-accept decision must not bind an action")
+            except (OSError, WorkbenchError, KeyError, TypeError) as exc:
+                errors.append(f"{decision_path.name}: {exc}")
+        for action_id in set(actions) - referenced_actions:
+            errors.append(f"{action_id}.json: RevisionAction is not bound to an accepted finding decision")
+
         revision_runs = quick / "revision-generation-runs"
         if revision_runs.is_dir():
-            for run_dir in sorted(p for p in revision_runs.iterdir() if p.is_dir()):
+            for run_dir in sorted(path for path in revision_runs.iterdir() if path.is_dir() and not path.is_symlink()):
                 try:
-                    run, _ = _read_json(run_dir / "record.json"); prompt = (run_dir / "prompt.md").read_bytes()
-                    if sha256_bytes(prompt) != run.get("prompt", {}).get("sha256"): errors.append(f"{run_dir.name}: prompt hash mismatch")
+                    run, _ = _read_json(run_dir / "record.json")
+                    prompt = (run_dir / "prompt.md").read_bytes()
+                    if sha256_bytes(prompt) != run.get("prompt", {}).get("sha256"):
+                        errors.append(f"{run_dir.name}: prompt hash mismatch")
+                    if run.get("source_sha256") != version["source"]["sha256"] or run.get("manuscript_version_id") != version_id:
+                        errors.append(f"{run_dir.name}: revision source binding mismatch")
+                    pair_rows = run.get("finding_action_bindings")
+                    if pair_rows is None:
+                        pair_rows = [{"finding_id": finding_id, "action_id": action_id} for finding_id, action_id in zip(run.get("finding_ids", []), run.get("action_ids", []))]
+                    for pair in pair_rows if isinstance(pair_rows, list) else []:
+                        if not isinstance(pair, dict) or actions.get(str(pair.get("action_id")), ({}, {}))[1].get("finding_id") != pair.get("finding_id"):
+                            errors.append(f"{run_dir.name}: Finding–Action run binding mismatch")
+                    local_proposals: dict[str, tuple[Path, dict[str, Any]]] = {}
                     attempts = run_dir / "attempts"
                     if attempts.is_dir():
-                        for attempt in sorted(p for p in attempts.iterdir() if p.is_dir()):
-                            record, _ = _read_json(attempt / "record.json"); raw = (attempt / "response.json").read_bytes()
-                            if sha256_bytes(raw) != record.get("response_sha256"): errors.append(f"{run_dir.name}/{attempt.name}: response hash mismatch")
-                            try: value = parse_json_strict(raw); fresh, changes = _validate_revision(value, run, manuscript)
-                            except WorkbenchError as exc: fresh, changes = [str(exc)], []
-                            if (not fresh) != bool(record.get("valid")) or fresh != record.get("errors"): errors.append(f"{run_dir.name}/{attempt.name}: validation record mismatch")
+                        for attempt in sorted(path for path in attempts.iterdir() if path.is_dir() and not path.is_symlink()):
+                            record, _ = _read_json(attempt / "record.json")
+                            raw = (attempt / "response.json").read_bytes()
+                            if sha256_bytes(raw) != record.get("response_sha256"):
+                                errors.append(f"{run_dir.name}/{attempt.name}: response hash mismatch")
+                            try:
+                                value = parse_json_strict(raw); fresh, changes = _validate_revision(value, run, manuscript)
+                            except (WorkbenchError, KeyError, TypeError) as exc:
+                                fresh, changes = [str(exc)], []
+                            if (not fresh) != bool(record.get("valid")) or fresh != record.get("errors"):
+                                errors.append(f"{run_dir.name}/{attempt.name}: validation record mismatch")
                             proposal_path = attempt / "revision-patch-proposal.json"
-                            if proposal_path.is_file():
+                            if proposal_path.is_file() and not proposal_path.is_symlink():
                                 proposal, _ = _read_json(proposal_path)
-                                if fresh or proposal.get("changes") != changes: errors.append(f"{run_dir.name}/{attempt.name}: derived proposal mismatch")
-                    proposal_paths = sorted(run_dir.glob("attempts/attempt-*/revision-patch-proposal.json"))
-                    if proposal_paths:
-                        proposal_hashes = {sha256_bytes(path.read_bytes()) for path in proposal_paths}
-                        for decision_path in _regular_files(run_dir / "hunk-decisions", "HD*.json"):
-                            decision, _ = _read_json(decision_path)
-                            if decision.get("proposal_sha256") not in proposal_hashes: errors.append(f"{decision_path.name}: proposal binding mismatch")
-                except (OSError, WorkbenchError) as exc: errors.append(f"{run_dir.name}: {exc}")
-    applications = root / "documents" / "D1" / "revision-applications"
-    for path in _regular_files(applications, "AP*.json"):
+                                if fresh or proposal.get("changes") != changes or proposal.get("generation_run_id") != run_dir.name:
+                                    errors.append(f"{run_dir.name}/{attempt.name}: derived proposal mismatch")
+                                digest = sha256_bytes(proposal_path.read_bytes())
+                                local_proposals[digest] = (proposal_path, proposal)
+                                proposals[digest] = (proposal_path, proposal)
+                            elif record.get("valid"):
+                                errors.append(f"{run_dir.name}/{attempt.name}: valid attempt is missing derived proposal")
+                    for decision_path in _regular_files(run_dir / "hunk-decisions", "HD*.json"):
+                        decision, raw = _read_json(decision_path)
+                        _verify_tracked(root, decision_path, decision, errors)
+                        decision_digest = sha256_bytes(raw)
+                        hunk_decisions[decision_digest] = (decision_path, decision)
+                        expected = {"artifact_type", "schema_version", "decision_id", "change_id", "decision", "reason", "edited_text", "fact_change", "verification_note", "regeneration_prompt", "proposal_sha256", "provenance", "lifecycle"}
+                        if set(decision) != expected or decision.get("artifact_type") != "revision-hunk-decision" or decision.get("schema_version") != 1 or decision.get("lifecycle") != "append-only":
+                            errors.append(f"{decision_path.name}: invalid hunk decision fields")
+                        if decision.get("decision_id") != decision_path.stem or decision.get("decision") not in HUNK_DECISIONS or not isinstance(decision.get("reason"), str) or not decision.get("reason", "").strip():
+                            errors.append(f"{decision_path.name}: invalid hunk decision content")
+                        proposal_entry = local_proposals.get(str(decision.get("proposal_sha256")))
+                        changes = {item.get("change_id"): item for item in proposal_entry[1].get("changes", []) if isinstance(item, dict)} if proposal_entry else {}
+                        change = changes.get(decision.get("change_id"))
+                        if change is None:
+                            errors.append(f"{decision_path.name}: proposal/change binding mismatch")
+                            continue
+                        edited = decision.get("edited_text")
+                        if decision.get("decision") == "edit" and not isinstance(edited, str):
+                            errors.append(f"{decision_path.name}: edit decision requires edited_text")
+                        if decision.get("decision") != "edit" and edited is not None:
+                            errors.append(f"{decision_path.name}: edited_text is only valid for edit")
+                        manual_signal = decision.get("decision") == "edit" and bool(re.search(r"\d|https?://|[“”‘’\"]", edited or "")) and edited != change.get("replacement_text")
+                        expected_fact = bool(change.get("fact_change") or manual_signal)
+                        expected_note = change.get("verification_note") or ("UNVERIFIED: human-edited text contains a number, quotation, or link." if manual_signal else "")
+                        if decision.get("fact_change") != expected_fact or decision.get("verification_note") != expected_note:
+                            errors.append(f"{decision_path.name}: hunk fact-change fields do not recompute")
+                        regeneration = decision.get("regeneration_prompt")
+                        if decision.get("decision") == "regenerate":
+                            if not isinstance(regeneration, dict) or set(regeneration) != {"relative_path", "sha256"}:
+                                errors.append(f"{decision_path.name}: regeneration prompt binding is invalid")
+                            else:
+                                regen_path = decision_path.parent / str(regeneration.get("relative_path"))
+                                if not regen_path.is_file() or regen_path.is_symlink() or sha256_bytes(regen_path.read_bytes()) != regeneration.get("sha256"):
+                                    errors.append(f"{decision_path.name}: regeneration prompt hash mismatch")
+                        elif regeneration is not None:
+                            errors.append(f"{decision_path.name}: non-regenerate decision carries a prompt")
+                except (OSError, WorkbenchError, KeyError, TypeError) as exc:
+                    errors.append(f"{run_dir.name}: {exc}")
+
+        for completion_path in _regular_files(quick / "no-revision-completions", "NC*.json"):
+            try:
+                completion, _ = _read_json(completion_path)
+                _verify_tracked(root, completion_path, completion, errors)
+                expected = {"artifact_type", "schema_version", "completion_id", "manuscript_version_id", "source_sha256", "source_findings_sha256", "outcome", "reason", "finding_decision_ids", "finding_decision_sha256s", "provenance", "lifecycle"}
+                if set(completion) != expected or completion.get("artifact_type") != "no-revision-completion" or completion.get("schema_version") != 1 or completion.get("lifecycle") != "immutable":
+                    errors.append(f"{completion_path.name}: invalid no-revision completion fields")
+                source_hash = completion.get("source_findings_sha256")
+                findings_payload = findings_by_hash.get(str(source_hash))
+                if completion.get("completion_id") != completion_path.stem or completion.get("manuscript_version_id") != version_id or completion.get("source_sha256") != version["source"]["sha256"] or findings_payload is None:
+                    errors.append(f"{completion_path.name}: no-revision source binding mismatch")
+                    continue
+                ids = completion.get("finding_decision_ids")
+                hashes = completion.get("finding_decision_sha256s")
+                if not isinstance(ids, list) or not isinstance(hashes, list) or len(ids) != len(hashes):
+                    errors.append(f"{completion_path.name}: no-revision decision bindings are invalid")
+                    continue
+                bound: list[dict[str, Any]] = []
+                for decision_id, digest in zip(ids, hashes):
+                    entry = decisions_by_hash.get(str(digest))
+                    if entry is None or entry[1].get("decision_id") != decision_id or entry[1].get("source_findings_sha256") != source_hash:
+                        errors.append(f"{completion_path.name}: finding decision hash mismatch")
+                    else:
+                        bound.append(entry[1])
+                base_findings = findings_payload.get("findings", [])
+                latest = {item.get("finding_id"): item for item in bound}
+                expected_outcome = "no_findings" if not base_findings else "all_declined"
+                if completion.get("outcome") != expected_outcome or (base_findings and ({item.get("finding_id") for item in base_findings} != set(latest) or any(item.get("decision") not in {"reject", "defer"} for item in latest.values()))):
+                    errors.append(f"{completion_path.name}: no-revision outcome does not recompute")
+                if not isinstance(completion.get("reason"), str) or not completion.get("reason", "").strip():
+                    errors.append(f"{completion_path.name}: completion reason is invalid")
+                corrected_rows = []
+                for finding in base_findings:
+                    decision = latest.get(finding.get("finding_id"))
+                    corrected = dict(finding)
+                    if decision and isinstance(decision.get("corrections"), dict):
+                        corrected.update(decision["corrections"])
+                    corrected_rows.append({**corrected, "decision": None if decision is None else decision["decision"], "decision_id": None if decision is None else decision["decision_id"], "action_id": None if decision is None else decision.get("action_id"), "source_findings_sha256": source_hash})
+                export_dir = root / "exports" / str(completion.get("completion_id"))
+                source_export = export_dir / f"{version_id}.md"
+                if not source_export.is_file() or source_export.is_symlink() or source_export.read_bytes() != _source(root, version_id)[2]:
+                    errors.append(f"{completion_path.name}: exported manuscript hash mismatch")
+                checklist = ["# Revision checklist", "", f"- Manuscript: `{version_id}` `{completion['source_sha256']}`", f"- Outcome: `{completion['outcome']}`", f"- Reason: {completion['reason']}", "", "No revised document version was created.", ""]
+                expected_checklist = "\n".join(checklist).encode("utf-8")
+                expected_audit = {"artifact_type": "no-revision-audit-export", "schema_version": 1, "completion": completion, "atomic_findings": findings_payload, "atomic_findings_sha256": source_hash, "findings": corrected_rows, "finding_decisions": bound, "source_sha256": completion["source_sha256"]}
+                exports = {"revision-checklist.md": expected_checklist, "audit.json": json_bytes(expected_audit), "audit.md": ("# No-revision audit\n\n" + "\n".join(checklist[2:])).encode("utf-8")}
+                for name, expected_bytes in exports.items():
+                    exported = export_dir / name
+                    if not exported.is_file() or exported.is_symlink() or exported.read_bytes() != expected_bytes:
+                        errors.append(f"{completion_path.name}: {name} hash mismatch")
+            except (OSError, WorkbenchError, KeyError, TypeError) as exc:
+                errors.append(f"{completion_path.name}: {exc}")
+
+    applications_dir = root / "documents" / "D1" / "revision-applications"
+    applications: dict[str, tuple[Path, dict[str, Any], bytes]] = {}
+    for application_path in _regular_files(applications_dir, "AP*.json"):
         try:
-            application, _ = _read_json(path); _, _, output, _ = _source(root, application["output_version_id"])
-            if sha256_bytes(output) != application.get("output_source_sha256"): errors.append(f"{path.name}: output version hash mismatch")
-        except (OSError, WorkbenchError, KeyError) as exc: errors.append(f"{path.name}: {exc}")
+            application, application_raw = _read_json(application_path)
+            _verify_tracked(root, application_path, application, errors)
+            applications[str(application.get("application_id"))] = (application_path, application, application_raw)
+            expected_fields = {"artifact_type", "schema_version", "application_id", "generation_run_id", "proposal_sha256", "decision_fingerprint", "base_version_id", "base_source_sha256", "output_version_id", "output_source_sha256", "applied_changes", "rejected_changes", "decision_sha256s", "provenance", "lifecycle"}
+            if set(application) != expected_fields or application.get("artifact_type") != "revision-application-record" or application.get("schema_version") != 1 or application.get("lifecycle") != "immutable" or application.get("application_id") != application_path.stem:
+                errors.append(f"{application_path.name}: invalid application fields")
+            proposal_entry = proposals.get(str(application.get("proposal_sha256")))
+            if proposal_entry is None:
+                errors.append(f"{application_path.name}: application proposal binding mismatch")
+                continue
+            proposal = proposal_entry[1]
+            if application.get("generation_run_id") != proposal.get("generation_run_id") or application.get("base_version_id") != proposal.get("manuscript_version_id") or application.get("base_source_sha256") != proposal.get("source_sha256"):
+                errors.append(f"{application_path.name}: application base binding mismatch")
+            decision_hashes = application.get("decision_sha256s")
+            changes = proposal.get("changes")
+            if not isinstance(decision_hashes, list) or not isinstance(changes, list) or len(decision_hashes) != len(changes):
+                errors.append(f"{application_path.name}: application decision hashes are incomplete")
+                continue
+            bound_decisions: list[dict[str, Any]] = []
+            for change, digest in zip(changes, decision_hashes):
+                entry = hunk_decisions.get(str(digest))
+                if entry is None or entry[1].get("proposal_sha256") != application.get("proposal_sha256") or entry[1].get("change_id") != change.get("change_id") or entry[1].get("decision") == "regenerate":
+                    errors.append(f"{application_path.name}: bound hunk decision mismatch")
+                else:
+                    bound_decisions.append(entry[1])
+            if len(bound_decisions) != len(changes):
+                continue
+            expected_fingerprint = sha256_bytes((str(application["proposal_sha256"]) + "".join(decision_hashes)).encode())
+            if application.get("decision_fingerprint") != expected_fingerprint:
+                errors.append(f"{application_path.name}: decision fingerprint mismatch")
+            _, base_version, _, base_text = _source(root, str(application["base_version_id"]))
+            if base_version["source"]["sha256"] != application.get("base_source_sha256"):
+                errors.append(f"{application_path.name}: base source hash mismatch")
+            edits: list[tuple[int, int, str, dict[str, Any], dict[str, Any]]] = []
+            rejected: list[str] = []
+            for change, decision in zip(changes, bound_decisions):
+                if decision["decision"] == "reject":
+                    rejected.append(change["change_id"]); continue
+                replacement = decision["edited_text"] if decision["decision"] == "edit" else change["replacement_text"]
+                if change["original_quote"]:
+                    start = base_text.index(change["original_quote"]); end = start + len(change["original_quote"])
+                else:
+                    anchor = change["insertion_anchor"]; start = base_text.index(anchor) + (len(anchor) if change["change_kind"] == "insert_after" else 0); end = start
+                edits.append((start, end, replacement, change, decision))
+            output = base_text
+            for start, end, replacement, _, _ in sorted(edits, key=lambda item: (item[0], item[1]), reverse=True):
+                output = output[:start] + replacement + output[end:]
+            output_bytes = output.encode("utf-8")
+            _, _, stored_output, _ = _source(root, str(application["output_version_id"]))
+            if stored_output != output_bytes or application.get("output_source_sha256") != sha256_bytes(output_bytes):
+                errors.append(f"{application_path.name}: recomputed V2 bytes mismatch")
+            expected_applied = [{"change_id": item[3]["change_id"], "decision_id": item[4]["decision_id"], "finding_ids": item[3]["finding_ids"], "action_ids": item[3]["action_ids"], "fact_change": item[4].get("fact_change", item[3]["fact_change"]), "verification_note": item[4].get("verification_note", item[3]["verification_note"])} for item in sorted(edits, key=lambda item: (item[0], item[1]))]
+            if application.get("applied_changes") != expected_applied or application.get("rejected_changes") != rejected:
+                errors.append(f"{application_path.name}: applied/rejected change sets mismatch")
+        except (OSError, WorkbenchError, KeyError, TypeError, ValueError) as exc:
+            errors.append(f"{application_path.name}: {exc}")
+
+    resolution_runs = root / "documents" / "D1" / "resolution-runs"
+    if resolution_runs.is_dir():
+        for run_dir in sorted(path for path in resolution_runs.iterdir() if path.is_dir() and not path.is_symlink()):
+            try:
+                run, _ = _read_json(run_dir / "record.json")
+                prompt = (run_dir / "prompt.md").read_bytes()
+                if sha256_bytes(prompt) != run.get("prompt", {}).get("sha256"):
+                    errors.append(f"{run_dir.name}: resolution prompt hash mismatch")
+                application_entry = applications.get(str(run.get("application_id")))
+                if application_entry is None or sha256_bytes(application_entry[2]) != run.get("application_sha256"):
+                    errors.append(f"{run_dir.name}: resolution application binding mismatch")
+                _, version, _, manuscript = _source(root, str(run["manuscript_version_id"]))
+                if run.get("source_sha256") != version["source"]["sha256"]:
+                    errors.append(f"{run_dir.name}: resolution source binding mismatch")
+                proposal_rows: dict[str, dict[str, Any]] = {}
+                attempts = run_dir / "attempts"
+                if attempts.is_dir():
+                    for attempt in sorted(path for path in attempts.iterdir() if path.is_dir() and not path.is_symlink()):
+                        attempt_record, _ = _read_json(attempt / "record.json")
+                        raw = (attempt / "response.json").read_bytes()
+                        if sha256_bytes(raw) != attempt_record.get("response_sha256"):
+                            errors.append(f"{run_dir.name}/{attempt.name}: resolution response hash mismatch")
+                        try:
+                            value = parse_json_strict(raw); fresh, results = _validate_resolution(value, run, manuscript)
+                        except (WorkbenchError, KeyError, TypeError) as exc:
+                            fresh, results = [str(exc)], []
+                        if (not fresh) != bool(attempt_record.get("valid")) or fresh != attempt_record.get("errors"):
+                            errors.append(f"{run_dir.name}/{attempt.name}: resolution validation record mismatch")
+                        proposal_path = attempt / "resolution-proposals.json"
+                        if proposal_path.is_file() and not proposal_path.is_symlink():
+                            proposal, _ = _read_json(proposal_path)
+                            if fresh or proposal.get("results") != results or proposal.get("resolution_run_id") != run_dir.name:
+                                errors.append(f"{run_dir.name}/{attempt.name}: derived resolution proposal mismatch")
+                            proposal_rows[sha256_bytes(proposal_path.read_bytes())] = proposal
+                        elif attempt_record.get("valid"):
+                            errors.append(f"{run_dir.name}/{attempt.name}: valid resolution attempt is missing proposal")
+                for decision_path in _regular_files(run_dir / "human-decisions", "RD*.json"):
+                    decision, _ = _read_json(decision_path)
+                    _verify_tracked(root, decision_path, decision, errors)
+                    expected = {"artifact_type", "schema_version", "decision_id", "finding_id", "final_status", "reason", "proposal_sha256", "provenance", "lifecycle"}
+                    if set(decision) != expected or decision.get("artifact_type") != "finding-resolution-decision" or decision.get("schema_version") != 1 or decision.get("lifecycle") != "append-only":
+                        errors.append(f"{decision_path.name}: invalid resolution decision fields")
+                    proposal = proposal_rows.get(str(decision.get("proposal_sha256")))
+                    proposal_findings = {item.get("finding_id") for item in proposal.get("results", []) if isinstance(item, dict)} if proposal else set()
+                    if decision.get("decision_id") != decision_path.stem or decision.get("finding_id") not in proposal_findings or decision.get("final_status") not in RESOLUTION_STATUSES or not isinstance(decision.get("reason"), str) or not decision.get("reason", "").strip():
+                        errors.append(f"{decision_path.name}: invalid resolution decision content/binding")
+            except (OSError, WorkbenchError, KeyError, TypeError) as exc:
+                errors.append(f"{run_dir.name}: {exc}")
     return errors
 
 

@@ -16,6 +16,16 @@
         "producer": {"type": "string", "minLength": 1}
       }
     },
+    "revision-integrity-policy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["artifact_type", "schema_version", "enabled_at", "producer", "lifecycle"],
+      "properties": {"artifact_type": {"const": "revision-integrity-policy"}, "schema_version": {"const": 1}, "enabled_at": {"type": "string", "format": "date-time"}, "producer": {"const": "argument-revision"}, "lifecycle": {"const": "immutable"}}
+    },
+    "revision-artifact-integrity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["artifact_type", "schema_version", "artifact_relative_path", "artifact_sha256", "policy_enabled_at", "provenance", "lifecycle"],
+      "properties": {"artifact_type": {"const": "revision-artifact-integrity"}, "schema_version": {"const": 1}, "artifact_relative_path": {"type": "string", "minLength": 1}, "artifact_sha256": {"$ref": "#/$defs/digest"}, "policy_enabled_at": {"type": "string", "format": "date-time"}, "provenance": {"$ref": "#/$defs/provenance"}, "lifecycle": {"const": "immutable"}}
+    },
     "revision-generation-run": {
       "type": "object",
       "additionalProperties": false,
@@ -63,6 +73,8 @@
     }
   },
   "oneOf": [
+    {"$ref": "#/$defs/revision-integrity-policy"},
+    {"$ref": "#/$defs/revision-artifact-integrity"},
     {"$ref": "#/$defs/revision-generation-run"},
     {"$ref": "#/$defs/revision-result-attempt"},
     {"$ref": "#/$defs/revision-patch-proposal"},
