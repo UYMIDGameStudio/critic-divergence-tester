@@ -86,3 +86,11 @@ The candidates were generated outside both repositories and accompanied by a
 RevisionAction coverage audit. They remain outside the Gate corpus until the
 author adopts them. This checkpoint records authorization and lifecycle only;
 it deliberately does not publish manuscript text or local private paths.
+
+Both final candidate byte streams were also exercised in disposable copies of
+the V1 workspaces. Each imported as an immutable V2, accepted a valid Raw IR,
+deterministically generated a Reviewed IR and structural diff, and passed
+`ir verify-project`. The preflight Reviewed IRs contain 15 Claims each. This
+proves that the candidates are technically importable; it does not turn a model
+draft into an author version. The preflight copies are excluded from the Gate B
+corpus unless and until the author explicitly adopts the corresponding text.
