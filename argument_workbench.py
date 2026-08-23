@@ -129,6 +129,7 @@ def _parent(role: str, artifact: str, data: bytes) -> dict[str, str]:
 @dataclass(frozen=True)
 class WorkspacePaths:
     root: Path
+    version_id: str = VERSION_ID
 
     @property
     def project(self) -> Path:
@@ -143,8 +144,12 @@ class WorkspacePaths:
         return self.document_dir / "document.json"
 
     @property
+    def versions_dir(self) -> Path:
+        return self.document_dir / "versions"
+
+    @property
     def version_dir(self) -> Path:
-        return self.document_dir / "versions" / VERSION_ID
+        return self.versions_dir / self.version_id
 
     @property
     def version(self) -> Path:
@@ -179,12 +184,47 @@ class WorkspacePaths:
         return self.reviewed_dir / "argument-map.md"
 
 
-def workspace_paths(raw: Path | str) -> WorkspacePaths:
+def _validate_version_id(version_id: str) -> str:
+    normalized = version_id.strip().upper()
+    if re.fullmatch(r"V[1-9][0-9]*", normalized) is None:
+        raise WorkbenchError("version ID must be V1..Vn")
+    return normalized
+
+
+def list_version_ids(raw: WorkspacePaths | Path | str) -> list[str]:
+    root = raw.root if isinstance(raw, WorkspacePaths) else Path(raw).resolve()
+    versions_dir = root / "documents" / DOCUMENT_ID / "versions"
+    if not versions_dir.exists():
+        return []
+    if versions_dir.is_symlink() or not versions_dir.is_dir():
+        raise WorkbenchError("versions must be a regular non-symlink directory")
+    version_ids: list[str] = []
+    for path in versions_dir.iterdir():
+        if path.is_symlink():
+            raise WorkbenchError(f"version directory must not be a symlink: {path}")
+        if not path.is_dir() or re.fullmatch(r"V[1-9][0-9]*", path.name) is None:
+            raise WorkbenchError(f"unexpected entry in versions directory: {path.name}")
+        version_ids.append(path.name)
+    return sorted(version_ids, key=lambda value: int(value[1:]))
+
+
+def workspace_paths(
+    raw: WorkspacePaths | Path | str,
+    version_id: str | None = None,
+) -> WorkspacePaths:
+    if isinstance(raw, WorkspacePaths):
+        if version_id is None:
+            return raw
+        return WorkspacePaths(raw.root, _validate_version_id(version_id))
     candidate = Path(raw)
     if candidate.is_symlink():
         raise WorkbenchError("project directory must not be a symbolic link")
     root = candidate.resolve()
-    return WorkspacePaths(root)
+    selected = _validate_version_id(version_id) if version_id is not None else None
+    if selected is None:
+        versions = list_version_ids(root)
+        selected = versions[-1] if versions else VERSION_ID
+    return WorkspacePaths(root, selected)
 
 
 def _safe_source_name(name: str) -> bool:
@@ -332,6 +372,117 @@ def initialize_workspace(
     return WorkspacePaths(target)
 
 
+def import_document_version(
+    project_dir: WorkspacePaths | Path | str,
+    manuscript: Path | str,
+    *,
+    parent_version: str | None = None,
+) -> WorkspacePaths:
+    """Append one immutable manuscript version without changing earlier versions."""
+    root_paths = workspace_paths(project_dir)
+    versions = list_version_ids(root_paths)
+    if not versions:
+        raise WorkbenchError("project has no V1; initialize it before importing a version")
+    expected_numbers = list(range(1, len(versions) + 1))
+    if [int(value[1:]) for value in versions] != expected_numbers:
+        raise WorkbenchError("version IDs must be continuous from V1")
+    latest_id = versions[-1]
+    selected_parent = (
+        _validate_version_id(parent_version)
+        if parent_version is not None
+        else latest_id
+    )
+    if selected_parent != latest_id:
+        raise WorkbenchError(
+            f"new versions must descend from current {latest_id}; branching is not yet supported"
+        )
+    parent_paths = WorkspacePaths(root_paths.root, selected_parent)
+    parent_errors = verify_workspace(parent_paths)
+    if parent_errors:
+        raise WorkbenchError(
+            f"parent version {selected_parent} is invalid: " + "; ".join(parent_errors)
+        )
+
+    source_path = Path(manuscript)
+    resolved_source = source_path.resolve()
+    if source_path.is_symlink() or not resolved_source.is_file():
+        raise WorkbenchError(
+            f"manuscript must be a regular non-symlink file: {resolved_source}"
+        )
+    source_bytes = resolved_source.read_bytes()
+    try:
+        source_text = source_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise WorkbenchError(f"manuscript is not UTF-8: {exc}") from exc
+    if not source_text.strip():
+        raise WorkbenchError("manuscript must not be empty")
+    if not _safe_source_name(resolved_source.name):
+        raise WorkbenchError("manuscript filename is not a safe basename")
+    _, parent_source_bytes, _ = _workspace_source(parent_paths)
+    if source_bytes == parent_source_bytes:
+        raise WorkbenchError("new DocumentVersion must differ from its parent source bytes")
+
+    project, _ = _read_json(root_paths.project)
+    document, document_bytes = _read_json(root_paths.document)
+    parent_record, parent_record_bytes = _read_json(parent_paths.version)
+    next_id = f"V{len(versions) + 1}"
+    target_paths = WorkspacePaths(root_paths.root, next_id)
+    if target_paths.version_dir.exists() or target_paths.version_dir.is_symlink():
+        raise WorkbenchError(f"refusing to overwrite existing version: {next_id}")
+    created_at = utc_now()
+    source_relative = PurePosixPath("source", resolved_source.name).as_posix()
+    version = {
+        "schema_version": 1,
+        "artifact": "document-version",
+        "artifact_id": next_id,
+        "lifecycle": "immutable",
+        "provenance": _provenance("human-confirmed", created_at, "local-user"),
+        "parents": [
+            _parent("document", "argument-document", document_bytes),
+            _parent("parent-version", "document-version", parent_record_bytes),
+        ],
+        "project_id": project["project_id"],
+        "document_id": document["document_id"],
+        "version_id": next_id,
+        "source": {
+            "name": resolved_source.name,
+            "relative_path": source_relative,
+            "sha256": sha256_bytes(source_bytes),
+        },
+        "parent_version": selected_parent,
+    }
+    contract_errors = validate_artifact(version)
+    if contract_errors:
+        raise WorkbenchError(
+            "internal DocumentVersion contract error: " + "; ".join(contract_errors)
+        )
+    if parent_record.get("version_id") != selected_parent:
+        raise WorkbenchError("parent version record identity does not match its directory")
+    prompt = build_ir_extraction_prompt(
+        source_text,
+        source_name=resolved_source.name,
+        source_sha256=sha256_bytes(source_bytes),
+    ).encode("utf-8")
+    temporary = Path(
+        tempfile.mkdtemp(prefix=f".{next_id}.", dir=target_paths.versions_dir)
+    )
+    try:
+        archived_source = temporary / Path(source_relative)
+        archived_source.parent.mkdir(parents=True, exist_ok=True)
+        _write_new(archived_source, source_bytes)
+        _write_new(temporary / "document-version.json", json_bytes(version))
+        _write_new(temporary / "extraction-prompt.md", prompt)
+        (temporary / "raw-ir").mkdir()
+        (temporary / "corrections").mkdir()
+        (temporary / "reviewed-ir").mkdir()
+        os.replace(temporary, target_paths.version_dir)
+    except Exception:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+        raise
+    return target_paths
+
+
 def _workspace_source(paths: WorkspacePaths) -> tuple[dict[str, Any], bytes, Path]:
     version, _ = _read_json(paths.version)
     source_path = paths.version_dir / str(version["source"]["relative_path"])
@@ -341,6 +492,31 @@ def _workspace_source(paths: WorkspacePaths) -> tuple[dict[str, Any], bytes, Pat
     if sha256_bytes(source_bytes) != version["source"]["sha256"]:
         raise WorkbenchError("workspace source hash does not match document-version")
     return version, source_bytes, source_path
+
+
+def document_version_chain(
+    paths_or_project: WorkspacePaths | Path | str,
+) -> list[tuple[dict[str, Any], bytes]]:
+    """Load current DocumentVersion followed by every exact declared ancestor."""
+    paths = workspace_paths(paths_or_project)
+    chain: list[tuple[dict[str, Any], bytes]] = []
+    seen: set[str] = set()
+    current_id: str | None = paths.version_id
+    while current_id is not None:
+        if current_id in seen:
+            raise WorkbenchError("DocumentVersion parent chain contains a cycle")
+        seen.add(current_id)
+        value, data = _read_json(
+            paths.versions_dir / current_id / "document-version.json"
+        )
+        if value.get("version_id") != current_id:
+            raise WorkbenchError(
+                f"DocumentVersion {current_id} identity does not match directory"
+            )
+        chain.append((value, data))
+        parent = value.get("parent_version")
+        current_id = str(parent) if parent is not None else None
+    return chain
 
 
 def _structurally_admissible_ir(value: object) -> list[str]:
@@ -1052,6 +1228,39 @@ def verify_workspace(
     project_value = entries[0][0]
     document_value = entries[1][0]
     version_value = entries[2][0]
+    if version_value.get("version_id") != paths.version_id:
+        errors.append("document-version identity does not match its directory")
+    cursor = version_value
+    seen_versions = {paths.version_id}
+    while cursor.get("parent_version") is not None:
+        parent_id = str(cursor["parent_version"])
+        if parent_id in seen_versions:
+            errors.append("DocumentVersion parent chain contains a cycle")
+            break
+        seen_versions.add(parent_id)
+        parent_path = paths.versions_dir / parent_id / "document-version.json"
+        try:
+            parent_value, parent_bytes = _read_json(parent_path)
+        except (OSError, WorkbenchError) as exc:
+            errors.append(f"parent-version {parent_id}: {exc}")
+            break
+        parent_errors = validate_artifact(parent_value)
+        errors.extend(
+            f"parent-version {parent_id}: {error}" for error in parent_errors
+        )
+        parent_by_role = {
+            parent.get("role"): parent
+            for parent in cursor.get("parents", [])
+            if isinstance(parent, dict)
+        }
+        if parent_by_role.get("parent-version", {}).get("sha256") != sha256_bytes(
+            parent_bytes
+        ):
+            errors.append(f"parent-version {parent_id}: exact-byte parent hash is broken")
+        if parent_value.get("version_id") != parent_id:
+            errors.append(f"parent-version {parent_id}: identity does not match directory")
+        entries.append((parent_value, parent_bytes))
+        cursor = parent_value
     if (
         isinstance(project_value, dict)
         and isinstance(document_value, dict)
@@ -1206,7 +1415,7 @@ def verify_workspace(
     try:
         from argument_review import verify_reviews
 
-        errors.extend(f"reviews: {error}" for error in verify_reviews(paths.root))
+        errors.extend(f"reviews: {error}" for error in verify_reviews(paths))
     except ImportError as exc:
         errors.append(f"reviews: cannot load review verifier: {exc}")
     try:
@@ -1214,7 +1423,7 @@ def verify_workspace(
 
         errors.extend(
             f"perspective reviews: {error}"
-            for error in verify_perspective_reviews(paths.root)
+            for error in verify_perspective_reviews(paths)
         )
     except ImportError as exc:
         errors.append(f"perspective reviews: cannot load verifier: {exc}")
@@ -1223,7 +1432,7 @@ def verify_workspace(
 
         errors.extend(
             f"adjudications: {error}"
-            for error in verify_adjudications(paths.root)
+            for error in verify_adjudications(paths)
         )
     except ImportError as exc:
         errors.append(f"adjudications: cannot load verifier: {exc}")
@@ -1232,7 +1441,7 @@ def verify_workspace(
 
         errors.extend(
             f"direct baselines: {error}"
-            for error in verify_direct_review_baselines(paths.root)
+            for error in verify_direct_review_baselines(paths)
         )
     except ImportError as exc:
         errors.append(f"direct baselines: cannot load verifier: {exc}")
@@ -1241,7 +1450,7 @@ def verify_workspace(
 
         errors.extend(
             f"work sessions: {error}"
-            for error in verify_work_sessions(paths.root)
+            for error in verify_work_sessions(paths)
         )
     except ImportError as exc:
         errors.append(f"work sessions: cannot load verifier: {exc}")
@@ -1250,10 +1459,44 @@ def verify_workspace(
 
         errors.extend(
             f"status triage: {error}"
-            for error in verify_review_status_triage(paths.root)
+            for error in verify_review_status_triage(paths)
         )
     except ImportError as exc:
         errors.append(f"status triage: cannot load verifier: {exc}")
+    return errors
+
+
+def verify_project_versions(project_dir: WorkspacePaths | Path | str) -> list[str]:
+    """Verify every immutable DocumentVersion and every version-local lifecycle."""
+    root_paths = workspace_paths(project_dir)
+    errors: list[str] = []
+    try:
+        versions = list_version_ids(root_paths)
+    except WorkbenchError as exc:
+        return [str(exc)]
+    if not versions:
+        return ["project has no DocumentVersion"]
+    numbers = [int(version_id[1:]) for version_id in versions]
+    if numbers != list(range(1, len(versions) + 1)):
+        errors.append("DocumentVersion IDs must be continuous from V1")
+    previous_source_hash: str | None = None
+    for index, version_id in enumerate(versions):
+        paths = WorkspacePaths(root_paths.root, version_id)
+        version_errors = verify_workspace(paths)
+        errors.extend(f"{version_id}: {error}" for error in version_errors)
+        try:
+            record, _ = _read_json(paths.version)
+        except (OSError, WorkbenchError):
+            continue
+        expected_parent = None if index == 0 else versions[index - 1]
+        if record.get("parent_version") != expected_parent:
+            errors.append(
+                f"{version_id}: parent_version must be {expected_parent!r}"
+            )
+        source_hash = record.get("source", {}).get("sha256")
+        if previous_source_hash is not None and source_hash == previous_source_hash:
+            errors.append(f"{version_id}: source bytes duplicate its parent version")
+        previous_source_hash = str(source_hash)
     return errors
 
 

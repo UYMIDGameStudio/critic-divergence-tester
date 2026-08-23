@@ -567,6 +567,24 @@ perspective-reviews/PV1/
 
 同一 Claim 可以同时显示 Social Science FAIL、Individualism FAIL 和 Contrastivism PASS；系统不会把它们压成 `66% confidence`。《结构的替身》C7 已完成一次真实 vertical-slice 运行，artifact hashes、框架分歧和暴露出的 cache lifecycle 修复记录在 [`docs/phase4-perspective-demo.md`](docs/phase4-perspective-demo.md)。Phase 4 当前仍不包含跨版本 lineage、Finding resolution、Citation verification 或 GUI。
 
+### Phase 5：导入新的 DocumentVersion
+
+修改稿不覆盖 V1。把新稿导入同一个项目后，程序创建连续的 `V2`、`V3`……，每个版本保存自己的 source、extraction prompt、Raw IR、corrections、Reviewed IR、reviews 和人工历史：
+
+```powershell
+py -3 critic_runner.py ir import-version $project .\draft-v2.md
+
+# 普通 IR 命令默认作用于最新版本，此时是 V2
+py -3 critic_runner.py ir collect $project --file .\argument-ir-v2.json `
+  --producer-label "模型标签"
+py -3 critic_runner.py ir inspect $project
+
+# verify-project 会验证 V1..当前版本，而不只检查最新目录
+py -3 critic_runner.py ir verify-project $project
+```
+
+新版本必须与当前 parent 的原稿精确字节不同，并通过 `parent-version` SHA-256 绑定前一份 `document-version.json`。当前产品只允许线性 `V1 → V2 → V3`，尚不开放分支版本；这避免在 lineage 与 Finding resolution contract 稳定前暗中引入未定义的合并语义。导入只创建版本和 source-bound extraction prompt，不会复制 V1 的 Claim ID，也不会声称新旧 Claim 相同。Structural Diff、模型 lineage proposal 和人工确认在后续 Phase 5 增量中生成。
+
 ### 兼容的低层 Argument IR 流程
 
 先让工具为原稿生成一份**抽取提示词**：

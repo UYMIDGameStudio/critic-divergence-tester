@@ -40,6 +40,7 @@ from argument_workbench import (
     _read_json,
     _write_new,
     correction_entries,
+    document_version_chain,
     json_bytes,
     list_attempts,
     parse_json_strict,
@@ -297,7 +298,7 @@ def prepare_perspective_review(
         raise WorkbenchError("Perspective Lens protocol must be UTF-8") from exc
     protocol_sha256 = sha256_bytes(protocol_bytes)
 
-    for existing in list_perspective_reviews(workspace.root):
+    for existing in list_perspective_reviews(workspace):
         record, _ = _read_json(existing.record)
         parents = {
             parent.get("role"): parent
@@ -320,7 +321,7 @@ def prepare_perspective_review(
         ):
             return existing, False
 
-    review_id = _next_review_id(workspace.root)
+    review_id = _next_review_id(workspace)
     paths = PerspectiveReviewPaths(workspace, review_id)
     created_at = utc_now()
     protocol_record = {
@@ -602,7 +603,7 @@ def collect_perspective_results(
         rebuild_perspective_attempt(paths, attempt_id)
         from argument_adjudication import rebuild_adjudication_cache
 
-        rebuild_adjudication_cache(paths.workspace.root)
+        rebuild_adjudication_cache(paths.workspace)
     return attempt_dir, record
 
 
@@ -963,8 +964,9 @@ def verify_perspective_reviews(project_dir: Path | str) -> list[str]:
         errors.append("Perspective Review IDs must be continuous from PV1")
     base_entries: list[tuple[object, bytes]] = []
     try:
-        for path in (workspace.project, workspace.document, workspace.version):
+        for path in (workspace.project, workspace.document):
             base_entries.append(_read_json(path))
+        base_entries.extend(document_version_chain(workspace))
         base_entries.extend((value, data) for _, value, data in list_attempts(workspace))
         base_entries.extend(
             (value, data) for _, value, data in correction_entries(workspace)

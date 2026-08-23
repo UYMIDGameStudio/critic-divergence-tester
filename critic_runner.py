@@ -41,11 +41,13 @@ from argument_workbench import (
     PASTE_END_MARKER as IR_PASTE_END_MARKER,
     WorkbenchError,
     collect_raw_attempt,
+    import_document_version,
     initialize_workspace,
     rebuild_workspace,
     run_inspector,
     selected_attempt,
     verify_workspace,
+    verify_project_versions,
     workspace_paths,
 )
 from argument_review import (
@@ -2999,6 +3001,19 @@ def ir_init_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def ir_import_version_command(args: argparse.Namespace) -> int:
+    source_path = resolve_manuscript_path(args.manuscript)
+    paths = import_document_version(
+        args.project,
+        source_path,
+        parent_version=args.parent_version,
+    )
+    print(f"DocumentVersion: {paths.version_id}")
+    print(f"Archived source: {paths.version_dir / 'source' / source_path.name}")
+    print(f"Extraction prompt: {paths.prompt}")
+    return 0
+
+
 def _read_ir_paste_bytes() -> bytes:
     print(
         "Paste the model's pure Argument IR JSON. On a new line enter "
@@ -3118,7 +3133,7 @@ def ir_rebuild_command(args: argparse.Namespace) -> int:
 
 
 def ir_verify_project_command(args: argparse.Namespace) -> int:
-    errors = verify_workspace(args.project)
+    errors = verify_project_versions(args.project)
     return _ir_print_validation("argument-workbench-project", errors)
 
 
@@ -4448,6 +4463,20 @@ def parser() -> argparse.ArgumentParser:
     )
     ir_init_parser.add_argument("--title", help="project/document title (default: filename stem)")
     ir_init_parser.set_defaults(func=ir_init_command)
+
+    ir_import_version_parser = ir_sub.add_parser(
+        "import-version",
+        help="append a new immutable manuscript DocumentVersion",
+    )
+    ir_import_version_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    ir_import_version_parser.add_argument("manuscript", help="new UTF-8 manuscript path")
+    ir_import_version_parser.add_argument(
+        "--parent-version",
+        help="parent Version ID (default: current latest; branching is not yet supported)",
+    )
+    ir_import_version_parser.set_defaults(func=ir_import_version_command)
 
     ir_collect_parser = ir_sub.add_parser(
         "collect",

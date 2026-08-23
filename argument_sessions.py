@@ -22,6 +22,7 @@ from argument_workbench import (
     _provenance,
     _read_json,
     _write_new,
+    document_version_chain,
     json_bytes,
     utc_now,
     workspace_paths,
@@ -115,7 +116,7 @@ def start_work_session(
     workspace = workspace_paths(project_dir)
     project, _ = _read_json(workspace.project)
     version, version_bytes = _read_json(workspace.version)
-    existing = list_work_sessions(workspace.root)
+    existing = list_work_sessions(workspace)
     open_sessions = [entry for entry in existing if entry.record is None]
     if open_sessions:
         raise WorkbenchError(
@@ -349,7 +350,7 @@ def verify_work_sessions(project_dir: Path | str) -> list[str]:
         project, project_bytes = _read_json(workspace.project)
         document, document_bytes = _read_json(workspace.document)
         version, version_bytes = _read_json(workspace.version)
-        entries = list_work_sessions(workspace.root)
+        entries = list_work_sessions(workspace)
     except (OSError, WorkbenchError) as exc:
         return [str(exc)]
     for entry in entries:
@@ -368,9 +369,9 @@ def verify_work_sessions(project_dir: Path | str) -> list[str]:
         bundle = [
             (project, project_bytes),
             (document, document_bytes),
-            (version, version_bytes),
-            (entry.start, entry.start_bytes),
         ]
+        bundle.extend(document_version_chain(workspace))
+        bundle.append((entry.start, entry.start_bytes))
         if entry.record is not None and entry.record_bytes is not None:
             record_errors = validate_artifact(entry.record)
             errors.extend(f"{prefix}/record: {error}" for error in record_errors)

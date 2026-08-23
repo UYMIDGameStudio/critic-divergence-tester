@@ -112,9 +112,9 @@ def render_claim_lenses(project_dir: Path | str, claim_id: str) -> str:
         raise WorkbenchError(f"unknown current Claim: {target}")
 
     current_sha256 = sha256_bytes(reviewed_ir_bytes)
-    rule_indexes = _current_rule_indexes(workspace.root, current_sha256)
+    rule_indexes = _current_rule_indexes(workspace, current_sha256)
     perspective_indexes = _current_perspective_indexes(
-        workspace.root, current_sha256
+        workspace, current_sha256
     )
     lines = [
         f"# Review Lenses — {target}",

@@ -341,6 +341,10 @@ def validate_document_version(value: object) -> list[str]:
         {"document"} if parent_version is None else {"document", "parent-version"},
         errors,
     )
+    expected_parent_artifacts = {"document": "argument-document"}
+    if parent_version is not None:
+        expected_parent_artifacts["parent-version"] = "document-version"
+    _require_parent_artifacts(item, expected_parent_artifacts, errors)
     source = item.get("source")
     if not isinstance(source, dict):
         errors.append("source must be an object")

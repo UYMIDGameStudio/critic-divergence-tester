@@ -57,6 +57,8 @@ Parent hashes always cover the exact file bytes on disk. Artifact objects do not
 
 An accepted adjudication is incomplete unless the same validated bundle contains at least one RevisionAction linked to its exact hash. ClaimLineage uses arrays on both sides so split and merge are native rather than encoded as fake one-to-one identities. A model proposal is an immutable `status=proposed` artifact; a human confirmation or rejection is a second artifact that binds the exact proposal hash. Human-originated lineage may be confirmed directly but is still marked `proposed_by=human`.
 
+DocumentVersion IDs are version-local sequence labels, not Claim identity. `V1` binds the immutable Document; each later version additionally binds the exact previous `document-version.json` bytes through a `parent-version` parent and records the corresponding `parent_version` ID. The Phase 5 application currently enforces a continuous linear chain and rejects identical adjacent source bytes. Every version owns an independent Raw/Correction/Reviewed/Review lifecycle; selecting the latest version never relocates or rewrites an earlier directory.
+
 ## Field provenance in Reviewed IR
 
 `reviewed-ir/argument-ir.json` deliberately remains Argument IR schema v1 so the existing `ir validate` and `ir plan` commands keep working. Its companion `reviewed-ir/record.json` is the formal Reviewed IR artifact and contains:

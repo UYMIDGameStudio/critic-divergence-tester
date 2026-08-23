@@ -23,6 +23,7 @@ from argument_workbench import (
     _parent,
     _read_json,
     _write_new,
+    document_version_chain,
     json_bytes,
     workspace_paths,
 )
@@ -230,7 +231,7 @@ def collect_direct_review_baseline(
         raise WorkbenchError(
             "inline baseline prompt does not contain the exact manuscript bytes"
         )
-    existing = list_direct_review_baselines(workspace.root)
+    existing = list_direct_review_baselines(workspace)
     baseline_id = f"DB{len(existing) + 1}"
     paths = DirectBaselinePaths(workspace.version_dir, baseline_id)
     record = {
@@ -330,7 +331,7 @@ def verify_direct_review_baselines(project_dir: Path | str) -> list[str]:
         version, version_bytes = _read_json(workspace.version)
         project, project_bytes = _read_json(workspace.project)
         document, document_bytes = _read_json(workspace.document)
-        entries = list_direct_review_baselines(workspace.root)
+        entries = list_direct_review_baselines(workspace)
     except (OSError, WorkbenchError) as exc:
         return [str(exc)]
     for paths, record, record_bytes in entries:
@@ -396,9 +397,9 @@ def verify_direct_review_baselines(project_dir: Path | str) -> list[str]:
         entries_for_bundle = [
             (project, project_bytes),
             (document, document_bytes),
-            (version, version_bytes),
-            (record, record_bytes),
         ]
+        entries_for_bundle.extend(document_version_chain(workspace))
+        entries_for_bundle.append((record, record_bytes))
         bundle_errors = validate_contract_bundle(entries_for_bundle)
         errors.extend(f"{prefix}: {error}" for error in bundle_errors)
     return errors
