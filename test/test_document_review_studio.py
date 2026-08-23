@@ -4,6 +4,7 @@ import io
 import hashlib
 import json
 import shutil
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -15,7 +16,7 @@ import document_review_ingest
 from document_review_ingest import IngestionError, ingest_bytes, safe_upload_name
 from document_review_model import CRITIC_DIMENSIONS, DocumentBlock, DocumentLocation, ExtractionWarning, QualitySignals, RawFileBinding, StructuredDocument, stable_id
 from document_review_studio import DocumentReviewProject, ReviewStudioError
-from document_review_ui import render_studio_shell
+from document_review_ui import StudioApp, render_studio_shell
 
 
 def _docx(*, revised: bool = False) -> bytes:
@@ -84,6 +85,9 @@ class DocumentReviewStudioTests(unittest.TestCase):
         self.assertIn("experimental preview", shell)
         self.assertIn("运行选中的本地预检", shell)
         self.assertIn("导出 / 导入独立 AI 审查", shell)
+        self.assertIn("普通 JSON（人工关联，较弱审计）", shell)
+        self.assertIn("删除本地项目", shell)
+        self.assertIn("一键修复可自动修复项", shell)
         self.assertIn("导出五份独立协议", shell)
         self.assertIn("模型原始 JSON 响应", shell)
         self.assertIn("抽取内容与定位预览", shell)
@@ -334,7 +338,39 @@ class DocumentReviewStudioTests(unittest.TestCase):
             payload = {"critic": request["critic"], "source_sha256": project.document().source.sha256, "findings": []}
             with self.assertRaises(ReviewStudioError):
                 project.collect_model_audit(request["critic"], json.dumps(payload), provider=request["provider"], model=request["model"], request_id=request["request_id"])
-            self.assertFalse(list((project.root / "audits" / request["critic"]).glob("*.json")))
+            run = project.collect_model_audit(request["critic"], json.dumps(payload), provider=request["provider"], model=request["model"], request_id=request["request_id"], binding_mode="manual_association")
+            run_path = project.root / "audits" / request["critic"] / f"{run.run_id}.json"
+            saved = json.loads(run_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["response_binding"]["mode"], "manual-association")
+            self.assertFalse(saved["response_binding"]["request_echo_verified"])
+            self.assertEqual(saved["declared_model_metadata"]["response_binding"], "manual-association")
+
+    def test_local_project_can_be_deleted_only_from_project_library(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="draft.txt", content=b"Draft text\n")
+            app = StudioApp.create(temp_dir)
+            deleted = app.delete_project(project.root.name)
+            self.assertFalse(project.root.exists())
+            self.assertIsNone(deleted.project)
+            with self.assertRaises(ReviewStudioError):
+                app.delete_project("..\\outside.document-review-studio")
+
+    def test_environment_repair_action_returns_to_dependency_check(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch("document_review_ui.repair_dependencies") as repair:
+            app = StudioApp.create(temp_dir)
+            result = app.repair_environment()
+            repair.assert_called_once_with(None)
+            self.assertIn("dependencies", result.view())
+
+    def test_python_dependency_repair_uses_current_interpreter(self) -> None:
+        completed = type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        with patch("document_review_ingest.subprocess.run", return_value=completed) as run, patch("document_review_ingest.doctor_dependencies", return_value=[]):
+            self.assertEqual(document_review_ingest.repair_dependency("pypdf"), [])
+        command = run.call_args.args[0]
+        self.assertEqual(command[0], sys.executable)
+        self.assertEqual(command[1:3], ["-m", "pip"])
+        self.assertEqual(command[3], "install")
+        self.assertEqual(command[4], "pypdf>=5.0,<7.0")
 
     def test_independent_ai_protocol_export_and_import_preserve_invocation_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -996,7 +996,7 @@ class DocumentReviewProject:
         self._update_state(ai_review_state="protocols_ready", last_ai_protocol_at=_now())
         return rows
 
-    def collect_model_audit(self, critic: str, response: bytes | str, *, provider: str = "external", model: str = "unlabelled", request_id: str | None = None, model_label: str | None = None) -> AuditRun:
+    def collect_model_audit(self, critic: str, response: bytes | str, *, provider: str = "external", model: str = "unlabelled", request_id: str | None = None, model_label: str | None = None, binding_mode: str = "strict") -> AuditRun:
         """Validate and archive one provider-neutral model response.
 
         The raw response is stored separately from the parsed run.  A model
@@ -1014,6 +1014,8 @@ class DocumentReviewProject:
             raise ReviewStudioError("未知审查维度")
         if model_label and model == "unlabelled":
             model = model_label
+        if binding_mode not in {"strict", "manual_association"}:
+            raise ReviewStudioError("AI 响应绑定模式必须是 strict 或 manual_association")
         if not provider.strip() or not model.strip():
             raise ReviewStudioError("模型审查导入必须记录 provider 和 model")
         requests: list[tuple[Path, dict[str, Any]]] = []
@@ -1057,9 +1059,17 @@ class DocumentReviewProject:
             "provider": request.get("provider"),
             "model": request.get("model"),
         }
-        for field, expected in expected_envelope.items():
-            if parsed.get(field) != expected:
-                raise ReviewStudioError(f"模型返回的 {field} 未与已导出请求逐项匹配")
+        present_envelope_fields = {field for field in expected_envelope if field in parsed}
+        if binding_mode == "strict" or present_envelope_fields:
+            if present_envelope_fields != set(expected_envelope):
+                missing = ", ".join(sorted(set(expected_envelope) - present_envelope_fields))
+                raise ReviewStudioError(f"模型响应只回显了部分请求绑定字段；缺少：{missing}")
+            for field, expected in expected_envelope.items():
+                if parsed.get(field) != expected:
+                    raise ReviewStudioError(f"模型返回的 {field} 未与已导出请求逐项匹配")
+            response_binding = "strict-response-envelope"
+        else:
+            response_binding = "manual-association"
         if parsed.get("critic") != critic:
             raise ReviewStudioError("模型返回的 critic 与提交维度不一致")
         if parsed.get("source_sha256") != document.source.sha256:
@@ -1088,7 +1098,8 @@ class DocumentReviewProject:
         response_parents = [_parent_ref(self.root, prompt_path, role="critic-prompt"), _parent_ref(self.root, request_path, role="ai-review-request")]
         _write_tracked(self.root, raw_path, raw, parents=response_parents, provenance="model-raw-response")
         run_value = run.to_dict()
-        run_value["declared_model_metadata"] = {"provider": provider, "model": model, "request_id": request["request_id"], "prompt_sha256": request["prompt_sha256"], "prompt_file_sha256": request["prompt_file_sha256"], "raw_response_sha256": _sha256(raw), "import_mode": "manual"}
+        run_value["declared_model_metadata"] = {"provider": provider, "model": model, "request_id": request["request_id"], "prompt_sha256": request["prompt_sha256"], "prompt_file_sha256": request["prompt_file_sha256"], "raw_response_sha256": _sha256(raw), "import_mode": "manual", "response_binding": response_binding}
+        run_value["response_binding"] = {"mode": response_binding, "request_echo_verified": response_binding == "strict-response-envelope", "association_note": "模型响应未回显请求字段；provider/model/request_id 由用户在当前导出请求上手动关联" if response_binding == "manual-association" else "响应逐项回显并匹配当前导出请求"}
         run_path = directory / f"{run.run_id}.json"
         _write_tracked(self.root, run_path, canonical_json(run_value), parents=[*response_parents, _parent_ref(self.root, raw_path, role="raw-model-response")], provenance="model-parsed-audit")
         self._append_event("model_audit_imported", {"run_id": run.run_id, "critic": critic, "declared_model_metadata": run_value["declared_model_metadata"], "finding_ids": [finding.finding_id for finding in findings]})

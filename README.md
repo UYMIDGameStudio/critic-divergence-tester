@@ -32,8 +32,10 @@ Document Review Studio 当前标记为 **experimental preview**。它支持 Mark
 字节与 SHA-256 永不覆盖，解析警告、页码/表格单元格定位、人工裁决和导出
 审计包都保存在本地项目中。详细限制和环境要求见
 [`docs/document-review-studio.md`](docs/document-review-studio.md)。
-独立 AI 导入要求原始响应回显所选请求的 `request_id`、`prompt_sha256`、provider
-和 model；人工导入只记录 `declared_model_metadata`，不冒充直接模型调用。
+独立 AI 导入默认要求原始响应回显所选请求的 `request_id`、`prompt_sha256`、provider
+和 model；如果模型做不到，可在界面或 CLI 明确选择“普通 JSON（人工关联）”，接受不带
+回显字段的有效 JSON，但会记录较弱的 `response_binding`，不声称响应确由该 prompt 生成。
+两种模式都只记录 `declared_model_metadata`，不冒充直接模型调用。
 识别确认由受保护的 extraction decision 产物授权，`state.json` 只是可重建缓存；
 本地索引可发现普通修改/删除，但强回滚仍需要项目外可信检查点或签名。
 
@@ -65,7 +67,7 @@ flowchart LR
 - Windows：`%LOCALAPPDATA%\ArgumentWorkbench\projects`
 - macOS/Linux：`$XDG_DATA_HOME/argument-workbench/projects`，未设置时为 `~/.local/share/argument-workbench/projects`
 
-每个项目都可单独复制备份或删除。正式导出位于项目内的 `exports/<application-id>/`，包含 V2 Markdown、可执行修订清单、审计 Markdown 和机器可读审计记录。
+每个项目都可单独复制备份或从项目库页面删除；删除前会二次确认且不可撤销。正式导出位于项目内的 `exports/<application-id>/`，包含 V2 Markdown、可执行修订清单、审计 Markdown 和机器可读审计记录。环境自检可用 `py -3 critic_runner.py doctor --repair` 一键修复缺失的 Python PDF 适配器；Tesseract 仍需按系统提示安装。
 
 ## 专业研究 / 高级 CLI
 

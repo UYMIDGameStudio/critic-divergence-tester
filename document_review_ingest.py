@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import zipfile
 from dataclasses import dataclass
@@ -634,26 +635,63 @@ def ingest_bytes(name: str, data: bytes, *, limits: IngestionLimits | None = Non
     raise IngestionError("未实现的文件类型")
 
 
+_REPAIRABLE_PYTHON_PACKAGES = {
+    "pypdf": "pypdf>=5.0,<7.0",
+    "pymupdf": "pymupdf>=1.24,<2.0",
+}
+
+
 def doctor_dependencies() -> list[dict[str, Any]]:
-    """Return user-facing dependency status for the CLI and browser UI."""
+    """Return dependency status plus safe, user-facing repair metadata."""
     rows: list[dict[str, Any]] = []
     for package, label, optional, purpose, license_name in (
-        ("pypdf", "pypdf", False, "PDF 文本页解析", "BSD-3-Clause"),
+        ("pypdf", "pypdf", True, "PDF 文本页解析", "BSD-3-Clause"),
         ("fitz", "pymupdf", True, "PDF 坐标、扫描页渲染", "AGPL-3.0-or-later / commercial"),
     ):
+        repair_spec = _REPAIRABLE_PYTHON_PACKAGES[label]
+        base = {"name": label, "available": False, "optional": optional, "purpose": purpose, "license": license_name, "repairable": True, "repair_key": label, "install": f"python -m pip install {repair_spec}"}
         try:
             module = __import__(package)
-            version = getattr(module, "__version__", "installed")
-            rows.append({"name": label, "available": True, "optional": optional, "purpose": purpose, "version": version, "license": license_name})
+            base.update({"available": True, "version": getattr(module, "__version__", "installed")})
+            base.pop("install", None)
         except ImportError:
-            rows.append({"name": label, "available": False, "optional": optional, "purpose": purpose, "license": license_name, "install": f"python -m pip install {label}"})
+            pass
+        rows.append(base)
     ocr = TesseractOCR()
     available, detail = ocr.available()
-    rows.append({"name": "tesseract", "available": available, "optional": True, "purpose": "扫描 PDF OCR（chi_sim/chi_tra/eng）", "license": "Apache-2.0 engine; language-data terms vary", "detail": detail})
+    rows.append({"name": "tesseract", "available": available, "optional": True, "purpose": "扫描 PDF OCR（chi_sim/chi_tra/eng）", "license": "Apache-2.0 engine; language-data terms vary", "detail": detail, "repairable": False, "repair_key": "tesseract", "repair_hint": "需要在操作系统中安装 Tesseract 5.x 及 chi_sim、chi_tra、eng 语言包；应用不会静默安装系统软件"})
     return rows
+
+
+def repair_dependency(name: str) -> list[dict[str, Any]]:
+    """Install one supported Python adapter and return refreshed diagnostics.
+
+    System OCR engines are intentionally excluded: installing them requires a
+    platform package manager and language-data consent outside this app.
+    """
+    package = _REPAIRABLE_PYTHON_PACKAGES.get(name)
+    if package is None:
+        raise IngestionError(f"依赖 {name} 不支持应用内自动修复；请按环境提示处理")
+    command = [sys.executable, "-m", "pip", "install", package]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=300, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise IngestionError(f"自动安装 {name} 失败：{exc}") from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "无安装器输出").strip()[-1200:]
+        raise IngestionError(f"自动安装 {name} 失败：{detail}")
+    return doctor_dependencies()
+
+
+def repair_dependencies(names: Iterable[str] | None = None) -> list[dict[str, Any]]:
+    """Repair all requested/missing Python adapters, then re-run the doctor."""
+    selected = list(names) if names is not None else [row["repair_key"] for row in doctor_dependencies() if not row["available"] and row.get("repairable")]
+    for name in selected:
+        repair_dependency(name)
+    return doctor_dependencies()
 
 
 __all__ = [
     "IngestionError", "IngestionLimits", "OCRAdapter", "ParserUnavailable", "TesseractOCR",
-    "doctor_dependencies", "ingest_bytes", "safe_upload_name",
+    "doctor_dependencies", "repair_dependency", "repair_dependencies", "ingest_bytes", "safe_upload_name",
 ]

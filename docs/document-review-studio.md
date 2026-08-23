@@ -18,6 +18,11 @@ The server binds to loopback only. Use `--no-browser` to print the local URL
 without opening a browser, `--data-dir` to choose the local project library,
 or `--project` to open an existing `.document-review-studio` project.
 
+The project library page has an explicit, irreversible delete action. It only
+accepts a project directory directly inside the configured library; deleting a
+project removes its local source, audit artifacts, receipts, and exports. Copy
+the project directory elsewhere first if it is needed as a backup.
+
 The UI flow is intentionally gated:
 
 1. Upload `.md`, `.txt`, `.docx`, or `.pdf`.
@@ -90,9 +95,14 @@ read-only mode.
   rendering produces a visible diagnostic and prevents formal review.
 
 Run `python critic_runner.py doctor` to see parser and OCR availability and the
-declared license boundary for each optional component. The dependency ranges
-are in `pyproject.toml`; PyMuPDF's AGPL/commercial choice must be reviewed for
-the deployment context.
+declared license boundary for each optional component. The Studio environment
+card can repair missing Python adapters in one action (currently `pypdf` and
+`PyMuPDF`). Tesseract is an operating-system program and language-pack choice,
+so it is reported with an installation hint rather than silently installed.
+The same repair is available from the terminal with
+`python critic_runner.py doctor --repair`.
+The dependency ranges are in `pyproject.toml`; PyMuPDF's AGPL/commercial
+choice must be reviewed for the deployment context.
 
 ## Review contract
 
@@ -120,17 +130,31 @@ CLI:
 ```powershell
 python critic_runner.py studio-protocols <project> --provider <provider> --model <model>
 python critic_runner.py studio-import-ai <project> <critic> <response.json> --provider <provider> --model <model> --request-id <request-id>
+# If the model cannot echo the bookkeeping envelope:
+python critic_runner.py studio-import-ai <project> <critic> <response.json> --provider <provider> --model <model> --request-id <request-id> --binding-mode manual_association
 ```
 
-The exported prompt includes a required response envelope containing the exact
-`request_id`, `prompt_sha256`, provider, and model. Imports reject a response
-unless all four values echo the selected request. `prompt_sha256` identifies
-the protocol payload; `prompt_file_sha256` separately binds the rendered prompt
-file. The current browser/CLI flow is a manual import, so parsed runs store
+The exported prompt recommends a response envelope containing the exact
+`request_id`, `prompt_sha256`, provider, and model. Strict imports require all
+four values to echo the selected request. `prompt_sha256` identifies the
+protocol payload; `prompt_file_sha256` separately binds the rendered prompt
+file.
+
+Some models cannot reliably echo these bookkeeping fields. For those cases the
+UI and CLI expose an explicit `manual_association` mode. It accepts an
+otherwise valid ordinary JSON response, but records
+`response_binding.mode=manual-association` and
+`request_echo_verified=false`. This means the user associated the response
+with the selected request; it does not prove that the response was generated
+for that prompt. A response containing only some envelope fields is rejected
+in both modes to avoid silently accepting a misleading partial binding.
+
+The current browser/CLI flow is a manual import, so parsed runs store
 `declared_model_metadata` rather than claiming a direct `model_invocation`.
 Imports preserve the declared metadata, raw response hash/content, and parsed
-AuditRun/Finding separately. `collect_model_audit` validates the request
-envelope, source hash, critic identity, Finding contract, and block locations.
+AuditRun/Finding separately. `collect_model_audit` validates the source hash,
+critic identity, Finding contract, and block locations in either mode, and
+validates the request envelope in strict mode.
 
 For DOCX inputs, preview exports are named
 `normalized-editable-copy.docx`. They may lose source layout and are not a

@@ -92,7 +92,7 @@ from argument_citations import (
 )
 from argument_ui import serve_workbench
 from argument_app import default_data_dir, serve_product_app
-from document_review_ingest import doctor_dependencies
+from document_review_ingest import doctor_dependencies, repair_dependencies
 from document_review_ui import default_studio_data_dir, serve_document_review_studio
 from document_review_studio import DocumentReviewProject, ReviewStudioError
 from document_review_model import CRITIC_DIMENSIONS
@@ -3132,7 +3132,7 @@ def studio_import_ai_command(args: argparse.Namespace) -> int:
     try:
         project = DocumentReviewProject(Path(args.project))
         response = Path(args.file).read_bytes()
-        run = project.collect_model_audit(args.critic, response, provider=args.provider, model=args.model, request_id=args.request_id)
+        run = project.collect_model_audit(args.critic, response, provider=args.provider, model=args.model, request_id=args.request_id, binding_mode=args.binding_mode)
     except (OSError, ValueError, ReviewStudioError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -4688,6 +4688,8 @@ def doctor(args: argparse.Namespace) -> int:
     # Missing optional components are visible here, but do not make the legacy
     # Markdown/TXT runner unusable.
     try:
+        if getattr(args, "repair", False):
+            repair_dependencies()
         for dependency in doctor_dependencies():
             if dependency["available"]:
                 checks.append(f"Document Review Studio {dependency['name']} available")
@@ -4921,6 +4923,7 @@ def parser() -> argparse.ArgumentParser:
     studio_import_parser.add_argument("--provider", required=True, help="provider label bound by the exported request")
     studio_import_parser.add_argument("--model", required=True, help="model label bound by the exported request")
     studio_import_parser.add_argument("--request-id", help="specific exported AI request id")
+    studio_import_parser.add_argument("--binding-mode", choices=("strict", "manual_association"), default="strict", help="strict requires response envelope; manual_association accepts ordinary JSON and records the weaker user association")
     studio_import_parser.set_defaults(func=studio_import_ai_command)
 
     sub.add_parser("list", help="list available protocols").set_defaults(func=list_protocols)
@@ -4934,6 +4937,11 @@ def parser() -> argparse.ArgumentParser:
         "--directory",
         default=".",
         help="directory to test for archive write access (default: current directory)",
+    )
+    doctor_parser.add_argument(
+        "--repair",
+        action="store_true",
+        help="install missing repairable Document Review Studio Python adapters before checking",
     )
     doctor_parser.set_defaults(func=doctor)
 

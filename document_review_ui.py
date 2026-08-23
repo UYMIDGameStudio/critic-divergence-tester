@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import secrets
+import shutil
 import threading
 import webbrowser
 from dataclasses import dataclass, replace
@@ -14,7 +15,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from document_review_ingest import IngestionLimits, doctor_dependencies
+from document_review_ingest import IngestionLimits, doctor_dependencies, repair_dependencies
 from document_review_studio import DocumentReviewProject, ReviewStudioError
 
 
@@ -59,7 +60,10 @@ class StudioApp:
         return rows
 
     def view(self) -> dict[str, Any]:
-        return {"storage_path": str(self.data_dir), "projects": self.projects(), "selected": self.project.view() if self.project else None, "dependencies": doctor_dependencies()}
+        selected = self.project.view() if self.project else None
+        if selected is not None:
+            selected["directory"] = self.project.root.name
+        return {"storage_path": str(self.data_dir), "projects": self.projects(), "selected": selected, "dependencies": doctor_dependencies()}
 
     def open_project(self, directory: str) -> "StudioApp":
         if Path(directory).name != directory or not directory.endswith(".document-review-studio"):
@@ -68,6 +72,23 @@ class StudioApp:
         if target.parent != self.data_dir or target.is_symlink() or not target.is_dir():
             raise ReviewStudioError("项目不在本地文档审查项目库中")
         return replace(self, project=DocumentReviewProject(target))
+
+    def delete_project(self, directory: str) -> "StudioApp":
+        if not isinstance(directory, str) or Path(directory).name != directory or not directory.endswith(".document-review-studio"):
+            raise ReviewStudioError("项目目录名无效")
+        candidate = self.data_dir / directory
+        if candidate.is_symlink() or not candidate.is_dir():
+            raise ReviewStudioError("项目不存在或不是安全的本地目录")
+        target = candidate.resolve()
+        if target.parent != self.data_dir or target == self.data_dir or not target.is_dir():
+            raise ReviewStudioError("拒绝删除项目库之外的目录")
+        shutil.rmtree(target)
+        selected = None if self.project and self.project.root == target else self.project
+        return replace(self, project=selected)
+
+    def repair_environment(self, names: list[str] | None = None) -> "StudioApp":
+        repair_dependencies(names)
+        return self
 
     def require_project(self) -> DocumentReviewProject:
         if self.project is None:
@@ -90,11 +111,18 @@ class StudioApp:
         return replace(self, project=project)
 
     def act(self, payload: dict[str, Any]) -> "StudioApp":
-        project = self.require_project()
         action = payload.get("action")
         data = payload.get("data", {})
         if not isinstance(action, str) or not isinstance(data, dict):
             raise ReviewStudioError("操作请求无效")
+        if action == "delete_project":
+            return self.delete_project(str(data.get("directory", "")))
+        if action == "repair_environment":
+            names = data.get("names")
+            if names is not None and (not isinstance(names, list) or not all(isinstance(name, str) for name in names)):
+                raise ReviewStudioError("环境修复目标无效")
+            return self.repair_environment(names)
+        project = self.require_project()
         if action == "confirm_extraction":
             project.confirm_extraction(str(data.get("choice", "")), corrected_text=data.get("corrected_text"))
         elif action == "confirm_context":
@@ -104,7 +132,7 @@ class StudioApp:
         elif action == "prepare_ai_audits":
             project.prepare_ai_audits(data.get("critics"), provider=str(data.get("provider", "")), model=str(data.get("model", "")))
         elif action == "import_ai_audit":
-            project.collect_model_audit(str(data.get("critic", "")), str(data.get("response", "")), provider=str(data.get("provider", "")), model=str(data.get("model", "")), request_id=str(data.get("request_id", "")) or None)
+            project.collect_model_audit(str(data.get("critic", "")), str(data.get("response", "")), provider=str(data.get("provider", "")), model=str(data.get("model", "")), request_id=str(data.get("request_id", "")) or None, binding_mode=str(data.get("binding_mode", "strict")))
         elif action == "decide_finding":
             project.decide_finding(str(data.get("finding_id", "")), str(data.get("decision", "")), reason=str(data.get("reason", "")), corrected_action=data.get("corrected_action"))
         elif action == "prepare_bridge":
@@ -217,10 +245,15 @@ def render_studio_shell(token: str) -> str:
     shell = shell.replace("运行选中的审查</button>", "运行选中的本地预检</button>")
     shell = shell.replace("act('run_audits'", "act('run_local_prechecks'")
     shell = shell.replace("+(e.available?'<div class=\"row\">", "+(e.available?'<h3>抽取内容与定位预览</h3><div class=\"quote\">'+(e.blocks||[]).map(b=>'['+esc(b.location&&b.location.block_id||b.block_id)+' · page '+esc(b.location&&b.location.page||'-')+'] '+esc(b.text)).join('\\n\\n')+'</div><div class=\"row\">")
-    ai_card = "if(s.can_review){body+='<div class=\"card next\"><h2>导出 / 导入独立 AI 审查</h2><p>这里不直接调用模型：先为每个 critic 导出独立协议，再把严格 JSON 原始响应导回。响应必须回显 request id、prompt hash、provider 和 model；系统保存声明的模型元数据、原始响应和解析结果。</p><div class=\"grid\"><div><label>Provider</label><input id=\"ai-provider\" value=\"external\"><label>Model</label><input id=\"ai-model\" placeholder=\"例如 gpt-5\"><button id=\"prepare-ai\">导出五份独立协议</button></div><div><label>已导出的协议</label><select id=\"ai-request\">'+(s.ai_requests||[]).map(r=>'<option value=\"'+esc(r.request_id)+'\">'+esc(r.critic)+' · '+esc(r.provider)+'/'+esc(r.model)+'</option>').join('')+'</select><label>模型原始 JSON 响应</label><textarea id=\"ai-response\" placeholder=\"粘贴所选 critic 的严格 JSON 原始响应（须回显请求绑定字段）\"></textarea><button id=\"import-ai\">导入并校验 AI 审查</button></div></div>'+(s.ai_requests||[]).map(r=>'<details><summary>'+esc(r.critic)+' · prompt '+esc(r.prompt_sha256.slice(0,12))+'</summary><div class=\"block\">'+esc(r.prompt)+'</div></details>').join('')+'<div id=\"err\" class=\"error\"></div></div>';}"
+    shell = shell.replace("'<p class=\"row\"><button class=\"secondary open\" data-dir=\"'+esc(p.directory)+'\">打开</button><span>'", "'<p class=\"row\"><button class=\"secondary open\" data-dir=\"'+esc(p.directory)+'\">打开</button><button class=\"danger delete-project\" data-dir=\"'+esc(p.directory)+'\">删除</button><span>'")
+    shell = shell.replace("<h3>环境自检</h3>", "<h3>环境自检</h3><p class=\"muted\">缺少 Python 适配器时可一键安装；Tesseract 等系统组件按提示处理。</p><p><button class=\"secondary\" id=\"repair-environment\">一键修复可自动修复项</button></p>")
+    shell = shell.replace("state.dependencies.map(d=>'<div class=\"'+(d.available?'ok':'warning')+'\">'+esc(d.name)+'：'+(d.available?'可用':'缺失')+' · '+esc(d.purpose)+(d.install?' · '+esc(d.install):'')+'</div>').join('')", "state.dependencies.map(d=>'<div class=\"'+(d.available?'ok':'warning')+'\"><b>'+esc(d.name)+'</b>：'+(d.available?'可用':'缺失')+' · '+esc(d.purpose)+(d.install?' · '+esc(d.install):'')+(d.available?'':(d.repairable?'<button class=\"secondary repair-dependency\" data-dependency=\"'+esc(d.repair_key)+'\">一键修复</button>':'<div class=\"muted\">'+esc(d.repair_hint||'请按说明处理')+'</div>'))+'</div>').join('')")
+    shell = shell.replace("<h2>'+esc(s.project.title)+'</h2>", "<h2>'+esc(s.project.title)+'</h2><p><button class=\"danger\" id=\"delete-selected\" data-dir=\"'+esc(s.directory||'')+'\">删除本地项目</button></p>")
+    ai_card = "if(s.can_review){body+='<div class=\"card next\"><h2>导出 / 导入独立 AI 审查</h2><p>这里不直接调用模型。严格模式要求模型回显四个绑定字段；多数模型做不到时可选“普通 JSON（人工关联）”，系统会明确记录这是用户把响应关联到当前请求，而不是证明响应确由该 prompt 生成。</p><div class=\"grid\"><div><label>Provider</label><input id=\"ai-provider\" value=\"external\"><label>Model</label><input id=\"ai-model\" placeholder=\"例如 gpt-5\"><button id=\"prepare-ai\">导出五份独立协议</button></div><div><label>已导出的协议</label><select id=\"ai-request\">'+(s.ai_requests||[]).map(r=>'<option value=\"'+esc(r.request_id)+'\">'+esc(r.critic)+' · '+esc(r.provider)+'/'+esc(r.model)+'</option>').join('')+'</select><label>响应绑定方式</label><select id=\"ai-binding-mode\"><option value=\"strict\">严格绑定（要求模型回显字段）</option><option value=\"manual_association\">普通 JSON（人工关联，较弱审计）</option></select><label>模型原始 JSON 响应</label><textarea id=\"ai-response\" placeholder=\"粘贴所选 critic 的 JSON；普通 JSON 模式不要求回显绑定字段\"></textarea><button id=\"import-ai\">导入并校验 AI 审查</button></div></div>'+(s.ai_requests||[]).map(r=>'<details><summary>'+esc(r.critic)+' · prompt '+esc(r.prompt_sha256.slice(0,12))+'</summary><div class=\"block\">'+esc(r.prompt)+'</div></details>').join('')+'<div id=\"err\" class=\"error\"></div></div>';}"
     shell = shell.replace("if(s.findings.length){", ai_card + "if(s.findings.length||['local_precheck_completed','ai_review_imported'].includes(st.review_state)){if(!s.findings.length)body+='<div class=\"card\"><h2>本轮没有产生 Finding</h2><p>零 Finding 结果仍保留审查范围和依据，不代表自动确认合规或质量。</p></div>';" )
     shell = shell.replace("+'<input id=\"reason-'+esc(f.finding_id)+'\" placeholder=\"人工决定理由\"><div class=\"row\"><button class=\"decision\" data-id=\"'+esc(f.finding_id)+'\" data-decision=\"accept\">接受</button>", "+'<input id=\"reason-'+esc(f.finding_id)+'\" placeholder=\"人工决定理由\"><label>人工修正动作（accept/correct 时优先进入修改桥）</label><textarea id=\"action-'+esc(f.finding_id)+'\" placeholder=\"'+esc(f.suggested_action)+'\"></textarea><div class=\"row\"><button class=\"decision\" data-id=\"'+esc(f.finding_id)+'\" data-decision=\"accept\">接受</button><button class=\"decision secondary\" data-id=\"'+esc(f.finding_id)+'\" data-decision=\"correct\">修正后接受</button>")
-    shell = shell.replace("document.querySelectorAll('.decision').forEach(b=>b.onclick=()=>act('decide_finding',{finding_id:b.dataset.id,decision:b.dataset.decision,reason:document.getElementById('reason-'+b.dataset.id).value}));", "if(document.getElementById('prepare-ai'))document.getElementById('prepare-ai').onclick=()=>act('prepare_ai_audits',{critics:['expression_ambiguity','execution_feasibility','compliance_legal_screen','reasonableness_governance','official_professional_format'],provider:document.getElementById('ai-provider').value,model:document.getElementById('ai-model').value});if(document.getElementById('import-ai'))document.getElementById('import-ai').onclick=()=>{const id=document.getElementById('ai-request').value,r=(s.ai_requests||[]).find(x=>x.request_id===id);if(!r)return alert('请先导出协议');act('import_ai_audit',{request_id:id,critic:r.critic,provider:r.provider,model:r.model,response:document.getElementById('ai-response').value})};document.querySelectorAll('.decision').forEach(b=>b.onclick=()=>act('decide_finding',{finding_id:b.dataset.id,decision:b.dataset.decision,reason:document.getElementById('reason-'+b.dataset.id).value,corrected_action:document.getElementById('action-'+b.dataset.id).value||null}));")
+    shell = shell.replace("document.querySelectorAll('.open').forEach(b=>b.onclick=async()=>{state=await api('/api/open',{directory:b.dataset.dir});render()})", "document.querySelectorAll('.open').forEach(b=>b.onclick=async()=>{state=await api('/api/open',{directory:b.dataset.dir});render()});document.querySelectorAll('.delete-project').forEach(b=>b.onclick=async()=>{if(!confirm('删除后无法恢复，确定删除这个本地项目吗？'))return;state=await api('/api/action',{action:'delete_project',data:{directory:b.dataset.dir}});render()})")
+    shell = shell.replace("document.querySelectorAll('.decision').forEach(b=>b.onclick=()=>act('decide_finding',{finding_id:b.dataset.id,decision:b.dataset.decision,reason:document.getElementById('reason-'+b.dataset.id).value}));", "if(document.getElementById('prepare-ai'))document.getElementById('prepare-ai').onclick=()=>act('prepare_ai_audits',{critics:['expression_ambiguity','execution_feasibility','compliance_legal_screen','reasonableness_governance','official_professional_format'],provider:document.getElementById('ai-provider').value,model:document.getElementById('ai-model').value});if(document.getElementById('import-ai'))document.getElementById('import-ai').onclick=()=>{const id=document.getElementById('ai-request').value,r=(s.ai_requests||[]).find(x=>x.request_id===id);if(!r)return alert('请先导出协议');act('import_ai_audit',{request_id:id,critic:r.critic,provider:r.provider,model:r.model,binding_mode:document.getElementById('ai-binding-mode').value,response:document.getElementById('ai-response').value})};if(document.getElementById('repair-environment'))document.getElementById('repair-environment').onclick=()=>act('repair_environment');document.querySelectorAll('.repair-dependency').forEach(b=>b.onclick=()=>act('repair_environment',{names:[b.dataset.dependency]}));if(document.getElementById('delete-selected'))document.getElementById('delete-selected').onclick=async()=>{if(!confirm('删除后无法恢复，确定删除这个本地项目吗？'))return;state=await api('/api/action',{action:'delete_project',data:{directory:document.getElementById('delete-selected').dataset.dir}});render()};document.querySelectorAll('.decision').forEach(b=>b.onclick=()=>act('decide_finding',{finding_id:b.dataset.id,decision:b.dataset.decision,reason:document.getElementById('reason-'+b.dataset.id).value,corrected_action:document.getElementById('action-'+b.dataset.id).value||null}));")
     return shell
 
 
