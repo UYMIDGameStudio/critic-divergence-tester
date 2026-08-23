@@ -37,6 +37,9 @@ py -3 critic_runner.py ir collect .\draft.argument-workbench --file .\argument-i
 # 3. 在行式 Inspector 中浏览并校正 Claims / Evidence / Assumptions / relations
 py -3 critic_runner.py ir inspect .\draft.argument-workbench
 
+# 3a. Reviewed IR 生成后，可随时打开本机三栏工作台；Ctrl+C 停止
+py -3 critic_runner.py ir ui .\draft.argument-workbench
+
 # 4. 默认只审核 conclusion/intermediate 及其上游承重链；--scope all 才是全面 audit
 py -3 critic_runner.py ir review prepare .\draft.argument-workbench --depth core
 
@@ -342,7 +345,7 @@ py -3 critic_runner.py ir collect .\demo.argument-workbench --file .\test\fixtur
 py -3 critic_runner.py ir inspect .\demo.argument-workbench
 ```
 
-这个 fixture 包含“总会”式过强主张、漏 Claim、错 Evidence 绑定、显式 Assumption 和 Citation，可用于体验校正。Workbench 当前支持单 Project / D1 下的线性多版本历史、many-to-many Claim Lineage、原 Lens Finding Resolution，以及 Citation→Evidence→Claim provenance；正式 GUI 尚未实现。Product Gate A 与 Gate B 均已由作者作出 human-confirmed `pass`，但早期队列负担和批量裁决等限制仍保留在 Gate 证据中，不能被“通过”抹掉。
+这个 fixture 包含“总会”式过强主张、漏 Claim、错 Evidence 绑定、显式 Assumption 和 Citation，可用于体验校正。Workbench 当前支持单 Project / D1 下的线性多版本历史、many-to-many Claim Lineage、原 Lens Finding Resolution、Citation→Evidence→Claim provenance，以及标准库实现的本地 document-first UI。Product Gate A 与 Gate B 均已由作者作出 human-confirmed `pass`，但早期队列负担和批量裁决等限制仍保留在 Gate 证据中，不能被“通过”抹掉。
 
 完整 artifact lifecycle、parent hash 和 field provenance 约定见 [`docs/artifact-contracts.md`](docs/artifact-contracts.md)。
 
@@ -568,7 +571,7 @@ perspective-reviews/PV1/
     └── findings/F0001.json ...
 ```
 
-同一 Claim 可以同时显示 Social Science FAIL、Individualism FAIL 和 Contrastivism PASS；系统不会把它们压成 `66% confidence`。《结构的替身》C7 已完成一次真实 vertical-slice 运行，artifact hashes、框架分歧和暴露出的 cache lifecycle 修复记录在 [`docs/phase4-perspective-demo.md`](docs/phase4-perspective-demo.md)。Phase 4 当前仍不包含跨版本 lineage、Finding resolution、Citation verification 或 GUI。
+同一 Claim 可以同时显示 Social Science FAIL、Individualism FAIL 和 Contrastivism PASS；系统不会把它们压成 `66% confidence`。《结构的替身》C7 已完成一次真实 vertical-slice 运行，artifact hashes、框架分歧和暴露出的 cache lifecycle 修复记录在 [`docs/phase4-perspective-demo.md`](docs/phase4-perspective-demo.md)。Perspective Lens 自身仍只负责产生独立 Finding；跨版本 lineage、Finding resolution、Citation verification 和 UI 分别由后续 application layer 接入，不改变 Lens contract。
 
 ### Phase 5：导入新的 DocumentVersion
 
@@ -701,6 +704,18 @@ py -3 critic_runner.py ir verify-project $project
 派生的 `evidence-provenance.md` 按 Citation 展示四维结果、来源、人工决定，并沿 Reviewed IR 的 `cites`、`supports`、`qualifies` 路径列出下游 Evidence 和 Claims。只要 Citation 尚未得到四维人工确认，下游显示 `depends_on_unverified_evidence`；这不等于 `claim_false`，也不会产生论文总分。无效模型返回仍保存在新的 attempt 中，不会生成派生事实或覆盖旧结果。
 
 一条作者 V2 Citation 已完成从外部原文、模型四维提案、人工确认到下游依赖更新的真实 vertical slice；公开哈希、来源、结果和限制见 [`docs/phase7-citation-demo.md`](docs/phase7-citation-demo.md)。该演示证明工作流可运行，不代表两篇稿件的全部 Citation 已核完。
+
+### Phase 8：本地三栏 Workbench
+
+Reviewed IR 建立后，可打开 document-first 的本机工作台：
+
+```powershell
+py -3 critic_runner.py ir ui $project
+```
+
+默认页面把原文、当前 Claim 的上下游论证和 Review 放在三个联动栏中。版本选择器可查看历史稿；Review 栏按 Lens 分别保留 PASS/FAIL/UNCERTAIN，并显示 Finding 的人工决定、RevisionAction、Citation 状态与 Claim Lineage。当前版本可以直接 `Accept / Reject / Defer`；Accept 必须填写正式 revision action，保存后写入与 CLI 完全相同的 append-only artifact。
+
+服务只监听 `127.0.0.1`，每次启动使用新的本地 token，Ctrl+C 即停止。它没有账号、同步、遥测或云端数据库，也不允许改成公网监听。界面不显示总分、不投票、不自动综合方法论冲突。架构、安全边界、真实浏览器演示和仍保留为行式交互的功能见 [`docs/phase8-local-ui.md`](docs/phase8-local-ui.md)。
 
 ### 兼容的低层 Argument IR 流程
 

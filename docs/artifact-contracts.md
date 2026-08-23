@@ -189,3 +189,21 @@ The report is deterministic and replaceable. It exposes workflow completeness, o
 `critic-adjudication` v1 remains the compatible report-oriented workflow. It is not silently treated as a Claim-centered Workbench adjudication. The Workbench shares its decision-field rules through an adapter, while `argument-finding`, `finding-adjudication`, and `revision-action` provide the product contract. A later migration can translate immutable legacy report evidence without changing either existing archive.
 
 Campaign, divergence, W/B, blind scorecards, and generic-critic controls remain Evaluation/Advanced artifacts. Their scores are not manuscript quality measures and do not appear in the Workbench project view.
+
+## Local UI application boundary
+
+`argument_ui.py` is an application projection, not a new artifact authority.
+Before serving a project it runs the complete project verifier, reads only
+validated immutable or derived artifacts, and labels deterministic,
+model-derived and human-confirmed fields separately. Earlier DocumentVersions
+are view-only. A current-version browser adjudication calls the same domain
+service as `ir adjudicate`, so it appends the existing `finding-adjudication`
+and `revision-action` contracts and deterministically rebuilds the Revision
+Plan. The UI never edits a Finding, model result, Reviewed IR, Lineage or
+Citation proposal in place.
+
+The server is standard-library-only, loopback-only and process-local. A random
+token gates artifact reads and writes; the HTML shell itself contains no source
+or IR payload. This token protects the localhost API from ordinary cross-origin
+requests, but it is not presented as multi-user authentication or permission to
+publish a workspace over a network.

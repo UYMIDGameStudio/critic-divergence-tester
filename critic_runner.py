@@ -90,6 +90,7 @@ from argument_citations import (
     rebuild_citation_audits,
     render_citation_audit,
 )
+from argument_ui import serve_workbench
 from argument_adjudication import (
     append_claim_bundle_decisions,
     claim_bundle_status,
@@ -3044,6 +3045,24 @@ def ir_init_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def ir_ui_command(args: argparse.Namespace) -> int:
+    server, url = serve_workbench(
+        args.project,
+        host=args.host,
+        port=args.port,
+        open_browser=not args.no_browser,
+    )
+    print(f"Argument Workbench UI: {url}")
+    print("Local-only session; press Ctrl+C to stop.")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nArgument Workbench UI stopped.")
+    finally:
+        server.server_close()
+    return 0
+
+
 def ir_import_version_command(args: argparse.Namespace) -> int:
     source_path = resolve_manuscript_path(args.manuscript)
     paths = import_document_version(
@@ -4792,6 +4811,26 @@ def parser() -> argparse.ArgumentParser:
     )
     ir_init_parser.add_argument("--title", help="project/document title (default: filename stem)")
     ir_init_parser.set_defaults(func=ir_init_command)
+
+    ir_ui_parser = ir_sub.add_parser(
+        "ui",
+        help="open the local document-first Argument Workbench application",
+    )
+    ir_ui_parser.add_argument(
+        "project", help="Argument Workbench project directory"
+    )
+    ir_ui_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="loopback host only (default: 127.0.0.1)",
+    )
+    ir_ui_parser.add_argument(
+        "--port", type=int, default=0, help="local port (default: choose a free port)"
+    )
+    ir_ui_parser.add_argument(
+        "--no-browser", action="store_true", help="print the URL without opening a browser"
+    )
+    ir_ui_parser.set_defaults(func=ir_ui_command)
 
     ir_import_version_parser = ir_sub.add_parser(
         "import-version",
