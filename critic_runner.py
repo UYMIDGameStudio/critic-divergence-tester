@@ -91,6 +91,7 @@ from argument_citations import (
     render_citation_audit,
 )
 from argument_ui import serve_workbench
+from argument_app import default_data_dir, serve_product_app
 from argument_adjudication import (
     append_claim_bundle_decisions,
     claim_bundle_status,
@@ -3063,6 +3064,33 @@ def ir_ui_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def app_command(args: argparse.Namespace) -> int:
+    project_dir = args.project
+    if args.manuscript:
+        source_path = resolve_manuscript_path(args.manuscript)
+        project_dir = Path(args.project) if args.project else source_path.with_name(
+            source_path.stem + ".argument-workbench"
+        )
+        initialize_workspace(source_path, Path(project_dir), title=args.title)
+    server, url = serve_product_app(
+        data_dir=args.data_dir,
+        project_dir=project_dir,
+        host=args.host,
+        port=args.port,
+        open_browser=not args.no_browser,
+    )
+    print(f"Argument Workbench: {url}")
+    print(f"Local projects: {Path(args.data_dir or default_data_dir()).resolve()}")
+    print("Local-only session; press Ctrl+C to stop.")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nArgument Workbench stopped.")
+    finally:
+        server.server_close()
+    return 0
+
+
 def ir_import_version_command(args: argparse.Namespace) -> int:
     source_path = resolve_manuscript_path(args.manuscript)
     paths = import_document_version(
@@ -4779,6 +4807,24 @@ def parser() -> argparse.ArgumentParser:
         description="Run critic protocols without depending on Claude Code."
     )
     sub = top.add_subparsers(dest="command", required=True)
+
+    app_parser = sub.add_parser(
+        "app", help="start the complete local Argument Workbench application"
+    )
+    app_parser.add_argument(
+        "manuscript", nargs="?", help="optional UTF-8 Markdown/TXT manuscript to import as V1"
+    )
+    app_parser.add_argument(
+        "--project", help="existing project directory, or destination when importing a manuscript"
+    )
+    app_parser.add_argument("--title", help="project title for a new manuscript")
+    app_parser.add_argument(
+        "--data-dir", help="local project library (default: per-user application data)"
+    )
+    app_parser.add_argument("--host", default="127.0.0.1", help="loopback host only")
+    app_parser.add_argument("--port", type=int, default=0, help="local port (default: automatic)")
+    app_parser.add_argument("--no-browser", action="store_true", help="print URL without opening it")
+    app_parser.set_defaults(func=app_command)
 
     sub.add_parser("list", help="list available protocols").set_defaults(func=list_protocols)
     sub.add_parser("tracks", help="list academic tracks and their protocols").set_defaults(
