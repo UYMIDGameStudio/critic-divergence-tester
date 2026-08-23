@@ -48,6 +48,7 @@ MAX_TEXT_CORRECTION_BYTES = 8 * 1024 * 1024
 INTEGRITY_POLICY_NAME = "integrity-policy.json"
 INTEGRITY_RECEIPT_DIR = ".integrity"
 INTEGRITY_INDEX_NAME = "integrity-index.json"
+EXTRACTION_DECISION_DIR_NAME = "extraction-decisions"
 
 
 CRITIC_PROTOCOLS: dict[str, dict[str, Any]] = {
@@ -370,10 +371,140 @@ class DocumentReviewProject:
     def manifest(self) -> dict[str, Any]:
         return _read_json(self.manifest_path)
 
+    def _default_state(self) -> dict[str, Any]:
+        return {"extraction_state": "unconfirmed", "context_state": "missing", "review_state": "not_started", "read_only": False, "diagnostics": []}
+
+    def _extraction_decision_records(self) -> list[tuple[Path, dict[str, Any], str]]:
+        records: list[tuple[Path, dict[str, Any], str]] = []
+        directory = self.root / EXTRACTION_DECISION_DIR_NAME
+        if not directory.is_dir():
+            return records
+        for path in directory.glob("*.json"):
+            if path.is_symlink():
+                continue
+            value = _read_json(path)
+            records.append((path, value, _sha256(path.read_bytes())))
+        return records
+
+    def _latest_extraction_decision(self) -> dict[str, Any] | None:
+        try:
+            records = self._extraction_decision_records()
+        except (OSError, ValueError, ReviewStudioError):
+            return None
+        valid = [value for _, value, _ in records if isinstance(value.get("sequence"), int)]
+        return max(valid, key=lambda value: value["sequence"]) if valid else None
+
+    def _derive_state(self, cached: Mapping[str, Any]) -> dict[str, Any]:
+        state = self._default_state()
+        decision = self._latest_extraction_decision()
+        if decision:
+            state["extraction_state"] = decision.get("extraction_state", "unconfirmed")
+        elif (self.root / "extraction" / "diagnostic.json").is_file():
+            state["extraction_state"] = "blocked"
+        context_path = self.root / "context.json"
+        if context_path.is_file():
+            try:
+                state["context_state"] = "confirmed" if _read_json(context_path).get("confirmed") is True else "missing"
+            except (OSError, ValueError, ReviewStudioError):
+                state["context_state"] = "missing"
+        audit_runs = list((self.root / "audits").glob("*/*.json")) if (self.root / "audits").is_dir() else []
+        has_ai = False
+        has_audit = False
+        for path in audit_runs:
+            try:
+                value = _read_json(path)
+            except (OSError, ValueError, ReviewStudioError):
+                continue
+            has_audit = True
+            if str(value.get("model_label", "")).startswith("manual-import:"):
+                has_ai = True
+        if has_ai:
+            state["review_state"] = "ai_review_imported"
+            state["ai_review_state"] = "imported"
+        elif has_audit:
+            state["review_state"] = "local_precheck_completed"
+        cached_diagnostics = cached.get("diagnostics", [])
+        if isinstance(cached_diagnostics, list):
+            state["diagnostics"] = cached_diagnostics
+        for key in ("last_audit_at", "last_ai_protocol_at"):
+            if key in cached:
+                state[key] = cached[key]
+        state["read_only"] = bool(cached.get("read_only", False))
+        if isinstance(cached.get("integrity_errors"), list):
+            state["integrity_errors"] = list(cached["integrity_errors"])
+        return state
+
     def state(self) -> dict[str, Any]:
-        if not self.state_path.is_file():
-            raise ReviewStudioError("项目 state.json 缺失")
-        return _read_json(self.state_path)
+        if self.state_path.is_symlink():
+            raise ReviewStudioError("项目 state.json 不能是符号链接")
+        cached: dict[str, Any] = {}
+        if self.state_path.is_file():
+            try:
+                cached = _read_json(self.state_path)
+            except (OSError, ValueError, ReviewStudioError):
+                cached = {}
+        state = self._derive_state(cached)
+        try:
+            errors = self.integrity_errors()
+        except (OSError, ValueError, KeyError, TypeError, ReviewStudioError):
+            errors = []
+        if errors:
+            state["read_only"] = True
+            state["integrity_errors"] = errors
+        if cached != state or not self.state_path.is_file():
+            _atomic_write(self.state_path, canonical_json(state))
+        return state
+
+    def _extraction_decision_chain_errors(self) -> list[str]:
+        errors: list[str] = []
+        expected = {"artifact_type", "schema_version", "decision_id", "sequence", "previous_extraction_decision_sha256", "decision", "extraction_state", "source_sha256", "document_relative_path", "document_sha256", "quality_relative_path", "quality_sha256", "warnings_relative_path", "warnings_sha256", "corrected_text_sha256", "created_at", "lifecycle"}
+        try:
+            records = self._extraction_decision_records()
+        except (OSError, ValueError, ReviewStudioError) as exc:
+            return [f"extraction-decisions: 无法读取决定链：{exc}"]
+        valid: list[tuple[Path, dict[str, Any], str]] = []
+        for path, value, digest in records:
+            if set(value) != expected or value.get("artifact_type") != "extraction-decision" or value.get("schema_version") != 1 or value.get("lifecycle") != "append-only":
+                errors.append(f"{path.name}: extraction decision fields or policy invalid")
+                continue
+            allowed_states = {"confirm": "confirmed", "continue_with_warning": "confirmed_with_warning", "correct": "confirmed_corrected", "replace": "replacement_required"}
+            if value.get("decision") not in allowed_states or value.get("extraction_state") != allowed_states.get(value.get("decision")) or not isinstance(value.get("sequence"), int) or value.get("sequence", 0) < 1:
+                errors.append(f"{path.name}: extraction decision values invalid")
+                continue
+            valid.append((path, value, digest))
+        if not valid:
+            return errors
+        ordered = sorted(valid, key=lambda row: row[1]["sequence"])
+        sequences = [row[1]["sequence"] for row in ordered]
+        if sequences != list(range(1, len(ordered) + 1)):
+            errors.append("extraction decisions: sequence must be continuous")
+            return errors
+        for index, (_, value, digest) in enumerate(ordered):
+            expected_previous = None if index == 0 else ordered[index - 1][2]
+            if value.get("previous_extraction_decision_sha256") != expected_previous:
+                errors.append(f"{value.get('decision_id')}: previous extraction decision mismatch")
+        latest = ordered[-1][1]
+        current_paths = {
+            "document_relative_path": self.document_path,
+            "quality_relative_path": self.root / "extraction" / "quality.json",
+            "warnings_relative_path": self.root / "extraction" / "warnings.json",
+        }
+        for path_key, path in current_paths.items():
+            relative = str(path.relative_to(self.root)).replace("\\", "/")
+            digest_key = path_key.replace("relative_path", "sha256")
+            if latest.get(path_key) != relative:
+                errors.append(f"latest extraction decision path mismatch: {path_key}")
+            if not path.is_file() or _sha256(path.read_bytes()) != latest.get(digest_key):
+                errors.append(f"latest extraction decision is not bound to current {path_key}")
+        source = self.manifest().get("source", {})
+        if latest.get("source_sha256") != source.get("sha256"):
+            errors.append("latest extraction decision source mismatch")
+        return errors
+
+    def _authoritative_extraction_decision(self) -> dict[str, Any] | None:
+        if self._extraction_decision_chain_errors():
+            return None
+        return self._latest_extraction_decision()
 
     def integrity_errors(self) -> list[str]:
         """Recheck the complete artifact chain before every state-changing action."""
@@ -407,11 +538,11 @@ class DocumentReviewProject:
                 if len(raw) != source.get("bytes"):
                     errors.append("原始文件字节数不匹配")
             protected: set[Path] = set()
-            for name in ("project.json", "context.json", INTEGRITY_INDEX_NAME):
+            for name in ("project.json", "context.json", "audit-log.jsonl", INTEGRITY_INDEX_NAME):
                 path = self.root / name
                 if path.exists() or path.is_symlink():
                     protected.add(path)
-            for dirname in ("source", "extraction", "ai-requests", "audits", "finding-decisions", "exports"):
+            for dirname in ("source", "extraction", EXTRACTION_DECISION_DIR_NAME, "ai-requests", "audits", "finding-decisions", "exports"):
                 directory = self.root / dirname
                 if not directory.is_dir():
                     continue
@@ -533,7 +664,9 @@ class DocumentReviewProject:
                     errors.append("结构化文档未绑定当前原始文件")
             except (OSError, ValueError, KeyError, TypeError, ReviewStudioError) as exc:
                 errors.append(f"结构化文档无法读取：{exc}")
+            errors.extend(self._extraction_decision_chain_errors())
             errors.extend(self._decision_chain_errors())
+            errors.extend(self._audit_log_chain_errors())
         except (OSError, KeyError, TypeError, ValueError, ReviewStudioError) as exc:
             errors.append(f"项目完整性检查失败：{exc}")
         return errors
@@ -574,13 +707,53 @@ class DocumentReviewProject:
         _atomic_write(self.state_path, canonical_json(state))
         return state
 
+    def _audit_log_chain_errors(self) -> list[str]:
+        path = self.root / "audit-log.jsonl"
+        if not path.exists():
+            return []
+        errors: list[str] = []
+        expected = {"artifact_type", "schema_version", "event_id", "sequence", "previous_event_sha256", "event", "created_at", "payload", "event_sha256", "lifecycle"}
+        try:
+            raw_lines = path.read_bytes().splitlines()
+        except OSError as exc:
+            return [f"audit-log.jsonl: 无法读取事件链：{exc}"]
+        previous: str | None = None
+        for sequence, raw_line in enumerate(raw_lines, start=1):
+            try:
+                value = json.loads(raw_line.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                errors.append(f"audit-log.jsonl:{sequence}: invalid event JSON: {exc}")
+                continue
+            if not isinstance(value, dict) or set(value) != expected or value.get("artifact_type") != "audit-event" or value.get("schema_version") != 1 or value.get("lifecycle") != "append-only" or not isinstance(value.get("event"), str) or not isinstance(value.get("payload"), dict):
+                errors.append(f"audit-log.jsonl:{sequence}: invalid event fields")
+                continue
+            if value.get("sequence") != sequence:
+                errors.append(f"audit-log.jsonl:{sequence}: event sequence mismatch")
+            if value.get("previous_event_sha256") != previous:
+                errors.append(f"audit-log.jsonl:{sequence}: previous event hash mismatch")
+            event_without_hash = {key: item for key, item in value.items() if key != "event_sha256"}
+            event_hash = _sha256(canonical_json(event_without_hash))
+            if value.get("event_sha256") != event_hash:
+                errors.append(f"audit-log.jsonl:{sequence}: event hash mismatch")
+            previous = value.get("event_sha256") if isinstance(value.get("event_sha256"), str) else None
+        return errors
+
     def _append_event(self, event: str, payload: Mapping[str, Any]) -> None:
-        event_record = {"event_id": stable_id("EV", self.manifest().get("project_id", ""), event, _now(), secrets.token_hex(4)), "event": event, "created_at": _now(), "payload": dict(payload)}
         path = self.root / "audit-log.jsonl"
         if path.is_symlink():
             raise ReviewStudioError("审计日志不能是符号链接")
-        with path.open("ab") as handle:
-            handle.write(canonical_json(event_record))
+        existing = path.read_bytes() if path.is_file() else b""
+        if existing and self._audit_log_chain_errors():
+            raise ReviewStudioError("审计日志事件链无效，拒绝继续写入")
+        records = [json.loads(line.decode("utf-8")) for line in existing.splitlines()] if existing else []
+        previous = records[-1].get("event_sha256") if records else None
+        event_record = {"artifact_type": "audit-event", "schema_version": 1, "event_id": stable_id("EV", self.manifest().get("project_id", ""), event, _now(), secrets.token_hex(4)), "sequence": len(records) + 1, "previous_event_sha256": previous, "event": event, "created_at": _now(), "payload": dict(payload), "lifecycle": "append-only"}
+        event_record["event_sha256"] = _sha256(canonical_json(event_record))
+        updated = existing + canonical_json(event_record)
+        if path.is_file():
+            _replace_tracked(self.root, path, updated, provenance="append-only-audit-event-chain", artifact_type="audit-event-chain")
+        else:
+            _write_tracked(self.root, path, updated, provenance="append-only-audit-event-chain", artifact_type="audit-event-chain")
 
     def extraction_quality(self) -> dict[str, Any]:
         document = self.document()
@@ -602,11 +775,58 @@ class DocumentReviewProject:
             return "项目执行方案"
         return "专业文档"
 
+    def _append_extraction_decision(self, decision: str, extraction_state: str, *, corrected_text_sha256: str | None = None) -> dict[str, Any]:
+        document = self.document()
+        if document is None:
+            raise ReviewStudioError("没有可供确认的结构化识别结果")
+        quality_path = self.root / "extraction" / "quality.json"
+        warnings_path = self.root / "extraction" / "warnings.json"
+        previous = self._latest_extraction_decision()
+        previous_path = None
+        sequence = 1
+        previous_hash = None
+        if previous:
+            sequence = int(previous["sequence"]) + 1
+            previous_path = self.root / EXTRACTION_DECISION_DIR_NAME / f"{previous['decision_id']}.json"
+            if previous_path.is_file():
+                previous_hash = _sha256(previous_path.read_bytes())
+        decision_id = stable_id("EXD", document.source.sha256, decision, str(sequence), _now(), secrets.token_hex(4))
+        record = {
+            "artifact_type": "extraction-decision",
+            "schema_version": 1,
+            "decision_id": decision_id,
+            "sequence": sequence,
+            "previous_extraction_decision_sha256": previous_hash,
+            "decision": decision,
+            "extraction_state": extraction_state,
+            "source_sha256": document.source.sha256,
+            "document_relative_path": str(self.document_path.relative_to(self.root)).replace("\\", "/"),
+            "document_sha256": _sha256(self.document_path.read_bytes()),
+            "quality_relative_path": str(quality_path.relative_to(self.root)).replace("\\", "/"),
+            "quality_sha256": _sha256(quality_path.read_bytes()),
+            "warnings_relative_path": str(warnings_path.relative_to(self.root)).replace("\\", "/"),
+            "warnings_sha256": _sha256(warnings_path.read_bytes()),
+            "corrected_text_sha256": corrected_text_sha256,
+            "created_at": _now(),
+            "lifecycle": "append-only",
+        }
+        parents = [
+            _parent_ref(self.root, _safe_child(self.root, self.manifest()["source"]["relative_path"]), role="original-source"),
+            _parent_ref(self.root, self.document_path, role="current-structured-document"),
+            _parent_ref(self.root, quality_path, role="current-extraction-quality"),
+            _parent_ref(self.root, warnings_path, role="current-extraction-warnings"),
+        ]
+        if previous_path is not None:
+            parents.append(_parent_ref(self.root, previous_path, role="previous-extraction-decision"))
+        _write_tracked(self.root, self.root / EXTRACTION_DECISION_DIR_NAME / f"{decision_id}.json", canonical_json(record), parents=parents, provenance="human-confirmed-extraction-decision", artifact_type="extraction-decision")
+        return record
+
     def confirm_extraction(self, choice: str, *, corrected_text: str | None = None) -> dict[str, Any]:
         self._ensure_writable()
         if choice not in {"confirm", "correct", "continue_with_warning", "replace"}:
             raise ReviewStudioError("识别确认选项必须是 confirm、correct、continue_with_warning 或 replace")
         if choice == "replace":
+            self._append_extraction_decision("replace", "replacement_required")
             self._append_event("extraction_replaced", {"decision": "user_must_upload_replacement"})
             return self._update_state(extraction_state="replacement_required")
         document = self.document()
@@ -639,16 +859,21 @@ class DocumentReviewProject:
             _replace_tracked(self.root, self.root / "extraction" / "quality.json", canonical_json(corrected.quality.to_dict()), parents=[corrected_parent])
             _replace_tracked(self.root, self.root / "extraction" / "warnings.json", canonical_json({"warnings": [warning.to_dict() for warning in corrected.warnings]}), parents=[corrected_parent])
             _replace_tracked(self.root, self.root / "extraction" / "source-map.json", canonical_json({"source_to_block": corrected.source_to_block}), parents=[corrected_parent])
+            self._append_extraction_decision("correct", "confirmed_corrected", corrected_text_sha256=_sha256(corrected_bytes))
             self._append_event("extraction_corrected", {"corrected_sha256": _sha256(corrected_bytes), "source_sha256": document.source.sha256})
             return self._update_state(extraction_state="confirmed_corrected", read_only=False)
         if choice == "confirm" and any(w.severity in {"critical", "high"} for w in document.warnings):
             raise ReviewStudioError("识别存在高风险警告；请选择带警告继续或先修正/更换文件")
         state_name = "confirmed" if choice == "confirm" else "confirmed_with_warning"
+        self._append_extraction_decision(choice, state_name)
         self._append_event("extraction_confirmed", {"decision": choice, "source_sha256": document.source.sha256})
         return self._update_state(extraction_state=state_name, read_only=False)
 
     def confirm_context(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         self._ensure_writable()
+        extraction_decision = self._authoritative_extraction_decision()
+        if extraction_decision is None or extraction_decision.get("extraction_state") not in {"confirmed", "confirmed_corrected", "confirmed_with_warning"}:
+            raise ReviewStudioError("必须先完成并保存可信的识别确认决定")
         required = {"document_type", "jurisdiction", "effective_date", "publisher_type", "audience", "involves_minors", "involves_fees", "involves_sponsorship", "involves_contract", "involves_personal_information", "involves_intellectual_property", "publication_status"}
         missing = sorted(required - set(payload))
         if missing:
@@ -673,11 +898,15 @@ class DocumentReviewProject:
         }.items()})
 
     def can_review(self) -> tuple[bool, list[str]]:
-        state = self.state()
         reasons: list[str] = []
-        if state.get("extraction_state") not in {"confirmed", "confirmed_corrected", "confirmed_with_warning"}:
+        integrity = self.integrity_errors()
+        if integrity:
+            reasons.append("项目完整性校验失败")
+        extraction_decision = self._authoritative_extraction_decision()
+        if extraction_decision is None or extraction_decision.get("extraction_state") not in {"confirmed", "confirmed_corrected", "confirmed_with_warning"}:
             reasons.append("识别结果尚未由用户确认")
-        if state.get("context_state") != "confirmed":
+        context = self.context()
+        if context is None or not context.confirmed:
             reasons.append("文档类型与适用上下文尚未确认")
         try:
             document = self.document()

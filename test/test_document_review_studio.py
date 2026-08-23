@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import shutil
 import tempfile
@@ -226,6 +227,63 @@ class DocumentReviewStudioTests(unittest.TestCase):
                 self.assertTrue(view["state"]["integrity_errors"])
                 with self.assertRaises(ReviewStudioError):
                     project.decide_finding(finding.finding_id, "reject", reason="must not write")
+
+    def test_context_cannot_be_confirmed_before_extraction(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="draft.txt", content=b"Draft text\n")
+            with self.assertRaises(ReviewStudioError):
+                project.confirm_context(self.context())
+
+    def test_state_tampering_cannot_unlock_review(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="draft.txt", content=b"Draft text\n")
+            state = project.state()
+            state["extraction_state"] = "confirmed"
+            state["context_state"] = "confirmed"
+            project.state_path.write_bytes(json.dumps(state).encode("utf-8"))
+            self.assertEqual(project.integrity_errors(), [])
+            self.assertEqual(project.state()["extraction_state"], "unconfirmed")
+            self.assertFalse(project.can_review()[0])
+            with self.assertRaises(ReviewStudioError):
+                project.run_local_prechecks(["expression_ambiguity"])
+            self.assertFalse(project.state()["read_only"])
+
+    def test_extraction_decision_binds_current_document_quality_and_warnings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="draft.txt", content=b"Draft text\n")
+            project.confirm_extraction("confirm")
+            decision_path = next((project.root / "extraction-decisions").glob("*.json"))
+            decision = json.loads(decision_path.read_text(encoding="utf-8"))
+            self.assertEqual(decision["document_relative_path"], "extraction/document.json")
+            self.assertEqual(decision["document_sha256"], hashlib.sha256(project.document_path.read_bytes()).hexdigest())
+            quality_path = project.root / "extraction" / "quality.json"
+            warnings_path = project.root / "extraction" / "warnings.json"
+            self.assertEqual(decision["quality_sha256"], hashlib.sha256(quality_path.read_bytes()).hexdigest())
+            self.assertEqual(decision["warnings_sha256"], hashlib.sha256(warnings_path.read_bytes()).hexdigest())
+            project.document_path.write_bytes(project.document_path.read_bytes() + b"\n")
+            self.assertTrue(any("latest extraction decision is not bound" in error for error in project.integrity_errors()))
+
+    def test_state_is_rebuilt_from_authoritative_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="draft.txt", content=b"Draft text\n")
+            project.confirm_extraction("confirm")
+            project.confirm_context(self.context())
+            tampered = project.state()
+            tampered["extraction_state"] = "blocked"
+            tampered["context_state"] = "missing"
+            project.state_path.write_bytes(json.dumps(tampered).encode("utf-8"))
+            rebuilt = project.state()
+            self.assertEqual(rebuilt["extraction_state"], "confirmed")
+            self.assertEqual(rebuilt["context_state"], "confirmed")
+            self.assertEqual(json.loads(project.state_path.read_text(encoding="utf-8")), rebuilt)
+
+    def test_audit_log_tampering_forces_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="draft.txt", content=b"Draft text\n")
+            (project.root / "audit-log.jsonl").write_text("forged or truncated\n", encoding="utf-8")
+            view = project.view()
+            self.assertTrue(view["state"]["read_only"])
+            self.assertTrue(any("audit-log.jsonl" in error for error in view["state"].get("integrity_errors", [])))
 
     def _delete_artifact_and_receipt(self, project: DocumentReviewProject, path: Path) -> None:
         path.unlink()

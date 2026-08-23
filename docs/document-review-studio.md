@@ -40,6 +40,8 @@ Each project is a `.document-review-studio` directory containing:
   identity;
 - `extraction/document.json`: the format-neutral block model;
 - `extraction/quality.json`, `warnings.json`, and `source-map.json`;
+- `extraction-decisions/`: append-only human extraction confirmations,
+  corrections, warning continuations, and replacement requests;
 - `context.json`: human-confirmed review context;
 - `ai-requests/<request>/`: provider/model-bound critic prompts;
 - `audits/<critic>/`: raw model responses and parsed immutable runs;
@@ -47,7 +49,9 @@ Each project is a `.document-review-studio` directory containing:
 - `exports/`: audit reports, drafts, DOCX output, and the revision bridge;
 - `integrity-index.json`: append-only project register of every tracked artifact,
   its receipt, content hash, sequence, and predecessor index head;
-- `audit-log.jsonl`: local workflow events.
+- `audit-log.jsonl`: a protected append-only event chain with event sequence and
+  previous-event hash;
+- `state.json`: a rebuildable UI/cache snapshot, never an authorization source.
 
 Every protected artifact has a receipt binding its content SHA-256, parent
 artifact hashes, provenance, and the immutable `integrity-policy.json` marker.
@@ -59,7 +63,17 @@ run/Finding, sequenced human decision, revision bridge, and export. Missing
 index entries, receipts, changed parents, broken decision sequences, and
 deletion of the policy marker force read-only mode. This detects ordinary local
 tampering; it is not a keyed signature against an attacker who can rewrite the
-entire project and every receipt/index entry.
+entire project and every receipt/index entry. In particular, the mechanism can
+detect ordinary modification and deletion, but cannot resist an attacker who can
+restore an older index, its receipt, and the corresponding project snapshot.
+Strong rollback protection requires an external trusted checkpoint or signature.
+
+The review gate derives extraction authorization from the latest
+`extraction-decision` and its bindings to the current document, quality, and
+warnings artifacts. It never trusts `state.json` for that decision. Context
+confirmation is rejected until a valid extraction decision exists. The audit
+log is part of the integrity chain; replacing or truncating it forces
+read-only mode.
 
 ## Parser limits
 
