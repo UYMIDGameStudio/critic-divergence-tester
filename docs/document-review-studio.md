@@ -43,17 +43,22 @@ The UI flow is intentionally gated:
    critic-specific AI protocols and import each raw JSON response.
 6. Decide each Finding manually.
 7. Generate work-group/Finding-set Actions from accepted Finding decisions.
-   Supported operations include block replacement, before/after insertion,
-   block deletion, table-cell replacement, and section append.
+   The system suggests block replacement, before/after insertion, block
+   deletion, table-cell replacement, or section append, but a human must
+   explicitly select and justify the operation before any Hunk is accepted.
 8. Enter an exact Hunk (human-authored or manually imported from AI), inspect
    the operation and before/after text, and approve or reject it.
 9. Materialize only approved Hunks into a new document version and re-run every
    original deterministic local critic. Aggregate deterministic checks compare
    stable check data so a partial fix remains `partially-resolved`, and newly
    introduced Findings are added to the risk report.
-10. For every external-model critic, export the request bound to that critic,
-    Revision and revised-text hash; import its response; then confirm each
-    proposed Resolution or new Finding manually.
+10. For every external-model critic, export the request bound to the complete
+    original prompt snapshot, request, AuditRun, critic protocol,
+    provider/model, current Revision, and revised-text hash. Import the new
+    provider/model declaration and response, then confirm each original
+    Finding Resolution manually. New Findings cannot receive a Resolution;
+    they and human-confirmed partial/unresolved items become open Findings in
+    a follow-up round based on the revised document.
 11. Export revised Markdown/DOCX, the difference report, unresolved-risk
     report, recheck result, and complete audit package.
 
@@ -74,11 +79,14 @@ Each project is a `.document-review-studio` directory containing:
 - `finding-decisions/`: append-only human decisions;
 - `revision-plans/`: immutable Actions bound to the complete current Finding
   decision set, including accept/correct/reject/defer;
+- `action-operation-decisions/`: append-only human choices that turn an
+  operation suggestion into an authorized Action operation;
 - `revision-hunks/`: append-only exact replacement proposals with stable
   before-text hashes;
 - `hunk-decisions/`: immutable human approvals or rejections;
 - `revisions/`: atomically staged materialized drafts, diffs, unresolved risks,
-  local rechecks, external recheck requests/results, and human Resolutions;
+  local rechecks, external recheck requests/results, human Resolutions, and
+  version-bound follow-up Finding rounds;
 - `exports/`: audit reports, drafts, DOCX output, and the revision bridge;
 - `integrity-index.json`: append-only project register of every tracked artifact,
   its receipt, content hash, sequence, and predecessor index head;
@@ -232,8 +240,9 @@ inherit the critic's suggested action.
 - Initial critic protocol export/import has CLI commands, but the full
   Action/Hunk/external-Resolution revision workflow is browser-only.
 - External Resolution is only complete after the bound response is imported
-  and a human confirms every original and new item. Until then the risk report
-  says `requires-external-recheck` or `awaiting-human-resolution`.
+  and a human confirms every original item. New items are never labelled
+  resolved at discovery time: they remain `new-finding-awaiting-next-round`
+  until promoted into the next revision round's normal Finding queue.
 - If every Hunk is rejected, the current package still uses the “修改稿” output
   name even though its risk report records that no proposed modification was
   applied. A distinct no-change completion package remains to be implemented.

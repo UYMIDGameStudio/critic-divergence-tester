@@ -27,7 +27,7 @@ py -3 critic_runner.py app ".\结构的替身.md"
 python critic_runner.py studio
 ```
 
-Document Review Studio 当前标记为 **experimental preview**。本地确定性 Finding 已接通受约束修改与稳定 `check_id` 复审；外部模型 Finding 也能生成绑定原 critic/Revision 的复审协议、导入响应，并由人逐项确认 Resolution。它仍不是正式 V1：除 Gate C 外部用户验证外，原位 DOCX 修订、跨块结构修改和修改闭环的 CLI 对等入口等产品限制仍需解决。它支持 Markdown、TXT、DOCX、文本 PDF 和扫描 PDF；
+Document Review Studio 当前标记为 **experimental preview**。本地确定性 Finding 已接通受约束修改与稳定 `check_id` 复审；外部模型复审请求绑定原 critic 的完整 prompt 快照、request、AuditRun、协议摘要和 provider/model。原 Finding 的 Resolution 由人确认；新 Finding 和仍未解决项会成为修订稿版本上的下一轮 open Finding，重新进入裁决和修改。它仍不是正式 V1：除 Gate C 外部用户验证外，原位 DOCX 修订、跨块结构修改和修改闭环的 CLI 对等入口等产品限制仍需解决。它支持 Markdown、TXT、DOCX、文本 PDF 和扫描 PDF；
 上传后必须先确认识别质量和文档上下文，再明确选择“本地确定性预检”或导出/导入五个独立 AI critic。原始文件
 字节与 SHA-256 永不覆盖，解析警告、页码/表格单元格定位、人工裁决和导出
 审计包都保存在本地项目中。详细限制和环境要求见
@@ -39,7 +39,7 @@ Document Review Studio 当前标记为 **experimental preview**。本地确定�
 识别确认由受保护的 extraction decision 产物授权，`state.json` 只是可重建缓存；
 本地索引可发现普通修改/删除，但强回滚仍需要项目外可信检查点或签名。
 
-应用会自动打开本机页面。创建项目后，页面用七步状态条和一个“继续”主提示引导流程：确认识别 → 确认上下文 → 本地预检 → 导出/导入五个独立 AI critic → 人工裁决 → 独立 Action/Hunk 批准 → 修改稿复审与导出。首次裁决视图最多显示 30 个按“同一定位＋同一修改动作”形成的工作组，所有原子 Finding 和独立 critic 理由仍完整保留。修改层按工作组/明确 Finding 集生成 `replace_block`、前后插入、删除、表格单元格替换或追加章节等 Action，不再仅按 block 合并。每个 Revision 绑定全部当前 accept/correct/reject/defer 决定；任何决定变化都会使旧版本失效。外部模型 Finding 必须经过同 critic 复审响应和人工 Resolution 才能从风险清单撤回。导出中心提供 `修改稿.docx`、`修改稿.md`、`修改说明.md`、`未解决风险.md`、复审结果和完整审计包。
+应用会自动打开本机页面。创建项目后，页面用七步状态条和一个“继续”主提示引导流程：确认识别 → 确认上下文 → 本地预检 → 导出/导入五个独立 AI critic → 人工裁决 → 独立 Action/Hunk 批准 → 修改稿复审与导出。首次裁决视图最多显示 30 个按“同一定位＋同一修改动作”形成的工作组，所有原子 Finding 和独立 critic 理由仍完整保留。修改层按工作组/明确 Finding 集生成 Action；系统可以建议 `replace_block`、前后插入、删除、表格单元格替换或追加章节，但用户必须显式选择并说明操作类型，关键词不会直接授权删除整块。每个 Revision 绑定全部当前 accept/correct/reject/defer 决定；任何决定变化都会使旧版本失效。外部新 Finding 不能直接标为 resolved，而会进入修订稿版本的下一轮。导出中心提供 `修改稿.docx`、`修改稿.md`、`修改说明.md`、`未解决风险.md`、复审结果和完整审计包。
 
 已有 Reviewed IR 的项目会在同一项目主页显示“专业研究视图”，继续提供 Claim、Rule/Perspective Lens、Citation、版本 lineage 和 Finding Resolution；不同 Lens 的结论保持并列，不做投票合并。快速修订仍是默认入口。
 

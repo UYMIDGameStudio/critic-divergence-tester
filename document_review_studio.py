@@ -626,7 +626,7 @@ class DocumentReviewProject:
                     protected.add(path)
             for dirname in (
                 "source", "extraction", EXTRACTION_DECISION_DIR_NAME, "ai-requests",
-                "audits", "finding-decisions", "revision-plans", "revision-hunks",
+                "audits", "finding-decisions", "revision-plans", "action-operation-decisions", "revision-hunks",
                 "hunk-decisions", "revisions", "exports",
             ):
                 directory = self.root / dirname
@@ -776,6 +776,34 @@ class DocumentReviewProject:
             return None
         value = _read_json(self.document_path)
         return _document_from_dict(value)
+
+    def _review_round_records(self) -> list[tuple[Path, dict[str, Any], str]]:
+        rows: list[tuple[Path, dict[str, Any], str]] = []
+        root = self.root / "revisions"
+        for path in root.glob("*/followup-round.json") if root.is_dir() else []:
+            if path.is_symlink():
+                continue
+            value = _read_json(path)
+            if value.get("artifact_type") == "document-review-followup-round":
+                rows.append((path, value, _sha256(path.read_bytes())))
+        return sorted(rows, key=lambda row: (int(row[1].get("sequence", 0)), str(row[1].get("created_at", ""))))
+
+    def current_review_round(self) -> tuple[Path, dict[str, Any], str] | None:
+        rows = self._review_round_records()
+        return rows[-1] if rows else None
+
+    def _review_document_record(self) -> tuple[Path, StructuredDocument]:
+        current_round = self.current_review_round()
+        if current_round:
+            document_path = _safe_child(self.root, str(current_round[1].get("base_document_relative_path", "")))
+            document = _document_from_dict(_read_json(document_path))
+            if document.source.sha256 != current_round[1].get("base_revised_sha256"):
+                raise ReviewStudioError("下一轮审查文档与 follow-up round 绑定不一致")
+            return document_path, document
+        document = self.document()
+        if not document:
+            raise ReviewStudioError("没有结构化文档")
+        return self.document_path, document
 
     def _save_document(self, document: StructuredDocument) -> None:
         source_path = _safe_child(self.root, self.manifest()["source"]["relative_path"])
@@ -1118,6 +1146,45 @@ class DocumentReviewProject:
                 active[critic] = records[-1]
         return active
 
+    def _critic_origin_binding(self, critic: str) -> dict[str, Any]:
+        current_round = self.current_review_round()
+        if current_round:
+            inherited = current_round[1].get("critic_bindings", {}).get(critic)
+            if isinstance(inherited, dict):
+                for field in ("original_prompt_relative_path", "original_request_relative_path", "original_audit_run_relative_path"):
+                    path = _safe_child(self.root, str(inherited.get(field, "")))
+                    if not path.is_file() or path.is_symlink():
+                        raise ReviewStudioError(f"下一轮 critic 原始绑定缺失：{field}")
+                return dict(inherited)
+        active = self._active_audit_run_records().get(critic)
+        if not active or active[1].get("model_label") == "deterministic-local-rules":
+            raise ReviewStudioError(f"找不到外部 critic 的原始 AuditRun：{critic}")
+        run_path, run, run_sha256 = active
+        metadata = run.get("declared_model_metadata", {})
+        request_id = metadata.get("request_id")
+        request_path = self.root / "ai-requests" / str(request_id) / "request.json"
+        prompt_path = request_path.parent / "prompt.md"
+        request = _read_json(request_path)
+        prompt_bytes = prompt_path.read_bytes()
+        if request.get("critic") != critic or request.get("prompt_file_sha256") != _sha256(prompt_bytes):
+            raise ReviewStudioError(f"原 critic request/prompt 绑定无效：{critic}")
+        return {
+            "critic": critic,
+            "critic_protocol_sha256": _sha256(canonical_json(CRITIC_PROTOCOLS[critic])),
+            "original_request_id": request_id,
+            "original_request_sha256": _sha256(request_path.read_bytes()),
+            "original_request_relative_path": str(request_path.relative_to(self.root)).replace("\\", "/"),
+            "original_prompt_sha256": request.get("prompt_sha256"),
+            "original_prompt_file_sha256": request.get("prompt_file_sha256"),
+            "original_prompt_relative_path": str(prompt_path.relative_to(self.root)).replace("\\", "/"),
+            "original_audit_run_id": run.get("run_id"),
+            "original_audit_run_sha256": run_sha256,
+            "original_audit_run_relative_path": str(run_path.relative_to(self.root)).replace("\\", "/"),
+            "original_provider": metadata.get("provider"),
+            "original_model": metadata.get("model"),
+            "original_response_binding": run.get("response_binding"),
+        }
+
     def _audit_run_chain_errors(self) -> list[str]:
         errors: list[str] = []
         for critic in CRITIC_DIMENSIONS:
@@ -1451,15 +1518,14 @@ class DocumentReviewProject:
 
     def findings(self) -> list[Finding]:
         rows: dict[str, Finding] = {}
-        for _, value, _ in self._active_audit_run_records().values():
-            try:
-                for item in value.get("findings", []):
-                    finding = _finding_from_dict(item)
-                    if finding.finding_id in rows:
-                        raise ReviewStudioError(f"当前审查结果包含重复 Finding ID：{finding.finding_id}")
-                    rows[finding.finding_id] = finding
-            except (OSError, ValueError, KeyError, TypeError, ReviewStudioError):
-                raise
+        current_round = self.current_review_round()
+        sources = [current_round[1]] if current_round else [value for _, value, _ in self._active_audit_run_records().values()]
+        for value in sources:
+            for item in value.get("findings", []):
+                finding = _finding_from_dict(item)
+                if finding.finding_id in rows:
+                    raise ReviewStudioError(f"当前审查结果包含重复 Finding ID：{finding.finding_id}")
+                rows[finding.finding_id] = finding
         decisions = self._decisions()
         decision_history = self._decision_records()
         current: list[Finding] = []
@@ -1547,6 +1613,9 @@ class DocumentReviewProject:
         return bindings, _sha256(canonical_json(bindings))
 
     def _finding_artifact_path(self, finding_id: str) -> Path:
+        current_round = self.current_review_round()
+        if current_round and any(isinstance(item, dict) and item.get("finding_id") == finding_id for item in current_round[1].get("findings", [])):
+            return current_round[0]
         matches = [
             path
             for path, value, _ in self._active_audit_run_records().values()
@@ -1603,9 +1672,7 @@ class DocumentReviewProject:
         or bypass Finding → Action → Hunk → Resolution approval.
         """
         self._ensure_writable()
-        document = self.document()
-        if not document:
-            raise ReviewStudioError("没有结构化文档")
+        document_path, document = self._review_document_record()
         findings = self.findings()
         open_findings = [item.finding_id for item in findings if item.status == "open"]
         if open_findings:
@@ -1632,7 +1699,7 @@ class DocumentReviewProject:
             lines.extend([f"## {finding.finding_id} · {finding.critic}", "", f"- Location: `{finding.location.block_id}` page={finding.location.page}", f"- Evidence: {finding.evidence}", f"- Issue: {finding.issue}", f"- Standard: {finding.standard}", f"- Consequence: {finding.consequence}", f"- Original suggested action: {finding.suggested_action}", f"- Human-approved action: {approved_action}", f"- Human decision: {finding.status} (sequence {decision['sequence']})", ""])
         report = "\n".join(lines).encode("utf-8")
         report_path = bridge / "findings-report.md"
-        bridge_parents = [_parent_ref(self.root, self.document_path, role="structured-document"), *[_parent_ref(self.root, path, role="current-finding-decision") for path in decision_paths]]
+        bridge_parents = [_parent_ref(self.root, document_path, role="structured-document"), *[_parent_ref(self.root, path, role="current-finding-decision") for path in decision_paths]]
         _write_tracked(self.root, report_path, report, parents=bridge_parents, provenance="deterministic-revision-bridge")
         binding = {"artifact_type": "revision-bridge", "schema_version": 2, "bridge_id": bridge_id, "source_sha256": document.source.sha256, "source_name": document.source.original_name, "report_relative_path": str(report_path.relative_to(self.root)).replace("\\", "/"), "report_sha256": _sha256(report), "finding_ids": [item.finding_id for item in accepted], "decision_bindings": [{"finding_id": item.finding_id, "decision_id": decisions[item.finding_id]["decision_id"], "decision_sha256": _sha256((self.root / "finding-decisions" / f"{decisions[item.finding_id]['decision_id']}.json").read_bytes()), "approved_action": (decisions[item.finding_id].get("corrected_action") or item.suggested_action).strip()} for item in accepted], "revision_loop": "existing-argument-workbench-constrained-revision", "track_changes_claimed": False, "revised_document_ready": False, "lifecycle": "immutable"}
         binding_path = bridge / "bridge.json"
@@ -1704,9 +1771,7 @@ class DocumentReviewProject:
         exact replacement text and receive its own human decision before use.
         """
         self._ensure_writable()
-        document = self.document()
-        if not document:
-            raise ReviewStudioError("没有结构化文档")
+        document_path, document = self._review_document_record()
         findings = self.findings()
         open_findings = [item.finding_id for item in findings if item.status == "open"]
         if open_findings:
@@ -1742,7 +1807,7 @@ class DocumentReviewProject:
             actions.append({
                 "action_id": stable_id("ACT", plan_id, work_group_id, operation),
                 "work_group_id": work_group_id,
-                "operation": operation,
+                "operation_suggestion": operation,
                 "block_id": block_id,
                 "block_kind": block.kind,
                 "before_text": block.text,
@@ -1775,12 +1840,71 @@ class DocumentReviewProject:
             "lifecycle": "immutable",
         }
         parents = [
-            _parent_ref(self.root, self.document_path, role="structured-document"),
+            _parent_ref(self.root, document_path, role="structured-document"),
             *[_parent_ref(self.root, path, role="current-finding-decision") for path in decision_paths.values()],
         ]
         _write_tracked(self.root, plan_path, canonical_json(plan), parents=parents, provenance="deterministic-human-approved-revision-plan")
         self._append_event("revision_plan_prepared", {"plan_id": plan_id, "action_count": len(actions)})
         return plan
+
+    def _action_operation_records(self, plan_id: str | None = None) -> list[tuple[Path, dict[str, Any], str]]:
+        rows: list[tuple[Path, dict[str, Any], str]] = []
+        directory = self.root / "action-operation-decisions"
+        for path in directory.glob("*.json") if directory.is_dir() else []:
+            if path.is_symlink():
+                continue
+            value = _read_json(path)
+            if plan_id is None or value.get("plan_id") == plan_id:
+                rows.append((path, value, _sha256(path.read_bytes())))
+        return rows
+
+    def _current_action_operations(self, plan_id: str) -> dict[str, tuple[Path, dict[str, Any], str]]:
+        grouped: dict[str, list[tuple[Path, dict[str, Any], str]]] = {}
+        for row in self._action_operation_records(plan_id):
+            grouped.setdefault(str(row[1].get("action_id", "")), []).append(row)
+        return {action_id: max(values, key=lambda row: int(row[1].get("sequence", 0))) for action_id, values in grouped.items()}
+
+    def _actions_with_operations(self, plan: Mapping[str, Any]) -> list[dict[str, Any]]:
+        decisions = self._current_action_operations(str(plan["plan_id"]))
+        rows: list[dict[str, Any]] = []
+        for value in plan.get("actions", []):
+            action = dict(value)
+            decision = decisions.get(str(action["action_id"]))
+            action["operation"] = decision[1]["operation"] if decision else None
+            action["operation_decision"] = decision[1] if decision else None
+            action["operation_decision_sha256"] = decision[2] if decision else None
+            rows.append(action)
+        return rows
+
+    @_serialized_mutation
+    def set_revision_action_operation(self, action_id: str, operation: str, *, reason: str) -> dict[str, Any]:
+        self._ensure_writable()
+        allowed = {"replace_block", "insert_before", "insert_after", "delete_block", "replace_table_cell", "append_section"}
+        if operation not in allowed:
+            raise ReviewStudioError("修改操作类型无效")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ReviewStudioError("确认修改操作必须填写理由")
+        plan = self.revision_plan()
+        if not plan:
+            raise ReviewStudioError("请先生成当前修改计划")
+        action = next((item for item in plan.get("actions", []) if item.get("action_id") == action_id), None)
+        if not action:
+            raise ReviewStudioError("找不到修改动作")
+        if operation == "replace_table_cell" and action.get("block_kind") != "table_cell":
+            raise ReviewStudioError("replace_table_cell 只能用于表格单元格锚点")
+        if action.get("block_kind") == "table_cell" and operation != "replace_table_cell":
+            raise ReviewStudioError("表格单元格当前只支持 replace_table_cell")
+        history = [row for row in self._action_operation_records(str(plan["plan_id"])) if row[1].get("action_id") == action_id]
+        previous = max(history, key=lambda row: int(row[1].get("sequence", 0))) if history else None
+        sequence = int(previous[1]["sequence"]) + 1 if previous else 1
+        record = {"artifact_type": "revision-action-operation-decision", "schema_version": 1, "decision_id": stable_id("AOD", plan["plan_id"], action_id, sequence, operation, _now(), secrets.token_hex(4)), "plan_id": plan["plan_id"], "action_id": action_id, "sequence": sequence, "previous_decision_sha256": previous[2] if previous else None, "operation": operation, "reason": reason.strip(), "created_at": _now(), "lifecycle": "append-only"}
+        path = self.root / "action-operation-decisions" / f"{record['decision_id']}.json"
+        parents = [_parent_ref(self.root, self.root / "revision-plans" / f"{plan['plan_id']}.json", role="revision-plan")]
+        if previous:
+            parents.append(_parent_ref(self.root, previous[0], role="previous-operation-decision"))
+        _write_tracked(self.root, path, canonical_json(record), parents=parents, provenance="human-confirmed-action-operation")
+        self._append_event("revision_action_operation_decided", record)
+        return record
 
     def _revision_hunk_records(self, plan_id: str | None = None) -> list[tuple[Path, dict[str, Any], str]]:
         rows: list[tuple[Path, dict[str, Any], str]] = []
@@ -1825,9 +1949,12 @@ class DocumentReviewProject:
         plan = self.revision_plan()
         if not plan:
             raise ReviewStudioError("请先生成当前 Finding 决定对应的修改计划")
-        action = next((item for item in plan.get("actions", []) if item.get("action_id") == action_id), None)
+        action = next((item for item in self._actions_with_operations(plan) if item.get("action_id") == action_id), None)
         if not action:
             raise ReviewStudioError("找不到修改动作")
+        if not action.get("operation"):
+            raise ReviewStudioError("必须先由人工显式确认该 Action 的修改操作类型")
+        operation_row = self._current_action_operations(str(plan["plan_id"]))[action_id]
         if not action.get("supported"):
             raise ReviewStudioError(str(action.get("unsupported_reason") or "当前锚点不支持自动修改"))
         if not isinstance(revised_text, str):
@@ -1856,6 +1983,8 @@ class DocumentReviewProject:
             "sequence": sequence,
             "previous_hunk_sha256": previous[2] if previous else None,
             "operation": action["operation"],
+            "operation_decision_id": operation_row[1]["decision_id"],
+            "operation_decision_sha256": operation_row[2],
             "block_id": action["block_id"],
             "before_text": action["before_text"],
             "before_sha256": action["before_sha256"],
@@ -1869,7 +1998,7 @@ class DocumentReviewProject:
         }
         path = self.root / "revision-hunks" / f"{hunk['hunk_id']}.json"
         plan_path = self.root / "revision-plans" / f"{plan['plan_id']}.json"
-        parents = [_parent_ref(self.root, plan_path, role="revision-plan")]
+        parents = [_parent_ref(self.root, plan_path, role="revision-plan"), _parent_ref(self.root, operation_row[0], role="human-operation-decision")]
         if previous:
             parents.append(_parent_ref(self.root, previous[0], role="previous-hunk"))
         _write_tracked(self.root, path, canonical_json(hunk), parents=parents, provenance=provenance)
@@ -1925,11 +2054,14 @@ class DocumentReviewProject:
         """Materialize only approved, anchor-verified Hunks and run local rechecks."""
         self._ensure_writable()
         plan = self.revision_plan()
-        document = self.document()
+        _, document = self._review_document_record()
         context = self.context()
         if not plan or not document or not context:
             raise ReviewStudioError("修改计划、结构化文档或审查上下文缺失")
-        actions = {str(item["action_id"]): item for item in plan.get("actions", [])}
+        actions = {str(item["action_id"]): item for item in self._actions_with_operations(plan)}
+        missing_operations = [action_id for action_id, item in actions.items() if not item.get("operation")]
+        if missing_operations:
+            raise ReviewStudioError("每个 Action 必须先人工确认修改操作类型：" + ", ".join(missing_operations))
         unsupported = [item["block_id"] for item in actions.values() if not item.get("supported")]
         if unsupported:
             raise ReviewStudioError("以下锚点不能安全自动修改，请先调整 Finding 定位：" + ", ".join(unsupported))
@@ -1959,6 +2091,8 @@ class DocumentReviewProject:
                 raise ReviewStudioError(f"Hunk 锚点内容已变化，拒绝静默应用：{block_id}")
             if hunk.get("operation") != action.get("operation"):
                 raise ReviewStudioError(f"Hunk 操作与 Action 不一致：{action['action_id']}")
+            if hunk.get("operation_decision_sha256") != action.get("operation_decision_sha256"):
+                raise ReviewStudioError(f"Hunk 未绑定该 Action 最新的人工操作决定：{action['action_id']}")
             if action["operation"] == "append_section":
                 append_actions.append((action, hunk))
             else:
@@ -2088,14 +2222,20 @@ class DocumentReviewProject:
                 new_rows.append({"finding_id": current.finding_id, "critic": current.critic, "check_id": current.check_id, "state": "new-finding", "basis": current.issue, "recheck_finding": current.to_dict(), "changed_by_approved_hunk": False})
         resolution_rows.extend(new_rows)
         external_critics = sorted({row["critic"] for row in resolution_rows if row["state"] == "requires-external-recheck"})
-        external_request_payloads: list[tuple[str, str, dict[str, Any]]] = []
+        external_request_payloads: list[tuple[str, str, dict[str, Any], list[dict[str, Any]]]] = []
         for critic in external_critics:
             original_rows = [item.to_dict() for item in original_findings.values() if item.critic == critic and item.status in {"accept", "correct"}]
+            origin = self._critic_origin_binding(critic)
+            original_prompt_path = _safe_child(self.root, str(origin["original_prompt_relative_path"]))
+            original_request_path = _safe_child(self.root, str(origin["original_request_relative_path"]))
+            original_run_path = _safe_child(self.root, str(origin["original_audit_run_relative_path"]))
+            original_prompt_snapshot = original_prompt_path.read_text(encoding="utf-8")
             request_id = stable_id("RRQ", revision_id, critic)
             base_prompt = "\n".join([
                 f"# External critic recheck · {critic}",
                 "",
-                "Re-run the same independent critic against the revised document. Do not infer resolution from wording changes.",
+                "Re-run exactly the critic defined by the bound original protocol below. Preserve its objective, checks, evidence standard, exclusions, and independence boundary.",
+                "Do not infer resolution from wording changes and do not add another critic, vote, or score.",
                 "Return JSON with request_id, prompt_sha256, revision_id, revised_sha256, critic, resolutions, and new_findings.",
                 "Each resolution must contain finding_id, state (resolved|partially-resolved|still-present), reason, and evidence.",
                 "Every newly detected issue must be a full Finding in new_findings; use source_finding_id only when it truly descends from an original Finding.",
@@ -2103,6 +2243,15 @@ class DocumentReviewProject:
                 f"request_id: {request_id}",
                 f"revision_id: {revision_id}",
                 f"revised_sha256: {revised_sha}",
+                "",
+                "## Bound critic definition",
+                json.dumps(CRITIC_PROTOCOLS[critic], ensure_ascii=False, indent=2),
+                "",
+                "## Original request/AuditRun binding",
+                json.dumps(origin, ensure_ascii=False, indent=2),
+                "",
+                "## Exact original prompt snapshot",
+                original_prompt_snapshot,
                 "",
                 "## Original Findings",
                 json.dumps(original_rows, ensure_ascii=False, indent=2),
@@ -2113,9 +2262,10 @@ class DocumentReviewProject:
             prompt_sha256 = _sha256(base_prompt.encode("utf-8"))
             envelope = {"request_id": request_id, "prompt_sha256": prompt_sha256, "revision_id": revision_id, "revised_sha256": revised_sha, "critic": critic}
             prompt = base_prompt + "\n\n## Required response envelope\nReturn these fields exactly:\n```json\n" + json.dumps(envelope, ensure_ascii=False, indent=2) + "\n```\n"
-            request = {"artifact_type": "external-critic-recheck-request", "schema_version": 1, "request_id": request_id, "revision_id": revision_id, "revised_sha256": revised_sha, "critic": critic, "prompt_sha256": prompt_sha256, "prompt_file_sha256": _sha256(prompt.encode("utf-8")), "original_finding_ids": [item["finding_id"] for item in original_rows], "created_at": _now(), "lifecycle": "immutable"}
-            external_request_payloads.append((critic, prompt, request))
-        recheck = {"artifact_type": "document-revision-recheck", "schema_version": 2, "revision_id": revision_id, "revised_sha256": revised_sha, "local_critic_runs": recheck_runs, "recheck_findings": [item.to_dict() for item in recheck_findings], "finding_resolutions": resolution_rows, "external_recheck_required": external_critics, "external_recheck_requests": [request for _, _, request in external_request_payloads], "created_at": _now()}
+            request = {"artifact_type": "external-critic-recheck-request", "schema_version": 2, "request_id": request_id, "revision_id": revision_id, "revised_sha256": revised_sha, "critic": critic, "critic_protocol": CRITIC_PROTOCOLS[critic], **origin, "prompt_sha256": prompt_sha256, "prompt_file_sha256": _sha256(prompt.encode("utf-8")), "original_finding_ids": [item["finding_id"] for item in original_rows], "created_at": _now(), "lifecycle": "immutable"}
+            origin_parents = [_parent_ref(self.root, original_prompt_path, role="original-critic-prompt"), _parent_ref(self.root, original_request_path, role="original-ai-request"), _parent_ref(self.root, original_run_path, role="original-audit-run")]
+            external_request_payloads.append((critic, prompt, request, origin_parents))
+        recheck = {"artifact_type": "document-revision-recheck", "schema_version": 2, "revision_id": revision_id, "revised_sha256": revised_sha, "local_critic_runs": recheck_runs, "recheck_findings": [item.to_dict() for item in recheck_findings], "finding_resolutions": resolution_rows, "external_recheck_required": external_critics, "external_recheck_requests": [request for _, _, request, _ in external_request_payloads], "created_at": _now()}
         unresolved_lines = ["# 未解决风险", ""]
         unresolved_rows = [row for row in resolution_rows if row["state"] != "resolved"]
         if not unresolved_rows:
@@ -2153,12 +2303,12 @@ class DocumentReviewProject:
             (unresolved_path, unresolved_data, [pending_ref(recheck_path, recheck_data, "recheck")], "deterministic-unresolved-risk-report"),
             (revision_path, revision_data, [pending_ref(markdown_path, markdown_data, "revised-markdown"), pending_ref(recheck_path, recheck_data, "recheck"), pending_ref(unresolved_path, unresolved_data, "unresolved-risks")], "approved-revision-binding"),
         ]
-        for critic, prompt, request in external_request_payloads:
+        for critic, prompt, request, origin_parents in external_request_payloads:
             request_path = output / "external-recheck-requests" / critic / "request.json"
             prompt_path = output / "external-recheck-requests" / critic / "prompt.md"
             request_data = canonical_json(request)
             prompt_data = prompt.encode("utf-8")
-            request_parents = [pending_ref(revision_path, revision_data, "revision"), pending_ref(recheck_path, recheck_data, "local-recheck")]
+            request_parents = [pending_ref(revision_path, revision_data, "revision"), pending_ref(recheck_path, recheck_data, "local-recheck"), *origin_parents]
             artifact_batch.extend([
                 (request_path, request_data, request_parents, "deterministic-external-recheck-request"),
                 (prompt_path, prompt_data, [*request_parents, pending_ref(request_path, request_data, "recheck-request")], "deterministic-external-recheck-prompt"),
@@ -2220,6 +2370,14 @@ class DocumentReviewProject:
             prompt_bytes = prompt_path.read_bytes()
             if _sha256(prompt_bytes) != value.get("prompt_file_sha256"):
                 raise ReviewStudioError("外部复审协议与 request 绑定不一致")
+            for path_field, hash_field in (
+                ("original_prompt_relative_path", "original_prompt_file_sha256"),
+                ("original_request_relative_path", "original_request_sha256"),
+                ("original_audit_run_relative_path", "original_audit_run_sha256"),
+            ):
+                original_path = _safe_child(self.root, str(value.get(path_field, "")))
+                if not original_path.is_file() or original_path.is_symlink() or _sha256(original_path.read_bytes()) != value.get(hash_field):
+                    raise ReviewStudioError(f"外部复审请求的原 critic 绑定无效：{path_field}")
             value["prompt"] = prompt_bytes.decode("utf-8")
             value["relative_path"] = str(prompt_path.relative_to(self.root)).replace("\\", "/")
             rows.append(value)
@@ -2239,7 +2397,7 @@ class DocumentReviewProject:
         return rows
 
     @_serialized_mutation
-    def collect_external_recheck(self, revision_id: str, critic: str, response: bytes | str, *, binding_mode: str = "strict") -> dict[str, Any]:
+    def collect_external_recheck(self, revision_id: str, critic: str, response: bytes | str, *, provider: str, model: str, binding_mode: str = "strict") -> dict[str, Any]:
         self._ensure_writable()
         revision_dir = self._revision_directory(revision_id)
         request = next((item for item in self.external_recheck_requests(revision_id) if item.get("critic") == critic), None)
@@ -2247,11 +2405,21 @@ class DocumentReviewProject:
             raise ReviewStudioError("该 Revision 没有此 critic 的外部复审请求")
         if binding_mode not in {"strict", "manual_association"}:
             raise ReviewStudioError("外部复审绑定方式无效")
+        if not isinstance(provider, str) or not provider.strip() or not isinstance(model, str) or not model.strip():
+            raise ReviewStudioError("外部复审导入必须声明 provider 和 model")
         raw = response.encode("utf-8") if isinstance(response, str) else response
         if not isinstance(raw, bytes) or len(raw) > MAX_TEXT_CORRECTION_BYTES:
             raise ReviewStudioError("外部复审响应超过安全大小限制")
+        def reject_duplicate(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            value: dict[str, Any] = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ReviewStudioError(f"外部复审 JSON 含重复字段：{key}")
+                value[key] = item
+            return value
+
         try:
-            parsed = json.loads(raw.decode("utf-8"))
+            parsed = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicate)
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ReviewStudioError("外部复审响应必须是 UTF-8 JSON") from exc
         if not isinstance(parsed, dict):
@@ -2303,7 +2471,7 @@ class DocumentReviewProject:
             known_ids.add(finding.finding_id)
             clean_new_findings.append(finding.to_dict())
         result_id = stable_id("RR", request["request_id"], _sha256(raw), _now(), secrets.token_hex(4))
-        result = {"artifact_type": "external-critic-recheck-result", "schema_version": 1, "result_id": result_id, "request_id": request["request_id"], "revision_id": revision_id, "revised_sha256": request["revised_sha256"], "critic": critic, "resolutions": clean_resolutions, "new_findings": clean_new_findings, "response_binding": "strict-response-envelope" if binding_mode == "strict" else "manual-association", "raw_response_sha256": _sha256(raw), "created_at": _now(), "lifecycle": "immutable"}
+        result = {"artifact_type": "external-critic-recheck-result", "schema_version": 2, "result_id": result_id, "request_id": request["request_id"], "revision_id": revision_id, "revised_sha256": request["revised_sha256"], "critic": critic, "resolutions": clean_resolutions, "new_findings": clean_new_findings, "declared_model_metadata": {"provider": provider.strip(), "model": model.strip(), "import_mode": "manual", "response_binding": "strict-response-envelope" if binding_mode == "strict" else "manual-association"}, "response_binding": "strict-response-envelope" if binding_mode == "strict" else "manual-association", "raw_response_sha256": _sha256(raw), "created_at": _now(), "lifecycle": "immutable"}
         result_dir = revision_dir / "external-rechecks" / critic
         raw_path = result_dir / f"{result_id}.raw-response.json"
         result_path = result_dir / f"{result_id}.json"
@@ -2335,9 +2503,9 @@ class DocumentReviewProject:
         if not result_row:
             raise ReviewStudioError("找不到外部复审结果")
         result_path, result, _ = result_row
-        valid_ids = {item["finding_id"] for item in result.get("resolutions", [])} | {item["finding_id"] for item in result.get("new_findings", [])}
+        valid_ids = {item["finding_id"] for item in result.get("resolutions", [])}
         if finding_id not in valid_ids:
-            raise ReviewStudioError("人工 Resolution 未绑定当前外部复审 Finding")
+            raise ReviewStudioError("只有原 Finding 的复审结论可以做 Resolution；新 Finding 必须进入下一轮裁决")
         prior = [row for row in self._external_resolution_records(revision_id) if row[1].get("result_id") == result_id and row[1].get("finding_id") == finding_id]
         previous = max(prior, key=lambda row: int(row[1].get("sequence", 0))) if prior else None
         sequence = int(previous[1]["sequence"]) + 1 if previous else 1
@@ -2367,9 +2535,94 @@ class DocumentReviewProject:
             items: list[dict[str, Any]] = []
             if latest:
                 items.extend({**item, "kind": "original", "human_decision": decisions.get(item["finding_id"])} for item in latest[1].get("resolutions", []))
-                items.extend({"finding_id": item["finding_id"], "state": "new-finding", "reason": item["issue"], "evidence": item["evidence"], "kind": "new", "finding": item, "human_decision": decisions.get(item["finding_id"])} for item in latest[1].get("new_findings", []))
-            rows.append({**request, "result": latest[1] if latest else None, "items": items, "complete": bool(latest) and bool(items) and all(item.get("human_decision") for item in items)})
-        return {"revision_id": revision_id, "requests": rows, "complete": all(row["complete"] for row in rows) if rows else True}
+                items.extend({"finding_id": item["finding_id"], "state": "new-finding", "reason": item["issue"], "evidence": item["evidence"], "kind": "new", "finding": item, "human_decision": None, "next_step": "followup-adjudication"} for item in latest[1].get("new_findings", []))
+            original_items = [item for item in items if item["kind"] == "original"]
+            resolution_complete = bool(latest) and bool(original_items) and all(item.get("human_decision") for item in original_items)
+            followup_items = [item for item in items if item["kind"] == "new" or (item.get("human_decision") and item["human_decision"].get("state") != "resolved")]
+            rows.append({**request, "result": latest[1] if latest else None, "items": items, "resolution_complete": resolution_complete, "followup_required": bool(followup_items)})
+        followup_started = (self._revision_directory(revision_id) / "followup-round.json").is_file()
+        resolutions_complete = all(row["resolution_complete"] for row in rows) if rows else True
+        followup_required = any(row["followup_required"] for row in rows)
+        for row in rows:
+            row["complete"] = row["resolution_complete"] and (not row["followup_required"] or followup_started)
+        return {"revision_id": revision_id, "requests": rows, "resolutions_complete": resolutions_complete, "followup_required": followup_required, "followup_started": followup_started, "can_start_followup": resolutions_complete and followup_required and not followup_started, "complete": resolutions_complete and (not followup_required or followup_started)}
+
+    @_serialized_mutation
+    def start_followup_round(self, revision_id: str) -> dict[str, Any]:
+        """Promote unresolved and newly discovered external issues into a new Finding round."""
+        self._ensure_writable()
+        revision_dir = self._revision_directory(revision_id)
+        round_path = revision_dir / "followup-round.json"
+        if round_path.is_file():
+            return _read_json(round_path)
+        status = self.external_recheck_status(revision_id)
+        if not status["resolutions_complete"]:
+            raise ReviewStudioError("必须先逐项确认所有原 Finding 的外部 Resolution")
+        if not status["followup_required"]:
+            raise ReviewStudioError("本次外部复审没有需要进入下一轮的 Finding")
+        revised_document = _document_from_dict(_read_json(revision_dir / "document.json"))
+        revised_block_ids = {block.block_id for block in revised_document.blocks}
+        fallback_block = revised_document.blocks[0] if revised_document.blocks else None
+        prior_findings = {item.finding_id: item for item in self.findings()}
+        promoted: list[Finding] = []
+        source_rows: list[dict[str, Any]] = []
+        critic_bindings: dict[str, dict[str, Any]] = {}
+        parents = [_parent_ref(self.root, revision_dir / "revision.json", role="base-revision"), _parent_ref(self.root, revision_dir / "document.json", role="base-revised-document")]
+        resolution_records = self._external_resolution_records(revision_id)
+        for request in status["requests"]:
+            result = request.get("result")
+            if not result:
+                continue
+            result_row = next(row for row in self._external_recheck_results(revision_id, str(request["critic"])) if row[1].get("result_id") == result.get("result_id"))
+            parents.append(_parent_ref(self.root, result_row[0], role="external-recheck-result"))
+            critic_bindings[str(request["critic"])] = {key: request[key] for key in (
+                "critic", "critic_protocol_sha256", "original_request_id", "original_request_sha256", "original_request_relative_path",
+                "original_prompt_sha256", "original_prompt_file_sha256", "original_prompt_relative_path", "original_audit_run_id",
+                "original_audit_run_sha256", "original_audit_run_relative_path", "original_provider", "original_model", "original_response_binding",
+            )}
+            decisions: dict[str, tuple[Path, dict[str, Any], str]] = {}
+            for item in resolution_records:
+                if item[1].get("result_id") != result["result_id"]:
+                    continue
+                finding_id = str(item[1]["finding_id"])
+                current = decisions.get(finding_id)
+                if current is None or int(item[1].get("sequence", 0)) > int(current[1].get("sequence", 0)):
+                    decisions[finding_id] = item
+            for resolution in result.get("resolutions", []):
+                decision_row = decisions.get(resolution["finding_id"])
+                if not decision_row:
+                    continue
+                decision = decision_row[1]
+                parents.append(_parent_ref(self.root, decision_row[0], role="human-external-resolution"))
+                if decision.get("state") == "resolved":
+                    continue
+                original = prior_findings.get(resolution["finding_id"])
+                if not original:
+                    raise ReviewStudioError("无法把未解决的原 Finding 继承到下一轮")
+                location = original.location
+                if location.block_id not in revised_block_ids:
+                    if fallback_block is None:
+                        raise ReviewStudioError("修订稿没有可用于继承 Finding 的定位")
+                    location = make_location(fallback_block)
+                promoted_id = stable_id("F", revision_id, result["result_id"], original.finding_id, "carry")[:30]
+                promoted.append(replace(original, finding_id=promoted_id, location=location, evidence=resolution["evidence"], status="open", source_finding_id=original.finding_id, origin="external-recheck-carried-forward"))
+                source_rows.append({"finding_id": promoted_id, "source_finding_id": original.finding_id, "source_result_id": result["result_id"], "reason": "human-resolution-" + str(decision["state"])})
+            for new_value in result.get("new_findings", []):
+                original_new = _finding_from_dict(new_value)
+                promoted_id = stable_id("F", revision_id, result["result_id"], original_new.finding_id, "new")[:30]
+                promoted.append(replace(original_new, finding_id=promoted_id, status="open", source_finding_id=original_new.finding_id, origin="external-recheck-new-finding"))
+                source_rows.append({"finding_id": promoted_id, "source_finding_id": original_new.finding_id, "source_result_id": result["result_id"], "reason": "external-new-finding"})
+        if not promoted:
+            raise ReviewStudioError("没有可进入下一轮的 Finding")
+        if len({item.finding_id for item in promoted}) != len(promoted):
+            raise ReviewStudioError("下一轮 Finding ID 冲突")
+        history = self._review_round_records()
+        sequence = len(history) + 1
+        round_id = stable_id("RND", revision_id, *sorted(item.finding_id for item in promoted))
+        record = {"artifact_type": "document-review-followup-round", "schema_version": 1, "round_id": round_id, "sequence": sequence, "base_revision_id": revision_id, "base_revised_sha256": _read_json(revision_dir / "revision.json")["revised_sha256"], "base_document_relative_path": str((revision_dir / "document.json").relative_to(self.root)).replace("\\", "/"), "findings": [item.to_dict() for item in promoted], "finding_sources": source_rows, "critic_bindings": critic_bindings, "created_at": _now(), "lifecycle": "immutable"}
+        _write_tracked(self.root, round_path, canonical_json(record), parents=parents, provenance="human-confirmed-followup-finding-round")
+        self._append_event("followup_round_started", {"round_id": round_id, "base_revision_id": revision_id, "finding_ids": [item.finding_id for item in promoted]})
+        return record
 
     def _composed_unresolved_report(self, revision_id: str) -> str:
         revision_dir = self._revision_directory(revision_id)
@@ -2387,6 +2640,9 @@ class DocumentReviewProject:
                     rows.append({"finding_id": finding_id, "critic": request["critic"], "check_id": None, "state": "requires-external-recheck", "basis": "外部复审协议已生成，尚未导入响应"})
                 continue
             for item in request.get("items", []):
+                if item.get("kind") == "new":
+                    rows.append({"finding_id": item["finding_id"], "critic": request["critic"], "check_id": item.get("finding", {}).get("check_id"), "state": "new-finding-awaiting-next-round" if not external.get("followup_started") else "new-finding-promoted-to-next-round", "basis": "外部复审发现的新问题不能直接判为 resolved；必须进入下一轮 Finding 裁决与修改"})
+                    continue
                 human = item.get("human_decision")
                 if human and human.get("state") == "resolved":
                     continue
@@ -2406,9 +2662,7 @@ class DocumentReviewProject:
             raise ReviewStudioError("正式导出前必须完成识别与上下文质量门：" + "；".join(reasons))
         if not self._active_audit_run_records():
             raise ReviewStudioError("正式导出前至少要完成一次本地预检或独立 AI 审查")
-        document = self.document()
-        if not document:
-            raise ReviewStudioError("没有可导出的结构化文档")
+        document_path, document = self._review_document_record()
         findings = self.findings()
         open_findings = [item.finding_id for item in findings if item.status == "open"]
         if open_findings:
@@ -2435,7 +2689,7 @@ class DocumentReviewProject:
         output = self.root / "exports" / export_id
         output.mkdir(parents=True, exist_ok=False)
         draft = trusted_markdown
-        base_parents = [_parent_ref(self.root, self.document_path, role="structured-document")]
+        base_parents = [_parent_ref(self.root, document_path, role="structured-document")]
         if trusted_revision:
             base_parents.append(_parent_ref(self.root, trusted_revision[0] / "revision.json", role="approved-revision"))
         draft_path = output / "draft.md"
@@ -2448,6 +2702,12 @@ class DocumentReviewProject:
                 continue
         decisions = self._decisions()
         chain_parents = list(base_parents)
+        external_evidence_parents: list[dict[str, Any]] = []
+        if trusted_revision:
+            revision_id = str(trusted_revision[1]["revision_id"])
+            external_evidence_parents.extend(_parent_ref(self.root, row[0], role="external-recheck-result") for row in self._external_recheck_results(revision_id))
+            external_evidence_parents.extend(_parent_ref(self.root, row[0], role="human-external-resolution") for row in self._external_resolution_records(revision_id))
+            chain_parents.extend(external_evidence_parents)
         for path in sorted((self.root / "audits").glob("*/*.json")) if (self.root / "audits").is_dir() else []:
             chain_parents.append(_parent_ref(self.root, path, role="audit-run"))
         for value in decisions.values():
@@ -2455,7 +2715,10 @@ class DocumentReviewProject:
         bridge_root = self.root / "exports" / "revision-bridge"
         for bridge_path in sorted(bridge_root.glob("*/bridge.json")) if bridge_root.is_dir() else []:
             chain_parents.append(_parent_ref(self.root, bridge_path, role="revision-bridge"))
-        audit = {"artifact_type": "document-review-export", "schema_version": 2, "product_status": "experimental-preview", "export_id": export_id, "source": document.source.to_dict(), "parser": {"name": document.parser_name, "version": document.parser_version}, "quality": document.quality.to_dict(), "warnings": [warning.to_dict() for warning in document.warnings], "audit_runs": runs, "findings": [finding.to_dict() for finding in findings], "decisions": list(decisions.values()), "revision": trusted_revision[1] if trusted_revision else None, "external_recheck": external_recheck, "independent_critics": list(CRITIC_DIMENSIONS), "scores": None, "legal_boundary": "合规筛查不是律师意见；无来源材料时只能输出待核实问题", "created_at": _now()}
+        current_round = self.current_review_round()
+        if current_round:
+            chain_parents.append(_parent_ref(self.root, current_round[0], role="current-review-round"))
+        audit = {"artifact_type": "document-review-export", "schema_version": 2, "product_status": "experimental-preview", "export_id": export_id, "source": document.source.to_dict(), "parser": {"name": document.parser_name, "version": document.parser_version}, "quality": document.quality.to_dict(), "warnings": [warning.to_dict() for warning in document.warnings], "audit_runs": runs, "findings": [finding.to_dict() for finding in findings], "decisions": list(decisions.values()), "review_round": current_round[1] if current_round else None, "revision": trusted_revision[1] if trusted_revision else None, "external_recheck": external_recheck, "independent_critics": list(CRITIC_DIMENSIONS), "scores": None, "legal_boundary": "合规筛查不是律师意见；无来源材料时只能输出待核实问题", "created_at": _now()}
         audit_path = output / "audit.json"
         _write_tracked(self.root, audit_path, canonical_json(audit), parents=chain_parents, provenance="deterministic-audit-export")
         quality_path = output / "quality-report.json"
@@ -2472,7 +2735,7 @@ class DocumentReviewProject:
                 if source_path.is_file():
                     _write_tracked(self.root, output / name, source_path.read_bytes(), parents=[_parent_ref(self.root, source_path, role="revision-evidence")], provenance="approved-revision-evidence-export")
             unresolved_path = output / "未解决风险.md"
-            _write_tracked(self.root, unresolved_path, self._composed_unresolved_report(str(trusted_revision[1]["revision_id"])).encode("utf-8"), parents=[_parent_ref(self.root, trusted_revision[0] / "recheck.json", role="revision-recheck")], provenance="composed-local-and-external-risk-export")
+            _write_tracked(self.root, unresolved_path, self._composed_unresolved_report(str(trusted_revision[1]["revision_id"])).encode("utf-8"), parents=[_parent_ref(self.root, trusted_revision[0] / "recheck.json", role="revision-recheck"), *external_evidence_parents], provenance="composed-local-and-external-risk-export")
             capability_path = output / "track-changes-capability.json"
             _write_tracked(self.root, capability_path, canonical_json({"native_track_changes": False, "revised_document_ready": True, "output_name": "修改稿.docx", "message": "修改稿由已批准 Hunk 生成；提供逐行差异报告，但不冒充 Word 原生 Track Changes"}), parents=[_parent_ref(self.root, revised_docx_path, role="revised-docx")])
         elif document.source.extension == ".docx":
@@ -2645,14 +2908,15 @@ class DocumentReviewProject:
         decisions = self._hunk_decisions()
         actions: list[dict[str, Any]] = []
         ready = True
-        for action in plan.get("actions", []):
+        for action in self._actions_with_operations(plan):
             row = dict(action)
             hunk_row = hunks.get(str(action["action_id"]))
             hunk = dict(hunk_row[1]) if hunk_row else None
             decision = dict(decisions[hunk["hunk_id"]][1]) if hunk and hunk["hunk_id"] in decisions else None
             row["hunk"] = hunk
             row["hunk_decision"] = decision
-            if not action.get("supported") or hunk is None or decision is None:
+            row["hunk_stale"] = bool(hunk and hunk.get("operation_decision_sha256") != action.get("operation_decision_sha256"))
+            if not action.get("supported") or not action.get("operation") or hunk is None or decision is None or row["hunk_stale"]:
                 ready = False
             actions.append(row)
         latest = self._latest_revision()
@@ -2682,7 +2946,7 @@ class DocumentReviewProject:
         manifest = self.manifest()
         state = self.state()
         try:
-            document = self.document()
+            _, document = self._review_document_record()
         except (OSError, KeyError, TypeError, ValueError, ReviewStudioError):
             document = None
         can_review, reasons = self.can_review()

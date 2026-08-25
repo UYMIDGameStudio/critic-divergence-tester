@@ -194,6 +194,12 @@ class StudioApp:
                 rationale=str(data.get("rationale", "")),
                 provenance=str(data.get("provenance", "human-authored")),
             )
+        elif action == "set_revision_action_operation":
+            project.set_revision_action_operation(
+                str(data.get("action_id", "")),
+                str(data.get("operation", "")),
+                reason=str(data.get("reason", "")),
+            )
         elif action == "decide_revision_hunk":
             project.decide_revision_hunk(
                 str(data.get("hunk_id", "")),
@@ -207,6 +213,8 @@ class StudioApp:
                 str(data.get("revision_id", "")),
                 str(data.get("critic", "")),
                 str(data.get("response", "")),
+                provider=str(data.get("provider", "")),
+                model=str(data.get("model", "")),
                 binding_mode=str(data.get("binding_mode", "strict")),
             )
         elif action == "decide_external_resolution":
@@ -217,6 +225,8 @@ class StudioApp:
                 str(data.get("state", "")),
                 reason=str(data.get("reason", "")),
             )
+        elif action == "start_followup_round":
+            project.start_followup_round(str(data.get("revision_id", "")))
         elif action == "export":
             project.export(revised_markdown=data.get("revised_markdown"))
         else:
