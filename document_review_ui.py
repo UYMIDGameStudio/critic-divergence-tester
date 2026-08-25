@@ -202,6 +202,21 @@ class StudioApp:
             )
         elif action == "finalize_revision":
             project.finalize_revision()
+        elif action == "import_external_recheck":
+            project.collect_external_recheck(
+                str(data.get("revision_id", "")),
+                str(data.get("critic", "")),
+                str(data.get("response", "")),
+                binding_mode=str(data.get("binding_mode", "strict")),
+            )
+        elif action == "decide_external_resolution":
+            project.decide_external_resolution(
+                str(data.get("revision_id", "")),
+                str(data.get("result_id", "")),
+                str(data.get("finding_id", "")),
+                str(data.get("state", "")),
+                reason=str(data.get("reason", "")),
+            )
         elif action == "export":
             project.export(revised_markdown=data.get("revised_markdown"))
         else:

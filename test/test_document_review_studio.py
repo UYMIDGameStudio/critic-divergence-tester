@@ -109,8 +109,9 @@ class DocumentReviewStudioTests(unittest.TestCase):
         self.assertIn("导出 / 导入独立 AI 审查", shell)
         self.assertIn("普通 JSON（人工关联，较弱审计）", shell)
         self.assertIn("默认只展示前", shell)
-        self.assertIn("逐段修改与批准", shell)
+        self.assertIn("逐项修改与批准", shell)
         self.assertIn("生成修改稿并复审", shell)
+        self.assertIn("外部 critic 复审与人工 Resolution", shell)
         self.assertIn("删除本地项目", shell)
         self.assertIn("一键修复可自动修复项", shell)
         self.assertIn("导出五份独立协议", shell)
@@ -424,7 +425,9 @@ class DocumentReviewStudioTests(unittest.TestCase):
         completed = type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()
         with patch("document_review_ingest.subprocess.run", return_value=completed) as run, patch("document_review_ingest.importlib.import_module"):
             document_review_ingest.repair_dependency("pypdf")
-        command = run.call_args.args[0]
+        pip_calls = [call.args[0] for call in run.call_args_list if call.args and call.args[0][:3] == [sys.executable, "-m", "pip"]]
+        self.assertEqual(len(pip_calls), 1)
+        command = pip_calls[0]
         self.assertEqual(command[0], sys.executable)
         self.assertEqual(command[1:3], ["-m", "pip"])
         self.assertEqual(command[3:6], ["install", "--disable-pip-version-check", "--no-input"])
@@ -491,7 +494,7 @@ class DocumentReviewStudioTests(unittest.TestCase):
             self.assertTrue((revision / "未解决风险.md").is_file())
             recheck = json.loads((revision / "recheck.json").read_text(encoding="utf-8"))
             self.assertTrue(recheck["local_critic_runs"])
-            self.assertTrue(all(row["state"] in {"withdrawn-by-local-recheck", "still-present"} for row in recheck["finding_resolutions"]))
+            self.assertTrue(all(row["state"] in {"resolved", "partially-resolved", "still-present", "new-finding"} for row in recheck["finding_resolutions"]))
             output = project.export()
             self.assertTrue((output / "修改稿.docx").is_file())
             self.assertTrue((output / "修改说明.md").is_file())
@@ -515,8 +518,175 @@ class DocumentReviewStudioTests(unittest.TestCase):
             revision = project.finalize_revision()
             self.assertNotIn("不应进入修改稿的文本", (revision / "修改稿.md").read_text(encoding="utf-8"))
             unresolved = (revision / "未解决风险.md").read_text(encoding="utf-8")
-            self.assertIn("unresolved", unresolved)
+            self.assertIn("still-present", unresolved)
             self.assertIn("对应 Hunk 被人工拒绝", unresolved)
+
+    def test_governance_partial_fix_remains_in_unresolved_risks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="policy.md", content="# 治理规则\n\n违规行为将被处分。\n".encode())
+            project.confirm_extraction("confirm")
+            project.confirm_context(self.context())
+            project.run_local_prechecks(["reasonableness_governance"])
+            finding = project.findings()[0]
+            self.assertEqual(finding.check_id, "governance.required_controls")
+            self.assertEqual(len(finding.check_data["items"]), 5)
+            project.decide_finding(finding.finding_id, "accept", reason="治理缺口成立")
+            action = project.prepare_revision_plan()["actions"][0]
+            hunk = project.propose_revision_hunk(action["action_id"], "## 申诉\n参与者可以提交申诉。", rationale="本轮仅补申诉渠道")
+            project.decide_revision_hunk(hunk["hunk_id"], "approve", reason="先应用已核实部分")
+            revision = project.finalize_revision()
+            recheck = json.loads((revision / "recheck.json").read_text(encoding="utf-8"))
+            resolution = next(row for row in recheck["finding_resolutions"] if row["finding_id"] == finding.finding_id)
+            self.assertEqual(resolution["state"], "partially-resolved")
+            self.assertIn("复议渠道", resolution["basis"])
+            risks = (revision / "未解决风险.md").read_text(encoding="utf-8")
+            self.assertIn("partially-resolved", risks)
+            self.assertNotIn("没有未解决项", risks)
+
+    def test_recheck_new_finding_is_never_dropped_from_risk_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="notice.md", content="第一段。\n\n第二段。\n".encode())
+            project.confirm_extraction("confirm")
+            project.confirm_context(self.context())
+            project.run_local_prechecks(["expression_ambiguity"])
+            finding = project.findings()[0]
+            self.assertEqual(finding.check_id, "expression.document_purpose")
+            project.decide_finding(finding.finding_id, "accept", reason="需要标题")
+            action = project.prepare_revision_plan()["actions"][0]
+            hunk = project.propose_revision_hunk(action["action_id"], "# 适时通知", rationale="加入标题")
+            project.decide_revision_hunk(hunk["hunk_id"], "approve", reason="批准标题")
+            revision = project.finalize_revision()
+            recheck = json.loads((revision / "recheck.json").read_text(encoding="utf-8"))
+            new_rows = [row for row in recheck["finding_resolutions"] if row["state"] == "new-finding"]
+            self.assertEqual(len(new_rows), 1)
+            self.assertEqual(new_rows[0]["check_id"], "expression.ambiguous_term:适时")
+            self.assertIn(new_rows[0]["finding_id"], (revision / "未解决风险.md").read_text(encoding="utf-8"))
+
+    def test_revision_is_invalidated_by_any_current_decision_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="plan.md", content="# 活动\n\n开始执行。\n".encode())
+            project.confirm_extraction("confirm")
+            project.confirm_context(self.context())
+            project.run_local_prechecks(["execution_feasibility"])
+            findings = project.findings()
+            accepted, rejected = findings[0], findings[1:]
+            project.decide_finding(accepted.finding_id, "accept", reason="纳入修改")
+            for finding in rejected:
+                project.decide_finding(finding.finding_id, "reject", reason="本轮不处理")
+            action = project.prepare_revision_plan()["actions"][0]
+            hunk = project.propose_revision_hunk(action["action_id"], "## 责任\n负责人：项目经理。", rationale="补负责人")
+            project.decide_revision_hunk(hunk["hunk_id"], "approve", reason="批准")
+            project.finalize_revision()
+            project.decide_finding(rejected[0].finding_id, "defer", reason="改为后续处理")
+            self.assertIsNone(project.revision_plan())
+            self.assertIsNone(project.revision_workspace()["revision"])
+            output = project.export()
+            audit = json.loads((output / "audit.json").read_text(encoding="utf-8"))
+            self.assertIsNone(audit["revision"])
+            self.assertFalse((output / "修改稿.docx").exists())
+
+    def test_revision_actions_preserve_distinct_work_groups_and_operations(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="plan.md", content="# 活动\n\n相关人员参加。\n".encode())
+            project.confirm_extraction("confirm")
+            project.confirm_context(self.context())
+            project.run_local_prechecks(["expression_ambiguity", "execution_feasibility", "reasonableness_governance", "official_professional_format"])
+            findings = project.findings()
+            self.assertEqual(len(findings), 6)
+            for finding in findings:
+                project.decide_finding(finding.finding_id, "accept", reason="分别处理")
+            queue = project.finding_work_groups()
+            plan = project.prepare_revision_plan()
+            self.assertEqual(len(plan["actions"]), queue["total_groups"])
+            self.assertEqual(len({row["work_group_id"] for row in plan["actions"]}), len(plan["actions"]))
+            self.assertIn("insert_after", {row["operation"] for row in plan["actions"]})
+            self.assertIn("append_section", {row["operation"] for row in plan["actions"]})
+
+    def test_finalize_recheck_failure_leaves_no_revision_and_retry_succeeds(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="draft.md", content="# 活动\n\n相关人员报名。\n".encode())
+            project.confirm_extraction("confirm")
+            project.confirm_context(self.context())
+            project.run_local_prechecks(["expression_ambiguity"])
+            finding = project.findings()[0]
+            project.decide_finding(finding.finding_id, "accept", reason="问题成立")
+            action = project.prepare_revision_plan()["actions"][0]
+            hunk = project.propose_revision_hunk(action["action_id"], "明确名单内参与者报名。", rationale="消除歧义")
+            project.decide_revision_hunk(hunk["hunk_id"], "approve", reason="批准")
+            original = project._deterministic_audit
+            with patch.object(project, "_deterministic_audit", side_effect=RuntimeError("simulated recheck crash")):
+                with self.assertRaises(RuntimeError):
+                    project.finalize_revision()
+            revisions = project.root / "revisions"
+            self.assertFalse(revisions.exists() and any(path.is_dir() for path in revisions.iterdir()))
+            with patch.object(project, "_deterministic_audit", side_effect=original):
+                revision = project.finalize_revision()
+            self.assertTrue((revision / "revision.json").is_file())
+            self.assertEqual(project.integrity_errors(), [])
+
+    def test_correct_decision_requires_nonblank_bounded_action(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="draft.md", content="# 活动\n\n相关人员报名。\n".encode())
+            project.confirm_extraction("confirm")
+            project.confirm_context(self.context())
+            project.run_local_prechecks(["expression_ambiguity"])
+            finding_id = project.findings()[0].finding_id
+            for value in (None, "   ", 42):
+                with self.assertRaises(ReviewStudioError):
+                    project.decide_finding(finding_id, "correct", reason="修正", corrected_action=value)
+            with self.assertRaises(ReviewStudioError):
+                project.decide_finding(finding_id, "correct", reason="修正", corrected_action="字" * 100_001)
+
+    def test_external_critic_recheck_requires_import_and_human_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="draft.md", content="# 活动\n\n原始内容。\n".encode())
+            project.confirm_extraction("confirm")
+            project.confirm_context(self.context())
+            critic = "execution_feasibility"
+            request = project.prepare_ai_audits([critic], provider="example-provider", model="example-model")[0]
+            finding_payload = self.model_finding(project, critic, "MODEL-F-1", "执行责任不明确")
+            response = {
+                "request_id": request["request_id"],
+                "prompt_sha256": request["prompt_sha256"],
+                "provider": request["provider"],
+                "model": request["model"],
+                "critic": critic,
+                "source_sha256": project.document().source.sha256,
+                "findings": [finding_payload],
+            }
+            project.collect_model_audit(critic, json.dumps(response, ensure_ascii=False), provider=request["provider"], model=request["model"], request_id=request["request_id"])
+            finding = project.findings()[0]
+            project.decide_finding(finding.finding_id, "accept", reason="接受外部批评")
+            action = project.prepare_revision_plan()["actions"][0]
+            hunk = project.propose_revision_hunk(action["action_id"], "负责人：项目经理。", rationale="明确负责人")
+            project.decide_revision_hunk(hunk["hunk_id"], "approve", reason="批准")
+            revision_dir = project.finalize_revision()
+            revision = json.loads((revision_dir / "revision.json").read_text(encoding="utf-8"))
+            status = project.external_recheck_status(revision["revision_id"])
+            self.assertFalse(status["complete"])
+            external_request = status["requests"][0]
+            self.assertIsNone(external_request["result"])
+            recheck_response = {
+                "request_id": external_request["request_id"],
+                "prompt_sha256": external_request["prompt_sha256"],
+                "revision_id": revision["revision_id"],
+                "revised_sha256": revision["revised_sha256"],
+                "critic": critic,
+                "resolutions": [{"finding_id": finding.finding_id, "state": "resolved", "reason": "负责人已经明确", "evidence": "负责人：项目经理。"}],
+                "new_findings": [],
+            }
+            result = project.collect_external_recheck(revision["revision_id"], critic, json.dumps(recheck_response, ensure_ascii=False))
+            status = project.external_recheck_status(revision["revision_id"])
+            self.assertFalse(status["complete"])
+            self.assertIsNotNone(status["requests"][0]["result"])
+            project.decide_external_resolution(revision["revision_id"], result["result_id"], finding.finding_id, "resolved", reason="人工核对修改稿后确认")
+            self.assertTrue(project.external_recheck_status(revision["revision_id"])["complete"])
+            output = project.export()
+            audit = json.loads((output / "audit.json").read_text(encoding="utf-8"))
+            self.assertTrue(audit["external_recheck"]["complete"])
+            risks = (output / "未解决风险.md").read_text(encoding="utf-8")
+            self.assertNotIn(finding.finding_id, risks)
+            self.assertEqual(project.integrity_errors(), [])
 
     def test_attention_queue_groups_only_same_location_and_action_without_losing_critics(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

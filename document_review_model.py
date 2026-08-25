@@ -252,6 +252,8 @@ class Finding:
     required_observation: str = ""
     proposed_group_id: str | None = None
     source_finding_id: str | None = None
+    check_id: str | None = None
+    check_data: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.critic not in CRITIC_DIMENSIONS:
@@ -264,6 +266,8 @@ class Finding:
             raise ValueError("finding location must include a stable block_id")
         if not self.finding_id.strip():
             raise ValueError("finding_id is required")
+        if self.check_id is not None and (not isinstance(self.check_id, str) or not self.check_id.strip()):
+            raise ValueError("finding check_id must be non-empty text when supplied")
         if not self.evidence.strip():
             raise ValueError("finding evidence is required")
         for label, value in (
@@ -355,6 +359,11 @@ def validate_finding_dict(value: Mapping[str, Any]) -> list[str]:
     finding_id = value.get("finding_id")
     if isinstance(finding_id, str) and len(finding_id) > 256:
         errors.append("finding_id exceeds 256 characters")
+    check_id = value.get("check_id")
+    if check_id is not None and (not isinstance(check_id, str) or not check_id.strip() or len(check_id) > 256):
+        errors.append("check_id must be non-empty text of at most 256 characters")
+    if "check_data" in value and not isinstance(value.get("check_data"), Mapping):
+        errors.append("check_data must be an object")
     return errors
 
 
