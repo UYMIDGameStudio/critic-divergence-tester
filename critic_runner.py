@@ -181,15 +181,16 @@ from critic_workflow import (
 
 
 ROOT = Path(__file__).resolve().parent
-IR_SOCIAL_SCIENCE_RULES = ROOT / "ir" / "social-science-checks.json"
+RESOURCE_ROOT = ROOT if (ROOT / "critic-social-science.md").is_file() else Path(sys.prefix)
+IR_SOCIAL_SCIENCE_RULES = RESOURCE_ROOT / "ir" / "social-science-checks.json"
 
 PROTOCOLS = {
-    "critic-social-science": ROOT / "critic-social-science.md",
-    "critic-natural-science": ROOT / "critic-natural-science.md",
-    "critic-engineering": ROOT / "critic-engineering.md",
-    "critic-individualist": ROOT / "critic-individualist.md",
-    "critic-contrastivist": ROOT / "critic-contrastivist.md",
-    "citation-auditor": ROOT / "citation-auditor.md",
+    "critic-social-science": RESOURCE_ROOT / "critic-social-science.md",
+    "critic-natural-science": RESOURCE_ROOT / "critic-natural-science.md",
+    "critic-engineering": RESOURCE_ROOT / "critic-engineering.md",
+    "critic-individualist": RESOURCE_ROOT / "critic-individualist.md",
+    "critic-contrastivist": RESOURCE_ROOT / "critic-contrastivist.md",
+    "citation-auditor": RESOURCE_ROOT / "citation-auditor.md",
     "critic-generic": ROOT / "test" / "critic-generic.md",
 }
 

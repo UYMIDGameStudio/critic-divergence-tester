@@ -39,7 +39,7 @@ Document Review Studio 当前标记为 **experimental preview**。它支持 Mark
 识别确认由受保护的 extraction decision 产物授权，`state.json` 只是可重建缓存；
 本地索引可发现普通修改/删除，但强回滚仍需要项目外可信检查点或签名。
 
-应用会自动打开本机页面。创建项目后，页面用七步状态条和一个“继续”主提示引导流程：确认识别 → 确认上下文 → 本地预检 → 导出/导入五个独立 AI critic → 逐条人工裁决 → 生成修改任务 → 导出结果。协议支持一键复制、上一项/下一项和 `x/5` 导入进度；导出中心直接提供各文件下载和打开所在文件夹，不要求用户打开 JSON 或拼 artifact 路径。
+应用会自动打开本机页面。创建项目后，页面用七步状态条和一个“继续”主提示引导流程：确认识别 → 确认上下文 → 本地预检 → 导出/导入五个独立 AI critic → 逐条人工裁决 → 生成修改任务 → 导出结果。协议支持一键复制、上一项/下一项、`x/5` 导入进度和五份协议 ZIP；导出中心直接提供各文件下载和打开所在文件夹，不要求用户打开 JSON 或拼 artifact 路径。重复生成协议时，每个 critic 只显示当前请求，旧请求仍留在受保护历史中。正式修改桥和导出都要求至少一次审查且全部 Finding 已裁决。
 
 已有 Reviewed IR 的项目会在同一项目主页显示“专业研究视图”，继续提供 Claim、Rule/Perspective Lens、Citation、版本 lineage 和 Finding Resolution；不同 Lens 的结论保持并列，不做投票合并。快速修订仍是默认入口。
 
@@ -67,7 +67,7 @@ flowchart LR
 - Windows：`%LOCALAPPDATA%\ArgumentWorkbench\projects`
 - macOS/Linux：`$XDG_DATA_HOME/argument-workbench/projects`，未设置时为 `~/.local/share/argument-workbench/projects`
 
-每个项目都可单独复制备份或从项目库页面删除；删除前会二次确认且不可撤销。正式导出位于项目内的 `exports/<application-id>/`，包含 V2 Markdown、可执行修订清单、审计 Markdown 和机器可读审计记录。环境自检可用 `py -3 critic_runner.py doctor --repair` 一键修复缺失的 Python PDF 适配器；Tesseract 仍需按系统提示安装。
+每个项目都可单独复制备份或从项目库页面删除；删除前会二次确认且不可撤销。正式导出位于项目内的 `exports/<application-id>/`，包含可编辑规范化副本、审查报告、结构化结果和完整审计包。环境自检可在首页直接一键修复缺失的 Python PDF 适配器，并在当前项目尚未确认识别时自动重试；CLI 也可运行 `py -3 critic_runner.py doctor --repair`。Tesseract 和语言包仍需按系统提示安装，应用不会静默安装系统软件。
 
 ## 专业研究 / 高级 CLI
 

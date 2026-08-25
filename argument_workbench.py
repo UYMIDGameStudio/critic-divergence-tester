@@ -144,6 +144,10 @@ class WorkspacePaths:
         return self.document_dir / "document.json"
 
     @property
+    def history_index(self) -> Path:
+        return self.root / "project-history-index.json"
+
+    @property
     def versions_dir(self) -> Path:
         return self.document_dir / "versions"
 
@@ -256,6 +260,53 @@ def _matching_extraction_prompt_protocol(
     return None
 
 
+def _history_entry_hash(value: dict[str, Any]) -> str:
+    return sha256_bytes(json_bytes({key: item for key, item in value.items() if key != "entry_sha256"}))
+
+
+def _new_history_index(version: dict[str, Any], version_bytes: bytes, created_at: str) -> dict[str, Any]:
+    entry = {
+        "sequence": 1,
+        "version_id": str(version["version_id"]),
+        "version_sha256": sha256_bytes(version_bytes),
+        "source_sha256": str(version["source"]["sha256"]),
+        "previous_entry_sha256": None,
+        "created_at": created_at,
+    }
+    entry["entry_sha256"] = _history_entry_hash(entry)
+    return {
+        "artifact": "argument-project-history-index",
+        "schema_version": 1,
+        "lifecycle": "append-only",
+        "entries": [entry],
+        "head_sha256": entry["entry_sha256"],
+        "next_sequence": 2,
+    }
+
+
+def _append_history_version(root: Path, version: dict[str, Any], version_bytes: bytes) -> None:
+    path = root / "project-history-index.json"
+    index, _ = _read_json(path)
+    entries = index.get("entries")
+    sequence = index.get("next_sequence")
+    if not isinstance(entries, list) or not isinstance(sequence, int):
+        raise WorkbenchError("project history index is not appendable")
+    entry = {
+        "sequence": sequence,
+        "version_id": str(version["version_id"]),
+        "version_sha256": sha256_bytes(version_bytes),
+        "source_sha256": str(version["source"]["sha256"]),
+        "previous_entry_sha256": index.get("head_sha256"),
+        "created_at": utc_now(),
+    }
+    entry["entry_sha256"] = _history_entry_hash(entry)
+    updated = dict(index)
+    updated["entries"] = [*entries, entry]
+    updated["head_sha256"] = entry["entry_sha256"]
+    updated["next_sequence"] = sequence + 1
+    _atomic_write(path, json_bytes(updated))
+
+
 def initialize_workspace(
     manuscript: Path,
     project_dir: Path,
@@ -360,6 +411,7 @@ def initialize_workspace(
         _write_new(paths.document, document_bytes)
         _write_new(paths.version, version_bytes)
         _write_new(paths.prompt, prompt)
+        _write_new(paths.history_index, json_bytes(_new_history_index(version, version_bytes, created_at)))
         paths.raw_dir.mkdir(parents=True, exist_ok=True)
         paths.corrections_dir.mkdir(parents=True, exist_ok=True)
         paths.reviewed_dir.mkdir(parents=True, exist_ok=True)
@@ -386,6 +438,9 @@ def import_document_version(
     expected_numbers = list(range(1, len(versions) + 1))
     if [int(value[1:]) for value in versions] != expected_numbers:
         raise WorkbenchError("version IDs must be continuous from V1")
+    project_errors = verify_project_versions(root_paths.root)
+    if project_errors:
+        raise WorkbenchError("project version history is invalid: " + "; ".join(project_errors))
     latest_id = versions[-1]
     selected_parent = (
         _validate_version_id(parent_version)
@@ -476,6 +531,7 @@ def import_document_version(
         (temporary / "corrections").mkdir()
         (temporary / "reviewed-ir").mkdir()
         os.replace(temporary, target_paths.version_dir)
+        _append_history_version(root_paths.root, version, json_bytes(version))
     except Exception:
         if temporary.exists():
             shutil.rmtree(temporary)
@@ -1476,6 +1532,52 @@ def verify_project_versions(project_dir: WorkspacePaths | Path | str) -> list[st
         return [str(exc)]
     if not versions:
         return ["project has no DocumentVersion"]
+    try:
+        history, _ = _read_json(root_paths.history_index)
+    except (OSError, WorkbenchError) as exc:
+        errors.append(f"project history index: {exc}")
+        history = {}
+    expected_history_fields = {
+        "artifact", "schema_version", "lifecycle", "entries", "head_sha256", "next_sequence",
+    }
+    entries = history.get("entries", []) if isinstance(history, dict) else []
+    if (
+        set(history) != expected_history_fields
+        or history.get("artifact") != "argument-project-history-index"
+        or history.get("schema_version") != 1
+        or history.get("lifecycle") != "append-only"
+        or not isinstance(entries, list)
+    ):
+        errors.append("project history index fields are invalid")
+        entries = []
+    indexed_versions: list[str] = []
+    previous_entry_hash: str | None = None
+    for expected_sequence, entry in enumerate(entries, 1):
+        if not isinstance(entry, dict):
+            errors.append(f"project history index entry {expected_sequence} is invalid")
+            continue
+        if entry.get("sequence") != expected_sequence:
+            errors.append(f"project history index sequence gap at {expected_sequence}")
+        if entry.get("previous_entry_sha256") != previous_entry_hash:
+            errors.append(f"project history index parent mismatch at {expected_sequence}")
+        if entry.get("entry_sha256") != _history_entry_hash(entry):
+            errors.append(f"project history index hash mismatch at {expected_sequence}")
+        version_id = str(entry.get("version_id", ""))
+        indexed_versions.append(version_id)
+        version_path = root_paths.versions_dir / version_id / "document-version.json"
+        if version_path.is_symlink() or not version_path.is_file():
+            errors.append(f"project history index artifact missing: {version_id}")
+        else:
+            version_bytes = version_path.read_bytes()
+            if sha256_bytes(version_bytes) != entry.get("version_sha256"):
+                errors.append(f"project history index version hash mismatch: {version_id}")
+        previous_entry_hash = entry.get("entry_sha256") if isinstance(entry.get("entry_sha256"), str) else None
+    if indexed_versions != versions:
+        errors.append("project history index version set does not match on-disk versions")
+    if history.get("head_sha256") != previous_entry_hash:
+        errors.append("project history index head mismatch")
+    if history.get("next_sequence") != len(entries) + 1:
+        errors.append("project history index next sequence mismatch")
     numbers = [int(version_id[1:]) for version_id in versions]
     if numbers != list(range(1, len(versions) + 1)):
         errors.append("DocumentVersion IDs must be continuous from V1")

@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -199,7 +200,10 @@ def _protocol_source(lens_id: str) -> tuple[str, Path, bytes]:
             "contrastive-explanation"
         )
     legacy, filename = PROTOCOLS[lens_id]
-    path = Path(__file__).resolve().parent / filename
+    module_root = Path(__file__).resolve().parent
+    path = module_root / filename
+    if not path.is_file():
+        path = Path(sys.prefix) / filename
     if path.is_symlink() or not path.is_file():
         raise WorkbenchError(f"Perspective Lens protocol is missing or unsafe: {path}")
     return legacy, path, path.read_bytes()

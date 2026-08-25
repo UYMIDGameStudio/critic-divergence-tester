@@ -102,7 +102,9 @@ read-only mode.
 Run `python critic_runner.py doctor` to see parser and OCR availability and the
 declared license boundary for each optional component. The Studio environment
 card can repair missing Python adapters in one action (currently `pypdf` and
-`PyMuPDF`). Tesseract is an operating-system program and language-pack choice,
+`PyMuPDF`). After a successful repair, an open project that was blocked before
+human extraction confirmation is automatically re-ingested; the same retry is
+also available as an explicit “重新识别” action. Tesseract is an operating-system program and language-pack choice,
 so it is reported with an installation hint rather than silently installed.
 The same repair is available from the terminal with
 `python critic_runner.py doctor --repair`.
@@ -161,11 +163,15 @@ AuditRun/Finding separately. `collect_model_audit` validates the source hash,
 critic identity, Finding contract, and block locations in either mode, and
 validates the request envelope in strict mode.
 
-The browser keeps a per-critic `imported/not imported` count, provides copy and
-previous/next controls for protocol work, and shows every generated export in
-an export center. Exported files can be downloaded individually, and the
-containing folder can be opened from the local desktop. The ZIP is a bundle of
-the generated audit result and normalized editable output; it is not a claim
+The browser keeps exactly one active request per critic, preserves superseded
+requests as protected history, shows a per-critic `imported/not imported` count,
+provides copy, previous/next, and five-protocol ZIP controls, and shows every
+generated export in an export center. Exported files can be downloaded
+individually, and the containing folder can be opened from the local desktop.
+Formal export requires confirmed extraction/context, at least one current audit,
+and a decision for every current Finding. The complete audit ZIP includes the
+source and protected project history needed for local verification as well as
+the generated result; it is not a claim
 that a revised document was produced before the constrained revision loop.
 
 For DOCX inputs, preview exports are named

@@ -8,6 +8,7 @@ parser into an apparently successful extraction.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import io
 import os
 import re
@@ -57,6 +58,8 @@ class ParserUnavailable(IngestionError):
 class IngestionLimits:
     max_file_bytes: int = 32 * 1024 * 1024
     max_pdf_pages: int = 250
+    max_pdf_stream_uncompressed_bytes: int = 16 * 1024 * 1024
+    max_pdf_total_uncompressed_bytes: int = 64 * 1024 * 1024
     max_docx_entries: int = 5000
     max_docx_uncompressed_bytes: int = 128 * 1024 * 1024
     max_docx_compression_ratio: int = 1000
@@ -391,13 +394,25 @@ def _fallback_pdf_text(data: bytes, source: RawFileBinding, limits: IngestionLim
         raise IngestionError("PDF 页数超过安全限制")
     streams = re.findall(rb"stream\r?\n(.*?)\r?\nendstream", data, flags=re.S)
     page_texts: list[str] = []
+    expanded_total = 0
     for stream in streams:
         raw = stream
         try:
             import zlib
-            raw = zlib.decompress(stream)
-        except Exception:
+            decompressor = zlib.decompressobj()
+            raw = decompressor.decompress(stream, limits.max_pdf_stream_uncompressed_bytes + 1)
+            if len(raw) > limits.max_pdf_stream_uncompressed_bytes or decompressor.unconsumed_tail:
+                raise IngestionError("PDF 内容流解压后超过安全上限")
+            raw += decompressor.flush()
+            if len(raw) > limits.max_pdf_stream_uncompressed_bytes:
+                raise IngestionError("PDF 内容流解压后超过安全上限")
+        except IngestionError:
+            raise
+        except zlib.error:
             pass
+        expanded_total += len(raw)
+        if expanded_total > limits.max_pdf_total_uncompressed_bytes:
+            raise IngestionError("PDF 内容流累计解压体积超过安全上限")
         chunks: list[str] = []
         for match in re.finditer(rb"\((?:\\.|[^)])*\)\s*Tj|\[(.*?)\]\s*TJ", raw, flags=re.S):
             value = match.group(0)
@@ -504,7 +519,7 @@ def _pdf_text(data: bytes, source: RawFileBinding, limits: IngestionLimits) -> S
         warnings.append(ExtractionWarning("short-text-pages", "low", "部分页面文本较短；这不是扫描件判据，请在内容预览中确认", details={"pages": low_text_pages}))
     if name == "pypdf":
         warnings.append(ExtractionWarning("pdf-coordinates-unavailable", "medium", "当前使用 pypdf；已保存页码但没有可靠字符坐标"))
-    quality = QualitySignals(page_count=page_count, blank_pages=blank_pages, text_coverage=(text_chars / max(1, page_count * 1200)), suspected_reading_order=suspected_order, parser_available=True, ocr_available=None, requires_confirmation=True)
+    quality = QualitySignals(page_count=page_count, blank_pages=blank_pages, text_coverage=min(1.0, text_chars / max(1, page_count * 1200)), suspected_reading_order=suspected_order, parser_available=True, ocr_available=None, requires_confirmation=True)
     if page_count and scanned_pages == page_count:
         quality.text_coverage = 0.0
     return StructuredDocument(stable_id("DOC", source.sha256), Path(source.original_name).stem, source, name, PARSER_VERSION, blocks, warnings, quality, mapping, {"pdf_kind": "scanned" if scanned_pages == page_count else ("mixed" if scanned_pages else "text"), "page_text_lengths": [len(value) for value in page_texts], "coordinates_available": name == "pymupdf"})
@@ -516,9 +531,10 @@ class TesseractOCR:
     name = "tesseract"
     version = "unknown"
 
-    def __init__(self, executable: str | None = None, *, renderer: Any | None = None):
+    def __init__(self, executable: str | None = None, *, renderer: Any | None = None, timeout_seconds: int = 45):
         self.executable = executable or shutil.which("tesseract")
         self.renderer = renderer
+        self.timeout_seconds = max(1, int(timeout_seconds))
         if self.executable:
             try:
                 output = subprocess.run([self.executable, "--version"], capture_output=True, text=True, timeout=5, check=False).stdout.splitlines()
@@ -549,7 +565,7 @@ class TesseractOCR:
             input_path.write_bytes(page_bytes)
             command = [self.executable or "tesseract", str(input_path), str(output_base), "--psm", "3", "-l", language, "tsv"]
             try:
-                result = subprocess.run(command, capture_output=True, text=True, timeout=45, check=False)
+                result = subprocess.run(command, capture_output=True, text=True, timeout=self.timeout_seconds, check=False)
             except subprocess.TimeoutExpired as exc:
                 raise IngestionError(f"OCR 第 {page_number} 页超时") from exc
             if result.returncode != 0:
@@ -594,7 +610,7 @@ def ingest_bytes(name: str, data: bytes, *, limits: IngestionLimits | None = Non
         scan_pages = [warning for warning in document.warnings if warning.code == "scan-pages-detected"]
         if scan_pages:
             scan_page_numbers = {page for warning in scan_pages for page in warning.details.get("pages", [])}
-            adapter = ocr or TesseractOCR()
+            adapter = ocr or TesseractOCR(timeout_seconds=limits.max_ocr_seconds_per_page)
             available, detail = adapter.available()
             document.quality.ocr_available = available
             if not available:
@@ -611,6 +627,7 @@ def ingest_bytes(name: str, data: bytes, *, limits: IngestionLimits | None = Non
                 return document
             pdf = fitz.open(stream=data, filetype="pdf")
             ocr_blocks: list[DocumentBlock] = []
+            recognized_pages: set[int] = set()
             low_confidence = 0
             for page_number, page in enumerate(pdf, start=1):
                 if scan_page_numbers and page_number not in scan_page_numbers:
@@ -620,13 +637,16 @@ def ingest_bytes(name: str, data: bytes, *, limits: IngestionLimits | None = Non
                 text = str(result.get("text", "")).strip()
                 low_confidence += int(result.get("low_confidence_words", 0))
                 if not text:
-                    document.quality.blank_pages.append(page_number)
+                    if page_number not in document.quality.blank_pages:
+                        document.quality.blank_pages.append(page_number)
                     continue
+                recognized_pages.add(page_number)
                 block_id = _block_id(source.sha256, "ocr_block", len(document.blocks) + len(ocr_blocks), text, page_number)
                 block = DocumentBlock(block_id, "paragraph", text=text, location=DocumentLocation(block_id, "ocr_block", page=page_number, paragraph=len(document.blocks) + len(ocr_blocks), source_path=source.original_name), attrs={"ocr": True, "confidence": result.get("confidence", 0), "engine": result.get("engine", adapter.name), "engine_version": result.get("engine_version", adapter.version), "language": result.get("language", ocr_language)})
                 ocr_blocks.append(block)
                 document.source_to_block.append({"page": page_number, "block_id": block_id, "ocr": True, "confidence": result.get("confidence", 0)})
             document.blocks = [block for block in document.blocks if block.location and block.location.page not in scan_page_numbers and block.location.page not in document.quality.blank_pages] + ocr_blocks
+            document.quality.blank_pages = sorted(page for page in document.quality.blank_pages if page not in recognized_pages)
             document.quality.ocr_low_confidence_blocks = low_confidence
             document.quality.text_coverage = min(1.0, sum(len(block.text) for block in document.blocks) / max(1, document.quality.page_count * 1200))
             document.metadata["ocr"] = {"engine": adapter.name, "version": adapter.version, "language": ocr_language, "human_corrected": False}
@@ -672,7 +692,7 @@ def repair_dependency(name: str) -> list[dict[str, Any]]:
     package = _REPAIRABLE_PYTHON_PACKAGES.get(name)
     if package is None:
         raise IngestionError(f"依赖 {name} 不支持应用内自动修复；请按环境提示处理")
-    command = [sys.executable, "-m", "pip", "install", package]
+    command = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-input", package]
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=300, check=False)
     except (OSError, subprocess.SubprocessError) as exc:
@@ -680,6 +700,12 @@ def repair_dependency(name: str) -> list[dict[str, Any]]:
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "无安装器输出").strip()[-1200:]
         raise IngestionError(f"自动安装 {name} 失败：{detail}")
+    importlib.invalidate_caches()
+    module_name = "fitz" if name == "pymupdf" else name
+    try:
+        importlib.import_module(module_name)
+    except ImportError as exc:
+        raise IngestionError(f"{name} 安装命令已完成，但当前 Python 仍无法导入；请重启应用后重试") from exc
     return doctor_dependencies()
 
 

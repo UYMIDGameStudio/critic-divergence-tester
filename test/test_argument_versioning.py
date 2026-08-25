@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -169,6 +170,13 @@ class ArgumentVersioningTests(unittest.TestCase):
             _, changed = versioning.build_structural_diff(v2.root)
             self.assertTrue(changed)
             self.assertEqual(workbench.verify_project_versions(v2.root), [])
+
+    def test_deleting_latest_version_cannot_silently_roll_back_project(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            _, v2 = self.make_two_versions(Path(temporary))
+            shutil.rmtree(v2.version_dir)
+            errors = workbench.verify_project_versions(v2.root)
+            self.assertTrue(any("V2" in error and ("missing" in error or "history" in error) for error in errors), errors)
 
 
 if __name__ == "__main__":

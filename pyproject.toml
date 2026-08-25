@@ -7,11 +7,48 @@ name = "critic-divergence-tester"
 version = "0.1.0"
 description = "Local-first, model-neutral argument and document review workbench"
 requires-python = ">=3.10,<3.15"
-license = {text = "MIT"}
+license = "MIT"
 dependencies = []
 
 [tool.setuptools]
-packages = ["ir", "schemas"]
+py-modules = [
+  "argument_adjudication",
+  "argument_app",
+  "argument_baseline",
+  "argument_citations",
+  "argument_contracts",
+  "argument_gate",
+  "argument_gate_b",
+  "argument_ir",
+  "argument_lens_view",
+  "argument_lineage",
+  "argument_perspective",
+  "argument_resolution",
+  "argument_review",
+  "argument_revision",
+  "argument_sessions",
+  "argument_triage",
+  "argument_ui",
+  "argument_versioning",
+  "argument_workbench",
+  "critic_execution",
+  "critic_runner",
+  "critic_scoring",
+  "critic_workflow",
+  "document_review_ingest",
+  "document_review_model",
+  "document_review_studio",
+  "document_review_ui",
+  "document_review_ui_shell",
+]
+
+[tool.setuptools.data-files]
+"." = ["build-verifier.md", "citation-auditor.md", "critic-contrastivist.md", "critic-engineering.md", "critic-individualist.md", "critic-natural-science.md", "critic-social-science.md", "diff-reviewer.md", "divergence-test.md"]
+"ir" = ["ir/social-science-checks.json"]
+"schemas" = ["schemas/revision-workflow.schema.json"]
+
+[project.scripts]
+critic-divergence-tester = "critic_runner:main"
 
 [project.optional-dependencies]
 # Kept optional so the existing Markdown/TXT workflow remains zero-install.

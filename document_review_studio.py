@@ -17,9 +17,12 @@ import json
 import os
 import re
 import secrets
+import threading
 import zipfile
+from contextlib import contextmanager
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from functools import wraps
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -50,6 +53,56 @@ INTEGRITY_POLICY_NAME = "integrity-policy.json"
 INTEGRITY_RECEIPT_DIR = ".integrity"
 INTEGRITY_INDEX_NAME = "integrity-index.json"
 EXTRACTION_DECISION_DIR_NAME = "extraction-decisions"
+
+
+_PROJECT_LOCKS: dict[str, threading.RLock] = {}
+_PROJECT_LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def _project_mutation_lock(root: Path):
+    """Serialize one complete project mutation in this and other processes."""
+    key = str(root.resolve())
+    with _PROJECT_LOCKS_GUARD:
+        thread_lock = _PROJECT_LOCKS.setdefault(key, threading.RLock())
+    with thread_lock:
+        lock_path = root / ".mutation.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+b") as handle:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _serialized_mutation(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with _project_mutation_lock(self.root):
+            return method(self, *args, **kwargs)
+
+    return wrapped
 
 
 CRITIC_PROTOCOLS: dict[str, dict[str, Any]] = {
@@ -426,7 +479,7 @@ class DocumentReviewProject:
         decision = self._latest_extraction_decision()
         if decision:
             state["extraction_state"] = decision.get("extraction_state", "unconfirmed")
-        elif (self.root / "extraction" / "diagnostic.json").is_file():
+        elif (self.root / "extraction" / "diagnostic.json").is_file() and not self.document_path.is_file():
             state["extraction_state"] = "blocked"
         context_path = self.root / "context.json"
         if context_path.is_file():
@@ -473,8 +526,10 @@ class DocumentReviewProject:
         state = self._derive_state(cached)
         try:
             errors = self.integrity_errors()
-        except (OSError, ValueError, KeyError, TypeError, ReviewStudioError):
-            errors = []
+        except (OSError, ValueError, KeyError, TypeError, ReviewStudioError) as exc:
+            # A broken verifier is itself an integrity failure.  Failing open
+            # here would turn parser/index errors into write authorization.
+            errors = [f"完整性检查器异常：{exc}"]
         if errors:
             state["read_only"] = True
             state["integrity_errors"] = errors
@@ -692,6 +747,8 @@ class DocumentReviewProject:
             except (OSError, ValueError, KeyError, TypeError, ReviewStudioError) as exc:
                 errors.append(f"结构化文档无法读取：{exc}")
             errors.extend(self._extraction_decision_chain_errors())
+            errors.extend(self._ai_request_chain_errors())
+            errors.extend(self._audit_run_chain_errors())
             errors.extend(self._decision_chain_errors())
             errors.extend(self._audit_log_chain_errors())
         except (OSError, KeyError, TypeError, ValueError, ReviewStudioError) as exc:
@@ -786,6 +843,39 @@ class DocumentReviewProject:
         document = self.document()
         return {"quality": document.quality.to_dict() if document else {}, "warnings": [warning.to_dict() for warning in document.warnings] if document else [], "diagnostics": self.state().get("diagnostics", [])}
 
+    @_serialized_mutation
+    def retry_extraction(self) -> dict[str, Any]:
+        """Re-run ingestion after optional PDF/OCR dependencies are repaired."""
+        self._ensure_writable()
+        if self._latest_extraction_decision() is not None:
+            raise ReviewStudioError("已经存在识别确认决定；重新识别前请新建项目或显式更换文件")
+        manifest = self.manifest()
+        source_path = _safe_child(self.root, str(manifest["source"]["relative_path"]))
+        document = ingest_bytes(str(manifest["source"]["name"]), source_path.read_bytes())
+        if self.document_path.is_file():
+            retry_id = stable_id("REX", document.source.sha256, _now(), secrets.token_hex(4))
+            retry_path = self.root / "extraction" / "retries" / retry_id / "document.json"
+            retry_bytes = canonical_json(document.to_dict())
+            _write_tracked(self.root, retry_path, retry_bytes, parents=[_parent_ref(self.root, source_path, role="original-source")], provenance="parser-retry")
+            _replace_tracked(self.root, self.document_path, retry_bytes, parents=[_parent_ref(self.root, retry_path, role="successful-retry")], provenance="parser-derived-current")
+            document_parent = _parent_ref(self.root, self.document_path, role="structured-document")
+            for path, data in (
+                (self.root / "extraction" / "quality.json", canonical_json(document.quality.to_dict())),
+                (self.root / "extraction" / "warnings.json", canonical_json({"warnings": [warning.to_dict() for warning in document.warnings]})),
+                (self.root / "extraction" / "source-map.json", canonical_json({"source_to_block": document.source_to_block})),
+            ):
+                _replace_tracked(self.root, path, data, parents=[document_parent], provenance="parser-retry-current")
+        else:
+            self._save_document(document)
+        hard_blocks = [warning.message for warning in document.warnings if warning.code in {"ocr-unavailable", "pdf-renderer-unavailable"}]
+        self._append_event("extraction_retried", {"source_sha256": document.source.sha256, "hard_block_count": len(hard_blocks)})
+        return self._update_state(
+            extraction_state="blocked" if hard_blocks else "unconfirmed",
+            diagnostics=hard_blocks,
+            read_only=False,
+            integrity_errors=[],
+        )
+
     def suggested_document_type(self) -> str:
         try:
             document = self.document()
@@ -848,6 +938,7 @@ class DocumentReviewProject:
         _write_tracked(self.root, self.root / EXTRACTION_DECISION_DIR_NAME / f"{decision_id}.json", canonical_json(record), parents=parents, provenance="human-confirmed-extraction-decision", artifact_type="extraction-decision")
         return record
 
+    @_serialized_mutation
     def confirm_extraction(self, choice: str, *, corrected_text: str | None = None) -> dict[str, Any]:
         self._ensure_writable()
         if choice not in {"confirm", "correct", "continue_with_warning", "replace"}:
@@ -896,6 +987,7 @@ class DocumentReviewProject:
         self._append_event("extraction_confirmed", {"decision": choice, "source_sha256": document.source.sha256})
         return self._update_state(extraction_state=state_name, read_only=False)
 
+    @_serialized_mutation
     def confirm_context(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         self._ensure_writable()
         extraction_decision = self._authoritative_extraction_decision()
@@ -909,6 +1001,22 @@ class DocumentReviewProject:
             raise ReviewStudioError("涉及范围字段必须是布尔值")
         if payload.get("publication_status") not in {"internal-draft", "external-formal"}:
             raise ReviewStudioError("publication_status 必须是 internal-draft 或 external-formal")
+        text_fields = ("document_type", "jurisdiction", "effective_date", "publisher_type", "audience")
+        for name in text_fields:
+            value = payload.get(name)
+            if not isinstance(value, str) or not value.strip():
+                raise ReviewStudioError(f"{name} 不能为空；未知时请明确填写 unknown 并说明")
+            if len(value.strip()) > 500:
+                raise ReviewStudioError(f"{name} 超过 500 字符安全上限")
+        effective_date = str(payload["effective_date"]).strip()
+        if effective_date.casefold() != "unknown":
+            try:
+                date.fromisoformat(effective_date)
+            except ValueError as exc:
+                raise ReviewStudioError("effective_date 必须是 YYYY-MM-DD 或 unknown") from exc
+        materials = payload.get("user_provided_materials", [])
+        if not isinstance(materials, list) or not all(isinstance(item, str) and item.strip() for item in materials):
+            raise ReviewStudioError("user_provided_materials 必须是非空文本数组")
         context = ReviewContext(**{name: payload[name] for name in required}, confirmed=True, model_suggestion=self.suggested_document_type(), user_provided_materials=list(payload.get("user_provided_materials", [])))
         context_path = self.root / "context.json"
         _write_tracked(self.root, context_path, canonical_json(context.to_dict()), parents=[_parent_ref(self.root, self.document_path, role="structured-document")], provenance="human-confirmed")
@@ -964,6 +1072,71 @@ class DocumentReviewProject:
         }
         return "# Document Review Studio independent AI review\n\nYou are exactly one independent critic. Return strict JSON only. Do not run another critic, merge dimensions, vote, score, or infer external facts without a source.\n\n## Contract and critic-specific protocol\n```json\n" + json.dumps(contract, ensure_ascii=False, indent=2) + "\n```\n\n## Confirmed review context\n```json\n" + json.dumps(context.to_dict(), ensure_ascii=False, indent=2) + "\n```\n\n## Internal document blocks\n```json\n" + json.dumps([block.to_dict() for block in document.blocks], ensure_ascii=False, indent=2) + "\n```\n"
 
+    def _audit_run_records(self, critic: str | None = None) -> list[tuple[Path, dict[str, Any], str]]:
+        root = self.root / "audits"
+        records: list[tuple[Path, dict[str, Any], str]] = []
+        pattern = f"{critic}/*.json" if critic else "*/*.json"
+        for path in root.glob(pattern) if root.is_dir() else []:
+            if path.is_symlink():
+                continue
+            value = _read_json(path)
+            if value.get("run_id") and value.get("critic") in CRITIC_DIMENSIONS:
+                records.append((path, value, _sha256(path.read_bytes())))
+        return records
+
+    def _ordered_audit_runs(self, critic: str) -> list[tuple[Path, dict[str, Any], str]]:
+        records = self._audit_run_records(critic)
+        return sorted(
+            records,
+            key=lambda row: (
+                int(row[1].get("run_sequence", 0))
+                if isinstance(row[1].get("run_sequence"), int)
+                else 0,
+                str(row[1].get("created_at", "")),
+                str(row[1].get("run_id", "")),
+            ),
+        )
+
+    def _next_audit_binding(self, critic: str) -> tuple[int, str | None]:
+        records = self._ordered_audit_runs(critic)
+        if not records:
+            return 1, None
+        latest = records[-1]
+        latest_sequence = latest[1].get("run_sequence")
+        sequence = int(latest_sequence) + 1 if isinstance(latest_sequence, int) else len(records) + 1
+        return sequence, latest[2]
+
+    def _active_audit_run_records(self) -> dict[str, tuple[Path, dict[str, Any], str]]:
+        active: dict[str, tuple[Path, dict[str, Any], str]] = {}
+        for critic in CRITIC_DIMENSIONS:
+            records = self._ordered_audit_runs(critic)
+            if records:
+                active[critic] = records[-1]
+        return active
+
+    def _audit_run_chain_errors(self) -> list[str]:
+        errors: list[str] = []
+        for critic in CRITIC_DIMENSIONS:
+            records = self._ordered_audit_runs(critic)
+            if not records:
+                continue
+            legacy = [row for row in records if "run_sequence" not in row[1]]
+            modern = [row for row in records if "run_sequence" in row[1]]
+            if not modern:
+                continue
+            sequences = [row[1].get("run_sequence") for row in modern]
+            if sequences != list(range(len(legacy) + 1, len(records) + 1)):
+                errors.append(f"{critic}: audit run sequence must be continuous")
+                continue
+            previous = legacy[-1][2] if legacy else None
+            for index, (_, value, digest) in enumerate(modern, start=len(legacy) + 1):
+                expected = previous
+                if value.get("previous_audit_run_sha256") != expected:
+                    errors.append(f"{critic}: audit run parent mismatch at sequence {index}")
+                previous = digest
+        return errors
+
+    @_serialized_mutation
     def run_local_prechecks(self, critics: Iterable[str] | None = None) -> list[AuditRun]:
         self._ensure_writable()
         allowed, reasons = self.can_review()
@@ -978,12 +1151,17 @@ class DocumentReviewProject:
         runs: list[AuditRun] = []
         for critic in selected:
             run = self._deterministic_audit(critic, document, context)
+            run.run_sequence, run.previous_audit_run_sha256 = self._next_audit_binding(critic)
             directory = self.root / "audits" / critic
             prompt_path = directory / f"{run.run_id}.local-precheck-protocol.md"
             parents = [_parent_ref(self.root, self.document_path, role="structured-document"), _parent_ref(self.root, self.root / "context.json", role="review-context")]
             _write_tracked(self.root, prompt_path, self.prompt(critic).encode("utf-8"), parents=parents, provenance="deterministic-local-precheck-protocol")
             run_path = directory / f"{run.run_id}.json"
-            _write_tracked(self.root, run_path, canonical_json(run.to_dict()), parents=[*parents, _parent_ref(self.root, prompt_path, role="local-precheck-protocol")], provenance="deterministic-local-precheck")
+            run_parents = [*parents, _parent_ref(self.root, prompt_path, role="local-precheck-protocol")]
+            previous = self._ordered_audit_runs(critic)
+            if previous:
+                run_parents.append(_parent_ref(self.root, previous[-1][0], role="previous-audit-run"))
+            _write_tracked(self.root, run_path, canonical_json(run.to_dict()), parents=run_parents, provenance="deterministic-local-precheck")
             self._append_event("local_precheck_created", {"run_id": run.run_id, "critic": critic, "finding_ids": [f.finding_id for f in run.findings]})
             runs.append(run)
         self._update_state(review_state="local_precheck_completed", last_audit_at=_now())
@@ -993,6 +1171,55 @@ class DocumentReviewProject:
         """Compatibility alias; these are deterministic local prechecks, not AI reviews."""
         return self.run_local_prechecks(critics)
 
+    def _ai_request_records(self, critic: str | None = None) -> list[tuple[Path, dict[str, Any], str]]:
+        directory = self.root / "ai-requests"
+        records: list[tuple[Path, dict[str, Any], str]] = []
+        for path in directory.glob("*/request.json") if directory.is_dir() else []:
+            value = _read_json(path)
+            if critic is None or value.get("critic") == critic:
+                records.append((path, value, _sha256(path.read_bytes())))
+        return sorted(
+            records,
+            key=lambda row: (
+                int(row[1].get("request_sequence", 0))
+                if isinstance(row[1].get("request_sequence"), int)
+                else 0,
+                str(row[1].get("created_at", "")),
+                str(row[1].get("request_id", "")),
+            ),
+        )
+
+    def _active_ai_request(self, critic: str) -> tuple[Path, dict[str, Any], str] | None:
+        records = self._ai_request_records(critic)
+        return records[-1] if records else None
+
+    def _ai_request_chain_errors(self) -> list[str]:
+        errors: list[str] = []
+        for critic in CRITIC_DIMENSIONS:
+            try:
+                records = self._ai_request_records(critic)
+            except (OSError, ValueError, KeyError, TypeError, ReviewStudioError) as exc:
+                errors.append(f"{critic}: AI request chain unreadable: {exc}")
+                continue
+            if not records:
+                continue
+            legacy = [row for row in records if "request_sequence" not in row[1]]
+            modern = [row for row in records if "request_sequence" in row[1]]
+            if not modern:
+                continue
+            sequences = [row[1].get("request_sequence") for row in modern]
+            if sequences != list(range(len(legacy) + 1, len(records) + 1)):
+                errors.append(f"{critic}: AI request sequence must be continuous")
+                continue
+            previous = legacy[-1][2] if legacy else None
+            for index, (_, value, digest) in enumerate(modern, start=len(legacy) + 1):
+                expected = previous
+                if value.get("previous_request_sha256") != expected:
+                    errors.append(f"{critic}: AI request parent mismatch at sequence {index}")
+                previous = digest
+        return errors
+
+    @_serialized_mutation
     def prepare_ai_audits(self, critics: Iterable[str] | None = None, *, provider: str, model: str) -> list[dict[str, Any]]:
         self._ensure_writable()
         allowed, reasons = self.can_review()
@@ -1010,19 +1237,26 @@ class DocumentReviewProject:
             prompt_sha256 = _sha256(base_prompt)
             normalized_provider = provider.strip()
             normalized_model = model.strip()
+            history = self._ai_request_records(critic)
+            previous = history[-1] if history else None
+            request_sequence = int(previous[1]["request_sequence"]) + 1 if previous and isinstance(previous[1].get("request_sequence"), int) else len(history) + 1
             request_id = stable_id("AIR", critic, prompt_sha256, normalized_provider, normalized_model, _now(), secrets.token_hex(4))
             envelope = {"request_id": request_id, "prompt_sha256": prompt_sha256, "provider": normalized_provider, "model": normalized_model}
             prompt = base_prompt + ("\n## Required response envelope\nReturn these four fields exactly as shown, in addition to the review result:\n```json\n" + json.dumps(envelope, ensure_ascii=False, indent=2) + "\n```\nDo not omit or alter any envelope value.\n").encode("utf-8")
             directory = self.root / "ai-requests" / request_id
             prompt_path = directory / "prompt.md"
             _write_tracked(self.root, prompt_path, prompt, parents=parents, provenance="deterministic-ai-protocol")
-            request = {"artifact_type": "independent-ai-review-request", "schema_version": 1, "request_id": request_id, "critic": critic, "provider": normalized_provider, "model": normalized_model, "prompt_sha256": prompt_sha256, "prompt_file_sha256": _sha256(prompt), "source_sha256": self.document().source.sha256, "created_at": _now(), "lifecycle": "immutable"}
+            request = {"artifact_type": "independent-ai-review-request", "schema_version": 2, "request_id": request_id, "critic": critic, "provider": normalized_provider, "model": normalized_model, "prompt_sha256": prompt_sha256, "prompt_file_sha256": _sha256(prompt), "source_sha256": self.document().source.sha256, "request_sequence": request_sequence, "previous_request_sha256": previous[2] if previous else None, "created_at": _now(), "lifecycle": "immutable"}
             request_path = directory / "request.json"
-            _write_tracked(self.root, request_path, canonical_json(request), parents=[*parents, _parent_ref(self.root, prompt_path, role="critic-prompt")], provenance="deterministic-ai-request")
+            request_parents = [*parents, _parent_ref(self.root, prompt_path, role="critic-prompt")]
+            if previous:
+                request_parents.append(_parent_ref(self.root, previous[0], role="previous-ai-request"))
+            _write_tracked(self.root, request_path, canonical_json(request), parents=request_parents, provenance="deterministic-ai-request")
             rows.append({**request, "prompt": prompt.decode("utf-8"), "relative_path": str(prompt_path.relative_to(self.root)).replace("\\", "/")})
         self._update_state(ai_review_state="protocols_ready", last_ai_protocol_at=_now())
         return rows
 
+    @_serialized_mutation
     def collect_model_audit(self, critic: str, response: bytes | str, *, provider: str = "external", model: str = "unlabelled", request_id: str | None = None, model_label: str | None = None, binding_mode: str = "strict") -> AuditRun:
         """Validate and archive one provider-neutral model response.
 
@@ -1052,11 +1286,15 @@ class DocumentReviewProject:
             if value.get("critic") == critic and request_matches:
                 requests.append((path, value))
         if not requests:
-            prepared = self.prepare_ai_audits([critic], provider=provider, model=model)[0]
-            request_path = self.root / "ai-requests" / prepared["request_id"] / "request.json"
-            request = _read_json(request_path)
+            raise ReviewStudioError("找不到对应的已导出 AI 请求；请先导出当前 critic 协议")
         else:
             request_path, request = sorted(requests, key=lambda row: row[1]["created_at"])[-1]
+        active_request = self._active_ai_request(critic)
+        if active_request is None or active_request[1].get("request_id") != request.get("request_id"):
+            raise ReviewStudioError("该 AI 请求已被更新协议取代；请使用当前 request")
+        for _, prior_run, _ in self._audit_run_records(critic):
+            if prior_run.get("declared_model_metadata", {}).get("request_id") == request.get("request_id"):
+                raise ReviewStudioError("该 AI 请求已经导入过结果；需要重跑时请先生成新 request")
         if request.get("provider") != provider or request.get("model") != model:
             raise ReviewStudioError("导入结果的 provider/model 与已导出协议不一致")
         prompt_path = request_path.parent / "prompt.md"
@@ -1106,6 +1344,7 @@ class DocumentReviewProject:
             raise ReviewStudioError("模型返回缺少 findings 数组")
         block_ids = {block.block_id for block in document.blocks}
         findings: list[Finding] = []
+        seen_source_ids: set[str] = set()
         for index, item in enumerate(raw_findings):
             if not isinstance(item, dict):
                 raise ReviewStudioError(f"第 {index + 1} 条 Finding 不是对象")
@@ -1117,9 +1356,15 @@ class DocumentReviewProject:
             if item["location"].get("block_id") not in block_ids:
                 raise ReviewStudioError(f"第 {index + 1} 条 Finding 定位不到内部 block")
             finding = _finding_from_dict(item)
+            if finding.finding_id in seen_source_ids:
+                raise ReviewStudioError(f"第 {index + 1} 条 Finding ID 在同一响应中重复")
+            seen_source_ids.add(finding.finding_id)
+            finding.source_finding_id = finding.finding_id
+            finding.finding_id = stable_id("F", critic, str(request["request_id"]), finding.source_finding_id)[:30]
             finding.origin = "model-derived"
             findings.append(finding)
-        run = AuditRun(stable_id("RUN", document.source.sha256, critic, _now(), secrets.token_hex(4)), critic, document.document_id, document.source.sha256, context, findings, list(parsed.get("observations", [])) if isinstance(parsed.get("observations", []), list) else [], list(parsed.get("zero_finding_basis", [])) if isinstance(parsed.get("zero_finding_basis", []), list) else [], f"manual-import:{provider}/{model}", _now())
+        run_sequence, previous_run_sha256 = self._next_audit_binding(critic)
+        run = AuditRun(stable_id("RUN", document.source.sha256, critic, _now(), secrets.token_hex(4)), critic, document.document_id, document.source.sha256, context, findings, list(parsed.get("observations", [])) if isinstance(parsed.get("observations", []), list) else [], list(parsed.get("zero_finding_basis", [])) if isinstance(parsed.get("zero_finding_basis", []), list) else [], f"manual-import:{provider}/{model}", _now(), run_sequence, previous_run_sha256)
         directory = self.root / "audits" / critic
         raw_path = directory / f"{run.run_id}.raw-response.json.txt"
         response_parents = [_parent_ref(self.root, prompt_path, role="critic-prompt"), _parent_ref(self.root, request_path, role="ai-review-request")]
@@ -1128,7 +1373,11 @@ class DocumentReviewProject:
         run_value["declared_model_metadata"] = {"provider": provider, "model": model, "request_id": request["request_id"], "prompt_sha256": request["prompt_sha256"], "prompt_file_sha256": request["prompt_file_sha256"], "raw_response_sha256": _sha256(raw), "import_mode": "manual", "response_binding": response_binding}
         run_value["response_binding"] = {"mode": response_binding, "request_echo_verified": response_binding == "strict-response-envelope", "association_note": "模型响应未回显请求字段；provider/model/request_id 由用户在当前导出请求上手动关联" if response_binding == "manual-association" else "响应逐项回显并匹配当前导出请求"}
         run_path = directory / f"{run.run_id}.json"
-        _write_tracked(self.root, run_path, canonical_json(run_value), parents=[*response_parents, _parent_ref(self.root, raw_path, role="raw-model-response")], provenance="model-parsed-audit")
+        run_parents = [*response_parents, _parent_ref(self.root, raw_path, role="raw-model-response")]
+        previous_runs = self._ordered_audit_runs(critic)
+        if previous_runs:
+            run_parents.append(_parent_ref(self.root, previous_runs[-1][0], role="previous-audit-run"))
+        _write_tracked(self.root, run_path, canonical_json(run_value), parents=run_parents, provenance="model-parsed-audit")
         self._append_event("model_audit_imported", {"run_id": run.run_id, "critic": critic, "declared_model_metadata": run_value["declared_model_metadata"], "finding_ids": [finding.finding_id for finding in findings]})
         self._update_state(review_state="ai_review_imported", ai_review_state="imported", last_audit_at=_now())
         return run
@@ -1197,21 +1446,30 @@ class DocumentReviewProject:
 
     def findings(self) -> list[Finding]:
         rows: dict[str, Finding] = {}
-        audits = self.root / "audits"
-        if not audits.is_dir():
-            return []
-        for path in sorted(audits.glob("*/*.json")):
-            if path.name.endswith(".prompt.json") or path.is_symlink():
-                continue
+        for _, value, _ in self._active_audit_run_records().values():
             try:
-                value = _read_json(path)
                 for item in value.get("findings", []):
                     finding = _finding_from_dict(item)
+                    if finding.finding_id in rows:
+                        raise ReviewStudioError(f"当前审查结果包含重复 Finding ID：{finding.finding_id}")
                     rows[finding.finding_id] = finding
             except (OSError, ValueError, KeyError, TypeError, ReviewStudioError):
-                continue
+                raise
         decisions = self._decisions()
-        return [replace(item, status=decisions.get(item.finding_id, {}).get("decision", item.status)) for item in rows.values()]
+        decision_history = self._decision_records()
+        current: list[Finding] = []
+        for item in rows.values():
+            decision = decisions.get(item.finding_id)
+            valid_snapshots = {_sha256(canonical_json(item.to_dict()))}
+            if decision and int(decision.get("sequence", 0)) > 1:
+                previous_sequence = int(decision["sequence"]) - 1
+                previous = next((value for _, value, _ in decision_history.get(item.finding_id, []) if value.get("sequence") == previous_sequence), None)
+                if previous:
+                    legacy_snapshot = replace(item, status=str(previous.get("decision", "open")))
+                    valid_snapshots.add(_sha256(canonical_json(legacy_snapshot.to_dict())))
+            status = decision.get("decision", item.status) if decision and decision.get("finding_snapshot_sha256") in valid_snapshots else item.status
+            current.append(replace(item, status=status))
+        return current
 
     def _decision_records(self) -> dict[str, list[tuple[Path, dict[str, Any], str]]]:
         grouped: dict[str, list[tuple[Path, dict[str, Any], str]]] = {}
@@ -1265,18 +1523,18 @@ class DocumentReviewProject:
         return result
 
     def _finding_artifact_path(self, finding_id: str) -> Path:
-        candidates: list[Path] = []
-        audits = self.root / "audits"
-        for path in audits.glob("*/*.json") if audits.is_dir() else []:
-            try:
-                if any(item.get("finding_id") == finding_id for item in _read_json(path).get("findings", [])):
-                    candidates.append(path)
-            except (OSError, ValueError, ReviewStudioError, AttributeError):
-                continue
-        if not candidates:
+        matches = [
+            path
+            for path, value, _ in self._active_audit_run_records().values()
+            if any(isinstance(item, dict) and item.get("finding_id") == finding_id for item in value.get("findings", []))
+        ]
+        if not matches:
             raise ReviewStudioError("找不到 Finding 的审查父产物")
-        return sorted(candidates)[-1]
+        if len(matches) > 1:
+            raise ReviewStudioError("Finding ID 在多个当前 critic 中冲突，拒绝选择错误父产物")
+        return matches[0]
 
+    @_serialized_mutation
     def decide_finding(self, finding_id: str, decision: str, *, reason: str, corrected_action: str | None = None) -> dict[str, Any]:
         self._ensure_writable()
         if decision not in FINDING_DECISIONS:
@@ -1291,7 +1549,8 @@ class DocumentReviewProject:
         prior_rows = self._decision_records().get(finding_id, [])
         previous = max(prior_rows, key=lambda row: row[1]["sequence"]) if prior_rows else None
         sequence = previous[1]["sequence"] + 1 if previous else 1
-        record = {"artifact_type": "finding-decision", "schema_version": 2, "decision_id": stable_id("FD", finding_id, sequence, decision, _now(), secrets.token_hex(4)), "finding_id": finding_id, "critic": finding.critic, "sequence": sequence, "previous_decision_sha256": previous[2] if previous else None, "decision": decision, "reason": reason, "corrected_action": corrected_action, "finding_snapshot_sha256": _sha256(canonical_json(finding.to_dict())), "created_at": _now(), "lifecycle": "append-only"}
+        authoritative_finding = replace(finding, status="open")
+        record = {"artifact_type": "finding-decision", "schema_version": 2, "decision_id": stable_id("FD", finding_id, sequence, decision, _now(), secrets.token_hex(4)), "finding_id": finding_id, "critic": finding.critic, "sequence": sequence, "previous_decision_sha256": previous[2] if previous else None, "decision": decision, "reason": reason, "corrected_action": corrected_action, "finding_snapshot_sha256": _sha256(canonical_json(authoritative_finding.to_dict())), "created_at": _now(), "lifecycle": "append-only"}
         decision_path = self.root / "finding-decisions" / f"{record['decision_id']}.json"
         parents = [_parent_ref(self.root, self._finding_artifact_path(finding_id), role="audit-run")]
         if previous:
@@ -1300,6 +1559,7 @@ class DocumentReviewProject:
         self._append_event("finding_decided", record)
         return record
 
+    @_serialized_mutation
     def prepare_revision_bridge(self) -> Path:
         """Create a report consumable by the existing constrained revision loop.
 
@@ -1311,6 +1571,9 @@ class DocumentReviewProject:
         if not document:
             raise ReviewStudioError("没有结构化文档")
         findings = self.findings()
+        open_findings = [item.finding_id for item in findings if item.status == "open"]
+        if open_findings:
+            raise ReviewStudioError("所有 Finding 完成人工裁决后才能生成修改任务：" + ", ".join(open_findings))
         decisions = self._decisions()
         accepted = [item for item in findings if item.status in {"accept", "correct"}]
         if not accepted:
@@ -1337,11 +1600,21 @@ class DocumentReviewProject:
         self._append_event("revision_bridge_prepared", binding)
         return report_path
 
+    @_serialized_mutation
     def export(self, *, revised_markdown: str | None = None) -> Path:
         self._ensure_writable()
+        allowed, reasons = self.can_review()
+        if not allowed:
+            raise ReviewStudioError("正式导出前必须完成识别与上下文质量门：" + "；".join(reasons))
+        if not self._active_audit_run_records():
+            raise ReviewStudioError("正式导出前至少要完成一次本地预检或独立 AI 审查")
         document = self.document()
         if not document:
             raise ReviewStudioError("没有可导出的结构化文档")
+        findings = self.findings()
+        open_findings = [item.finding_id for item in findings if item.status == "open"]
+        if open_findings:
+            raise ReviewStudioError("正式导出前必须裁决全部 Finding：" + ", ".join(open_findings))
         normalized = model_to_markdown(document)
         if revised_markdown is not None and revised_markdown != normalized:
             raise ReviewStudioError("尚未完成 Finding→Action→Hunk→Resolution 审批链，不能生成或命名 revised 文档")
@@ -1352,7 +1625,6 @@ class DocumentReviewProject:
         base_parents = [_parent_ref(self.root, self.document_path, role="structured-document")]
         draft_path = output / "draft.md"
         _write_tracked(self.root, draft_path, draft.encode("utf-8"), parents=base_parents, provenance="normalized-editable-copy")
-        findings = self.findings()
         runs: list[dict[str, Any]] = []
         for path in sorted((self.root / "audits").glob("*/*.json")) if (self.root / "audits").is_dir() else []:
             try:
@@ -1387,20 +1659,36 @@ class DocumentReviewProject:
             editable_path = output / "editable-draft.md"
             _write_tracked(self.root, editable_path, draft.encode("utf-8"), parents=[_parent_ref(self.root, draft_path, role="normalized-markdown")], provenance="normalized-editable-copy")
         package_buffer = io.BytesIO()
+        package_files: list[tuple[str, str]] = []
         with zipfile.ZipFile(package_buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for path in sorted(output.rglob("*")):
-                if path.is_file() and path.name != "audit-package.zip":
-                    archive.write(path, path.relative_to(output).as_posix())
+            for path in sorted(self.root.rglob("*")):
+                if path.is_symlink() or not path.is_file() or path.name in {"state.json", ".mutation.lock", "audit-package.zip"}:
+                    continue
+                relative = path.relative_to(self.root).as_posix()
+                if relative.startswith("exports/") and not relative.startswith(f"exports/{export_id}/") and not relative.startswith("exports/revision-bridge/"):
+                    continue
+                data = path.read_bytes()
+                archive.writestr("project/" + relative, data)
+                package_files.append((relative, _sha256(data)))
+            package_manifest = {
+                "artifact_type": "document-review-audit-package-manifest",
+                "schema_version": 1,
+                "export_id": export_id,
+                "source_sha256": document.source.sha256,
+                "files": [{"relative_path": relative, "sha256": digest} for relative, digest in package_files],
+                "created_at": _now(),
+            }
+            archive.writestr("package-manifest.json", canonical_json(package_manifest))
         _write_tracked(self.root, output / "audit-package.zip", package_buffer.getvalue(), parents=[_parent_ref(self.root, audit_path, role="audit-json"), _parent_ref(self.root, audit_markdown_path, role="audit-markdown")], provenance="audit-package-archive")
         self._append_event("export_created", {"export_id": export_id, "relative_path": str(output.relative_to(self.root)).replace("\\", "/")})
         return output
 
     def ai_requests(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
-        directory = self.root / "ai-requests"
-        for request_path in sorted(directory.glob("*/request.json")) if directory.is_dir() else []:
+        active = [record for critic in CRITIC_DIMENSIONS if (record := self._active_ai_request(critic)) is not None]
+        for request_path, request_value, _ in active:
             try:
-                value = _read_json(request_path)
+                value = dict(request_value)
                 prompt_path = request_path.parent / "prompt.md"
                 value["prompt"] = prompt_path.read_text(encoding="utf-8")
                 value["relative_path"] = str(prompt_path.relative_to(self.root)).replace("\\", "/")
@@ -1413,7 +1701,10 @@ class DocumentReviewProject:
                     metadata = run.get("declared_model_metadata", {})
                     if metadata.get("request_id") == value.get("request_id"):
                         matching_runs.append(run)
-                latest = matching_runs[-1] if matching_runs else None
+                latest = max(
+                    matching_runs,
+                    key=lambda run: int(run.get("run_sequence", 0)) if isinstance(run.get("run_sequence"), int) else 0,
+                ) if matching_runs else None
                 value["completed"] = latest is not None
                 value["run_id"] = latest.get("run_id") if latest else None
                 value["finding_count"] = len(latest.get("findings", [])) if latest else 0
@@ -1442,7 +1733,7 @@ class DocumentReviewProject:
         for directory in sorted((path for path in root.iterdir() if path.is_dir() and path.name != "revision-bridge"), reverse=True):
             files = []
             for path in sorted(directory.rglob("*")):
-                if not path.is_file() or path.name.endswith(".receipt.json"):
+                if not path.is_file() or INTEGRITY_RECEIPT_DIR in path.parts:
                     continue
                 relative = str(path.relative_to(self.root)).replace("\\", "/")
                 files.append({"name": path.name, "label": labels.get(path.name, path.name), "relative_path": relative, "size": path.stat().st_size})
@@ -1458,7 +1749,7 @@ class DocumentReviewProject:
         for directory in sorted((path for path in bridge_root.iterdir() if path.is_dir()), reverse=True) if bridge_root.is_dir() else []:
             files = []
             for path in sorted(directory.rglob("*")):
-                if path.is_file() and not path.name.endswith(".receipt.json"):
+                if path.is_file() and INTEGRITY_RECEIPT_DIR not in path.parts:
                     files.append({"name": path.name, "label": "修改任务报告" if path.name == "findings-report.md" else path.name, "relative_path": str(path.relative_to(self.root)).replace("\\", "/"), "size": path.stat().st_size})
             if not files:
                 continue
@@ -1470,6 +1761,7 @@ class DocumentReviewProject:
             rows.append({"kind": "revision-bridge", "export_id": directory.name, "created_at": datetime.fromtimestamp(directory.stat().st_mtime, tz=timezone.utc).isoformat(), "finding_count": len(binding.get("finding_ids", [])), "files": files})
         return sorted(rows, key=lambda row: str(row.get("created_at", "")), reverse=True)
 
+    @_serialized_mutation
     def export_file(self, relative_path: str) -> Path:
         """Resolve one export/bridge file, rejecting traversal and symlinks."""
         if not isinstance(relative_path, str) or not relative_path.startswith("exports/"):
@@ -1482,8 +1774,12 @@ class DocumentReviewProject:
             raise ReviewStudioError("导出文件不在项目目录内") from exc
         if candidate.is_symlink() or not candidate.is_file():
             raise ReviewStudioError("导出文件不存在")
+        errors = self.integrity_errors()
+        if errors:
+            raise ReviewStudioError("项目或导出文件完整性校验失败，拒绝按可信文件下载：" + "; ".join(errors))
         return candidate
 
+    @_serialized_mutation
     def view(self) -> dict[str, Any]:
         self._enforce_integrity()
         manifest = self.manifest()
@@ -1499,9 +1795,30 @@ class DocumentReviewProject:
             finding_rows = []
         ai_requests = self.ai_requests()
         findings_total = len(finding_rows)
-        finding_summary = {"total": findings_total, "open": sum(1 for item in finding_rows if item.get("status") == "open"), "accept": sum(1 for item in finding_rows if item.get("status") == "accept"), "correct": sum(1 for item in finding_rows if item.get("status") == "correct"), "reject": sum(1 for item in finding_rows if item.get("status") == "reject"), "defer": sum(1 for item in finding_rows if item.get("status") == "defer"), "by_severity": {severity: sum(1 for item in finding_rows if item.get("severity") == severity) for severity in ("critical", "high", "medium", "low", "info")}}
+        finding_summary = {
+            "total": findings_total,
+            **{decision: sum(1 for item in finding_rows if item.get("status") == decision) for decision in ("open", "accept", "correct", "reject", "defer")},
+            "by_severity": {severity: sum(1 for item in finding_rows if item.get("severity") == severity) for severity in ("critical", "high", "medium", "low", "info")},
+        }
         exports = self.export_summary()
-        workflow = [{"key": "extraction", "label": "文档识别", "status": "completed" if state.get("extraction_state", "") in {"confirmed", "confirmed_corrected", "confirmed_with_warning"} else "not_started", "detail": "已确认" if state.get("extraction_state", "") in {"confirmed", "confirmed_corrected", "confirmed_with_warning"} else "待确认"}, {"key": "context", "label": "审查上下文", "status": "completed" if state.get("context_state") == "confirmed" else "not_started", "detail": "已确认" if state.get("context_state") == "confirmed" else "待确认"}, {"key": "local", "label": "本地预检", "status": "completed" if state.get("review_state") in {"local_precheck_completed", "ai_review_imported", "completed"} else "not_started", "detail": "已运行" if state.get("review_state") in {"local_precheck_completed", "ai_review_imported", "completed"} else "未运行"}, {"key": "ai", "label": "AI 专项审查", "status": "completed" if ai_requests and all(item.get("completed") for item in ai_requests) else "in_progress" if any(item.get("completed") for item in ai_requests) else "not_started", "detail": f"{sum(1 for item in ai_requests if item.get('completed'))}/{len(ai_requests) or 5} 已导入"}, {"key": "adjudication", "label": "人工裁决", "status": "completed" if findings_total and finding_summary["open"] == 0 else "in_progress" if findings_total else "not_started", "detail": f"{findings_total - finding_summary['open']}/{findings_total} 已处理" if findings_total else "暂无 Finding"}, {"key": "bridge", "label": "受约束修改", "status": "completed" if any(item.get("kind") == "revision-bridge" for item in exports) else "not_started", "detail": "已生成修改任务" if any(item.get("kind") == "revision-bridge" for item in exports) else "未开始"}, {"key": "export", "label": "导出结果", "status": "completed" if any(item.get("kind") == "export" for item in exports) else "not_started", "detail": "已有导出文件" if any(item.get("kind") == "export" for item in exports) else "未导出"}]
+        extraction_confirmed = state.get("extraction_state") in {"confirmed", "confirmed_corrected", "confirmed_with_warning"}
+        local_complete = any(
+            value.get("model_label") == "deterministic-local-rules"
+            for critic in CRITIC_DIMENSIONS
+            for _, value, _ in self._audit_run_records(critic)
+        )
+        ai_done = sum(1 for item in ai_requests if item.get("completed"))
+        bridge_complete = any(item.get("kind") == "revision-bridge" for item in exports)
+        export_complete = any(item.get("kind") == "export" for item in exports)
+        workflow = [
+            {"key": "extraction", "label": "文档识别", "status": "completed" if extraction_confirmed else "not_started", "detail": "已确认" if extraction_confirmed else "待确认"},
+            {"key": "context", "label": "审查上下文", "status": "completed" if state.get("context_state") == "confirmed" else "not_started", "detail": "已确认" if state.get("context_state") == "confirmed" else "待确认"},
+            {"key": "local", "label": "本地预检", "status": "completed" if local_complete else "not_started", "detail": "已运行" if local_complete else "未运行"},
+            {"key": "ai", "label": "AI 专项审查", "status": "completed" if ai_requests and ai_done == len(ai_requests) else "in_progress" if ai_done else "not_started", "detail": f"{ai_done}/{len(ai_requests) or 5} 已导入"},
+            {"key": "adjudication", "label": "人工裁决", "status": "completed" if findings_total and finding_summary["open"] == 0 else "in_progress" if findings_total else "not_started", "detail": f"{findings_total - finding_summary['open']}/{findings_total} 已处理" if findings_total else "暂无 Finding"},
+            {"key": "bridge", "label": "受约束修改", "status": "completed" if bridge_complete else "not_started", "detail": "已生成修改任务" if bridge_complete else "未开始"},
+            {"key": "export", "label": "导出结果", "status": "completed" if export_complete else "not_started", "detail": "已有导出文件" if export_complete else "未导出"},
+        ]
         return {"project": manifest, "product_status": "experimental-preview", "state": state, "extraction": {"available": document is not None, "quality": document.quality.to_dict() if document else {}, "warnings": [warning.to_dict() for warning in document.warnings] if document else [], "blocks": [block.to_dict() for block in document.blocks] if document else [], "total_blocks": len(document.blocks) if document else 0}, "context": self.context().to_dict() if self.context() else {"model_suggestion": self.suggested_document_type()}, "can_review": can_review, "review_blockers": reasons, "ai_requests": ai_requests, "findings": finding_rows, "finding_summary": finding_summary, "workflow": workflow, "exports": exports}
 
 
@@ -1527,7 +1844,7 @@ def _finding_from_dict(value: Mapping[str, Any]) -> Finding:
         raise ReviewStudioError("Finding contract invalid: " + "; ".join(errors))
     location = DocumentLocation(**{key: value["location"].get(key) for key in DocumentLocation.__dataclass_fields__})
     basis = ExternalBasis(**{key: value["external_basis"].get(key, default) for key, default in ExternalBasis().__dict__.items()})
-    return Finding(value["finding_id"], value["critic"], value["document_type"], location, value["evidence"], value["issue"], value["standard"], value["consequence"], value["severity"], value["verification_state"], basis, list(value["uncertainties"]), value["suggested_action"], value["suggested_owner"], value["blocks_release_or_execution"], value.get("status", "open"), value.get("origin", "model-derived"), list(value.get("competing_readings", [])), value.get("required_observation", ""), value.get("proposed_group_id"))
+    return Finding(value["finding_id"], value["critic"], value["document_type"], location, value["evidence"], value["issue"], value["standard"], value["consequence"], value["severity"], value["verification_state"], basis, list(value["uncertainties"]), value["suggested_action"], value["suggested_owner"], value["blocks_release_or_execution"], value.get("status", "open"), value.get("origin", "model-derived"), list(value.get("competing_readings", [])), value.get("required_observation", ""), value.get("proposed_group_id"), value.get("source_finding_id"))
 
 
 def _audit_markdown(audit: Mapping[str, Any]) -> str:

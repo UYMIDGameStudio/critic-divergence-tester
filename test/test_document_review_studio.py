@@ -8,6 +8,8 @@ import sys
 import tempfile
 import unittest
 import zipfile
+import zlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -72,6 +74,26 @@ class DocumentReviewStudioTests(unittest.TestCase):
             "publication_status": "internal-draft",
         }
 
+    def model_finding(self, project: DocumentReviewProject, critic: str, source_id: str, issue: str) -> dict[str, object]:
+        block = project.document().blocks[0]
+        return {
+            "finding_id": source_id,
+            "critic": critic,
+            "document_type": "活动策划案",
+            "location": block.location.to_dict(),
+            "evidence": block.text,
+            "issue": issue,
+            "standard": "结果必须有可定位、可复核的判断标准",
+            "consequence": "错误关联会让人工裁决采用过期或跨维度结论",
+            "severity": "medium",
+            "verification_state": "model-proposed",
+            "external_basis": {"jurisdiction": "中国大陆", "unresolved_facts": []},
+            "uncertainties": [],
+            "suggested_action": "核对当前请求后再处理",
+            "suggested_owner": "文档负责人",
+            "blocks_release_or_execution": False,
+        }
+
     def test_text_model_has_stable_block_and_table_cell_locations(self) -> None:
         value = ingest_bytes("plan.md", "# 计划\n\n| 项目 | 金额 |\n| --- | --- |\n| 场地 | 100 |\n".encode())
         self.assertTrue(value.blocks)
@@ -131,6 +153,15 @@ class DocumentReviewStudioTests(unittest.TestCase):
             document = ingest_bytes("scan.pdf", b"%PDF-x\n", ocr=OCR())
         self.assertIn("OCR fixture text", document.plain_text)
         self.assertTrue(any(w.code == "ocr-used" for w in document.warnings))
+        self.assertEqual(document.quality.blank_pages, [])
+        self.assertLessEqual(document.quality.text_coverage, 1.0)
+
+    def test_builtin_pdf_fallback_limits_decompressed_streams(self) -> None:
+        compressed = zlib.compress(b"A" * 100_000)
+        malicious = b"%PDF-1.4\n1 0 obj << /Type /Page >> endobj\nstream\n" + compressed + b"\nendstream\n%%EOF"
+        limits = document_review_ingest.IngestionLimits(max_pdf_stream_uncompressed_bytes=1024, max_pdf_total_uncompressed_bytes=2048)
+        with patch("document_review_ingest._pdf_backend", return_value=None), self.assertRaises(IngestionError):
+            ingest_bytes("large-stream.pdf", malicious, limits=limits)
 
     def test_docx_revisions_are_blocking_and_table_structure_is_retained(self) -> None:
         document = ingest_bytes("plan.docx", _docx(revised=True))
@@ -146,6 +177,8 @@ class DocumentReviewStudioTests(unittest.TestCase):
             project.confirm_extraction("confirm")
             project.confirm_context(self.context())
             project.run_audits(["official_professional_format"])
+            for finding in project.findings():
+                project.decide_finding(finding.finding_id, "reject", reason="只验证规范化副本导出")
             output = project.export()
             normalized = output / "normalized-editable-copy.docx"
             self.assertTrue(normalized.is_file())
@@ -174,7 +207,9 @@ class DocumentReviewStudioTests(unittest.TestCase):
                 self.assertTrue(finding.location.block_id)
                 self.assertTrue(finding.evidence)
                 self.assertIn("external_basis", finding.to_dict())
-            project.decide_finding(findings[0].finding_id, "accept", reason="补充责任人")
+            for index, finding in enumerate(findings):
+                decision = "accept" if index == 0 else "reject"
+                project.decide_finding(finding.finding_id, decision, reason="完成正式导出前的逐项裁决")
             bridge = project.prepare_revision_bridge()
             self.assertTrue(bridge.is_file())
             export = project.export()
@@ -342,6 +377,7 @@ class DocumentReviewStudioTests(unittest.TestCase):
                     project.decide_finding(finding.finding_id, "accept", reason="bridge")
                     self._delete_artifact_and_receipt(project, project.prepare_revision_bridge())
                 else:
+                    project.decide_finding(finding.finding_id, "reject", reason="export gate")
                     output = project.export()
                     shutil.rmtree(output)
                 view = project.view()
@@ -383,13 +419,13 @@ class DocumentReviewStudioTests(unittest.TestCase):
 
     def test_python_dependency_repair_uses_current_interpreter(self) -> None:
         completed = type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()
-        with patch("document_review_ingest.subprocess.run", return_value=completed) as run, patch("document_review_ingest.doctor_dependencies", return_value=[]):
-            self.assertEqual(document_review_ingest.repair_dependency("pypdf"), [])
+        with patch("document_review_ingest.subprocess.run", return_value=completed) as run, patch("document_review_ingest.importlib.import_module"):
+            document_review_ingest.repair_dependency("pypdf")
         command = run.call_args.args[0]
         self.assertEqual(command[0], sys.executable)
         self.assertEqual(command[1:3], ["-m", "pip"])
-        self.assertEqual(command[3], "install")
-        self.assertEqual(command[4], "pypdf>=5.0,<7.0")
+        self.assertEqual(command[3:6], ["install", "--disable-pip-version-check", "--no-input"])
+        self.assertEqual(command[6], "pypdf>=5.0,<7.0")
 
     def test_independent_ai_protocol_export_and_import_preserve_invocation_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -473,6 +509,119 @@ class DocumentReviewStudioTests(unittest.TestCase):
             self.assertTrue(view["state"]["read_only"])
             with self.assertRaises(ReviewStudioError):
                 project.decide_finding("F-model-1", "accept", reason="not allowed after tamper")
+
+    def test_empty_context_is_rejected_and_export_has_formal_gates(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="draft.txt", content=b"Draft text\n")
+            with self.assertRaises(ReviewStudioError):
+                project.export()
+            project.confirm_extraction("confirm")
+            empty = self.context()
+            empty["jurisdiction"] = "   "
+            with self.assertRaises(ReviewStudioError):
+                project.confirm_context(empty)
+            project.confirm_context(self.context())
+            with self.assertRaises(ReviewStudioError):
+                project.export()
+            project.run_local_prechecks(["execution_feasibility"])
+            with self.assertRaises(ReviewStudioError):
+                project.export()
+            for finding in project.findings():
+                project.decide_finding(finding.finding_id, "reject", reason="formal completion gate")
+            self.assertTrue(project.export().is_dir())
+
+    def test_active_ai_requests_and_latest_runs_do_not_depend_on_filenames(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="draft.txt", content=b"Draft text\n")
+            project.confirm_extraction("confirm")
+            project.confirm_context(self.context())
+            first = project.prepare_ai_audits(CRITIC_DIMENSIONS, provider="provider", model="model")
+            second = project.prepare_ai_audits(CRITIC_DIMENSIONS, provider="provider", model="model")
+            active = project.ai_requests()
+            self.assertEqual(len(first), 5)
+            self.assertEqual(len(second), 5)
+            self.assertEqual(len(active), 5)
+            self.assertTrue(all(row["request_sequence"] == 2 for row in active))
+            selected = next(row for row in active if row["critic"] == "expression_ambiguity")
+            payload = {"request_id": selected["request_id"], "prompt_sha256": selected["prompt_sha256"], "provider": selected["provider"], "model": selected["model"], "critic": selected["critic"], "source_sha256": project.document().source.sha256, "findings": [self.model_finding(project, selected["critic"], "same-source-id", "latest issue")], "zero_finding_basis": []}
+            project.collect_model_audit(selected["critic"], json.dumps(payload, ensure_ascii=False), provider=selected["provider"], model=selected["model"], request_id=selected["request_id"])
+            rows = [row for row in project.findings() if row.critic == selected["critic"]]
+            self.assertEqual([row.issue for row in rows], ["latest issue"])
+            self.assertEqual(rows[0].source_finding_id, "same-source-id")
+
+    def test_same_source_finding_id_from_two_critics_remains_distinct(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="draft.txt", content=b"Draft text\n")
+            project.confirm_extraction("confirm")
+            project.confirm_context(self.context())
+            requests = project.prepare_ai_audits(["expression_ambiguity", "execution_feasibility"], provider="provider", model="model")
+            for request in requests:
+                payload = {"request_id": request["request_id"], "prompt_sha256": request["prompt_sha256"], "provider": request["provider"], "model": request["model"], "critic": request["critic"], "source_sha256": project.document().source.sha256, "findings": [self.model_finding(project, request["critic"], "F-1", f"issue for {request['critic']}")], "zero_finding_basis": []}
+                project.collect_model_audit(request["critic"], json.dumps(payload, ensure_ascii=False), provider=request["provider"], model=request["model"], request_id=request["request_id"])
+            findings = project.findings()
+            self.assertEqual(len(findings), 2)
+            self.assertEqual(len({finding.finding_id for finding in findings}), 2)
+            self.assertEqual({finding.source_finding_id for finding in findings}, {"F-1"})
+
+    def test_concurrent_decisions_keep_integrity_index_consistent(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="draft.md", content="# 活动\n\n相关人员适时报名。\n".encode())
+            project.confirm_extraction("confirm")
+            project.confirm_context(self.context())
+            project.run_local_prechecks(["expression_ambiguity"])
+            finding_id = project.findings()[0].finding_id
+            choices = ["accept", "reject", "correct", "defer"] * 5
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                records = list(executor.map(lambda pair: project.decide_finding(finding_id, pair[1], reason=f"concurrent {pair[0]}", corrected_action="人工动作" if pair[1] == "correct" else None), enumerate(choices)))
+            self.assertEqual(sorted(record["sequence"] for record in records), list(range(1, 21)))
+            self.assertEqual(project.integrity_errors(), [])
+
+    def test_complete_audit_package_and_tampered_download_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="draft.txt", content=b"Draft text\n")
+            project.confirm_extraction("confirm")
+            project.confirm_context(self.context())
+            request = project.prepare_ai_audits(["expression_ambiguity"], provider="provider", model="model")[0]
+            payload = {"request_id": request["request_id"], "prompt_sha256": request["prompt_sha256"], "provider": request["provider"], "model": request["model"], "critic": request["critic"], "source_sha256": project.document().source.sha256, "findings": [], "zero_finding_basis": ["independent pass"]}
+            run = project.collect_model_audit(request["critic"], json.dumps(payload), provider=request["provider"], model=request["model"], request_id=request["request_id"])
+            output = project.export()
+            package = output / "audit-package.zip"
+            with zipfile.ZipFile(package) as archive:
+                names = set(archive.namelist())
+            self.assertIn("package-manifest.json", names)
+            self.assertTrue(any(name.startswith("project/source/") for name in names))
+            self.assertTrue(any(name.endswith(f"{run.run_id}.raw-response.json.txt") for name in names))
+            self.assertTrue(any(name.endswith("integrity-index.json") for name in names))
+            audit_json = output / "audit.json"
+            relative = str(audit_json.relative_to(project.root)).replace("\\", "/")
+            audit_json.write_text("tampered", encoding="utf-8")
+            with self.assertRaises(ReviewStudioError):
+                project.export_file(relative)
+
+    def test_environment_repair_retries_blocked_project_and_protocol_zip_is_clean(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="scan.pdf", content=b"%PDF-1.7\nnot a real pdf")
+            app = StudioApp.create(temp_dir, project.root)
+            with patch("document_review_ui.repair_dependencies", return_value=[]), patch.object(DocumentReviewProject, "retry_extraction") as retry:
+                repaired = app.repair_environment()
+            retry.assert_called_once_with()
+            self.assertIn("环境修复完成", repaired.notice)
+
+            clean = DocumentReviewProject.create(temp_dir, filename="draft.txt", content=b"Draft text\n")
+            clean.confirm_extraction("confirm")
+            clean.confirm_context(self.context())
+            clean.prepare_ai_audits(CRITIC_DIMENSIONS, provider="provider", model="model")
+            bundle = StudioApp.create(temp_dir, clean.root).protocol_bundle()
+            with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+                self.assertEqual(len([name for name in archive.namelist() if name.endswith("prompt.md")]), 5)
+                self.assertFalse(any(".integrity" in name for name in archive.namelist()))
+
+    def test_ui_is_single_template_without_runtime_patch_chain(self) -> None:
+        source = Path(__import__("document_review_ui").__file__).read_text(encoding="utf-8")
+        self.assertEqual(source.count("def render_studio_shell"), 1)
+        self.assertNotIn("_render_studio_shell_base", source)
+        self.assertIn("修正后接受", render_studio_shell("token"))
+        self.assertIn("下载全部协议 ZIP", render_studio_shell("token"))
 
     def test_corrupt_internal_document_is_read_only_and_does_not_crash_view(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

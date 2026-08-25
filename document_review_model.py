@@ -251,6 +251,7 @@ class Finding:
     competing_readings: list[str] = field(default_factory=list)
     required_observation: str = ""
     proposed_group_id: str | None = None
+    source_finding_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.critic not in CRITIC_DIMENSIONS:
@@ -261,8 +262,20 @@ class Finding:
             raise ValueError(f"unknown verification state: {self.verification_state}")
         if not self.location.block_id:
             raise ValueError("finding location must include a stable block_id")
+        if not self.finding_id.strip():
+            raise ValueError("finding_id is required")
         if not self.evidence.strip():
             raise ValueError("finding evidence is required")
+        for label, value in (
+            ("document_type", self.document_type),
+            ("issue", self.issue),
+            ("standard", self.standard),
+            ("consequence", self.consequence),
+            ("suggested_action", self.suggested_action),
+            ("suggested_owner", self.suggested_owner),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"finding {label} is required")
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
@@ -283,6 +296,8 @@ class AuditRun:
     zero_finding_basis: list[str] = field(default_factory=list)
     model_label: str = "deterministic-local-rules"
     created_at: str = ""
+    run_sequence: int = 1
+    previous_audit_run_sha256: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -297,6 +312,8 @@ class AuditRun:
             "zero_finding_basis": list(self.zero_finding_basis),
             "model_label": self.model_label,
             "created_at": self.created_at,
+            "run_sequence": self.run_sequence,
+            "previous_audit_run_sha256": self.previous_audit_run_sha256,
         }
 
 
@@ -326,6 +343,18 @@ def validate_finding_dict(value: Mapping[str, Any]) -> list[str]:
         errors.append("uncertainties must be a list")
     if not isinstance(value.get("blocks_release_or_execution"), bool):
         errors.append("blocks_release_or_execution must be boolean")
+    for field_name in (
+        "finding_id", "document_type", "evidence", "issue", "standard",
+        "consequence", "suggested_action", "suggested_owner",
+    ):
+        field_value = value.get(field_name)
+        if not isinstance(field_value, str) or not field_value.strip():
+            errors.append(f"{field_name} must be non-empty text")
+        elif len(field_value) > 100_000:
+            errors.append(f"{field_name} exceeds the size limit")
+    finding_id = value.get("finding_id")
+    if isinstance(finding_id, str) and len(finding_id) > 256:
+        errors.append("finding_id exceeds 256 characters")
     return errors
 
 
