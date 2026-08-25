@@ -27,7 +27,7 @@ py -3 critic_runner.py app ".\结构的替身.md"
 python critic_runner.py studio
 ```
 
-Document Review Studio 当前标记为 **experimental preview**。它支持 Markdown、TXT、DOCX、文本 PDF 和扫描 PDF；
+Document Review Studio 当前标记为 **experimental preview**；受约束修改闭环已经实现，正式 V1 仍等待 Gate C 外部用户验证。它支持 Markdown、TXT、DOCX、文本 PDF 和扫描 PDF；
 上传后必须先确认识别质量和文档上下文，再明确选择“本地确定性预检”或导出/导入五个独立 AI critic。原始文件
 字节与 SHA-256 永不覆盖，解析警告、页码/表格单元格定位、人工裁决和导出
 审计包都保存在本地项目中。详细限制和环境要求见
@@ -39,7 +39,7 @@ Document Review Studio 当前标记为 **experimental preview**。它支持 Mark
 识别确认由受保护的 extraction decision 产物授权，`state.json` 只是可重建缓存；
 本地索引可发现普通修改/删除，但强回滚仍需要项目外可信检查点或签名。
 
-应用会自动打开本机页面。创建项目后，页面用七步状态条和一个“继续”主提示引导流程：确认识别 → 确认上下文 → 本地预检 → 导出/导入五个独立 AI critic → 逐条人工裁决 → 生成修改任务 → 导出结果。协议支持一键复制、上一项/下一项、`x/5` 导入进度和五份协议 ZIP；导出中心直接提供各文件下载和打开所在文件夹，不要求用户打开 JSON 或拼 artifact 路径。重复生成协议时，每个 critic 只显示当前请求，旧请求仍留在受保护历史中。正式修改桥和导出都要求至少一次审查且全部 Finding 已裁决。
+应用会自动打开本机页面。创建项目后，页面用七步状态条和一个“继续”主提示引导流程：确认识别 → 确认上下文 → 本地预检 → 导出/导入五个独立 AI critic → 人工裁决 → 逐段 Hunk 批准 → 修改稿复审与导出。首次裁决视图最多显示 30 个按“同一定位＋同一修改动作”形成的工作组，所有原子 Finding 和独立 critic 理由仍完整保留。协议支持一键复制、上一项/下一项、`x/5` 导入进度和五份协议 ZIP。每个修改 Hunk 都绑定已批准 Finding、原文块哈希和人工决定；只有批准的 Hunk 会进入新版本。导出中心提供 `修改稿.docx`、`修改稿.md`、`修改说明.md`、`未解决风险.md`、复审结果和完整审计包。外部模型来源的 Finding 不会被本地规则冒充复审，而会明确标为待外部复审。
 
 已有 Reviewed IR 的项目会在同一项目主页显示“专业研究视图”，继续提供 Claim、Rule/Perspective Lens、Citation、版本 lineage 和 Finding Resolution；不同 Lens 的结论保持并列，不做投票合并。快速修订仍是默认入口。
 

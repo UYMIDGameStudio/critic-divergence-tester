@@ -1,8 +1,8 @@
 # Document Review Studio
 
-> Status: **experimental preview**. Do not present this branch as a formal V1
-> until the constrained Finding → Action → Hunk → Resolution loop produces and
-> verifies a genuinely revised document.
+> Status: **experimental preview**. The constrained Finding → Action → Hunk →
+> revised document → recheck loop is implemented. Formal V1 remains gated on
+> external Gate C usability and direct-AI comparison evidence.
 
 Document Review Studio is the document-first workflow in this repository. It
 keeps the uploaded bytes separate from the internal review representation and
@@ -25,8 +25,11 @@ the project directory elsewhere first if it is needed as a backup.
 
 Inside a project, the header shows the seven-stage workflow and one suggested
 next action. The extraction preview can search long documents by text or block
-identifier. Finding review is filtered by critic, severity, and decision state;
-the full Finding contract is available from each card.
+identifier. Finding review is filtered by critic, severity, and decision state.
+Findings with the same stable location and normalized modification action are
+displayed as one attention work group while every critic's evidence, reason,
+and decision remains atomic. The first view contains at most 30 work groups;
+the complete queue requires explicit expansion.
 
 The UI flow is intentionally gated:
 
@@ -38,8 +41,14 @@ The UI flow is intentionally gated:
 5. Run the clearly labelled deterministic local precheck, or export five
    critic-specific AI protocols and import each raw JSON response.
 6. Decide each Finding manually.
-7. Prepare the bridge into the existing constrained revision workflow.
-8. Export the audit package and editable draft.
+7. Generate block-scoped Actions from accepted Finding decisions.
+8. Enter an exact replacement Hunk (human-authored or manually imported from
+   AI), inspect the before/after text, and approve or reject it.
+9. Materialize only approved Hunks into a new document version and re-run every
+   original deterministic local critic. Findings from external models remain
+   explicitly marked as requiring external recheck.
+10. Export revised Markdown/DOCX, the difference report, unresolved-risk
+    report, recheck result, and complete audit package.
 
 ## Storage and safety
 
@@ -56,6 +65,11 @@ Each project is a `.document-review-studio` directory containing:
 - `ai-requests/<request>/`: provider/model-bound critic prompts;
 - `audits/<critic>/`: raw model responses and parsed immutable runs;
 - `finding-decisions/`: append-only human decisions;
+- `revision-plans/`: immutable Finding/decision-bound block Actions;
+- `revision-hunks/`: append-only exact replacement proposals with stable
+  before-text hashes;
+- `hunk-decisions/`: immutable human approvals or rejections;
+- `revisions/`: materialized drafts, diffs, unresolved risks, and rechecks;
 - `exports/`: audit reports, drafts, DOCX output, and the revision bridge;
 - `integrity-index.json`: append-only project register of every tracked artifact,
   its receipt, content hash, sequence, and predecessor index head;
@@ -69,7 +83,8 @@ The append-only index is the expected artifact set, so deleting an artifact and
 its receipt together cannot make the project silently fall back to an earlier
 decision or an earlier audit state. The chain covers the source, structured
 extraction/corrections, context, critic prompt, raw response, parsed
-run/Finding, sequenced human decision, revision bridge, and export. Missing
+run/Finding, sequenced human decision, revision Action/Hunk/decision,
+materialized revision, recheck, revision bridge, and export. Missing
 index entries, receipts, changed parents, broken decision sequences, and
 deletion of the policy marker force read-only mode. This detects ordinary local
 tampering; it is not a keyed signature against an attacker who can rewrite the
@@ -169,13 +184,17 @@ provides copy, previous/next, and five-protocol ZIP controls, and shows every
 generated export in an export center. Exported files can be downloaded
 individually, and the containing folder can be opened from the local desktop.
 Formal export requires confirmed extraction/context, at least one current audit,
-and a decision for every current Finding. The complete audit ZIP includes the
-source and protected project history needed for local verification as well as
-the generated result; it is not a claim
-that a revised document was produced before the constrained revision loop.
+and a decision for every current Finding. A final revised-document export also
+requires a current revision plan, one decided latest Hunk per Action, anchor
+hash verification, and revision materialization. Rejected Hunks are never
+applied and remain visible in `未解决风险.md`. The complete audit ZIP includes
+the source and protected project history needed for local verification.
 
-For DOCX inputs, preview exports are named
-`normalized-editable-copy.docx`. They may lose source layout and are not a
-revision. `revised.docx` is deliberately unavailable until the constrained
-revision chain is complete and verified. A human `corrected_action` is carried
-into the revision bridge and supersedes the critic's original suggestion.
+Before the constrained revision chain is complete, DOCX preview exports are
+named `normalized-editable-copy.docx`; they may lose source layout and are not a
+revision. After every Action has a decided latest Hunk and the revision is
+materialized, the export contains `修改稿.docx`, `修改稿.md`, `修改说明.md`,
+`未解决风险.md`, and `recheck.json`. The DOCX is generated from the approved
+internal text model and does not claim to preserve source layout or Word Track
+Changes. A human `corrected_action` supersedes the critic's original
+instruction, but cannot change text until an exact Hunk is separately approved.

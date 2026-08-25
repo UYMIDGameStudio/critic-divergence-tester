@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import document_review_ingest
 from document_review_ingest import IngestionError, ingest_bytes, safe_upload_name
-from document_review_model import CRITIC_DIMENSIONS, DocumentBlock, DocumentLocation, ExtractionWarning, QualitySignals, RawFileBinding, StructuredDocument, stable_id
+from document_review_model import CRITIC_DIMENSIONS, DocumentBlock, DocumentLocation, ExternalBasis, ExtractionWarning, Finding, QualitySignals, RawFileBinding, StructuredDocument, stable_id
 from document_review_studio import DocumentReviewProject, ReviewStudioError
 from document_review_ui import StudioApp, render_studio_shell
 
@@ -108,6 +108,9 @@ class DocumentReviewStudioTests(unittest.TestCase):
         self.assertIn("运行选中的本地预检", shell)
         self.assertIn("导出 / 导入独立 AI 审查", shell)
         self.assertIn("普通 JSON（人工关联，较弱审计）", shell)
+        self.assertIn("默认只展示前", shell)
+        self.assertIn("逐段修改与批准", shell)
+        self.assertIn("生成修改稿并复审", shell)
         self.assertIn("删除本地项目", shell)
         self.assertIn("一键修复可自动修复项", shell)
         self.assertIn("导出五份独立协议", shell)
@@ -461,6 +464,84 @@ class DocumentReviewStudioTests(unittest.TestCase):
             self.assertIn(f"Human-approved action: {corrected}", report)
             self.assertIn("Original suggested action:", report)
             self.assertEqual(project.integrity_errors(), [])
+
+    def test_finding_action_hunk_revision_recheck_and_export_close_the_loop(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="draft.md", content="# 活动\n\n相关人员适时报名。\n".encode())
+            project.confirm_extraction("confirm")
+            project.confirm_context(self.context())
+            project.run_local_prechecks(["expression_ambiguity"])
+            findings = project.findings()
+            self.assertTrue(findings)
+            for finding in findings:
+                project.decide_finding(finding.finding_id, "accept", reason="进入受约束修改")
+            plan = project.prepare_revision_plan()
+            self.assertTrue(plan["actions"])
+            for action in plan["actions"]:
+                hunk = project.propose_revision_hunk(
+                    action["action_id"],
+                    "报名负责人须在 2026 年 9 月 1 日前书面通知符合条件的参与者。",
+                    rationale="明确责任主体、对象和期限",
+                    provenance="ai-assisted-manual-import",
+                )
+                project.decide_revision_hunk(hunk["hunk_id"], "approve", reason="逐段 diff 与任务要求一致")
+            revision = project.finalize_revision()
+            self.assertTrue((revision / "修改稿.md").is_file())
+            self.assertTrue((revision / "修改说明.md").is_file())
+            self.assertTrue((revision / "未解决风险.md").is_file())
+            recheck = json.loads((revision / "recheck.json").read_text(encoding="utf-8"))
+            self.assertTrue(recheck["local_critic_runs"])
+            self.assertTrue(all(row["state"] in {"withdrawn-by-local-recheck", "still-present"} for row in recheck["finding_resolutions"]))
+            output = project.export()
+            self.assertTrue((output / "修改稿.docx").is_file())
+            self.assertTrue((output / "修改说明.md").is_file())
+            self.assertTrue((output / "未解决风险.md").is_file())
+            audit = json.loads((output / "audit.json").read_text(encoding="utf-8"))
+            self.assertEqual(audit["revision"]["revision_id"], json.loads((revision / "revision.json").read_text(encoding="utf-8"))["revision_id"])
+            self.assertEqual(project.integrity_errors(), [])
+
+    def test_rejected_hunk_is_not_applied_and_remains_an_unresolved_risk(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="draft.md", content="# 活动\n\n相关人员适时报名。\n".encode())
+            project.confirm_extraction("confirm")
+            project.confirm_context(self.context())
+            project.run_local_prechecks(["expression_ambiguity"])
+            for finding in project.findings():
+                project.decide_finding(finding.finding_id, "accept", reason="问题成立")
+            plan = project.prepare_revision_plan()
+            for action in plan["actions"]:
+                hunk = project.propose_revision_hunk(action["action_id"], "不应进入修改稿的文本", rationale="候选方案")
+                project.decide_revision_hunk(hunk["hunk_id"], "reject", reason="候选文本引入新的歧义")
+            revision = project.finalize_revision()
+            self.assertNotIn("不应进入修改稿的文本", (revision / "修改稿.md").read_text(encoding="utf-8"))
+            unresolved = (revision / "未解决风险.md").read_text(encoding="utf-8")
+            self.assertIn("unresolved", unresolved)
+            self.assertIn("对应 Hunk 被人工拒绝", unresolved)
+
+    def test_attention_queue_groups_only_same_location_and_action_without_losing_critics(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="draft.txt", content=b"Draft text\n")
+            findings: list[Finding] = []
+            for index in range(35):
+                critic = CRITIC_DIMENSIONS[index % len(CRITIC_DIMENSIONS)]
+                group_number = 0 if index < 2 else index
+                findings.append(Finding(
+                    finding_id=f"F-{index}", critic=critic, document_type="测试文档",
+                    location=DocumentLocation(f"B-{group_number}", "paragraph"), evidence="证据",
+                    issue="影响执行链", standard="必须可执行", consequence="可能改变决策",
+                    severity="high" if index == 0 else "medium", verification_state="model-proposed",
+                    external_basis=ExternalBasis(), uncertainties=[], suggested_action="补充负责人" if index < 2 else f"动作 {index}",
+                    suggested_owner="负责人", blocks_release_or_execution=index == 0,
+                ))
+            queue = project.finding_work_groups(findings)
+            self.assertEqual(queue["default_limit"], 30)
+            self.assertEqual(queue["total_groups"], 34)
+            self.assertEqual(queue["hidden_groups"], 4)
+            first = queue["groups"][0]
+            self.assertEqual(first["finding_count"], 2)
+            self.assertEqual(first["critic_count"], 2)
+            self.assertEqual({item["finding_id"] for item in first["findings"]}, {"F-0", "F-1"})
+            self.assertIn("阻断发布或执行", first["priority_reasons"])
 
     def test_pdf_dependency_failure_is_saved_without_fake_review(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

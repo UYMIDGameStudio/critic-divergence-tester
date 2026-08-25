@@ -186,7 +186,22 @@ class StudioApp:
         elif action == "decide_finding":
             project.decide_finding(str(data.get("finding_id", "")), str(data.get("decision", "")), reason=str(data.get("reason", "")), corrected_action=data.get("corrected_action"))
         elif action == "prepare_bridge":
-            project.prepare_revision_bridge()
+            project.prepare_revision_plan()
+        elif action == "propose_revision_hunk":
+            project.propose_revision_hunk(
+                str(data.get("action_id", "")),
+                str(data.get("revised_text", "")),
+                rationale=str(data.get("rationale", "")),
+                provenance=str(data.get("provenance", "human-authored")),
+            )
+        elif action == "decide_revision_hunk":
+            project.decide_revision_hunk(
+                str(data.get("hunk_id", "")),
+                str(data.get("decision", "")),
+                reason=str(data.get("reason", "")),
+            )
+        elif action == "finalize_revision":
+            project.finalize_revision()
         elif action == "export":
             project.export(revised_markdown=data.get("revised_markdown"))
         else:
