@@ -112,6 +112,8 @@ class DocumentReviewStudioTests(unittest.TestCase):
         self.assertIn("experimental preview", shell)
         self.assertIn("运行选中的本地预检", shell)
         self.assertIn("导出 / 导入独立 AI 审查", shell)
+        self.assertIn("导出当前 AI 审查", shell)
+        self.assertIn("未经人工裁决", shell)
         self.assertIn("关联到当前任务（推荐）", shell)
         self.assertIn("严格回显校验（高级）", shell)
         self.assertIn("默认只展示前", shell)
@@ -1020,6 +1022,40 @@ class DocumentReviewStudioTests(unittest.TestCase):
             audit_json.write_text("tampered", encoding="utf-8")
             with self.assertRaises(ReviewStudioError):
                 project.export_file(relative)
+
+    def test_ai_review_can_be_exported_before_finding_adjudication(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="draft.txt", content=b"Draft text\n")
+            project.confirm_extraction("confirm")
+            project.confirm_context(self.context())
+            critic = "expression_ambiguity"
+            request = project.prepare_ai_audits([critic], provider="provider", model="model")[0]
+            finding = self.model_finding(project, critic, "MODEL-1", "时间表达不明确")
+            payload = {"request_id": request["request_id"], "prompt_sha256": request["prompt_sha256"], "provider": request["provider"], "model": request["model"], "critic": critic, "source_sha256": project.document().source.sha256, "findings": [finding], "zero_finding_basis": []}
+            project.collect_model_audit(critic, json.dumps(payload, ensure_ascii=False), provider="provider", model="model", request_id=request["request_id"])
+
+            with self.assertRaisesRegex(ReviewStudioError, "必须裁决全部 Finding"):
+                project.export()
+            output = project.export_ai_reviews()
+            self.assertTrue((output / "AI审查报告.md").is_file())
+            self.assertTrue((output / "AI审查结果.json").is_file())
+            self.assertTrue((output / "AI审查包.zip").is_file())
+            self.assertTrue((output / "原始响应" / f"{critic}.json.txt").is_file())
+            report = (output / "AI审查报告.md").read_text(encoding="utf-8")
+            self.assertIn("未经人工裁决", report)
+            self.assertIn("时间表达不明确", report)
+            snapshot = json.loads((output / "AI审查结果.json").read_text(encoding="utf-8"))
+            self.assertEqual(snapshot["status"], "unadjudicated-review-snapshot")
+            self.assertFalse(snapshot["human_decisions_included"])
+            self.assertEqual(snapshot["finding_count"], 1)
+            summary = project.export_summary()
+            exported = next(row for row in summary if row["export_id"] == output.name)
+            self.assertEqual(exported["kind"], "ai-review")
+            self.assertEqual(exported["finding_count"], 1)
+            relative = str((output / "AI审查报告.md").relative_to(project.root)).replace("\\", "/")
+            self.assertEqual(project.export_file(relative), output / "AI审查报告.md")
+            self.assertEqual(project.ai_requests()[0]["storage_relative_path"], f"audits/{critic}")
+            self.assertEqual(project.integrity_errors(), [])
 
     def test_environment_repair_retries_blocked_project_and_protocol_zip_is_clean(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

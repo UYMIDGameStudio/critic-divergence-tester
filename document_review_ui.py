@@ -192,7 +192,10 @@ class StudioApp:
             notice = f"AI 审查已导入（{binding_text}）"
             if normalization_count:
                 notice += f"；{normalization_count} 处格式已保守归一化，原始响应保持不变"
-            notice += "。"
+            notice += f"。原始响应与解析结果保存在：{run_path.parent}"
+        elif action == "export_ai_reviews":
+            output = project.export_ai_reviews()
+            notice = f"当前 AI 审查已导出：{output}"
         elif action == "decide_finding":
             project.decide_finding(str(data.get("finding_id", "")), str(data.get("decision", "")), reason=str(data.get("reason", "")), corrected_action=data.get("corrected_action"))
         elif action == "prepare_bridge":

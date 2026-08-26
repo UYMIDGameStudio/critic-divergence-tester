@@ -212,6 +212,13 @@ requests as protected history, shows a per-critic `imported/not imported` count,
 provides copy, previous/next, and five-protocol ZIP controls, and shows every
 generated export in an export center. Exported files can be downloaded
 individually, and the containing folder can be opened from the local desktop.
+As soon as at least one independent AI response has been imported, the browser
+can export an **unadjudicated AI review snapshot** without waiting for Finding
+decisions. It contains a readable Markdown report, structured JSON, verbatim raw
+responses, a manifest, and a ZIP bundle. The import notice and request card also
+show the project-relative storage location (`audits/<critic>/`); the export notice
+shows the full local output directory. This snapshot is explicitly separated from
+the formal post-adjudication export.
 Formal export requires confirmed extraction/context, at least one current audit,
 and a decision for every current Finding. A final revised-document export also
 requires a current revision plan, one decided latest Hunk per Action, anchor

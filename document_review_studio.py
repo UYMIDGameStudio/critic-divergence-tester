@@ -2744,6 +2744,76 @@ class DocumentReviewProject:
         return "\n".join(lines)
 
     @_serialized_mutation
+    def export_ai_reviews(self) -> Path:
+        """Export imported AI reviews before Finding adjudication."""
+        self._ensure_writable()
+        document = self.document()
+        if not document:
+            raise ReviewStudioError("没有可绑定的原始文档")
+        active_runs = [row for row in self._active_audit_run_records().values() if isinstance(row[1].get("declared_model_metadata"), Mapping)]
+        if not active_runs:
+            raise ReviewStudioError("尚未导入任何独立 AI 审查结果")
+        export_id = stable_id("AIEXP", document.source.sha256, _now(), secrets.token_hex(4))
+        output = self.root / "exports" / export_id
+        output.mkdir(parents=True, exist_ok=False)
+        run_parents = [_parent_ref(self.root, path, role="ai-audit-run") for path, _, _ in active_runs]
+        raw_parents: list[dict[str, Any]] = []
+        raw_exports: list[dict[str, Any]] = []
+        for run_path, run, _ in active_runs:
+            critic = str(run["critic"])
+            run_id = str(run["run_id"])
+            raw_path = run_path.parent / f"{run_id}.raw-response.json.txt"
+            if not raw_path.is_file() or raw_path.is_symlink():
+                raise ReviewStudioError(f"AI 审查原始响应缺失：{critic}/{run_id}")
+            raw_parent = _parent_ref(self.root, raw_path, role="raw-model-response")
+            raw_parents.append(raw_parent)
+            exported_raw = output / "原始响应" / f"{critic}.json.txt"
+            raw_data = raw_path.read_bytes()
+            _write_tracked(self.root, exported_raw, raw_data, parents=[raw_parent], provenance="verbatim-model-response-export")
+            raw_exports.append({"critic": critic, "run_id": run_id, "relative_path": str(exported_raw.relative_to(output)).replace("\\", "/"), "sha256": _sha256(raw_data)})
+        findings = [item for _, run, _ in active_runs for item in run.get("findings", [])]
+        snapshot = {
+            "artifact_type": "independent-ai-review-snapshot",
+            "schema_version": 1,
+            "export_id": export_id,
+            "status": "unadjudicated-review-snapshot",
+            "source": document.source.to_dict(),
+            "runs": [run for _, run, _ in active_runs],
+            "findings": findings,
+            "raw_responses": raw_exports,
+            "finding_count": len(findings),
+            "human_decisions_included": False,
+            "created_at": _now(),
+        }
+        json_path = output / "AI审查结果.json"
+        _write_tracked(self.root, json_path, canonical_json(snapshot), parents=[*run_parents, *raw_parents], provenance="deterministic-ai-review-snapshot")
+        report_path = output / "AI审查报告.md"
+        _write_tracked(self.root, report_path, _ai_review_markdown(snapshot).encode("utf-8"), parents=[_parent_ref(self.root, json_path, role="ai-review-snapshot")], provenance="deterministic-ai-review-render")
+        manifest = {
+            "artifact_type": "independent-ai-review-export",
+            "schema_version": 1,
+            "export_id": export_id,
+            "status": "unadjudicated-review-snapshot",
+            "source_sha256": document.source.sha256,
+            "report_relative_path": str(report_path.relative_to(self.root)).replace("\\", "/"),
+            "result_relative_path": str(json_path.relative_to(self.root)).replace("\\", "/"),
+            "finding_count": len(findings),
+            "critic_count": len(active_runs),
+            "created_at": snapshot["created_at"],
+        }
+        manifest_path = output / "ai-review-export.json"
+        _write_tracked(self.root, manifest_path, canonical_json(manifest), parents=[_parent_ref(self.root, json_path, role="ai-review-snapshot"), _parent_ref(self.root, report_path, role="ai-review-report")], provenance="deterministic-ai-review-export-manifest")
+        package_buffer = io.BytesIO()
+        with zipfile.ZipFile(package_buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for path in sorted(output.rglob("*")):
+                if path.is_file() and INTEGRITY_RECEIPT_DIR not in path.parts:
+                    archive.write(path, path.relative_to(output).as_posix())
+        package_path = output / "AI审查包.zip"
+        _write_tracked(self.root, package_path, package_buffer.getvalue(), parents=[_parent_ref(self.root, manifest_path, role="ai-review-export-manifest")], provenance="ai-review-snapshot-archive")
+        self._append_event("ai_review_export_created", {"export_id": export_id, "relative_path": str(output.relative_to(self.root)).replace("\\", "/"), "finding_count": len(findings)})
+        return output
+
+    @_serialized_mutation
     def export(self, *, revised_markdown: str | None = None) -> Path:
         self._ensure_writable()
         allowed, reasons = self.can_review()
@@ -2889,6 +2959,7 @@ class DocumentReviewProject:
                 value["run_id"] = latest.get("run_id") if latest else None
                 value["finding_count"] = len(latest.get("findings", [])) if latest else 0
                 value["response_binding"] = latest.get("response_binding") if latest else None
+                value["storage_relative_path"] = f"audits/{value.get('critic')}" if latest else None
                 rows.append(value)
             except (OSError, ValueError, ReviewStudioError):
                 continue
@@ -2915,6 +2986,10 @@ class DocumentReviewProject:
             "未解决风险.md": "未解决风险",
             "recheck.json": "复审结果",
             "track-changes-capability.json": "修订能力声明",
+            "AI审查报告.md": "AI 审查报告（未经人工裁决）",
+            "AI审查结果.json": "AI 审查结构化结果",
+            "AI审查包.zip": "AI 审查包",
+            "ai-review-export.json": "AI 审查导出清单",
         }
         for directory in sorted((path for path in root.iterdir() if path.is_dir() and path.name != "revision-bridge"), reverse=True):
             files = []
@@ -2926,11 +3001,16 @@ class DocumentReviewProject:
             if not files:
                 continue
             audit_value: dict[str, Any] = {}
+            kind = "export"
             try:
                 audit_value = _read_json(directory / "audit.json")
             except (OSError, ValueError, ReviewStudioError):
-                pass
-            rows.append({"kind": "export", "export_id": directory.name, "created_at": audit_value.get("created_at") or datetime.fromtimestamp(directory.stat().st_mtime, tz=timezone.utc).isoformat(), "files": files})
+                try:
+                    audit_value = _read_json(directory / "ai-review-export.json")
+                    kind = "ai-review"
+                except (OSError, ValueError, ReviewStudioError):
+                    pass
+            rows.append({"kind": kind, "export_id": directory.name, "created_at": audit_value.get("created_at") or datetime.fromtimestamp(directory.stat().st_mtime, tz=timezone.utc).isoformat(), "finding_count": audit_value.get("finding_count", 0), "files": files})
         bridge_root = root / "revision-bridge"
         for directory in sorted((path for path in bridge_root.iterdir() if path.is_dir()), reverse=True) if bridge_root.is_dir() else []:
             files = []
@@ -3114,6 +3194,33 @@ def _audit_markdown(audit: Mapping[str, Any]) -> str:
         if finding.get("external_basis", {}).get("unresolved_facts"):
             lines.append("- Unresolved facts: " + "；".join(finding["external_basis"]["unresolved_facts"]))
     lines.extend(["", "## Boundary", "", audit["legal_boundary"], ""])
+    return "\n".join(lines)
+
+
+def _ai_review_markdown(snapshot: Mapping[str, Any]) -> str:
+    source = snapshot["source"]
+    lines = [
+        "# 独立 AI 审查报告",
+        "",
+        "> 状态：未经人工裁决的审查快照。本报告不表示 Finding 已被接受、解决或应用到原文。",
+        "",
+        f"- 原始文件：`{source['original_name']}`",
+        f"- 原始文件 SHA-256：`{source['sha256']}`",
+        f"- 已导入 critic：{len(snapshot['runs'])}",
+        f"- Finding：{snapshot['finding_count']}",
+        "",
+    ]
+    for run in snapshot["runs"]:
+        metadata = run.get("declared_model_metadata", {})
+        lines.extend([f"## {run['critic']}", "", f"- Provider / model：{metadata.get('provider', '未声明')} / {metadata.get('model', '未声明')}", f"- Run：`{run['run_id']}`", f"- Response binding：{run.get('response_binding', {}).get('mode', '未记录')}", ""])
+        findings = run.get("findings", [])
+        if not findings:
+            basis = "；".join(run.get("zero_finding_basis", [])) or "模型未提供零 Finding 检查依据"
+            lines.extend(["本 critic 未返回 Finding。", "", f"检查依据：{basis}", ""])
+            continue
+        for finding in findings:
+            lines.extend([f"### {finding['finding_id']}", "", f"- 位置：`{finding['location']['block_id']}`，page {finding['location'].get('page') or '-'}", f"- 证据：{finding['evidence']}", f"- 问题：{finding['issue']}", f"- 判断标准：{finding['standard']}", f"- 后果：{finding['consequence']}", f"- 严重度：{finding['severity']}", f"- 核实状态：{finding['verification_state']}", f"- 建议动作：{finding['suggested_action']}", ""])
+    lines.extend(["## 后续", "", "请回到 Document Review Studio 对每条 Finding 分别接受、修正、拒绝或暂缓；不要把本快照当作已经批准的修改意见。", ""])
     return "\n".join(lines)
 
 
