@@ -127,6 +127,7 @@ class StudioApp:
 
     def protocol_bundle(self) -> bytes:
         project = self.require_project()
+        notice = "操作已完成。"
         if project.integrity_errors():
             raise ReviewStudioError("项目完整性校验失败，拒绝导出 AI 协议")
         requests = project.ai_requests()
@@ -182,7 +183,16 @@ class StudioApp:
         elif action == "prepare_ai_audits":
             project.prepare_ai_audits(data.get("critics"), provider=str(data.get("provider", "")), model=str(data.get("model", "")))
         elif action == "import_ai_audit":
-            project.collect_model_audit(str(data.get("critic", "")), str(data.get("response", "")), provider=str(data.get("provider", "")), model=str(data.get("model", "")), request_id=str(data.get("request_id", "")) or None, binding_mode=str(data.get("binding_mode", "strict")))
+            run = project.collect_model_audit(str(data.get("critic", "")), str(data.get("response", "")), provider=str(data.get("provider", "")), model=str(data.get("model", "")), request_id=str(data.get("request_id", "")) or None, binding_mode=str(data.get("binding_mode", "strict")))
+            run_path = project.root / "audits" / run.critic / f"{run.run_id}.json"
+            imported = json.loads(run_path.read_text(encoding="utf-8"))
+            normalization_count = len(imported.get("response_normalizations", []))
+            binding = imported.get("response_binding", {})
+            binding_text = "严格回显已验证" if binding.get("request_echo_verified") else "已人工关联到当前任务"
+            notice = f"AI 审查已导入（{binding_text}）"
+            if normalization_count:
+                notice += f"；{normalization_count} 处格式已保守归一化，原始响应保持不变"
+            notice += "。"
         elif action == "decide_finding":
             project.decide_finding(str(data.get("finding_id", "")), str(data.get("decision", "")), reason=str(data.get("reason", "")), corrected_action=data.get("corrected_action"))
         elif action == "prepare_bridge":
@@ -231,7 +241,7 @@ class StudioApp:
             project.export(revised_markdown=data.get("revised_markdown"))
         else:
             raise ReviewStudioError("未知操作")
-        return replace(self, notice="操作已完成。")
+        return replace(self, notice=notice)
 
 
 class StudioHTTPServer(ThreadingHTTPServer):

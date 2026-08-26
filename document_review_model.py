@@ -340,9 +340,9 @@ def validate_finding_dict(value: Mapping[str, Any]) -> list[str]:
     if value.get("severity") not in SEVERITIES:
         errors.append("severity is invalid")
     if value.get("verification_state") not in VERIFICATION_STATES:
-        errors.append("verification_state is invalid")
+        errors.append("verification_state 无效；只能使用 " + " | ".join(sorted(VERIFICATION_STATES)))
     if not isinstance(value.get("external_basis"), Mapping):
-        errors.append("external_basis must be an object")
+        errors.append("external_basis 必须是 JSON 对象；没有外部依据时使用 {}，不要使用 null、字符串或数组")
     if not isinstance(value.get("uncertainties"), list):
         errors.append("uncertainties must be a list")
     if not isinstance(value.get("blocks_release_or_execution"), bool):

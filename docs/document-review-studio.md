@@ -179,14 +179,26 @@ four values to echo the selected request. `prompt_sha256` identifies the
 protocol payload; `prompt_file_sha256` separately binds the rendered prompt
 file.
 
-Some models cannot reliably echo these bookkeeping fields. For those cases the
-UI and CLI expose an explicit `manual_association` mode. It accepts an
-otherwise valid ordinary JSON response, but records
+Some models cannot reliably echo these bookkeeping fields. The browser therefore
+defaults to an explicit `manual_association` mode. It accepts an otherwise valid
+ordinary JSON response without requiring the model to reproduce the source hash,
+but records
 `response_binding.mode=manual-association` and
-`request_echo_verified=false`. This means the user associated the response
+`request_echo_verified=false`, `source_echo_verified=false`, and
+`source_associated_by_application=true`. This means the user associated the response
 with the selected request; it does not prove that the response was generated
-for that prompt. A response containing only some envelope fields is rejected
-in both modes to avoid silently accepting a misleading partial binding.
+for that prompt. A conflicting source hash is always rejected. A response
+containing only some request-envelope fields is rejected in both modes to avoid
+silently accepting a misleading partial binding.
+
+The generated protocol includes an exact JSON response example, legal values for
+`verification_state`, and the complete `external_basis` object shape. On import,
+common unsupported verification labels are conservatively downgraded to
+`needs-human-verification`, and a null/string/array `external_basis` becomes an
+empty structured basis with an explicit unresolved-fact marker. Every such
+normalization is stored in `response_normalizations`; the raw model response is
+preserved unchanged. Missing substantive Finding fields, conflicting identities,
+invalid locations, and mismatched hashes are never repaired automatically.
 
 The current browser/CLI flow is a manual import, so parsed runs store
 `declared_model_metadata` rather than claiming a direct `model_invocation`.

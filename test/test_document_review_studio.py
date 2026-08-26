@@ -112,7 +112,8 @@ class DocumentReviewStudioTests(unittest.TestCase):
         self.assertIn("experimental preview", shell)
         self.assertIn("运行选中的本地预检", shell)
         self.assertIn("导出 / 导入独立 AI 审查", shell)
-        self.assertIn("普通 JSON（人工关联，较弱审计）", shell)
+        self.assertIn("关联到当前任务（推荐）", shell)
+        self.assertIn("严格回显校验（高级）", shell)
         self.assertIn("默认只展示前", shell)
         self.assertIn("逐项修改与批准", shell)
         self.assertIn("生成修改稿并复审", shell)
@@ -408,6 +409,66 @@ class DocumentReviewStudioTests(unittest.TestCase):
             self.assertEqual(saved["response_binding"]["mode"], "manual-association")
             self.assertFalse(saved["response_binding"]["request_echo_verified"])
             self.assertEqual(saved["declared_model_metadata"]["response_binding"], "manual-association")
+
+    def test_manual_association_supplies_source_binding_and_records_safe_normalization(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="draft.txt", content=b"Draft text\n")
+            project.confirm_extraction("confirm")
+            project.confirm_context(self.context())
+            request = project.prepare_ai_audits(["expression_ambiguity"], provider="example-provider", model="example-model")[0]
+            finding = self.model_finding(project, request["critic"], "model-F1", "ambiguous deadline")
+            finding["verification_state"] = "unverified"
+            finding["external_basis"] = "no external source supplied"
+            payload = {"critic": request["critic"], "findings": [finding]}
+
+            run = project.collect_model_audit(
+                request["critic"],
+                json.dumps(payload),
+                provider=request["provider"],
+                model=request["model"],
+                request_id=request["request_id"],
+                binding_mode="manual_association",
+            )
+
+            run_path = project.root / "audits" / request["critic"] / f"{run.run_id}.json"
+            saved = json.loads(run_path.read_text(encoding="utf-8"))
+            self.assertFalse(saved["response_binding"]["source_echo_verified"])
+            self.assertTrue(saved["response_binding"]["source_associated_by_application"])
+            self.assertEqual(saved["findings"][0]["verification_state"], "needs-human-verification")
+            self.assertIsInstance(saved["findings"][0]["external_basis"], dict)
+            self.assertTrue(saved["findings"][0]["external_basis"]["unresolved_facts"])
+            self.assertEqual({row["field"] for row in saved["response_normalizations"]}, {"verification_state", "external_basis"})
+            raw_path = project.root / "audits" / request["critic"] / f"{run.run_id}.raw-response.json.txt"
+            self.assertEqual(json.loads(raw_path.read_text(encoding="utf-8")), payload)
+
+    def test_manual_association_never_overwrites_conflicting_source_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="draft.txt", content=b"Draft text\n")
+            project.confirm_extraction("confirm")
+            project.confirm_context(self.context())
+            request = project.prepare_ai_audits(["expression_ambiguity"], provider="example-provider", model="example-model")[0]
+            payload = {"critic": request["critic"], "source_sha256": "0" * 64, "findings": []}
+            with self.assertRaisesRegex(ReviewStudioError, "SHA-256 与当前任务冲突"):
+                project.collect_model_audit(
+                    request["critic"],
+                    json.dumps(payload),
+                    provider=request["provider"],
+                    model=request["model"],
+                    request_id=request["request_id"],
+                    binding_mode="manual_association",
+                )
+
+    def test_generated_ai_prompt_contains_exact_finding_shape_and_enums(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="draft.txt", content=b"Draft text\n")
+            project.confirm_extraction("confirm")
+            project.confirm_context(self.context())
+            request = project.prepare_ai_audits(["expression_ambiguity"], provider="example-provider", model="example-model")[0]
+            prompt = request["prompt"]
+            self.assertIn("## Exact response shape", prompt)
+            self.assertIn('\"verification_state\": \"model-proposed\"', prompt)
+            self.assertIn('\"external_basis\": {', prompt)
+            self.assertIn(project.document().source.sha256, prompt)
 
     def test_local_project_can_be_deleted_only_from_project_library(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

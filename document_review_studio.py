@@ -38,6 +38,7 @@ from document_review_model import (
     QualitySignals,
     ReviewContext,
     StructuredDocument,
+    VERIFICATION_STATES,
     canonical_json,
     make_location,
     model_to_markdown,
@@ -1100,6 +1101,24 @@ class DocumentReviewProject:
             "document_type": context.document_type,
             "required_finding_fields": ["finding_id", "critic", "document_type", "location", "evidence", "issue", "standard", "consequence", "severity", "verification_state", "external_basis", "uncertainties", "suggested_action", "suggested_owner", "blocks_release_or_execution"],
             "required_response_envelope": ["request_id", "prompt_sha256", "provider", "model"],
+            "field_contract": {
+                "severity": ["info", "low", "medium", "high", "critical"],
+                "verification_state": sorted(VERIFICATION_STATES),
+                "external_basis": {
+                    "type": "object",
+                    "fields": {
+                        "jurisdiction": "string",
+                        "source_name": "string",
+                        "issuing_body": "string",
+                        "validity": "string",
+                        "locator": "string",
+                        "url_or_attachment": "string",
+                        "application": "string",
+                        "unresolved_facts": "array of strings",
+                    },
+                    "empty_value": ExternalBasis().to_dict(),
+                },
+            },
             "rules": {"independent": True, "do_not_vote_or_score": True, "location_must_use_block_or_page": True, "legal_screen_never_claims_counsel": True},
         }
         return "# Document Review Studio independent AI review\n\nYou are exactly one independent critic. Return strict JSON only. Do not run another critic, merge dimensions, vote, score, or infer external facts without a source.\n\n## Contract and critic-specific protocol\n```json\n" + json.dumps(contract, ensure_ascii=False, indent=2) + "\n```\n\n## Confirmed review context\n```json\n" + json.dumps(context.to_dict(), ensure_ascii=False, indent=2) + "\n```\n\n## Internal document blocks\n```json\n" + json.dumps([block.to_dict() for block in document.blocks], ensure_ascii=False, indent=2) + "\n```\n"
@@ -1313,7 +1332,31 @@ class DocumentReviewProject:
             request_sequence = int(previous[1]["request_sequence"]) + 1 if previous and isinstance(previous[1].get("request_sequence"), int) else len(history) + 1
             request_id = stable_id("AIR", critic, prompt_sha256, normalized_provider, normalized_model, _now(), secrets.token_hex(4))
             envelope = {"request_id": request_id, "prompt_sha256": prompt_sha256, "provider": normalized_provider, "model": normalized_model}
-            prompt = base_prompt + ("\n## Required response envelope\nReturn these four fields exactly as shown, in addition to the review result:\n```json\n" + json.dumps(envelope, ensure_ascii=False, indent=2) + "\n```\nDo not omit or alter any envelope value.\n").encode("utf-8")
+            response_example = {
+                **envelope,
+                "critic": critic,
+                "source_sha256": self.document().source.sha256,
+                "findings": [{
+                    "finding_id": "F1",
+                    "critic": critic,
+                    "document_type": self.context().document_type,
+                    "location": {"block_id": "COPY_AN_EXISTING_BLOCK_ID"},
+                    "evidence": "exact quotation from that block",
+                    "issue": "atomic problem",
+                    "standard": "criterion applied",
+                    "consequence": "practical consequence",
+                    "severity": "medium",
+                    "verification_state": "model-proposed",
+                    "external_basis": ExternalBasis().to_dict(),
+                    "uncertainties": [],
+                    "suggested_action": "specific revision action",
+                    "suggested_owner": "document owner",
+                    "blocks_release_or_execution": False,
+                }],
+                "observations": [],
+                "zero_finding_basis": [],
+            }
+            prompt = base_prompt + ("\n## Exact response shape\nReturn one JSON object only, without Markdown fences or commentary. Copy every bookkeeping value exactly. Use only the enum values and object shapes shown below. If there are no Findings, return an empty findings array and explain the inspected scope in zero_finding_basis.\n```json\n" + json.dumps(response_example, ensure_ascii=False, indent=2) + "\n```\n").encode("utf-8")
             directory = self.root / "ai-requests" / request_id
             prompt_path = directory / "prompt.md"
             _write_tracked(self.root, prompt_path, prompt, parents=parents, provenance="deterministic-ai-protocol")
@@ -1408,17 +1451,56 @@ class DocumentReviewProject:
             response_binding = "manual-association"
         if parsed.get("critic") != critic:
             raise ReviewStudioError("模型返回的 critic 与提交维度不一致")
-        if parsed.get("source_sha256") != document.source.sha256:
-            raise ReviewStudioError("模型返回没有绑定当前原始文件 SHA-256")
+        returned_source_sha256 = parsed.get("source_sha256")
+        if returned_source_sha256 is not None and returned_source_sha256 != document.source.sha256:
+            raise ReviewStudioError("模型返回的原始文件 SHA-256 与当前任务冲突，不能人工覆盖")
+        if binding_mode == "strict" and returned_source_sha256 is None:
+            raise ReviewStudioError("严格绑定要求模型回显当前原始文件 SHA-256；也可改用“当前任务人工关联”导入")
+        source_echo_verified = returned_source_sha256 == document.source.sha256
         raw_findings = parsed.get("findings")
         if not isinstance(raw_findings, list):
             raise ReviewStudioError("模型返回缺少 findings 数组")
         block_ids = {block.block_id for block in document.blocks}
         findings: list[Finding] = []
         seen_source_ids: set[str] = set()
+        response_normalizations: list[dict[str, Any]] = []
+        verification_aliases = {
+            "unverified": "needs-human-verification",
+            "needs_verification": "needs-human-verification",
+            "needs-human-review": "needs-human-verification",
+            "待核实": "needs-human-verification",
+            "unknown": "cannot-confirm",
+            "无法确认": "cannot-confirm",
+            "proposed": "model-proposed",
+            "模型判断": "model-proposed",
+        }
         for index, item in enumerate(raw_findings):
             if not isinstance(item, dict):
                 raise ReviewStudioError(f"第 {index + 1} 条 Finding 不是对象")
+            item = dict(item)
+            source_finding_id = str(item.get("finding_id", f"finding-{index + 1}"))
+            verification = item.get("verification_state")
+            if verification not in VERIFICATION_STATES:
+                normalized_verification = verification_aliases.get(str(verification).strip().casefold(), "needs-human-verification")
+                response_normalizations.append({"finding_id": source_finding_id, "field": "verification_state", "original": verification, "normalized": normalized_verification, "reason": "unsupported model enum was conservatively downgraded"})
+                item["verification_state"] = normalized_verification
+            basis = item.get("external_basis")
+            if not isinstance(basis, Mapping):
+                response_normalizations.append({"finding_id": source_finding_id, "field": "external_basis", "original_type": type(basis).__name__, "normalized": "empty ExternalBasis", "reason": "non-object model value cannot establish an external source"})
+                item["external_basis"] = ExternalBasis(unresolved_facts=["模型未提供结构化 external_basis；需人工核实外部依据"]).to_dict()
+                if item["verification_state"] == "verified":
+                    item["verification_state"] = "needs-human-verification"
+                    response_normalizations.append({"finding_id": source_finding_id, "field": "verification_state", "original": "verified", "normalized": "needs-human-verification", "reason": "verified cannot survive without a structured external basis"})
+            else:
+                normalized_basis = dict(basis)
+                unresolved = normalized_basis.get("unresolved_facts", [])
+                if isinstance(unresolved, str):
+                    normalized_basis["unresolved_facts"] = [unresolved]
+                    response_normalizations.append({"finding_id": source_finding_id, "field": "external_basis.unresolved_facts", "original_type": "string", "normalized": "array", "reason": "single text value wrapped as one unresolved fact"})
+                elif unresolved is None:
+                    normalized_basis["unresolved_facts"] = []
+                    response_normalizations.append({"finding_id": source_finding_id, "field": "external_basis.unresolved_facts", "original_type": "null", "normalized": "array", "reason": "null normalized to an empty list"})
+                item["external_basis"] = normalized_basis
             errors = validate_finding_dict(item)
             if errors:
                 raise ReviewStudioError(f"第 {index + 1} 条 Finding contract 无效：" + "; ".join(errors))
@@ -1442,7 +1524,14 @@ class DocumentReviewProject:
         _write_tracked(self.root, raw_path, raw, parents=response_parents, provenance="model-raw-response")
         run_value = run.to_dict()
         run_value["declared_model_metadata"] = {"provider": provider, "model": model, "request_id": request["request_id"], "prompt_sha256": request["prompt_sha256"], "prompt_file_sha256": request["prompt_file_sha256"], "raw_response_sha256": _sha256(raw), "import_mode": "manual", "response_binding": response_binding}
-        run_value["response_binding"] = {"mode": response_binding, "request_echo_verified": response_binding == "strict-response-envelope", "association_note": "模型响应未回显请求字段；provider/model/request_id 由用户在当前导出请求上手动关联" if response_binding == "manual-association" else "响应逐项回显并匹配当前导出请求"}
+        if response_binding == "strict-response-envelope":
+            association_note = "响应逐项回显并匹配当前导出请求与原件"
+        elif source_echo_verified:
+            association_note = "用户把响应关联到当前请求；模型回显的原件 SHA 已匹配，但请求字段未作严格回显验证"
+        else:
+            association_note = "用户把原始响应导入当前所选请求；请求与原件 SHA 由应用关联，不声称模型曾回显"
+        run_value["response_binding"] = {"mode": response_binding, "request_echo_verified": response_binding == "strict-response-envelope", "source_echo_verified": source_echo_verified, "source_associated_by_application": not source_echo_verified, "association_note": association_note}
+        run_value["response_normalizations"] = response_normalizations
         run_path = directory / f"{run.run_id}.json"
         run_parents = [*response_parents, _parent_ref(self.root, raw_path, role="raw-model-response")]
         previous_runs = self._ordered_audit_runs(critic)
