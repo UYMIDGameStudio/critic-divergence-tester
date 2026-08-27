@@ -127,7 +127,6 @@ class StudioApp:
 
     def protocol_bundle(self) -> bytes:
         project = self.require_project()
-        notice = "操作已完成。"
         if project.integrity_errors():
             raise ReviewStudioError("项目完整性校验失败，拒绝导出 AI 协议")
         requests = project.ai_requests()
@@ -172,6 +171,7 @@ class StudioApp:
         if action == "open_export_folder":
             return self.open_export_folder(str(data.get("relative_path", "")))
         project = self.require_project()
+        notice = "操作已完成。"
         if action == "confirm_extraction":
             project.confirm_extraction(str(data.get("choice", "")), corrected_text=data.get("corrected_text"))
         elif action == "confirm_context":

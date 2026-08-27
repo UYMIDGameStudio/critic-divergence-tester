@@ -131,6 +131,51 @@ class DocumentReviewStudioTests(unittest.TestCase):
         self.assertIn("人工修正动作", shell)
         self.assertIn("旧标签页的端口可能已经失效", shell)
         self.assertIn("已重新读取项目状态", shell)
+        self.assertIn("uncertainMutation", shell)
+
+    def test_all_standard_ui_actions_have_a_default_notice(self) -> None:
+        method_names = {
+            "confirm_extraction",
+            "confirm_context",
+            "retry_extraction",
+            "run_local_prechecks",
+            "prepare_ai_audits",
+            "decide_finding",
+            "prepare_revision_plan",
+            "propose_revision_hunk",
+            "set_revision_action_operation",
+            "decide_revision_hunk",
+            "finalize_revision",
+            "collect_external_recheck",
+            "decide_external_resolution",
+            "start_followup_round",
+            "export",
+        }
+        project = SimpleNamespace(**{name: (lambda *args, **kwargs: None) for name in method_names})
+        cases = [
+            ("confirm_extraction", {"choice": "confirm"}),
+            ("confirm_context", {}),
+            ("retry_extraction", {}),
+            ("run_audits", {"critics": []}),
+            ("run_local_prechecks", {"critics": []}),
+            ("prepare_ai_audits", {"critics": [], "provider": "p", "model": "m"}),
+            ("decide_finding", {"finding_id": "F", "decision": "reject", "reason": "r"}),
+            ("prepare_bridge", {}),
+            ("propose_revision_hunk", {"action_id": "A", "revised_text": "text", "rationale": "r"}),
+            ("set_revision_action_operation", {"action_id": "A", "operation": "replace_block", "reason": "r"}),
+            ("decide_revision_hunk", {"hunk_id": "H", "decision": "approve", "reason": "r"}),
+            ("finalize_revision", {}),
+            ("import_external_recheck", {"revision_id": "R", "critic": "c", "response": "{}", "provider": "p", "model": "m"}),
+            ("decide_external_resolution", {"revision_id": "R", "result_id": "X", "finding_id": "F", "state": "resolved", "reason": "r"}),
+            ("start_followup_round", {"revision_id": "R"}),
+            ("export", {}),
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = StudioApp(Path(temp_dir), "token", project)  # type: ignore[arg-type]
+            for action, data in cases:
+                with self.subTest(action=action):
+                    updated = app.act({"action": action, "data": data})
+                    self.assertEqual(updated.notice, "操作已完成。")
 
     def test_http_unexpected_action_error_returns_json_and_server_stays_available(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
