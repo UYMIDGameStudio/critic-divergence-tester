@@ -11,9 +11,11 @@ import secrets
 import shutil
 import subprocess
 import threading
+import traceback
 import webbrowser
 import zipfile
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -270,6 +272,7 @@ class StudioHTTPServer(ThreadingHTTPServer):
     def __init__(self, address: tuple[str, int], app: StudioApp):
         self.app = app
         self.action_lock = threading.RLock()
+        self.error_log_lock = threading.Lock()
         super().__init__(address, StudioRequestHandler)
 
 
@@ -298,6 +301,31 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
 
     def _auth(self) -> bool:
         return secrets.compare_digest(self.headers.get("X-Document-Review-Token", ""), self.server.app.token)
+
+    def _record_unexpected_error(self, exc: Exception, *, request_kind: str, action: str | None = None) -> str:
+        """Persist a correlation-safe traceback without recording request content."""
+        incident_id = f"ERR-{secrets.token_hex(6)}"
+        rendered_traceback = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        record = {
+            "incident_id": incident_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "request_kind": request_kind,
+            "request_path": urlsplit(self.path).path,
+            "action": action,
+            "exception_type": type(exc).__name__,
+            "exception_message": str(exc)[:1000],
+            "traceback": rendered_traceback[-20000:],
+        }
+        try:
+            log_path = self.server.app.data_dir / ".studio-errors.jsonl"
+            with self.server.error_log_lock:
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                with log_path.open("a", encoding="utf-8", newline="\n") as handle:
+                    handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+        traceback.print_exception(type(exc), exc, exc.__traceback__)
+        return incident_id
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlsplit(self.path)
@@ -331,18 +359,21 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
         except (OSError, ValueError, ReviewStudioError) as exc:
             self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except Exception as exc:
+            incident_id = self._record_unexpected_error(exc, request_kind="GET")
             self._json(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 {
                     "error": (
                         "本地服务读取项目状态时发生未预期错误"
-                        f"（{type(exc).__name__}）。请重新打开本次启动的 Studio 页面。"
+                        f"（{type(exc).__name__}，故障编号 {incident_id}）。"
+                        "请重新打开本次启动的 Studio 页面；详细调用栈已保存到项目库的 .studio-errors.jsonl。"
                     )
                 },
             )
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
+        request_action: str | None = None
         if path not in {"/api/upload", "/api/open", "/api/action"}:
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
@@ -356,6 +387,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             payload = _strict_json_payload(self.rfile.read(length))
             if not isinstance(payload, dict):
                 raise ReviewStudioError("请求必须是对象")
+            request_action = payload.get("action") if isinstance(payload.get("action"), str) else None
             with self.server.action_lock:
                 if path == "/api/upload":
                     self.server.app = self.server.app.upload(payload)
@@ -368,13 +400,15 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
         except (UnicodeDecodeError, json.JSONDecodeError, OSError, ValueError, ReviewStudioError) as exc:
             self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except Exception as exc:
+            incident_id = self._record_unexpected_error(exc, request_kind="POST", action=request_action)
             self._json(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 {
                     "error": (
                         "本地服务处理请求时发生未预期错误"
-                        f"（{type(exc).__name__}）。请先刷新或重新打开本次启动的 Studio 页面；"
-                        "操作可能已经完成，重新提交前请检查项目状态。"
+                        f"（{type(exc).__name__}，故障编号 {incident_id}）。"
+                        "请先刷新或重新打开本次启动的 Studio 页面；操作可能已经完成，"
+                        "重新提交前请检查项目状态。详细调用栈已保存到项目库的 .studio-errors.jsonl。"
                     )
                 },
             )

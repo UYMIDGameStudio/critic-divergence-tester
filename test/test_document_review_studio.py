@@ -243,6 +243,15 @@ class DocumentReviewStudioTests(unittest.TestCase):
                 finally:
                     error_response.close()
                 self.assertIn("操作可能已经完成", error["error"])
+                self.assertIn("故障编号 ERR-", error["error"])
+                error_log = Path(temp_dir) / ".studio-errors.jsonl"
+                self.assertTrue(error_log.is_file())
+                incident = json.loads(error_log.read_text(encoding="utf-8").splitlines()[-1])
+                self.assertEqual(incident["request_kind"], "POST")
+                self.assertEqual(incident["request_path"], "/api/action")
+                self.assertEqual(incident["action"], "close_project")
+                self.assertEqual(incident["exception_type"], "RuntimeError")
+                self.assertIn("simulated response failure", incident["traceback"])
 
                 state_request = Request(
                     url + "api/state",
@@ -1273,6 +1282,9 @@ class DocumentReviewStudioTests(unittest.TestCase):
         self.assertNotIn("_render_studio_shell_base", source)
         self.assertIn("修正后接受", render_studio_shell("token"))
         self.assertIn("下载全部协议 ZIP", render_studio_shell("token"))
+        self.assertIn('id="operation-status"', render_studio_shell("token"))
+        self.assertIn("本地确定性预检正在处理", render_studio_shell("token"))
+        self.assertIn("重新运行选中的本地预检", render_studio_shell("token"))
 
     def test_corrupt_internal_document_is_read_only_and_does_not_crash_view(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
