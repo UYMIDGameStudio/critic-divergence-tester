@@ -6,10 +6,13 @@ import json
 import shutil
 import sys
 import tempfile
+import threading
 import unittest
 import zipfile
 import zlib
 from concurrent.futures import ThreadPoolExecutor
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -18,7 +21,7 @@ import document_review_ingest
 from document_review_ingest import IngestionError, ingest_bytes, safe_upload_name
 from document_review_model import CRITIC_DIMENSIONS, DocumentBlock, DocumentLocation, ExternalBasis, ExtractionWarning, Finding, QualitySignals, RawFileBinding, StructuredDocument, stable_id
 from document_review_studio import DocumentReviewProject, ReviewStudioError
-from document_review_ui import StudioApp, render_studio_shell
+from document_review_ui import StudioApp, render_studio_shell, serve_document_review_studio
 
 
 def _docx(*, revised: bool = False) -> bytes:
@@ -126,6 +129,47 @@ class DocumentReviewStudioTests(unittest.TestCase):
         self.assertIn("模型原始 JSON 响应", shell)
         self.assertIn("抽取内容与定位预览", shell)
         self.assertIn("人工修正动作", shell)
+        self.assertIn("旧标签页的端口可能已经失效", shell)
+        self.assertIn("已重新读取项目状态", shell)
+
+    def test_http_unexpected_action_error_returns_json_and_server_stays_available(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            server, url = serve_document_review_studio(data_dir=temp_dir, open_browser=False)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                body = json.dumps({"action": "close_project", "data": {}}).encode("utf-8")
+                request = Request(
+                    url + "api/action",
+                    data=body,
+                    headers={
+                        "Content-Type": "application/json",
+                        "X-Document-Review-Token": server.app.token,
+                    },
+                    method="POST",
+                )
+                with patch.object(StudioApp, "act", side_effect=RuntimeError("simulated response failure")):
+                    with self.assertRaises(HTTPError) as raised:
+                        urlopen(request, timeout=5)
+                error_response = raised.exception
+                self.assertEqual(error_response.code, 500)
+                try:
+                    error = json.loads(error_response.read().decode("utf-8"))
+                finally:
+                    error_response.close()
+                self.assertIn("操作可能已经完成", error["error"])
+
+                state_request = Request(
+                    url + "api/state",
+                    headers={"X-Document-Review-Token": server.app.token},
+                )
+                with urlopen(state_request, timeout=5) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertIn("projects", json.loads(response.read().decode("utf-8")))
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
 
     def test_builtin_pdf_fallback_preserves_page_location(self) -> None:
         with patch("document_review_ingest._pdf_backend", return_value=None):
@@ -303,6 +347,34 @@ class DocumentReviewStudioTests(unittest.TestCase):
             project = DocumentReviewProject.create(temp_dir, filename="draft.txt", content=b"Draft text\n")
             with self.assertRaises(ReviewStudioError):
                 project.confirm_context(self.context())
+
+    def test_context_confirmation_exact_replay_is_idempotent_but_changes_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(temp_dir, filename="draft.txt", content=b"Draft text\n")
+            project.confirm_extraction("confirm")
+            first_state = project.confirm_context(self.context())
+            context_bytes = (project.root / "context.json").read_bytes()
+            event_count = len((project.root / "audit-log.jsonl").read_bytes().splitlines())
+            index_bytes = (project.root / "integrity-index.json").read_bytes()
+
+            # A later application version may infer a different suggestion;
+            # that must not turn the same human decision into an overwrite.
+            with patch.object(project, "suggested_document_type", return_value="升级后的模型建议"):
+                replayed_state = project.confirm_context(self.context())
+
+            self.assertEqual(first_state["context_state"], "confirmed")
+            self.assertEqual(replayed_state["context_state"], "confirmed")
+            self.assertEqual((project.root / "context.json").read_bytes(), context_bytes)
+            self.assertEqual(len((project.root / "audit-log.jsonl").read_bytes().splitlines()), event_count)
+            self.assertEqual((project.root / "integrity-index.json").read_bytes(), index_bytes)
+            self.assertEqual(project.integrity_errors(), [])
+
+            changed = self.context()
+            changed["audience"] = "不同受众"
+            with self.assertRaisesRegex(ReviewStudioError, "上下文已经确认"):
+                project.confirm_context(changed)
+            self.assertEqual((project.root / "context.json").read_bytes(), context_bytes)
+            self.assertEqual(project.integrity_errors(), [])
 
     def test_state_tampering_cannot_unlock_review(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

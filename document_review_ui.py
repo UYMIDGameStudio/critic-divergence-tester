@@ -313,6 +313,16 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 self._send(HTTPStatus.OK, content, mimetypes.guess_type(target.name)[0] or "application/octet-stream", filename=target.name)
         except (OSError, ValueError, ReviewStudioError) as exc:
             self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except Exception as exc:
+            self._json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                {
+                    "error": (
+                        "本地服务读取项目状态时发生未预期错误"
+                        f"（{type(exc).__name__}）。请重新打开本次启动的 Studio 页面。"
+                    )
+                },
+            )
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
@@ -340,6 +350,17 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.CREATED, response)
         except (UnicodeDecodeError, json.JSONDecodeError, OSError, ValueError, ReviewStudioError) as exc:
             self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except Exception as exc:
+            self._json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                {
+                    "error": (
+                        "本地服务处理请求时发生未预期错误"
+                        f"（{type(exc).__name__}）。请先刷新或重新打开本次启动的 Studio 页面；"
+                        "操作可能已经完成，重新提交前请检查项目状态。"
+                    )
+                },
+            )
 
 
 def render_studio_shell(token: str) -> str:

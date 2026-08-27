@@ -19,6 +19,13 @@ The server binds to loopback only. Use `--no-browser` to print the local URL
 without opening a browser, `--data-dir` to choose the local project library,
 or `--project` to open an existing `.document-review-studio` project.
 
+Each launch uses a new local port and token, so close pages left over from an
+earlier run. If a mutation response is interrupted, the current page reads the
+project state again instead of retrying the mutation. An exact replay of an
+already committed context confirmation is idempotent; a replay with changed
+human fields remains blocked because `context.json` is an immutable audit
+artifact.
+
 The project library page has an explicit, irreversible delete action. It only
 accepts a project directory directly inside the configured library; deleting a
 project removes its local source, audit artifacts, receipts, and exports. Copy

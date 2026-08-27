@@ -1052,6 +1052,16 @@ class DocumentReviewProject:
             raise ReviewStudioError("user_provided_materials 必须是非空文本数组")
         context = ReviewContext(**{name: payload[name] for name in required}, confirmed=True, model_suggestion=self.suggested_document_type(), user_provided_materials=list(payload.get("user_provided_materials", [])))
         context_path = self.root / "context.json"
+        existing = self.context()
+        if existing is not None:
+            existing_decision = {key: value for key, value in existing.to_dict().items() if key != "model_suggestion"}
+            replayed_decision = {key: value for key, value in context.to_dict().items() if key != "model_suggestion"}
+            if canonical_json(existing_decision) == canonical_json(replayed_decision):
+                # The browser may lose the response after the immutable artifact
+                # has already been committed.  Treat an exact replay as a read of
+                # the successful decision instead of attempting to overwrite it.
+                return self._update_state(context_state="confirmed")
+            raise ReviewStudioError("审查上下文已经确认，不能覆盖已有审计产物；当前版本暂不支持直接修改已确认上下文，请新建项目后重新确认")
         _write_tracked(self.root, context_path, canonical_json(context.to_dict()), parents=[_parent_ref(self.root, self.document_path, role="structured-document")], provenance="human-confirmed")
         self._append_event("context_confirmed", context.to_dict())
         return self._update_state(context_state="confirmed")
