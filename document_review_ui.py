@@ -198,7 +198,25 @@ class StudioApp:
         elif action == "retry_extraction":
             project.retry_extraction()
         elif action in {"run_audits", "run_local_prechecks"}:
-            project.run_local_prechecks(data.get("critics"))
+            runs = project.run_local_prechecks(data.get("critics")) or []
+            selected_critics = [run.critic for run in runs]
+            active_critics = {
+                str(request.get("critic"))
+                for request in (project.ai_requests() or [])
+                if request.get("critic")
+            }
+            missing_critics = [critic for critic in selected_critics if critic not in active_critics]
+            generated = []
+            if missing_critics:
+                provider = str(data.get("provider", "")).strip() or "手动导入"
+                model = str(data.get("model", "")).strip() or "未声明模型"
+                generated = project.prepare_ai_audits(missing_critics, provider=provider, model=model)
+            notice = f"本地确定性预检已完成；产生 {len(project.findings() or [])} 条当前 Finding"
+            if generated:
+                notice += f"，并生成 {len(generated)} 份独立 AI 审查任务"
+            elif selected_critics:
+                notice += "；对应 AI 审查任务已经存在"
+            notice += "。AI 任务仅包含待执行协议，尚未调用模型。"
         elif action == "prepare_ai_audits":
             project.prepare_ai_audits(data.get("critics"), provider=str(data.get("provider", "")), model=str(data.get("model", "")))
         elif action == "import_ai_audit":

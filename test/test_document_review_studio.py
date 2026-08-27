@@ -165,13 +165,50 @@ class DocumentReviewStudioTests(unittest.TestCase):
         self.assertIn("外部 critic 复审与人工 Resolution", shell)
         self.assertIn("删除本地项目", shell)
         self.assertIn("一键修复可自动修复项", shell)
-        self.assertIn("导出五份独立协议", shell)
+        self.assertIn("生成五份独立协议", shell)
         self.assertIn("模型原始 JSON 响应", shell)
         self.assertIn("抽取内容与定位预览", shell)
         self.assertIn("人工修正动作", shell)
         self.assertIn("旧标签页的端口可能已经失效", shell)
         self.assertIn("已重新读取项目状态", shell)
         self.assertIn("uncertainMutation", shell)
+
+    def test_ui_local_precheck_creates_missing_ai_tasks_without_replacing_existing_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = DocumentReviewProject.create(
+                temp_dir,
+                filename="plan.md",
+                content=b"# Plan\n\nThe organizer will publish the schedule.\n",
+            )
+            project.confirm_extraction("confirm")
+            project.confirm_context(self.context())
+            app = StudioApp(Path(temp_dir), "token", project)
+            payload = {
+                "action": "run_local_prechecks",
+                "data": {
+                    "critics": ["expression_ambiguity", "execution_feasibility"],
+                    "provider": "manual-provider",
+                    "model": "manual-model",
+                },
+            }
+
+            updated = app.act(payload)
+            first_requests = project.ai_requests()
+            self.assertEqual(
+                {request["critic"] for request in first_requests},
+                {"expression_ambiguity", "execution_feasibility"},
+            )
+            self.assertTrue(all(request["provider"] == "manual-provider" for request in first_requests))
+            self.assertIn("生成 2 份独立 AI 审查任务", updated.notice or "")
+            first_ids = {request["critic"]: request["request_id"] for request in first_requests}
+
+            updated = updated.act(payload)
+            second_requests = project.ai_requests()
+            self.assertEqual(
+                {request["critic"]: request["request_id"] for request in second_requests},
+                first_ids,
+            )
+            self.assertIn("对应 AI 审查任务已经存在", updated.notice or "")
 
     def test_all_standard_ui_actions_have_a_default_notice(self) -> None:
         method_names = {
@@ -190,6 +227,8 @@ class DocumentReviewStudioTests(unittest.TestCase):
             "decide_external_resolution",
             "start_followup_round",
             "export",
+            "ai_requests",
+            "findings",
         }
         project = SimpleNamespace(**{name: (lambda *args, **kwargs: None) for name in method_names})
         cases = [
@@ -215,7 +254,10 @@ class DocumentReviewStudioTests(unittest.TestCase):
             for action, data in cases:
                 with self.subTest(action=action):
                     updated = app.act({"action": action, "data": data})
-                    self.assertEqual(updated.notice, "操作已完成。")
+                    if action in {"run_audits", "run_local_prechecks"}:
+                        self.assertIn("本地确定性预检已完成", updated.notice or "")
+                    else:
+                        self.assertEqual(updated.notice, "操作已完成。")
 
     def test_http_unexpected_action_error_returns_json_and_server_stays_available(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1283,7 +1325,8 @@ class DocumentReviewStudioTests(unittest.TestCase):
         self.assertIn("修正后接受", render_studio_shell("token"))
         self.assertIn("下载全部协议 ZIP", render_studio_shell("token"))
         self.assertIn('id="operation-status"', render_studio_shell("token"))
-        self.assertIn("本地确定性预检正在处理", render_studio_shell("token"))
+        self.assertIn("run_local_prechecks:'本地确定性预检'", render_studio_shell("token"))
+        self.assertIn("正在处理，请稍候", render_studio_shell("token"))
         self.assertIn("重新运行选中的本地预检", render_studio_shell("token"))
 
     def test_corrupt_internal_document_is_read_only_and_does_not_crash_view(self) -> None:
