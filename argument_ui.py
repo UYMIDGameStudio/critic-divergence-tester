@@ -36,6 +36,8 @@ from argument_workbench import (
     WorkbenchError,
     _read_json,
     list_version_ids,
+    parse_json_strict,
+    project_mutation_lock,
     verify_project_versions,
     workspace_paths,
 )
@@ -632,6 +634,7 @@ class WorkbenchHTTPServer(ThreadingHTTPServer):
 
     def __init__(self, address: tuple[str, int], app: LocalWorkbench):
         self.app = app
+        self.action_lock = threading.RLock()
         super().__init__(address, WorkbenchRequestHandler)
 
 
@@ -684,9 +687,13 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 return
             version = parse_qs(parsed.query).get("version", [None])[0]
             try:
-                self._json(HTTPStatus.OK, self.server.app.view(version))
+                with self.server.action_lock:
+                    result = self.server.app.view(version)
+                self._json(HTTPStatus.OK, result)
             except WorkbenchError as exc:
                 self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            except Exception:
+                self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "本地服务处理请求时发生未预期错误，请刷新页面并检查项目状态"})
             return
         self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
@@ -708,12 +715,16 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "invalid request size"})
             return
         try:
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            payload = parse_json_strict(self.rfile.read(length))
             if not isinstance(payload, dict):
                 raise WorkbenchError("request body must be an object")
-            result = self.server.app.adjudicate(payload)
+            with self.server.action_lock, project_mutation_lock(self.server.app.project_dir):
+                result = self.server.app.adjudicate(payload)
         except (UnicodeDecodeError, json.JSONDecodeError, WorkbenchError) as exc:
             self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
+        except Exception:
+            self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "本地服务处理请求时发生未预期错误；操作可能已经完成，请刷新页面并检查项目状态后再决定是否重试"})
             return
         self._json(HTTPStatus.CREATED, result)
 
@@ -766,7 +777,8 @@ button,select,input,textarea{font:inherit}.top{position:sticky;top:0;z-index:4;b
 <dialog id="historyDialog"><form method="dialog"><h2>Argument History</h2><p class="muted">每个数字是可审计的工作流状态，不是稿件质量分数。</p><div id="historyTimeline" class="timeline"></div><div class="dialog-actions"><button class="primary">关闭</button></div></form></dialog>
 <script>
 const TOKEN=__WORKBENCH_TOKEN__;let state=null,selectedClaim=null,selectedLens='all',pendingFinding=null;const $=id=>document.getElementById(id);const esc=s=>{const d=document.createElement('div');d.textContent=s??'';return d.innerHTML};
-async function load(version){const q=version?'?version='+encodeURIComponent(version):'';const r=await fetch('/api/view'+q,{headers:{'X-Argument-Workbench-Token':TOKEN}});const j=await r.json();if(!r.ok)throw Error(j.error);state=j;if(!selectedClaim||!state.claims.some(c=>c.id===selectedClaim))selectedClaim=state.claims[0]?.id||null;render()}
+async function requestJson(path,options,mutation=false){let r;try{r=await fetch(path,options)}catch(cause){const e=Error('无法连接本地服务，请确认本次启动的页面仍然有效');e.transportFailure=true;throw e}let j;try{j=await r.json()}catch(cause){const e=Error('本地服务返回了无法识别的响应');e.transportFailure=true;throw e}if(!r.ok){const e=Error(j.error||`请求失败（${r.status}）`);e.uncertainMutation=mutation&&r.status>=500;throw e}return j}
+async function load(version){const q=version?'?version='+encodeURIComponent(version):'';state=await requestJson('/api/view'+q,{headers:{'X-Argument-Workbench-Token':TOKEN}});if(!selectedClaim||!state.claims.some(c=>c.id===selectedClaim))selectedClaim=state.claims[0]?.id||null;render()}
 function render(){document.title=state.project.title+' · Argument Workbench';$('projectTitle').textContent=state.project.title+' · '+state.project.source_name;$('version').innerHTML=state.project.versions.map(v=>`<option ${v===state.project.version_id?'selected':''}>${esc(v)}</option>`).join('');const d=state.dashboard;const ms=[['claims','Claims'],['open_findings','未裁决'],['deferred','推迟'],['resolved','已解决'],['accepted','已接受'],['unverified_citations','未核验引文']];$('metrics').innerHTML=ms.map(([k,l])=>`<div class="metric"><b>${d[k]}</b><span>${l}</span></div>`).join('');renderManuscript();renderClaims();renderReview()}
 function renderManuscript(){$('manuscript').innerHTML=state.manuscript.map(l=>`<div class="line ${l.claim_ids.includes(selectedClaim)?'active':''}" data-claims="${l.claim_ids.join(',')}"><span class="ln">${l.number}</span><span>${esc(l.text)}${l.claim_ids.map(id=>`<button class="claim-chip" data-claim="${id}">${id}</button>`).join('')}</span></div>`).join('');document.querySelectorAll('[data-claim]').forEach(b=>b.onclick=()=>selectClaim(b.dataset.claim))}
 function nodeLink(id){const n=state.nodes[id];return n?`<div class="card"><span class="claim-id">${esc(id)}</span> ${esc(n.text)}</div>`:`<div class="card">${esc(id)}</div>`}
@@ -797,7 +809,7 @@ function selectClaim(id){selectedClaim=id;renderManuscript();renderClaims();rend
 function openDecision(id){pendingFinding=id;const f=state.findings.find(x=>x.finding_id===id);$('decisionTitle').textContent=(f?.decision?'复议 ':'裁决 ')+id;$('decisionValue').value=f?.decision||'accept';$('decisionReason').value=f?.human_reason||'';$('actionText').value='';$('decisionError').innerHTML='';toggleAction();$('decisionDialog').showModal()}
 function toggleAction(){$('actionFields').style.display=$('decisionValue').value==='accept'?'block':'none'}$('decisionValue').onchange=toggleAction;$('version').onchange=()=>{selectedClaim=null;load($('version').value).catch(showFatal)};
 $('historyButton').onclick=renderHistory;
-$('decisionForm').onsubmit=async e=>{if(e.submitter?.value==='cancel')return;e.preventDefault();const decision=$('decisionValue').value;const actions=decision==='accept'?[{action_type:$('actionType').value,text:$('actionText').value.trim()}]:[];const payload={finding_id:pendingFinding,decision,reason:$('decisionReason').value.trim(),actions};try{const r=await fetch('/api/adjudications',{method:'POST',headers:{'Content-Type':'application/json','X-Argument-Workbench-Token':TOKEN},body:JSON.stringify(payload)});const j=await r.json();if(!r.ok)throw Error(j.error);state=j;$('decisionDialog').close();render()}catch(err){$('decisionError').innerHTML=`<div class="error">${esc(err.message)}</div>`}}
+$('decisionForm').onsubmit=async e=>{if(e.submitter?.value==='cancel')return;e.preventDefault();const decision=$('decisionValue').value;const actions=decision==='accept'?[{action_type:$('actionType').value,text:$('actionText').value.trim()}]:[];const payload={finding_id:pendingFinding,decision,reason:$('decisionReason').value.trim(),actions};try{state=await requestJson('/api/adjudications',{method:'POST',headers:{'Content-Type':'application/json','X-Argument-Workbench-Token':TOKEN},body:JSON.stringify(payload)},true);$('decisionDialog').close();render()}catch(err){const uncertain=err.transportFailure||err.uncertainMutation;if(uncertain){try{await load($('version').value)}catch(ignore){}}const message=uncertain?'本地服务连接中断或发生内部错误；状态已尝试刷新。操作可能已经完成，请先检查当前裁决，不要直接重复提交。':err.message;$('decisionError').innerHTML=`<div class="error">${esc(message)}</div>`}}
 function showFatal(err){document.body.innerHTML=`<div class="error" style="margin:30px">${esc(err.message)}</div>`}load().catch(showFatal);
 </script>
 </body></html>'''

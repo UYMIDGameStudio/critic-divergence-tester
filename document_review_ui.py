@@ -29,6 +29,23 @@ LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
 MAX_REQUEST_BYTES = 42 * 1024 * 1024
 
 
+def _strict_json_payload(data: bytes) -> object:
+    def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        value: dict[str, object] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ReviewStudioError(f"JSON 包含重复字段：{key}")
+            value[key] = item
+        return value
+
+    try:
+        return json.loads(data.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
+    except UnicodeDecodeError as exc:
+        raise ReviewStudioError(f"请求不是 UTF-8：{exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ReviewStudioError(f"请求不是有效 JSON：{exc}") from exc
+
+
 def default_studio_data_dir() -> Path:
     if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
         return Path(os.environ["LOCALAPPDATA"]) / "DocumentReviewStudio" / "projects"
@@ -336,7 +353,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
             if length <= 0 or length > MAX_REQUEST_BYTES:
                 raise ReviewStudioError("请求大小无效")
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            payload = _strict_json_payload(self.rfile.read(length))
             if not isinstance(payload, dict):
                 raise ReviewStudioError("请求必须是对象")
             with self.server.action_lock:

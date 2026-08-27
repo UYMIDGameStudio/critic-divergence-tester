@@ -8,7 +8,9 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -56,6 +58,52 @@ class WorkbenchError(ValueError):
 
 class DuplicateJsonKeyError(ValueError):
     pass
+
+
+_PROJECT_LOCKS: dict[str, threading.RLock] = {}
+_PROJECT_LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def project_mutation_lock(project_dir: Path | str):
+    """Serialize a project mutation across threads and local processes."""
+    candidate = Path(project_dir)
+    if candidate.is_symlink():
+        raise WorkbenchError("project directory must not be a symbolic link")
+    root = candidate.resolve()
+    if not root.is_dir():
+        raise WorkbenchError("project mutation lock requires an existing directory")
+    key = str(root)
+    with _PROJECT_LOCKS_GUARD:
+        thread_lock = _PROJECT_LOCKS.setdefault(key, threading.RLock())
+    with thread_lock:
+        lock_path = root / ".mutation.lock"
+        with lock_path.open("a+b") as handle:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:

@@ -17,6 +17,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import threading
 import zipfile
 from contextlib import contextmanager
@@ -370,7 +371,10 @@ class DocumentReviewProject:
     """One immutable upload plus append-only workflow decisions."""
 
     def __init__(self, root: Path):
-        self.root = root.resolve()
+        candidate = Path(root)
+        if candidate.is_symlink():
+            raise ReviewStudioError("项目目录不得是符号链接")
+        self.root = candidate.resolve()
         self._ensure_root()
 
     def _ensure_root(self) -> None:
@@ -412,42 +416,52 @@ class DocumentReviewProject:
         storage = Path(data_dir).resolve()
         storage.mkdir(parents=True, exist_ok=True)
         target = storage / _slug(safe_name, _sha256(content))
-        if target.exists():
-            project = cls(target)
-            manifest = project.manifest()
-            if manifest.get("source", {}).get("sha256") != _sha256(content):
-                raise ReviewStudioError("同名项目的原件 SHA-256 不匹配")
-            return project
-        target.mkdir()
-        _ensure_integrity_policy(target, create=True)
-        _initialize_integrity_index(target)
-        source_dir = target / "source"
-        source_dir.mkdir()
-        source_path = source_dir / safe_name
-        _write_tracked(target, source_path, content, provenance="user-uploaded")
-        manifest = {
-            "schema_version": STUDIO_SCHEMA_VERSION,
-            "project_id": stable_id("PRJ", _sha256(content), safe_name),
-            "title": title or Path(safe_name).stem,
-            "source": {"name": safe_name, "sha256": _sha256(content), "bytes": len(content), "relative_path": f"source/{safe_name}"},
-            "created_at": _now(),
-            "original_never_overwritten": True,
-        }
-        _write_tracked(target, target / "project.json", canonical_json(manifest), parents=[_parent_ref(target, source_path, role="original-source")])
-        state = {"extraction_state": "unconfirmed", "context_state": "missing", "review_state": "not_started", "read_only": False, "diagnostics": []}
-        _write_new(target / "state.json", canonical_json(state))
-        project = cls(target)
-        try:
-            document = ingest_bytes(safe_name, content, limits=limits, ocr=ocr)
-        except (IngestionError, OSError, ValueError) as exc:
-            diagnostic = {"schema_version": 1, "kind": "ingestion-failure", "safe": True, "message": str(exc)[:1000], "source_sha256": _sha256(content), "created_at": _now()}
-            _write_tracked(target, target / "extraction" / "diagnostic.json", canonical_json(diagnostic), parents=[_parent_ref(target, source_path, role="original-source")])
-            project._update_state(extraction_state="blocked", diagnostics=[diagnostic["message"]])
-            project._append_event("ingestion_failed", diagnostic)
-            return project
-        project._save_document(document)
-        project._append_event("uploaded", {"source_sha256": document.source.sha256, "parser": document.parser_name})
-        return project
+        with _project_mutation_lock(storage):
+            if target.is_symlink():
+                raise ReviewStudioError("项目路径不得是符号链接")
+            if target.exists():
+                project = cls(target)
+                manifest = project.manifest()
+                if manifest.get("source", {}).get("sha256") != _sha256(content):
+                    raise ReviewStudioError("同名项目的原件 SHA-256 不匹配")
+                return project
+            staging = storage / f".{target.name}.{os.getpid()}.{secrets.token_hex(8)}.import"
+            staging.mkdir()
+            try:
+                _ensure_integrity_policy(staging, create=True)
+                _initialize_integrity_index(staging)
+                source_dir = staging / "source"
+                source_dir.mkdir()
+                source_path = source_dir / safe_name
+                _write_tracked(staging, source_path, content, provenance="user-uploaded")
+                manifest = {
+                    "schema_version": STUDIO_SCHEMA_VERSION,
+                    "project_id": stable_id("PRJ", _sha256(content), safe_name),
+                    "title": title or Path(safe_name).stem,
+                    "source": {"name": safe_name, "sha256": _sha256(content), "bytes": len(content), "relative_path": f"source/{safe_name}"},
+                    "created_at": _now(),
+                    "original_never_overwritten": True,
+                }
+                _write_tracked(staging, staging / "project.json", canonical_json(manifest), parents=[_parent_ref(staging, source_path, role="original-source")])
+                state = {"extraction_state": "unconfirmed", "context_state": "missing", "review_state": "not_started", "read_only": False, "diagnostics": []}
+                _write_new(staging / "state.json", canonical_json(state))
+                project = cls(staging)
+                try:
+                    document = ingest_bytes(safe_name, content, limits=limits, ocr=ocr)
+                except (IngestionError, OSError, ValueError) as exc:
+                    diagnostic = {"schema_version": 1, "kind": "ingestion-failure", "safe": True, "message": str(exc)[:1000], "source_sha256": _sha256(content), "created_at": _now()}
+                    _write_tracked(staging, staging / "extraction" / "diagnostic.json", canonical_json(diagnostic), parents=[_parent_ref(staging, source_path, role="original-source")])
+                    project._update_state(extraction_state="blocked", diagnostics=[diagnostic["message"]])
+                    project._append_event("ingestion_failed", diagnostic)
+                else:
+                    project._save_document(document)
+                    project._append_event("uploaded", {"source_sha256": document.source.sha256, "parser": document.parser_name})
+                os.replace(staging, target)
+            except Exception:
+                if staging.exists() and not staging.is_symlink():
+                    shutil.rmtree(staging)
+                raise
+        return cls(target)
 
     def manifest(self) -> dict[str, Any]:
         return _read_json(self.manifest_path)

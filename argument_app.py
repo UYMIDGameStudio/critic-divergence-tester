@@ -13,6 +13,7 @@ import re
 import secrets
 import threading
 import webbrowser
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -44,6 +45,8 @@ from argument_workbench import (
     _read_json,
     initialize_workspace,
     list_version_ids,
+    parse_json_strict,
+    project_mutation_lock,
     verify_project_versions,
     workspace_paths,
 )
@@ -86,6 +89,8 @@ def _project_slug(filename: str, data: bytes) -> str:
 
 def _source_details(project_dir: Path) -> dict[str, Any]:
     versions = list_version_ids(project_dir)
+    if not versions:
+        raise WorkbenchError("项目没有可用版本")
     workspace = workspace_paths(project_dir, versions[-1])
     version, _ = _read_json(workspace.version)
     project, _ = _read_json(workspace.project)
@@ -121,6 +126,8 @@ def create_uploaded_project(
     root = Path(data_dir).resolve()
     root.mkdir(parents=True, exist_ok=True)
     target = root / _project_slug(safe_name, content)
+    if target.is_symlink():
+        raise WorkbenchError("项目路径不得是符号链接")
     if target.exists():
         errors = verify_project_versions(target)
         if errors:
@@ -170,7 +177,10 @@ class ProductApp:
     ) -> "ProductApp":
         storage = Path(data_dir or default_data_dir()).resolve()
         storage.mkdir(parents=True, exist_ok=True)
-        selected = None if project_dir is None else workspace_paths(project_dir).root
+        project_candidate = None if project_dir is None else Path(project_dir)
+        if project_candidate is not None and project_candidate.is_symlink():
+            raise WorkbenchError("项目目录不得是符号链接")
+        selected = None if project_candidate is None else workspace_paths(project_candidate).root
         if selected is not None:
             errors = verify_project_versions(selected)
             if errors:
@@ -183,17 +193,31 @@ class ProductApp:
             if candidate.is_symlink() or not candidate.is_dir():
                 continue
             try:
+                errors = verify_project_versions(candidate)
+                if errors:
+                    raise WorkbenchError("; ".join(errors))
                 rows.append(_source_details(candidate))
-            except (OSError, WorkbenchError, KeyError):
+            except (OSError, WorkbenchError, IndexError, KeyError, TypeError, ValueError):
                 rows.append({"title": candidate.name, "path": str(candidate), "invalid": True})
         return rows
 
     def view(self) -> dict[str, Any]:
         selected = None
         if self.project_dir is not None:
-            selected = {**_source_details(self.project_dir), **project_state(self.project_dir)}
-            current = workspace_paths(self.project_dir)
-            selected["professional_available"] = current.reviewed_payload.is_file() and not current.reviewed_payload.is_symlink()
+            state = project_state(self.project_dir)
+            try:
+                details = _source_details(self.project_dir)
+            except (OSError, WorkbenchError, IndexError, KeyError, TypeError, ValueError):
+                details = {
+                    "title": self.project_dir.name,
+                    "path": str(self.project_dir),
+                    "invalid": True,
+                }
+            selected = {**details, **state}
+            selected["professional_available"] = False
+            if state["stage"] != "read_only":
+                current = workspace_paths(self.project_dir)
+                selected["professional_available"] = current.reviewed_payload.is_file() and not current.reviewed_payload.is_symlink()
         return {
             "storage_path": str(self.data_dir),
             "projects": self.projects(),
@@ -223,8 +247,11 @@ class ProductApp:
         name = str(payload["directory"])
         if Path(name).name != name or not name.endswith(".argument-workbench"):
             raise WorkbenchError("项目目录名无效")
-        target = (self.data_dir / name).resolve()
-        if target.parent != self.data_dir or target.is_symlink() or not target.is_dir():
+        candidate = self.data_dir / name
+        if candidate.is_symlink():
+            raise WorkbenchError("项目不在本地项目库中")
+        target = candidate.resolve()
+        if target.parent != self.data_dir or not target.is_dir():
             raise WorkbenchError("项目不在本地项目库中")
         errors = verify_project_versions(target)
         if errors:
@@ -293,6 +320,7 @@ class ProductHTTPServer(ThreadingHTTPServer):
 
     def __init__(self, address: tuple[str, int], app: ProductApp):
         self.app = app
+        self.action_lock = threading.RLock()
         super().__init__(address, ProductRequestHandler)
 
 
@@ -331,22 +359,34 @@ class ProductRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/professional":
             try:
-                self.server.app.professional_view()
+                with self.server.action_lock:
+                    self.server.app.professional_view()
                 shell = render_app_shell(self.server.app.token).replace("'/api/view", "'/api/professional/view").replace("'/api/adjudications", "'/api/professional/adjudications")
                 self._send(HTTPStatus.OK, shell.encode(), "text/html; charset=utf-8")
             except WorkbenchError as exc:
                 self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            except Exception:
+                self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "本地服务处理请求时发生未预期错误，请刷新页面并检查项目状态"})
             return
         if path == "/api/state" and self._authorized():
-            self._json(HTTPStatus.OK, self.server.app.view())
+            try:
+                with self.server.action_lock:
+                    result = self.server.app.view()
+                self._json(HTTPStatus.OK, result)
+            except Exception:
+                self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "本地服务处理请求时发生未预期错误，请刷新页面并检查项目状态"})
             return
         if path == "/api/professional/view" and self._authorized():
             try:
                 from urllib.parse import parse_qs
                 version = parse_qs(urlsplit(self.path).query).get("version", [None])[0]
-                self._json(HTTPStatus.OK, self.server.app.professional_view(version))
+                with self.server.action_lock:
+                    result = self.server.app.professional_view(version)
+                self._json(HTTPStatus.OK, result)
             except WorkbenchError as exc:
                 self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            except Exception:
+                self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "本地服务处理请求时发生未预期错误，请刷新页面并检查项目状态"})
             return
         self._json(HTTPStatus.FORBIDDEN if path == "/api/state" else HTTPStatus.NOT_FOUND, {"error": "local UI token required" if path == "/api/state" else "not found"})
 
@@ -365,22 +405,32 @@ class ProductRequestHandler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
             if length <= 0 or length > MAX_REQUEST_BYTES:
                 raise WorkbenchError("请求大小无效")
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            payload = parse_json_strict(self.rfile.read(length))
             if not isinstance(payload, dict):
                 raise WorkbenchError("请求必须是对象")
-            if path == "/api/professional/adjudications":
-                result = self.server.app.professional_adjudicate(payload)
-            elif path == "/api/projects":
-                self.server.app = self.server.app.import_manuscript(payload)
-                result = self.server.app.view()
-            elif path == "/api/open":
-                self.server.app = self.server.app.open_project(payload)
-                result = self.server.app.view()
+            if path == "/api/projects":
+                lock_root = self.server.app.data_dir
+            elif path in {"/api/action", "/api/professional/adjudications"}:
+                lock_root = self.server.app.project_dir
             else:
-                result = self.server.app.act(payload)
+                lock_root = None
+            mutation_guard = project_mutation_lock(lock_root) if lock_root is not None else nullcontext()
+            with self.server.action_lock, mutation_guard:
+                if path == "/api/professional/adjudications":
+                    result = self.server.app.professional_adjudicate(payload)
+                elif path == "/api/projects":
+                    self.server.app = self.server.app.import_manuscript(payload)
+                    result = self.server.app.view()
+                elif path == "/api/open":
+                    self.server.app = self.server.app.open_project(payload)
+                    result = self.server.app.view()
+                else:
+                    result = self.server.app.act(payload)
             self._json(HTTPStatus.CREATED, result)
-        except (UnicodeDecodeError, json.JSONDecodeError, WorkbenchError, OSError) as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError, WorkbenchError, OSError, ValueError) as exc:
             self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except Exception:
+            self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "本地服务处理请求时发生未预期错误；操作可能已经完成，请刷新页面并检查项目状态后再决定是否重试"})
 
 
 def render_product_shell(token: str) -> str:
@@ -389,12 +439,13 @@ body{margin:0;background:#f4f1eb;color:#23201b;font:16px system-ui,sans-serif}ma
 </style></head><body><main><div class="brand">Local-first · model-neutral</div><h1>Argument Workbench</h1><p>普通 AI 给你一篇“改好了”的文章；这里让每一处修改都可追溯、由你批准，并能复查。</p><div id="app"></div></main><script>
 const TOKEN=__TOKEN__,el=document.getElementById('app');let state;
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-async function api(path,body){const r=await fetch(path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json','X-Argument-Workbench-Token':TOKEN},body:body?JSON.stringify(body):undefined});const j=await r.json();if(!r.ok)throw Error(j.error);return j}
-async function act(action,data={}){try{state=await api('/api/action',{action,data});render()}catch(e){const x=document.getElementById('err');if(x)x.textContent=e.message;else alert(e.message)}}
+async function api(path,body){let r;try{r=await fetch(path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json','X-Argument-Workbench-Token':TOKEN},body:body?JSON.stringify(body):undefined})}catch(cause){const e=Error('无法连接本地服务，请确认本次启动的页面仍然有效');e.transportFailure=true;throw e}let j;try{j=await r.json()}catch(cause){const e=Error('本地服务返回了无法识别的响应');e.transportFailure=true;throw e}if(!r.ok){const e=Error(j.error||`请求失败（${r.status}）`);e.uncertainMutation=!!body&&r.status>=500;throw e}return j}
+async function showMutationError(e){const uncertain=e.transportFailure||e.uncertainMutation;if(uncertain){try{state=await api('/api/state');render()}catch(ignore){}}const message=uncertain?'本地服务连接中断或发生内部错误；页面已尝试刷新。操作可能已经完成，请先检查当前状态，不要直接重复提交。':e.message;const x=document.getElementById('err');if(x)x.textContent=message;else alert(message)}
+async function act(action,data={}){try{state=await api('/api/action',{action,data});render()}catch(e){await showMutationError(e)}}
 function copyText(value){navigator.clipboard.writeText(value).catch(()=>{});}
 function errors(attempt){return attempt&&!attempt.valid?`<div class="error"><b>这次返回未通过校验，原始内容已保留。</b><ul>${attempt.errors.map(e=>`<li>${esc(e)}</li>`).join('')}</ul>${attempt.repair_prompt?'<button class="secondary" id="copyRepair">复制修复提示词</button>':''}</div>`:''}
 function promptPaste(title,prompt,attempt,action){return `<div class="card"><h2>${esc(title)}</h2><p>复制提示词，到任意 AI 运行，再把完整返回粘贴回来。</p><p><button id="copyPrompt">复制提示词</button></p><textarea id="response" placeholder="在这里粘贴 AI 返回">${esc(attempt&&!attempt.valid?attempt.raw:'')}</textarea><p><button id="submitResponse">校验并保存返回</button></p>${errors(attempt)}<div id="err" class="error"></div></div>`}
-function home(){el.innerHTML=`<div class="card"><h2>新建项目</h2><p class="muted">选择 Markdown/TXT 原稿。文件只保存在本机。</p><label>项目标题（可选）</label><input id="title" type="text"><label>原稿</label><input id="file" type="file" accept=".md,.txt,text/plain,text/markdown"><p><button id="create">导入为不可变 V1</button></p><div id="err" class="error"></div></div>${state.projects.length?`<div class="card"><h2>打开已有项目</h2>${state.projects.map(p=>`<p class="row"><button class="secondary open" data-dir="${esc(p.path.split(/[\\/]/).pop())}">打开</button><span>${esc(p.title)} · ${esc(p.current_version||'校验失败')}</span></p>`).join('')}</div>`:''}`;document.getElementById('create').onclick=async()=>{try{const f=document.getElementById('file').files[0];if(!f)throw Error('请选择稿件');state=await api('/api/projects',{filename:f.name,content:await f.text(),title:document.getElementById('title').value});render()}catch(e){document.getElementById('err').textContent=e.message}};document.querySelectorAll('.open').forEach(b=>b.onclick=async()=>{state=await api('/api/open',{directory:b.dataset.dir});render()})}
+function home(){el.innerHTML=`<div class="card"><h2>新建项目</h2><p class="muted">选择 Markdown/TXT 原稿。文件只保存在本机。</p><label>项目标题（可选）</label><input id="title" type="text"><label>原稿</label><input id="file" type="file" accept=".md,.txt,text/plain,text/markdown"><p><button id="create">导入为不可变 V1</button></p><div id="err" class="error"></div></div>${state.projects.length?`<div class="card"><h2>打开已有项目</h2>${state.projects.map(p=>`<p class="row"><button class="secondary open" data-dir="${esc(p.path.split(/[\\/]/).pop())}">打开</button><span>${esc(p.title)} · ${esc(p.current_version||'校验失败')}</span></p>`).join('')}</div>`:''}`;document.getElementById('create').onclick=async()=>{try{const f=document.getElementById('file').files[0];if(!f)throw Error('请选择稿件');state=await api('/api/projects',{filename:f.name,content:await f.text(),title:document.getElementById('title').value});render()}catch(e){await showMutationError(e)}};document.querySelectorAll('.open').forEach(b=>b.onclick=async()=>{try{state=await api('/api/open',{directory:b.dataset.dir});render()}catch(e){await showMutationError(e)}})}
 function bindPrompt(prompt,attempt,action){document.getElementById('copyPrompt').onclick=()=>copyText(prompt);document.getElementById('submitResponse').onclick=()=>act(action,{response:document.getElementById('response').value});const repair=document.getElementById('copyRepair');if(repair)repair.onclick=()=>copyText(attempt.repair_prompt)}
 function render(){if(!state.selected){home();return}const p=state.selected;let body=`<div class="card"><div class="muted">当前项目 · ${esc(p.current_version)}</div><h2>${esc(p.title)}</h2><p>${esc(p.source_name)} · <code>${esc(p.source_sha256.slice(0,12))}</code></p>${p.professional_available?'<p><a href="/professional">进入专业研究视图（IR、Lens、Citation、lineage）</a></p>':''}</div><div class="card next"><div class="muted">唯一下一步</div><h2>${esc(p.next_action)}</h2><p>V1 永久保留；模型只能提案，决定权在你。</p></div>`;
 if(p.stage==='read_only')body+=`<div class="card error"><h2>修改链校验失败</h2><p>项目已强制进入只读状态。修复下列完整性问题前，所有写入操作都会被拒绝。</p><ul>${p.errors.map(e=>`<li>${esc(e)}</li>`).join('')}</ul></div>`;

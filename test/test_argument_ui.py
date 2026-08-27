@@ -8,6 +8,7 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -212,9 +213,14 @@ class ArgumentUITests(unittest.TestCase):
                     raise
                 self.assertIn("Manuscript · 原文", shell)
                 self.assertIn("Argument History", shell)
+                self.assertIn("uncertainMutation", shell)
+                self.assertIn("不要直接重复提交", shell)
                 with self.assertRaises(urllib.error.HTTPError) as caught:
                     urllib.request.urlopen(url + "api/view", timeout=5)
-                self.assertEqual(caught.exception.code, 403)
+                try:
+                    self.assertEqual(caught.exception.code, 403)
+                finally:
+                    caught.exception.close()
                 request = urllib.request.Request(
                     url + "api/view",
                     headers={"X-Argument-Workbench-Token": server.app.token},
@@ -222,6 +228,79 @@ class ArgumentUITests(unittest.TestCase):
                 with urllib.request.urlopen(request, timeout=5) as response:
                     view = json.loads(response.read())
                 self.assertEqual(view["project"]["version_id"], "V1")
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+    def test_http_unexpected_error_returns_json_and_server_recovers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self.make_project(Path(temporary))
+            server, url = ui.serve_workbench(workspace, open_browser=False)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            request = urllib.request.Request(
+                url + "api/adjudications",
+                data=json.dumps({"finding_id": "x"}).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Argument-Workbench-Token": server.app.token,
+                },
+                method="POST",
+            )
+            try:
+                with patch.object(
+                    ui.LocalWorkbench, "adjudicate", side_effect=RuntimeError("boom")
+                ):
+                    with self.assertRaises(urllib.error.HTTPError) as caught:
+                        urllib.request.urlopen(request, timeout=5)
+                    try:
+                        self.assertEqual(caught.exception.code, 500)
+                        self.assertIn("操作可能已经完成", json.loads(caught.exception.read())["error"])
+                    finally:
+                        caught.exception.close()
+                view_request = urllib.request.Request(
+                    url + "api/view",
+                    headers={"X-Argument-Workbench-Token": server.app.token},
+                )
+                with urllib.request.urlopen(view_request, timeout=5) as response:
+                    self.assertEqual(json.loads(response.read())["project"]["version_id"], "V1")
+            except urllib.error.URLError as exc:
+                if isinstance(exc.reason, PermissionError):
+                    self.skipTest("local TCP connections are blocked by this sandbox")
+                raise
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+    def test_http_rejects_duplicate_json_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = self.make_project(Path(temporary))
+            server, url = ui.serve_workbench(workspace, open_browser=False)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            request = urllib.request.Request(
+                url + "api/adjudications",
+                data=b'{"decision":"accept","decision":"reject"}',
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Argument-Workbench-Token": server.app.token,
+                },
+                method="POST",
+            )
+            try:
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    urllib.request.urlopen(request, timeout=5)
+                try:
+                    self.assertEqual(caught.exception.code, 400)
+                    self.assertIn("duplicate JSON key", json.loads(caught.exception.read())["error"])
+                finally:
+                    caught.exception.close()
+            except urllib.error.URLError as exc:
+                if isinstance(exc.reason, PermissionError):
+                    self.skipTest("local TCP connections are blocked by this sandbox")
+                raise
             finally:
                 server.shutdown()
                 server.server_close()

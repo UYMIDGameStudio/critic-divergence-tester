@@ -61,6 +61,46 @@ def _simple_pdf(text: str = "Hello PDF") -> bytes:
 
 
 class DocumentReviewStudioTests(unittest.TestCase):
+    def test_project_creation_rejects_symbolic_link_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            content = b"Draft text\n"
+            real_project = DocumentReviewProject.create(
+                root / "outside", filename="draft.txt", content=content
+            )
+            library = root / "library"
+            library.mkdir()
+            alias = library / real_project.root.name
+            try:
+                alias.symlink_to(real_project.root, target_is_directory=True)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"directory symbolic links unavailable: {exc}")
+            with self.assertRaisesRegex(ReviewStudioError, "符号链接"):
+                DocumentReviewProject(alias)
+            with self.assertRaisesRegex(ReviewStudioError, "符号链接"):
+                DocumentReviewProject.create(
+                    library, filename="draft.txt", content=content
+                )
+
+    def test_failed_project_initialization_leaves_no_poisoned_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with patch.object(
+                DocumentReviewProject,
+                "_save_document",
+                side_effect=RuntimeError("simulated initialization failure"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "initialization failure"):
+                    DocumentReviewProject.create(
+                        root, filename="draft.txt", content=b"Draft text\n"
+                    )
+            self.assertEqual(list(root.glob("*.document-review-studio")), [])
+            self.assertEqual(list(root.glob("*.import")), [])
+            project = DocumentReviewProject.create(
+                root, filename="draft.txt", content=b"Draft text\n"
+            )
+            self.assertTrue(project.manifest_path.is_file())
+
     def context(self) -> dict[str, object]:
         return {
             "document_type": "活动策划案",
@@ -211,6 +251,33 @@ class DocumentReviewStudioTests(unittest.TestCase):
                 with urlopen(state_request, timeout=5) as response:
                     self.assertEqual(response.status, 200)
                     self.assertIn("projects", json.loads(response.read().decode("utf-8")))
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+    def test_http_rejects_duplicate_json_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            server, url = serve_document_review_studio(data_dir=temp_dir, open_browser=False)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            request = Request(
+                url + "api/action",
+                data=b'{"action":"close_project","action":"delete_project","data":{}}',
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Document-Review-Token": server.app.token,
+                },
+                method="POST",
+            )
+            try:
+                with self.assertRaises(HTTPError) as caught:
+                    urlopen(request, timeout=5)
+                try:
+                    self.assertEqual(caught.exception.code, 400)
+                    self.assertIn("重复字段", json.loads(caught.exception.read())["error"])
+                finally:
+                    caught.exception.close()
             finally:
                 server.shutdown()
                 server.server_close()
@@ -823,6 +890,14 @@ class DocumentReviewStudioTests(unittest.TestCase):
                     project.finalize_revision()
             revisions = project.root / "revisions"
             self.assertFalse(revisions.exists() and any(path.is_dir() for path in revisions.iterdir()))
+            with patch(
+                "document_review_studio._append_integrity_index",
+                side_effect=RuntimeError("simulated index failure"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "index failure"):
+                    project.finalize_revision()
+            self.assertFalse(revisions.exists() and any(path.is_dir() for path in revisions.iterdir()))
+            self.assertEqual(project.integrity_errors(), [])
             with patch.object(project, "_deterministic_audit", side_effect=original):
                 revision = project.finalize_revision()
             self.assertTrue((revision / "revision.json").is_file())
