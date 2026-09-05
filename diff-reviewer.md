@@ -91,9 +91,15 @@ Then findings, grouped:
    asked for. These are not automatically wrong, but every one must be listed.
 5. **类型与错误处理** — any `any`, any non-null assertion, any swallowed error,
    any silenced type check.
-6. **App Router 特有** — server versus client component boundaries, server-only
-   code imported into a client component, data fetching in a re-rendering
-   component, metadata and route segment config.
+
+Framework-specific checks are optional appendices, not a fixed sixth category.
+Only append one when the inspected project actually uses that framework. For a
+detected Next.js App Router project, append **框架专项：Next.js App Router** and
+check server versus client component boundaries, server-only code imported into
+a client component, data fetching in a re-rendering component, metadata, and
+route segment config. Other detected frameworks may define an equivalent named
+appendix grounded in their own project files. Do not emit an empty framework
+category when no applicable framework is detected.
 
 Rules:
 

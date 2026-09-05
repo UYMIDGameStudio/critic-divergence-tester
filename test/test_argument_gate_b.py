@@ -7,6 +7,7 @@ import unittest
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -71,6 +72,40 @@ class ProductGateBTests(unittest.TestCase):
                 self.assertEqual(critic_runner.main(["ir", "gate-b", "init", str(root / "gate"), str(p1), str(p2)]), 0)
                 self.assertEqual(critic_runner.main(["ir", "gate-b", "report", str(root / "gate"), "--show"]), 0)
             self.assertIn("Product Gate B", output.getvalue())
+
+    def test_gate_b_initialization_never_publishes_a_partial_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            p1 = self.completed_project(root / "one", split=True, verdicts=["pass", "fail"])
+            p2 = self.completed_project(root / "two", split=False, verdicts="fail")
+            output = root / "gate-b"
+            original_mkdir = Path.mkdir
+
+            for failing_directory in ("assessments", "decisions", "report"):
+                with self.subTest(failing_directory=failing_directory):
+                    def fail_one_step(path, *args, **kwargs):
+                        if path.name == failing_directory and path.parent.name.startswith(".gate-b."):
+                            raise RuntimeError("simulated initialization crash")
+                        return original_mkdir(path, *args, **kwargs)
+
+                    with patch.object(Path, "mkdir", fail_one_step):
+                        with self.assertRaisesRegex(RuntimeError, "simulated initialization crash"):
+                            gate_b.initialize_gate_b(output, [p1, p2])
+                    self.assertFalse(output.exists())
+                    self.assertEqual(list(root.glob(".gate-b.*")), [])
+
+            with patch.object(gate_b, 'rebuild_gate_b_report', side_effect=RuntimeError('report crash')):
+                with self.assertRaisesRegex(RuntimeError, 'report crash'):
+                    gate_b.initialize_gate_b(output, [p1, p2])
+            self.assertFalse(output.exists())
+            self.assertEqual(list(root.glob('.gate-b.*')), [])
+
+            gate = gate_b.initialize_gate_b(output, [p1, p2])
+            self.assertTrue(gate.corpus.is_file())
+            self.assertTrue(gate.assessments.is_dir())
+            self.assertTrue(gate.decisions.is_dir())
+            self.assertTrue(gate.report_dir.is_dir())
+            self.assertEqual(gate_b.verify_gate_b(output), [])
 
 
 if __name__ == "__main__":

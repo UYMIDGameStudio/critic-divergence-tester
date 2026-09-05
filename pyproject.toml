@@ -11,6 +11,7 @@ license = "MIT"
 dependencies = []
 
 [tool.setuptools]
+packages = ["cli", "contracts", "document_review_stores"]
 py-modules = [
   "argument_adjudication",
   "argument_app",
@@ -19,6 +20,7 @@ py-modules = [
   "argument_contracts",
   "argument_gate",
   "argument_gate_b",
+  "argument_gate_common",
   "argument_ir",
   "argument_lens_view",
   "argument_lineage",
@@ -36,10 +38,12 @@ py-modules = [
   "critic_scoring",
   "critic_workflow",
   "document_review_ingest",
+  "document_review_components",
   "document_review_model",
   "document_review_studio",
   "document_review_ui",
   "document_review_ui_shell",
+  "project_lock",
 ]
 
 [tool.setuptools.data-files]

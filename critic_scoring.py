@@ -663,6 +663,8 @@ def score_markdown(result: dict[str, object]) -> str:
     lines = [
         "# Divergence score",
         "",
+        "> Definition: d, W, and B are interval proportions calculated from human classification counts. They are not parametric statistical tests, variance estimates, or Cohen's d.",
+        "",
         "| Comparison | numerator | denominator | d interval |",
         "| --- | ---: | ---: | ---: |",
     ]

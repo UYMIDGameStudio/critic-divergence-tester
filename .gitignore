@@ -1,7 +1,11 @@
 .critic-runs/
 .critic-campaigns/
+evidence/
 *.argument-workbench/
 *.product-gate-a/
 .argument-gates/
 __pycache__/
 *.py[cod]
+build/
+dist/
+*.egg-info/

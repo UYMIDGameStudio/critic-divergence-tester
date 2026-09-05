@@ -35,6 +35,12 @@ jobs:
         run: >-
           python -m compileall -q
           critic_runner.py
+          cli
+          contracts
+          document_review_stores
+          document_review_components.py
+          argument_gate_common.py
+          project_lock.py
           argument_ir.py
           argument_contracts.py
           argument_workbench.py
@@ -122,6 +128,12 @@ jobs:
           python critic_runner.py studio --help
           python critic_runner.py studio-protocols --help
           python critic_runner.py studio-import-ai --help
+
+      - name: Build and install the distributable package
+        run: python -m pip install --no-deps .
+
+      - name: Verify installed package without checkout imports
+        run: python -I scripts/verify_installed_package.py
 
   pdf-text:
     name: Real text PDF / PyMuPDF + pypdf

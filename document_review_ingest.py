@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Protocol
@@ -220,42 +221,81 @@ def _xml_text(element: ET.Element, *, include_deleted: bool = False) -> str:
     return "".join(parts).strip()
 
 
-def _zip_safety(data: bytes, limits: IngestionLimits) -> zipfile.ZipFile:
+@dataclass(frozen=True)
+class _VerifiedZipArchive:
+    entries: dict[str, bytes]
+
+    def read(self, name: str) -> bytes:
+        try:
+            return self.entries[name]
+        except KeyError:
+            raise KeyError(name) from None
+
+    def namelist(self) -> list[str]:
+        return list(self.entries)
+
+
+def _zip_safety(data: bytes, limits: IngestionLimits) -> _VerifiedZipArchive:
+    archive = None
     try:
         archive = zipfile.ZipFile(io.BytesIO(data))
         infos = archive.infolist()
-    except (OSError, zipfile.BadZipFile) as exc:
-        raise IngestionError(f"DOCX 不是可读取的安全 ZIP：{exc}") from exc
-    if len(infos) > limits.max_docx_entries:
-        raise IngestionError("DOCX ZIP 条目过多，疑似 ZIP bomb")
-    total = 0
-    for info in infos:
-        name = info.filename.replace("\\", "/")
-        parts = Path(name).parts
-        if name.startswith("/") or ".." in parts or any(part == "" for part in parts):
-            raise IngestionError("DOCX 包含不安全路径")
-        mode = (info.external_attr >> 16) & 0o170000
-        if mode == 0o120000:
-            raise IngestionError("DOCX 包含符号链接")
-        if info.flag_bits & 0x1:
-            raise IngestionError("DOCX 受到密码保护，无法安全读取")
-        total += info.file_size
-        if total > limits.max_docx_uncompressed_bytes:
-            raise IngestionError("DOCX 解压后体积过大，疑似 ZIP bomb")
-        if info.compress_size and info.file_size / info.compress_size > limits.max_docx_compression_ratio:
-            raise IngestionError("DOCX 单个条目压缩率异常，疑似 ZIP bomb")
-    return archive
+        if len(infos) > limits.max_docx_entries:
+            raise IngestionError("DOCX ZIP 条目过多，疑似 ZIP bomb")
+        total = 0
+        extracted: dict[str, bytes] = {}
+        for info in infos:
+            name = info.filename.replace("\\", "/")
+            parts = Path(name).parts
+            if name.startswith("/") or ".." in parts or any(part == "" for part in parts):
+                raise IngestionError("DOCX 包含不安全路径")
+            if name in extracted:
+                raise IngestionError("DOCX 包含重复路径，无法安全解析")
+            mode = (info.external_attr >> 16) & 0o170000
+            if mode == 0o120000:
+                raise IngestionError("DOCX 包含符号链接")
+            if info.flag_bits & 0x1:
+                raise IngestionError("DOCX 受到密码保护，无法安全读取")
+
+            chunks: list[bytes] = []
+            entry_total = 0
+            with archive.open(info, "r") as source:
+                while True:
+                    chunk = source.read(min(64 * 1024, limits.max_docx_uncompressed_bytes - total + 1))
+                    if not chunk:
+                        break
+                    entry_total += len(chunk)
+                    total += len(chunk)
+                    if total > limits.max_docx_uncompressed_bytes:
+                        raise IngestionError("DOCX 解压后体积过大，疑似 ZIP bomb")
+                    if entry_total > max(1, info.compress_size) * limits.max_docx_compression_ratio:
+                        raise IngestionError("DOCX 单个条目压缩率异常，疑似 ZIP bomb")
+                    chunks.append(chunk)
+            extracted[name] = b"".join(chunks)
+    except (OSError, RuntimeError, zipfile.BadZipFile, zlib.error, EOFError) as exc:
+        raise IngestionError(f"DOCX 解压失败，无法安全读取：{exc}") from exc
+    finally:
+        if archive is not None:
+            archive.close()
+    return _VerifiedZipArchive(extracted)
 
 
-def _docx_xml(archive: zipfile.ZipFile, name: str) -> ET.Element | None:
+class _SafeDocxTreeBuilder(ET.TreeBuilder):
+    def doctype(self, name, pubid, system):
+        # Parser-level rejection also covers UTF-16/32 declarations that a
+        # byte-level ASCII scan cannot recognize.
+        raise IngestionError("DOCX XML 包含外部实体声明或 DTD")
+
+
+def _docx_xml(archive: _VerifiedZipArchive, name: str) -> ET.Element | None:
     try:
         raw = archive.read(name)
         if b"<!DOCTYPE" in raw.upper() or b"<!ENTITY" in raw.upper():
             raise IngestionError(f"DOCX XML 包含外部实体声明：{name}")
-        return ET.fromstring(raw)
+        return ET.fromstring(raw, parser=ET.XMLParser(target=_SafeDocxTreeBuilder()))
     except KeyError:
         return None
-    except ET.ParseError as exc:
+    except (ET.ParseError, LookupError) as exc:
         raise IngestionError(f"DOCX XML 损坏：{name}: {exc}") from exc
 
 

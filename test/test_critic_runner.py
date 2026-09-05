@@ -2323,6 +2323,7 @@ UNVERIFIED: none
         inconclusive = critic_runner.score_divergence(scorecard)
         self.assertEqual(inconclusive["verdict"], "inconclusive")
         markdown = critic_runner.score_markdown(inconclusive)
+        self.assertIn("not parametric statistical tests", markdown)
         self.assertIn("# Divergence score", markdown)
         self.assertIn("**inconclusive**", markdown)
 

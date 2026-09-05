@@ -60,6 +60,19 @@ flowchart LR
 
 快速修订中的人工决定、RevisionAction、application 和无修改 completion 会保存独立摘要凭据；默认入口会重新验证其字段、来源关系、派生结果和摘要，并在不一致时强制只读。这是一种**本地篡改可发现机制**，用于发现单文件误改、静默覆盖和普通篡改；它不是带密钥的密码学防篡改方案。能够同时改写原文件、摘要凭据和策略文件的完整磁盘写入者仍可协同重算这些内容。
 
+### 支持的并发模型
+
+同一个项目在同一时刻只支持一个写入方。CLI、Argument Workbench 本地页面和
+Document Review Studio 共用项目根目录中的跨进程独占锁；如果另一个本地进程正在
+修改项目，新的写操作会立即收到明确错误，不会静默竞争或无限等待。不同项目可以并行
+写入。纯读取命令不占用写锁；Studio 的状态/导出读取会做完整性投影，必要时可能更新只读
+状态，因此会短暂使用同一把锁。异常退出后操作系统会自动释放锁；`.mutation.lock` 是固定的
+锁载体文件，不代表锁仍被占用，也不应手工删除来尝试解锁。
+
+Gate A/B 初始化会先在同级的 `.<Gate 名称>.gate-staging` 保留目录内完成 corpus、
+目录结构和报告生成，最后整体发布。该暂存目录由程序管理；异常退出后重试同一初始化
+会清理并重建它。已发布的 Gate 始终拒绝覆盖。
+
 ## 第一次使用：完整修稿闭环
 
 应用内不绑定模型或 API。需要 AI 时会显示可一键复制的提示词和大文本框；把提示词交给任意 AI，再粘贴返回即可。无效返回仍会保存，并提供可复制的修复提示词。
@@ -911,6 +924,10 @@ python critic_runner.py campaign path/to/old-draft.md --repeat 2 -- your-model-c
 
 `campaign` 仍然严格串行运行，各次执行看不到其他报告。只要至少有两种非引证 critic、每种至少重复两次、全部报告成功且结构有效，它就会生成独立运行归档、`campaign.json`、可点击的 `SUMMARY.md` 和待填写的动态 schema v3 `scorecard.json`。scorecard 已从每份报告第一节提取全部 A 指控及其位置、指控和理由。
 
+批次启动时会固定稿件与每份协议的原始字节；运行期间修改或移走原文件不会改变后续重复
+的输入。每次开始和结束都会向诊断输出显示进度，标准输出仍只返回批次目录，便于脚本接续。
+之后用 `--source` 验证时，仍需提供与启动时相同版本的原稿。
+
 campaign schema v3 使用带种子的反向轮次平衡：第一轮按种子确定协议顺序，第二轮反向，第三轮再恢复，避免固定的 `I1, I2, C1, C2` 把时间漂移、缓存或执行器热身误当成协议差异。随机种子、策略和实际执行次序全部写入 `campaign.json`；用 `--order-seed published-seed` 可以精确复现，验证器会独立重算顺序并拒绝被调换的记录。
 
 三条学术线也能直接组成方法对照 campaign：
@@ -956,7 +973,7 @@ runner 默认读取同目录的 `blind-review.json` 和 `blind-key.json`，校�
 python critic_runner.py score .critic-campaigns/<campaign>/completed-scorecard.json --format markdown --output divergence-score.md
 ```
 
-记分器会重新读取全部归档报告，核对原始字节 hash，并再次提取 claims；它还把 scorecard 的运行顺序、协议归属、重复编号和归档路径反向绑定到 campaign 记录。证据清单被修改、报告被替换、运行身份被重写、路径逃出 campaign、同一条 claim 被重复配对或比较尚未明确完成时都会拒绝计分。随后它自动计算每次 d 的上下界、W/B 区间及 `reject` / `advance` / `inconclusive` 判决。它只接管可确定的算术，不替人判断两条指控是否语义重合。
+记分器会重新读取全部归档报告，核对原始字节 hash，并再次提取 claims；它还把 scorecard 的运行顺序、协议归属、重复编号和归档路径反向绑定到 campaign 记录。证据清单被修改、报告被替换、运行身份被重写、路径逃出 campaign、同一条 claim 被重复配对或比较尚未明确完成时都会拒绝计分。随后它自动计算每次 d 的上下界、W/B 区间及 `reject` / `advance` / `inconclusive` 判决。这里的 d、W、B 是基于人工分类计数得出的不一致比例区间，不是参数化统计检验、方差估计或 Cohen's d。它只接管可确定的算术，不替人判断两条指控是否语义重合。
 
 `python critic_runner.py init-scorecard scorecard.json` 仍可创建兼容的 schema v1 汇总计数表，用于没有 campaign 归档的旧实验；固定 I₁/I₂/C₁/C₂ 的 schema v2 仍可读取，新 campaign 默认使用可追溯且动态分组的逐条配对 schema v3。整个 campaign 可单独复核：
 
@@ -1059,11 +1076,19 @@ UNVERIFIED: <逐条列出没有确认的内容；没有则写 none>
 
 `divergence-test.md` 回答一个很窄的问题：`critic-individualist` 与 `critic-contrastivist` 的差异，是否明显大于同一 critic 重跑产生的采样噪声。
 
+当前单篇稿件的观察不得外推为 critic 的普遍性质。跨题材校准矩阵、固定条件和完成规则见
+[`docs/divergence-multi-manuscript-calibration.md`](docs/divergence-multi-manuscript-calibration.md)；
+在至少两篇额外定稿、四次隔离运行和人工盲配完成前，该项状态保持 pending。
+
 在新的项目结构里，它概念上属于 `evaluation/divergence`：W/B 只能说明 critic 是否产生不同输出，不能说明输出是否正确或有用。质量判断必须由真实问题标签、人工裁决和实际修订结果组成的 benchmark 提供。
 
 它是 **否决-only** 的：高分歧不能证明意见正确，更不能证明值得每篇都花 token。第二级控制件在 `test/critic-generic.md`，故意不参与普通审稿；runner 要求显式传 `--allow-test-artifact` 才允许执行它。所有非引证 critic 的六节骨架、原子化要求、逐条跟进量和强制判断项相同，generic 只缺少专用框架承诺。
 
 正式测试时仍然跑 I₁、I₂、C₁、C₂，并人工按“同处同因 / 同处异因 / 独有”拆原子指控。不要让模型自己给自己的分歧打分；`campaign` 和 `score` 只负责隔离运行、留档和复算。完整公式和判据见 `divergence-test.md`。
+
+作者本人完成的 Gate A/B 与外部可用性证据分开记录。非作者写作者／编辑的独立验证协议和
+待填证据登记见 [`docs/external-product-gate-validation.md`](docs/external-product-gate-validation.md)；
+在至少一名合格参与者的真实 artifact 可验证前，不宣称 P3-1 已完成。
 
 ## 开发检查
 

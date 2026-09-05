@@ -8,8 +8,6 @@ artifacts and never produce a manuscript score or an automatic pass decision.
 from __future__ import annotations
 
 import re
-import shutil
-import tempfile
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -35,6 +33,7 @@ from argument_contracts import (
     sha256_bytes,
     validate_artifact,
 )
+from argument_gate_common import GateLifecycle
 from argument_workbench import (
     WorkbenchError,
     _atomic_write,
@@ -59,6 +58,23 @@ METRIC_KEYS = (
     "reversed_attributions",
 )
 LEGACY_METRIC_KEYS = ("correction_minutes", *METRIC_KEYS)
+
+
+_GATE_LIFECYCLE = GateLifecycle(
+    label="Gate A",
+    corpus_artifact="product-gate-a-corpus",
+    assessment_artifact="product-gate-a-assessment",
+    decision_artifact="product-gate-a-decision",
+    assessment_pattern=ASSESSMENT_PATTERN,
+    decision_pattern=DECISION_PATTERN,
+    validator=validate_artifact,
+    readiness=lambda root: (
+        []
+        if _derive_report(gate_paths(root))[0]["readiness"]["ready_for_human_decision"]
+        else ["all 3-5 workflows and assessments must be complete"]
+    ),
+    error_type=WorkbenchError,
+)
 
 
 @dataclass(frozen=True)
@@ -645,45 +661,24 @@ def initialize_gate(
     errors = validate_artifact(corpus)
     if errors:
         raise WorkbenchError("internal Gate A corpus error: " + "; ".join(errors))
-    temporary = Path(tempfile.mkdtemp(prefix=f".{paths.root.name}.", dir=paths.root.parent))
-    try:
-        _write_new(temporary / "corpus.json", json_bytes(corpus))
-        (temporary / "assessments").mkdir()
-        (temporary / "decisions").mkdir()
-        (temporary / "report").mkdir()
-        temporary.replace(paths.root)
-    except Exception:
-        if temporary.exists():
-            shutil.rmtree(temporary)
-        raise
-    rebuild_gate_report(paths.root)
+    _GATE_LIFECYCLE.initialize(
+        paths.root,
+        json_bytes(corpus),
+        write_new=_write_new,
+        build_report=rebuild_gate_report,
+    )
     return paths
 
 
 def _read_corpus(paths: GatePaths) -> tuple[dict[str, Any], bytes]:
-    corpus, data = _read_json(paths.corpus)
-    errors = validate_artifact(corpus)
-    if errors:
-        raise WorkbenchError("Gate A corpus is invalid: " + "; ".join(errors))
-    return corpus, data
+    return _GATE_LIFECYCLE.read_corpus(paths.corpus, read_json=_read_json)
 
 
 def _numbered_entries(
     directory: Path, pattern: re.Pattern[str], label: str
 ) -> list[tuple[Path, dict[str, Any], bytes]]:
-    if directory.is_symlink() or not directory.is_dir():
-        raise WorkbenchError(f"{label} must be a regular non-symlink directory")
-    entries: list[tuple[Path, dict[str, Any], bytes]] = []
-    for child in sorted(directory.iterdir()):
-        match = pattern.fullmatch(child.name)
-        if match is None:
-            raise WorkbenchError(f"unexpected {label} entry: {child.name}")
-        value, data = _read_json(child)
-        entries.append((child, value, data))
-    actual = [int(pattern.fullmatch(path.name).group(1)) for path, _, _ in entries]
-    if actual != list(range(1, len(entries) + 1)):
-        raise WorkbenchError(f"{label} IDs must be continuous from 0001")
-    return entries
+    kind = "assessment" if pattern is ASSESSMENT_PATTERN else "decision"
+    return _GATE_LIFECYCLE.entries(directory, kind=kind, read_json=_read_json)
 
 
 def list_assessments(paths: GatePaths) -> list[tuple[Path, dict[str, Any], bytes]]:
@@ -822,9 +817,7 @@ def append_assessment(
                 "source": "sum of corpus-bound gate-a-work-session records",
             },
         }
-    contract_errors = validate_artifact(assessment)
-    if contract_errors:
-        raise WorkbenchError("internal Gate A assessment error: " + "; ".join(contract_errors))
+    _GATE_LIFECYCLE.validate_new(assessment, kind="assessment")
     output = paths.assessments / f"{assessment_id}.json"
     _write_new(output, json_bytes(assessment))
     rebuild_gate_report(paths.root)
@@ -839,13 +832,14 @@ def append_gate_decision(
     producer: str = "local-evaluator",
 ) -> Path:
     paths = gate_paths(gate_dir)
-    report, _, _, _ = _derive_report(paths)
     if decision not in GATE_A_DECISIONS:
         raise WorkbenchError("Gate A decision must be pass/fail/defer")
     if not reason.strip():
         raise WorkbenchError("Gate A decision requires a human reason")
-    if decision == "pass" and not report["readiness"]["ready_for_human_decision"]:
-        raise WorkbenchError("Gate A cannot pass before all 3-5 workflows and assessments are complete")
+    if decision == "pass":
+        issues = _GATE_LIFECYCLE.pass_issues(paths.root)
+        if issues:
+            raise WorkbenchError("Gate A cannot pass before " + "; ".join(issues))
     corpus, corpus_bytes = _read_corpus(paths)
     decisions = list_gate_decisions(paths)
     decision_id = f"GD{len(decisions) + 1:04d}"
@@ -867,9 +861,7 @@ def append_gate_decision(
         "reason": reason,
         "supersedes": supersedes,
     }
-    errors = validate_artifact(value)
-    if errors:
-        raise WorkbenchError("internal Gate A decision error: " + "; ".join(errors))
+    _GATE_LIFECYCLE.validate_new(value, kind="decision")
     output = paths.decisions / f"{decision_id}.json"
     _write_new(output, json_bytes(value))
     rebuild_gate_report(paths.root)
@@ -1126,14 +1118,13 @@ def rebuild_gate_report(gate_dir: Path | str) -> tuple[Path, bool]:
     if derivation_errors:
         raise WorkbenchError("cannot rebuild Gate A report: " + "; ".join(derivation_errors))
     markdown_bytes = markdown.encode("utf-8")
-    changed = False
-    paths.report_dir.mkdir(parents=True, exist_ok=True)
-    for path, data in ((paths.report_markdown, markdown_bytes), (paths.report_record, record_bytes)):
-        if path.exists() and path.is_symlink():
-            raise WorkbenchError(f"Gate A report artifact must not be a symlink: {path}")
-        if not path.exists() or path.read_bytes() != data:
-            _atomic_write(path, data)
-            changed = True
+    changed = _GATE_LIFECYCLE.rebuild_report(
+        (
+            (paths.report_markdown, markdown_bytes),
+            (paths.report_record, record_bytes),
+        ),
+        atomic_write=_atomic_write,
+    )
     return paths.report_markdown, changed
 
 
@@ -1149,7 +1140,9 @@ def verify_gate(gate_dir: Path | str, *, compare_report: bool = True) -> list[st
     except (OSError, WorkbenchError) as exc:
         return [str(exc)]
     expected_root_entries = {"corpus.json", "assessments", "decisions", "report"}
-    actual_root_entries = {child.name for child in paths.root.iterdir()}
+    actual_root_entries = {
+        child.name for child in paths.root.iterdir() if child.name != ".mutation.lock"
+    }
     if actual_root_entries != expected_root_entries:
         errors.append("Gate A root contains unexpected or missing entries")
     project_by_alias: dict[str, dict[str, Any]] = {}
@@ -1278,6 +1271,9 @@ def verify_gate(gate_dir: Path | str, *, compare_report: bool = True) -> list[st
                         )
         except (OSError, WorkbenchError) as exc:
             errors.append(f"{path.name}: {exc}")
+    errors.extend(
+        _GATE_LIFECYCLE.decision_chain_errors(decisions, digest=sha256_bytes)
+    )
     previous_hash: str | None = None
     for path, decision, data in decisions:
         contract_errors = validate_artifact(decision)
@@ -1287,8 +1283,6 @@ def verify_gate(gate_dir: Path | str, *, compare_report: bool = True) -> list[st
             errors.append(f"{path.name}: corpus_id does not match corpus")
         if parents.get("corpus", {}).get("sha256") != sha256_bytes(corpus_bytes):
             errors.append(f"{path.name}: corpus parent hash is disconnected")
-        if decision.get("supersedes") != previous_hash:
-            errors.append(f"{path.name}: supersedes does not identify the prior gate decision")
         if previous_hash is not None and parents.get("previous-decision", {}).get("sha256") != previous_hash:
             errors.append(f"{path.name}: previous-decision parent is disconnected")
         previous_hash = sha256_bytes(data)
