@@ -5,6 +5,16 @@ from __future__ import annotations
 from .base import *  # noqa: F401,F403
 
 class AuditRunStore(_ProjectComponent):
+    def review_critics(self) -> tuple[str, ...]:
+        context = self.context()
+        return profile_critics(context.review_profile if context else "document")
+
+    def _selected_critics(self, critics: Iterable[str] | None) -> list[str]:
+        selected = list(self.review_critics() if critics is None else critics)
+        if not selected or any(critic not in self.review_critics() for critic in selected):
+            raise ReviewStudioError("请选择当前审查类型中的至少一个维度")
+        return list(dict.fromkeys(selected))
+
     def prompt(self, critic: str) -> str:
         if critic not in CRITIC_DIMENSIONS:
             raise ReviewStudioError("未知审查维度")
@@ -153,9 +163,7 @@ class AuditRunStore(_ProjectComponent):
         document = self.document()
         context = self.context()
         assert document is not None and context is not None
-        selected = list(critics or CRITIC_DIMENSIONS)
-        if not selected or any(critic not in CRITIC_DIMENSIONS for critic in selected):
-            raise ReviewStudioError("审查维度无效")
+        selected = self._selected_critics(critics)
         runs: list[AuditRun] = []
         for critic in selected:
             run = self._deterministic_audit(critic, document, context)
@@ -235,9 +243,7 @@ class AuditRunStore(_ProjectComponent):
             raise ReviewStudioError("；".join(reasons))
         if not provider.strip() or not model.strip():
             raise ReviewStudioError("独立 AI 审查必须记录 provider 和 model")
-        selected = list(critics or CRITIC_DIMENSIONS)
-        if not selected or any(critic not in CRITIC_DIMENSIONS for critic in selected):
-            raise ReviewStudioError("审查维度无效")
+        selected = self._selected_critics(critics)
         parents = [_parent_ref(self.root, self.document_path, role="structured-document"), _parent_ref(self.root, self.root / "context.json", role="review-context")]
         rows: list[dict[str, Any]] = []
         for critic in selected:
@@ -471,6 +477,11 @@ class AuditRunStore(_ProjectComponent):
         findings: list[Finding] = []
         observations: list[str] = []
         zero_basis: list[str] = []
+        if critic.startswith("academic_"):
+            findings.extend(self._finding(critic, document, context, block, **details) for block, details in academic_prechecks(critic, document, context))
+            observations.append("仅执行离线文本线索检查；未验证论证有效性、研究结果或来源真实性。引用编号仅支持单项数字标记，作者—年份、范围引用和脚注仍需独立核验。")
+            if not findings:
+                zero_basis.append("本地规则未触发提示，不构成学术质量或引用真实性通过；请继续独立 AI 审查和人工核验。")
         if critic == "expression_ambiguity":
             ambiguous = re.search(r"相关人员|原则上|视情况|适时|必要时|等有关单位|尽快|适当", text)
             if ambiguous:

@@ -96,7 +96,7 @@ from argument_app import default_data_dir, serve_product_app
 from document_review_ingest import doctor_dependencies, repair_dependencies
 from document_review_ui import default_studio_data_dir, serve_document_review_studio
 from document_review_studio import DocumentReviewProject, ReviewStudioError
-from document_review_model import CRITIC_DIMENSIONS
+from review_profiles import ALL_CRITICS as CRITIC_DIMENSIONS
 from argument_adjudication import (
     append_claim_bundle_decisions,
     claim_bundle_status,

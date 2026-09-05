@@ -14,17 +14,15 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Mapping
 
+from review_profiles import ALL_CRITICS, DOCUMENT_CRITICS
+
 
 SCHEMA_VERSION = 1
 SUPPORTED_EXTENSIONS = {".md", ".txt", ".docx", ".pdf"}
 UNSUPPORTED_EXTENSIONS = {".doc", ".docm", ".pages"}
-CRITIC_DIMENSIONS = (
-    "expression_ambiguity",
-    "execution_feasibility",
-    "compliance_legal_screen",
-    "reasonableness_governance",
-    "official_professional_format",
-)
+# Historical public constant retains the five document defaults. Validation
+# uses ALL_CRITICS; profile routing is owned by review_profiles.
+CRITIC_DIMENSIONS = DOCUMENT_CRITICS
 VERIFICATION_STATES = {
     "verified",
     "model-proposed",
@@ -209,9 +207,17 @@ class ReviewContext:
     confirmed: bool = False
     model_suggestion: str | None = None
     user_provided_materials: list[str] = field(default_factory=list)
+    review_profile: str = "document"
+    discipline: str = "general"
+    research_type: str = "unspecified"
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        value = asdict(self)
+        # Preserve legacy document context serialization and snapshot hashes.
+        if self.review_profile == "document" and self.discipline == "general" and self.research_type == "unspecified":
+            for key in ("review_profile", "discipline", "research_type"):
+                value.pop(key)
+        return value
 
 
 @dataclass
@@ -256,7 +262,7 @@ class Finding:
     check_data: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.critic not in CRITIC_DIMENSIONS:
+        if self.critic not in ALL_CRITICS:
             raise ValueError(f"unknown critic dimension: {self.critic}")
         if self.severity not in SEVERITIES:
             raise ValueError(f"unknown finding severity: {self.severity}")
@@ -335,7 +341,7 @@ def validate_finding_dict(value: Mapping[str, Any]) -> list[str]:
     location = value.get("location")
     if not isinstance(location, Mapping) or not str(location.get("block_id", "")).strip():
         errors.append("location.block_id is required")
-    if value.get("critic") not in CRITIC_DIMENSIONS:
+    if value.get("critic") not in ALL_CRITICS:
         errors.append("critic is not a supported independent dimension")
     if value.get("severity") not in SEVERITIES:
         errors.append("severity is invalid")
@@ -343,6 +349,12 @@ def validate_finding_dict(value: Mapping[str, Any]) -> list[str]:
         errors.append("verification_state 无效；只能使用 " + " | ".join(sorted(VERIFICATION_STATES)))
     if not isinstance(value.get("external_basis"), Mapping):
         errors.append("external_basis 必须是 JSON 对象；没有外部依据时使用 {}，不要使用 null、字符串或数组")
+    if value.get("critic") == "academic_citations" and value.get("verification_state") == "verified":
+        basis = value.get("external_basis")
+        for field_name in ("source_name", "locator", "url_or_attachment", "application"):
+            entry = basis.get(field_name) if isinstance(basis, Mapping) else None
+            if not isinstance(entry, str) or not entry.strip():
+                errors.append(f"verified academic citation requires external_basis.{field_name}")
     if not isinstance(value.get("uncertainties"), list):
         errors.append("uncertainties must be a list")
     if not isinstance(value.get("blocks_release_or_execution"), bool):

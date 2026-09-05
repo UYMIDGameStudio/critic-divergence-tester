@@ -25,6 +25,7 @@ from urllib.parse import parse_qs, urlsplit
 from document_review_ingest import doctor_dependencies, repair_dependencies
 from document_review_studio import DocumentReviewProject, ReviewStudioError
 from document_review_ui_shell import SHELL_TEMPLATE
+from review_profiles import CRITIC_LABELS, DISCIPLINES, RESEARCH_TYPES
 
 
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
@@ -433,7 +434,8 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
 
 
 def render_studio_shell(token: str) -> str:
-    return SHELL_TEMPLATE.replace("__TOKEN__", json.dumps(token))
+    config = {"critics": CRITIC_LABELS, "disciplines": DISCIPLINES, "research_types": RESEARCH_TYPES}
+    return SHELL_TEMPLATE.replace("__TOKEN__", json.dumps(token)).replace("__REVIEW_CONFIG__", json.dumps(config, ensure_ascii=False))
 
 
 def serve_document_review_studio(*, data_dir: Path | str | None = None, project_dir: Path | str | None = None, host: str = "127.0.0.1", port: int = 0, open_browser: bool = True) -> tuple[StudioHTTPServer, str]:

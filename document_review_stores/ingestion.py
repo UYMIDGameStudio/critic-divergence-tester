@@ -606,7 +606,13 @@ class IngestionState(_ProjectComponent):
         materials = payload.get("user_provided_materials", [])
         if not isinstance(materials, list) or not all(isinstance(item, str) and item.strip() for item in materials):
             raise ReviewStudioError("user_provided_materials 必须是非空文本数组")
-        context = ReviewContext(**{name: payload[name] for name in required}, confirmed=True, model_suggestion=self.suggested_document_type(), user_provided_materials=list(payload.get("user_provided_materials", [])))
+        profile_fields = {}
+        for name, default, choices in (("review_profile", "document", PROFILES), ("discipline", "general", DISCIPLINES), ("research_type", "unspecified", RESEARCH_TYPES)):
+            value = payload.get(name, default)
+            if not isinstance(value, str) or value not in choices:
+                raise ReviewStudioError(f"{name} 无效")
+            profile_fields[name] = value
+        context = ReviewContext(**{name: payload[name] for name in required}, **profile_fields, confirmed=True, model_suggestion=self.suggested_document_type(), user_provided_materials=list(materials))
         context_path = self.root / "context.json"
         existing = self.context()
         if existing is not None:
@@ -628,6 +634,7 @@ class IngestionState(_ProjectComponent):
             return None
         value = _read_json(path)
         return ReviewContext(**{key: value.get(key, default) for key, default in {
+            "review_profile": "document", "discipline": "general", "research_type": "unspecified",
             "document_type": "专业文档", "jurisdiction": "", "effective_date": "", "publisher_type": "", "audience": "", "involves_minors": False, "involves_fees": False, "involves_sponsorship": False, "involves_contract": False, "involves_personal_information": False, "involves_intellectual_property": False, "publication_status": "internal-draft", "confirmed": False, "model_suggestion": None, "user_provided_materials": [],
         }.items()})
 

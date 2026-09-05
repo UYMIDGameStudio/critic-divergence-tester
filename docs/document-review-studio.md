@@ -1,5 +1,9 @@
 # Document Review Studio
 
+> 文书与学术已统一入口：运行 `python critic_runner.py app`，`studio` 为兼容别名。
+> 本文主要记录原文书五维度和共用底层流程；学术三维度、综合八维度与兼容策略
+> 见 [统一工作台说明](unified-workbench.md)。
+
 > Status: **experimental preview**. Deterministic local Findings have a stable
 > check-ID revision/recheck loop. External-model Findings have a critic-bound
 > recheck request/import and human Resolution loop. This is still not formal

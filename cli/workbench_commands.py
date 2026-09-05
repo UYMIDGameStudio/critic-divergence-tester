@@ -41,14 +41,21 @@ def ir_ui_command(args: argparse.Namespace) -> int:
 
 
 def app_command(args: argparse.Namespace) -> int:
+    from unified_app import serve_unified_app
+
     project_dir = args.project
     if args.manuscript:
-        source_path = resolve_manuscript_path(args.manuscript)
-        project_dir = Path(args.project) if args.project else source_path.with_name(
-            source_path.stem + ".argument-workbench"
-        )
-        initialize_workspace(source_path, Path(project_dir), title=args.title)
-    server, url = serve_product_app(
+        source_path = Path(args.manuscript).resolve()
+        if args.project:
+            # Preserve the original explicit destination import contract.
+            initialize_workspace(source_path, Path(args.project), title=args.title)
+        else:
+            project = DocumentReviewProject.create(
+                Path(args.data_dir or default_studio_data_dir()),
+                filename=source_path.name, content=source_path.read_bytes(), title=args.title,
+            )
+            project_dir = project.root
+    server, url = serve_unified_app(
         data_dir=args.data_dir,
         project_dir=project_dir,
         host=args.host,
@@ -56,7 +63,7 @@ def app_command(args: argparse.Namespace) -> int:
         open_browser=not args.no_browser,
     )
     print(f"Argument Workbench: {url}")
-    print(f"Local projects: {Path(args.data_dir or default_data_dir()).resolve()}")
+    print(f"Local projects: {Path(args.data_dir or default_studio_data_dir()).resolve()}")
     print("Local-only session; press Ctrl+C to stop.")
     try:
         server.serve_forever()
@@ -68,8 +75,10 @@ def app_command(args: argparse.Namespace) -> int:
 
 
 def studio_command(args: argparse.Namespace) -> int:
-    """Start the Document Review Studio loopback application."""
-    server, url = serve_document_review_studio(
+    """Compatibility alias of the unified application."""
+    from unified_app import serve_unified_app
+
+    server, url = serve_unified_app(
         data_dir=args.data_dir,
         project_dir=args.project,
         host=args.host,

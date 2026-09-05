@@ -60,6 +60,9 @@ jobs:
           document_review_model.py
           document_review_studio.py
           document_review_ui.py
+          unified_app.py
+          review_profiles.py
+          academic_review.py
           critic_execution.py
           critic_scoring.py
           critic_workflow.py

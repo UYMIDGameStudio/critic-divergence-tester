@@ -56,7 +56,7 @@ def parser() -> argparse.ArgumentParser:
         "app", help="start the complete local Argument Workbench application"
     )
     app_parser.add_argument(
-        "manuscript", nargs="?", help="optional UTF-8 Markdown/TXT manuscript to import as V1"
+        "manuscript", nargs="?", help="optional Markdown/TXT/DOCX/PDF to import into the unified workbench"
     )
     app_parser.add_argument(
         "--project", help="existing project directory, or destination when importing a manuscript"
@@ -71,7 +71,7 @@ def parser() -> argparse.ArgumentParser:
     app_parser.set_defaults(func=app_command)
 
     studio_parser = sub.add_parser(
-        "studio", help="start the local Document Review Studio application"
+        "studio", help="compatibility alias for the unified document and academic workbench"
     )
     studio_parser.add_argument("--project", help="existing .document-review-studio project")
     studio_parser.add_argument("--data-dir", help="local Document Review Studio project library")
@@ -84,7 +84,7 @@ def parser() -> argparse.ArgumentParser:
         "studio-protocols", help="export independent AI critic protocols for a Document Review Studio project"
     )
     studio_protocols_parser.add_argument("project", help="existing .document-review-studio project")
-    studio_protocols_parser.add_argument("--critic", action="append", choices=CRITIC_DIMENSIONS, help="critic to export; repeat or omit for all five")
+    studio_protocols_parser.add_argument("--critic", action="append", choices=CRITIC_DIMENSIONS, help="critic to export; repeat or omit for the confirmed review profile")
     studio_protocols_parser.add_argument("--provider", required=True, help="provider label recorded in the request")
     studio_protocols_parser.add_argument("--model", required=True, help="model label recorded in the request")
     studio_protocols_parser.set_defaults(func=studio_protocols_command)

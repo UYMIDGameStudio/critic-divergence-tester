@@ -13,6 +13,7 @@ dependencies = []
 [tool.setuptools]
 packages = ["cli", "contracts", "document_review_stores"]
 py-modules = [
+  "academic_review",
   "argument_adjudication",
   "argument_app",
   "argument_baseline",
@@ -44,6 +45,8 @@ py-modules = [
   "document_review_ui",
   "document_review_ui_shell",
   "project_lock",
+  "review_profiles",
+  "unified_app",
 ]
 
 [tool.setuptools.data-files]

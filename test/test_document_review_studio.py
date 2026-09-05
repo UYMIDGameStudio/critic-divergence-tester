@@ -165,7 +165,7 @@ class DocumentReviewStudioTests(unittest.TestCase):
         self.assertIn("外部 critic 复审与人工 Resolution", shell)
         self.assertIn("删除本地项目", shell)
         self.assertIn("一键修复可自动修复项", shell)
-        self.assertIn("生成五份独立协议", shell)
+        self.assertIn("生成当前类型的独立协议", shell)
         self.assertIn("模型原始 JSON 响应", shell)
         self.assertIn("抽取内容与定位预览", shell)
         self.assertIn("人工修正动作", shell)

@@ -657,6 +657,8 @@ class RevisionPlanBuilder(_ProjectComponent):
                     state, basis = "still-present", "原 Finding 没有稳定 check_id，系统拒绝仅凭自然语言变化判定已解决"
                 elif not candidates:
                     state, basis = "resolved", f"同一确定性检查 {original.check_id} 复跑后未再次产生 Finding"
+                    if original.critic.startswith("academic_"):
+                        basis += "；仅表示本地文本线索不再触发，不代表论证成立、方法有效或引用真实；这些仍需独立审查与人工核验"
                 else:
                     old_items = set(original.check_data.get("items", []))
                     new_items = {value for item in candidates for value in item.check_data.get("items", [])}

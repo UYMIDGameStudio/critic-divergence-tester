@@ -27,9 +27,9 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from document_review_ingest import IngestionError, IngestionLimits, ingest_bytes, safe_upload_name
+from academic_review import academic_prechecks
 from document_review_model import (
     AuditRun,
-    CRITIC_DIMENSIONS,
     DocumentBlock,
     DocumentLocation,
     ExternalBasis,
@@ -48,6 +48,10 @@ from document_review_model import (
 from project_lock import (
     ProjectMutationLockedError,
     project_mutation_lock as _shared_project_mutation_lock,
+)
+from review_profiles import (
+    ALL_CRITICS as CRITIC_DIMENSIONS, ACADEMIC_PROTOCOLS, CRITIC_LABELS,
+    PROFILES, DISCIPLINES, RESEARCH_TYPES, profile_critics,
 )
 
 
@@ -80,6 +84,7 @@ def _serialized_mutation(method):
 
 
 CRITIC_PROTOCOLS: dict[str, dict[str, Any]] = {
+    **ACADEMIC_PROTOCOLS,
     "expression_ambiguity": {
         "role": "表达歧义审查者",
         "objective": "寻找能产生至少两种可执行读法的表达，不把单纯风格偏好写成 Finding。",
@@ -656,12 +661,12 @@ class DocumentReviewProject:
             {"key": "extraction", "label": "文档识别", "status": "completed" if extraction_confirmed else "not_started", "detail": "已确认" if extraction_confirmed else "待确认"},
             {"key": "context", "label": "审查上下文", "status": "completed" if state.get("context_state") == "confirmed" else "not_started", "detail": "已确认" if state.get("context_state") == "confirmed" else "待确认"},
             {"key": "local", "label": "本地预检", "status": "completed" if local_complete else "not_started", "detail": "已运行" if local_complete else "未运行"},
-            {"key": "ai", "label": "AI 专项审查", "status": "completed" if ai_requests and ai_done == len(ai_requests) else "in_progress" if ai_done else "not_started", "detail": f"{ai_done}/{len(ai_requests) or 5} 已导入"},
+            {"key": "ai", "label": "AI 专项审查", "status": "completed" if ai_requests and ai_done == len(ai_requests) else "in_progress" if ai_done else "not_started", "detail": f"{ai_done}/{len(ai_requests) or len(self.review_critics())} 已导入"},
             {"key": "adjudication", "label": "人工裁决", "status": "completed" if findings_total and finding_summary["open"] == 0 else "in_progress" if findings_total else "not_started", "detail": f"{findings_total - finding_summary['open']}/{findings_total} 已处理" if findings_total else "暂无 Finding"},
             {"key": "bridge", "label": "受约束修改", "status": "completed" if revision_complete else "in_progress" if bridge_complete else "not_started", "detail": "修改稿已生成并复审" if revision_complete else "逐段修改中" if bridge_complete else "未开始"},
             {"key": "export", "label": "导出结果", "status": "completed" if export_complete else "not_started", "detail": "已有导出文件" if export_complete else "未导出"},
         ]
-        return {"project": manifest, "product_status": "experimental-preview", "state": state, "extraction": {"available": document is not None, "quality": document.quality.to_dict() if document else {}, "warnings": [warning.to_dict() for warning in document.warnings] if document else [], "blocks": [block.to_dict() for block in document.blocks] if document else [], "total_blocks": len(document.blocks) if document else 0}, "context": self.context().to_dict() if self.context() else {"model_suggestion": self.suggested_document_type()}, "can_review": can_review, "review_blockers": reasons, "ai_requests": ai_requests, "findings": finding_rows, "finding_summary": finding_summary, "attention_queue": attention_queue, "revision_workspace": revision_workspace, "workflow": workflow, "exports": exports}
+        return {"review_critics": {key: CRITIC_LABELS[key] for key in self.review_critics()}, "project": manifest, "product_status": "experimental-preview", "state": state, "extraction": {"available": document is not None, "quality": document.quality.to_dict() if document else {}, "warnings": [warning.to_dict() for warning in document.warnings] if document else [], "blocks": [block.to_dict() for block in document.blocks] if document else [], "total_blocks": len(document.blocks) if document else 0}, "context": self.context().to_dict() if self.context() else {"model_suggestion": self.suggested_document_type()}, "can_review": can_review, "review_blockers": reasons, "ai_requests": ai_requests, "findings": finding_rows, "finding_summary": finding_summary, "attention_queue": attention_queue, "revision_workspace": revision_workspace, "workflow": workflow, "exports": exports}
 
 
 def _document_from_dict(value: Mapping[str, Any]) -> StructuredDocument:

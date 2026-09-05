@@ -20,6 +20,7 @@ def main():
         'document_review_components', 'document_review_stores.ingestion',
         'document_review_stores.audits', 'document_review_stores.revision',
         'document_review_stores.exports', 'document_review_studio',
+        'review_profiles', 'academic_review', 'unified_app',
     ):
         module = importlib.import_module(name)
         if Path(module.__file__).resolve().is_relative_to(checkout):
@@ -46,7 +47,22 @@ def main():
         project.run_local_prechecks(['expression_ambiguity'])
         assert project.view()['project']
         assert not project.integrity_errors()
-    print('Installed package: imports, protocol data, rules, CLI and Studio workflow verified')
+        academic = DocumentReviewProject.create(directory, filename='paper.md', content=b'# Paper\n\nA causes B.')
+        academic.confirm_extraction('confirm')
+        academic.confirm_context(ReviewContext(document_type='paper', jurisdiction='unknown',
+            effective_date='unknown', publisher_type='author', audience='researchers',
+            review_profile='academic', research_type='theoretical').to_dict())
+        assert len(academic.run_local_prechecks()) == 3
+        assert len(academic.prepare_ai_audits(provider='manual', model='smoke-test')) == 3
+        assert not academic.integrity_errors()
+        from unified_app import serve_unified_app
+        server, url = serve_unified_app(data_dir=directory, project_dir=academic.root, open_browser=False)
+        try:
+            assert url.startswith('http://127.0.0.1:')
+            assert server.app.view()['unified']
+        finally:
+            server.server_close()
+    print('Installed package: imports, protocols, rules, CLI, document/academic workflows and unified server verified')
 
 
 if __name__ == '__main__':
