@@ -190,8 +190,8 @@ class ArgumentIRTests(unittest.TestCase):
                     ["ir", "prepare", str(manuscript)]
                 )
             self.assertEqual(exit_code, 2)
-            self.assertIn("不是 UTF-8 编码", stderr.getvalue())
-            self.assertIn("另存为", stderr.getvalue())
+            self.assertIn("无法解码稿件", stderr.getvalue())
+            self.assertIn("--encoding", stderr.getvalue())
 
     def test_ir_binds_exact_source_and_provenance(self) -> None:
         value = valid_ir(self.source_bytes)

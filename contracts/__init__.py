@@ -1,5 +1,8 @@
 """Public compatibility surface for all artifact contracts."""
 
+import json as _json
+import math as _math
+
 from .base import *
 from .core import *
 from .lineage import *
@@ -71,21 +74,80 @@ def validate_artifact(value: object) -> list[str]:
     return validator(value)
 
 
+def _bundle_json(data: bytes) -> object:
+    def unique_object(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate JSON key")
+            value[key] = item
+        return value
+
+    def finite_number(token):
+        number = float(token)
+        if not _math.isfinite(number):
+            raise ValueError("JSON numbers must be finite")
+        return number
+
+    parsed = _json.loads(data.decode("utf-8-sig"), object_pairs_hook=unique_object,
+                         parse_float=finite_number, parse_constant=finite_number)
+    # JSON escape sequences can contain lone surrogates even in valid UTF-8
+    # input. They cannot be persisted or displayed as Unicode text safely.
+    _json.dumps(parsed, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    return parsed
+
+
+def _same_json_value(left: object, right: object) -> bool:
+    """JSON equality without Python's True == 1 and 1 == 1.0 coercion."""
+    if type(left) is not type(right):
+        return False
+    if type(left) is dict:
+        return left.keys() == right.keys() and all(_same_json_value(left[key], right[key]) for key in left)
+    if type(left) is list:
+        return len(left) == len(right) and all(_same_json_value(a, b) for a, b in zip(left, right))
+    if type(left) is float:
+        return _math.isfinite(left) and _math.isfinite(right) and left == right
+    if left is None or type(left) in {str, int, bool}:
+        return left == right
+    return False
+
+
 def validate_contract_bundle(
     entries: list[tuple[object, bytes]],
 ) -> list[str]:
     """Validate artifacts, their exact-byte parent links, and accept/action interlocks."""
     errors: list[str] = []
     by_hash: dict[str, dict[str, Any]] = {}
-    for index, (value, data) in enumerate(entries):
-        entry_errors = validate_artifact(value)
-        errors.extend(f"entries[{index}]: {error}" for error in entry_errors)
-        if isinstance(value, dict):
-            by_hash[sha256_bytes(data)] = value
-
-    for index, (value, _) in enumerate(entries):
-        if not isinstance(value, dict):
+    valid_entries: list[tuple[int, dict[str, Any]]] = []
+    if not isinstance(entries, list):
+        return ["bundle entries must be an array"]
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+            errors.append(f"entries[{index}]: expected an artifact object and its original bytes")
             continue
+        value, data = entry
+        if type(data) is not bytes:
+            errors.append(f"entries[{index}]: artifact data must be bytes")
+            continue
+        try:
+            parsed = _bundle_json(data)
+            if not _same_json_value(value, parsed):
+                errors.append(f"entries[{index}]: artifact object does not match its original bytes")
+                continue
+        except (ValueError, TypeError, RecursionError, OverflowError):
+            errors.append(f"entries[{index}]: artifact bytes must contain strict UTF-8 JSON without duplicate keys, non-finite numbers or invalid Unicode")
+            continue
+        try:
+            entry_errors = validate_artifact(parsed)
+        except (TypeError, ValueError, KeyError, IndexError, RecursionError, OverflowError):
+            errors.append(f"entries[{index}]: malformed artifact fields cannot participate in a contract bundle")
+            continue
+        errors.extend(f"entries[{index}]: {error}" for error in entry_errors)
+        if not entry_errors and isinstance(parsed, dict):
+            by_hash[sha256_bytes(data)] = parsed
+            valid_entries.append((index, parsed))
+
+    for index, value in valid_entries:
         parents = value.get("parents")
         if not isinstance(parents, list):
             continue

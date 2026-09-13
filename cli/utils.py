@@ -4,6 +4,20 @@ from __future__ import annotations
 
 from .support import *  # noqa: F401,F403
 
+
+def _ir_read_source(path: Path, args) -> tuple[str, bytes, str]:
+    from document_text_encoding import TextDecodingError, decode_document_text
+    raw = path.read_bytes()
+    try:
+        decoded = decode_document_text(raw, getattr(args, "encoding", None))
+    except TextDecodingError as exc:
+        raise ArgumentIRError(f"无法解码稿件 {path.resolve()}：{exc}。请用 --encoding 指定文件的实际编码。") from exc
+    if not decoded.text.strip():
+        raise ArgumentIRError(f"稿件文件是空的：{path.resolve()}。请用记事本或其他编辑器加入正文并保存后重试；支持 UTF-8 和其他常用编码。")
+    if decoded.ambiguous:
+        raise ArgumentIRError("Source encoding is ambiguous; choose --encoding explicitly: " + ", ".join(decoded.candidates))
+    return decoded.text, raw, decoded.encoding
+
 def _ir_json_bytes(value: object) -> bytes:
     return (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
 

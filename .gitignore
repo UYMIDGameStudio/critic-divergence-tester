@@ -2,10 +2,13 @@
 .critic-campaigns/
 evidence/
 *.argument-workbench/
+*.document-review-studio/
 *.product-gate-a/
+*.product-gate-b/
 .argument-gates/
 __pycache__/
 *.py[cod]
 build/
 dist/
 *.egg-info/
+node_modules/

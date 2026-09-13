@@ -6,7 +6,6 @@ import threading
 import webbrowser
 from dataclasses import dataclass, replace
 from pathlib import Path
-from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 from argument_app import ProductApp, ProductRequestHandler, default_data_dir
@@ -32,6 +31,22 @@ class UnifiedApp(StudioApp):
         return value
 
 
+class _ResearchServerView:
+    """Dispatch-local facade with live state; access is guarded by action_lock."""
+    def __init__(self, server):
+        self._server = server
+        self.action_lock = server.action_lock
+        self.server_address = server.server_address
+
+    @property
+    def app(self):
+        return self._server.research_app
+
+    @app.setter
+    def app(self, value):
+        self._server.research_app = value
+
+
 class UnifiedRequestHandler(StudioRequestHandler, ProductRequestHandler):
     """Reuse legacy domain handlers without sharing their selected-project state.
 
@@ -41,17 +56,14 @@ class UnifiedRequestHandler(StudioRequestHandler, ProductRequestHandler):
 
     def _research(self, method):
         server, original_path = self.server, self.path
-        with server.action_lock:
-            facade = SimpleNamespace(app=server.research_app, action_lock=server.action_lock)
-            self.server = facade
-            self.path = original_path[len("/research"):] or "/"
-            self._in_research = True
-            try:
-                method(self)
-            finally:
-                server.research_app = facade.app
-                self.server, self.path = server, original_path
-                self._in_research = False
+        self.server = _ResearchServerView(server)
+        self.path = original_path[len("/research"):] or "/"
+        self._in_research = True
+        try:
+            method(self)
+        finally:
+            self.server, self.path = server, original_path
+            self._in_research = False
 
     def _send(self, status, data, content_type, *, filename=None):
         if getattr(self, "_in_research", False) and content_type.startswith("text/html"):
@@ -65,12 +77,16 @@ class UnifiedRequestHandler(StudioRequestHandler, ProductRequestHandler):
         return StudioRequestHandler._send(self, status, data, content_type, filename=filename)
 
     def do_GET(self):  # noqa: N802
+        if not self._local_request():
+            return StudioRequestHandler.do_GET(self)
         path = urlsplit(self.path).path
         if path == "/research" or path.startswith("/research/"):
             return self._research(ProductRequestHandler.do_GET)
         return StudioRequestHandler.do_GET(self)
 
     def do_POST(self):  # noqa: N802
+        if not self._local_request():
+            return StudioRequestHandler.do_POST(self)
         if urlsplit(self.path).path.startswith("/research/"):
             return self._research(ProductRequestHandler.do_POST)
         return StudioRequestHandler.do_POST(self)

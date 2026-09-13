@@ -8,9 +8,12 @@ cannot turn model output into human-confirmed state.
 from __future__ import annotations
 
 import json
+import hmac
 import re
 import secrets
+import socket
 import threading
+import time
 import webbrowser
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -45,6 +48,153 @@ from argument_workbench import (
 
 MAX_REQUEST_BYTES = 1024 * 1024
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
+
+
+class LocalHTTPProtocolError(Exception):
+    def __init__(self, status: HTTPStatus, message: str):
+        super().__init__(message)
+        self.status = status
+
+
+def request_context(token: str, project: Path, view: dict[str, Any]) -> str:
+    """Bind a displayed, deterministic snapshot to its actual project and session."""
+    body = json.dumps([str(project.resolve()), view], sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+    return hmac.new(token.encode("ascii"), body.encode("ascii"), "sha256").hexdigest()
+
+
+def require_request_context(handler, expected: str) -> None:
+    values = handler.headers.get_all("X-Argument-Project-Context", [])
+    if len(values) != 1 or not values[0].isascii() or not secrets.compare_digest(values[0], expected):
+        raise LocalHTTPProtocolError(HTTPStatus.CONFLICT, "项目或任务已变化，请刷新页面并核对内容后再提交")
+
+
+class LocalHTTPServer(ThreadingHTTPServer):
+    """Bound resource use for all local UI entry points."""
+    daemon_threads = True
+    request_queue_size = 16
+    max_connections = 8
+
+    def __init__(self, address, handler):
+        self.connection_slots = threading.BoundedSemaphore(self.max_connections)
+        super().__init__(address, handler)
+
+    def process_request(self, request, client_address):
+        if not self.connection_slots.acquire(blocking=False):
+            try:
+                request.settimeout(1)
+                request.sendall(b"HTTP/1.0 503 Service Unavailable\r\nContent-Length: 16\r\nConnection: close\r\n\r\nToo many clients")
+            except OSError:
+                pass
+            finally:
+                self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.connection_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.connection_slots.release()
+
+
+class LocalRequestHandler(BaseHTTPRequestHandler):
+    timeout = 30
+    header_timeout = 10
+    body_timeout = 30
+
+    def setup(self):
+        super().setup()
+        # Socket inactivity alone permits a client to retain a slot forever by
+        # sending one byte per timeout. Headers have an absolute deadline too.
+        self._header_timer = threading.Timer(self.header_timeout, self._expire_headers)
+        self._header_timer.daemon = True
+        self._header_timer.start()
+
+    def _expire_headers(self):
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def parse_request(self):
+        try:
+            return super().parse_request()
+        finally:
+            self._header_timer.cancel()
+
+    def handle(self):
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            self.close_connection = True
+
+    def finish(self):
+        self._header_timer.cancel()
+        try:
+            super().finish()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+
+    def _local_request(self) -> bool:
+        try:
+            hosts = self.headers.get_all("Host", [])
+            origins = self.headers.get_all("Origin", [])
+            if len(hosts) != 1 or len(origins) > 1 or any(c.isspace() for c in hosts[0]):
+                return False
+            host = urlsplit("http://" + hosts[0])
+            target = urlsplit(self.path)
+            if (host.hostname not in LOOPBACK_HOSTS or host.port != self.server.server_address[1]
+                    or host.username is not None or host.password is not None
+                    or host.path or host.query or host.fragment
+                    or not self.path.startswith("/") or target.scheme or target.netloc):
+                return False
+            return not origins or origins[0] == f"http://{host.netloc}"
+        except ValueError:
+            return False
+
+    def _token_authorized(self, name: str) -> bool:
+        values = self.headers.get_all(name, [])
+        return len(values) == 1 and values[0].isascii() and secrets.compare_digest(values[0], self.server.app.token)
+
+    def _read_json_body(self, maximum: int) -> bytes:
+        if (len(self.headers.get_all("Content-Type", [])) != 1
+                or self.headers.get_content_type() != "application/json"
+                or (self.headers.get_content_charset() or "utf-8").lower() not in {"utf-8", "utf8"}):
+            raise LocalHTTPProtocolError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "JSON UTF-8 required")
+        lengths = self.headers.get_all("Content-Length", [])
+        if self.headers.get_all("Transfer-Encoding", []) or len(lengths) != 1 or not re.fullmatch(r"[0-9]+", lengths[0]):
+            raise LocalHTTPProtocolError(HTTPStatus.BAD_REQUEST, "请求长度头无效")
+        # Avoid conversion of an attacker-controlled, arbitrarily long integer.
+        if len(lengths[0]) > 12:
+            raise LocalHTTPProtocolError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "请求大小无效")
+        length = int(lengths[0])
+        if length <= 0 or length > maximum:
+            raise LocalHTTPProtocolError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "请求大小无效")
+        deadline = time.monotonic() + self.body_timeout
+        chunks = []
+        remaining = length
+        try:
+            while remaining:
+                wait = deadline - time.monotonic()
+                if wait <= 0:
+                    raise TimeoutError
+                self.connection.settimeout(wait)
+                chunk = self.rfile.read1(min(remaining, 65536))
+                if not chunk:
+                    raise LocalHTTPProtocolError(HTTPStatus.BAD_REQUEST, "请求正文不完整")
+                chunks.append(chunk)
+                remaining -= len(chunk)
+        except TimeoutError as exc:
+            raise LocalHTTPProtocolError(HTTPStatus.REQUEST_TIMEOUT, "请求正文读取超时，请重新提交") from exc
+        finally:
+            self.connection.settimeout(self.timeout)
+        return b"".join(chunks)
+
+
 POSITION_PATTERN = re.compile(
     r"L(?P<start_line>[1-9][0-9]*):C(?P<start_column>[1-9][0-9]*)"
     r"-L(?P<end_line>[1-9][0-9]*):C(?P<end_column>[1-9][0-9]*)\Z"
@@ -52,18 +202,10 @@ POSITION_PATTERN = re.compile(
 
 
 def _source(workspace) -> tuple[str, dict[str, Any]]:
-    version, _ = _read_json(workspace.version)
-    relative = version.get("source", {}).get("relative_path")
-    if not isinstance(relative, str):
-        raise WorkbenchError("DocumentVersion source path is invalid")
-    path = workspace.version_dir / Path(relative)
-    if path.is_symlink() or not path.is_file():
-        raise WorkbenchError("DocumentVersion source must be a regular file")
-    try:
-        text = path.read_bytes().decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise WorkbenchError(f"DocumentVersion source is not UTF-8: {exc}") from exc
-    return text, version
+    from argument_workbench import _decoded_workspace_text, _workspace_source
+
+    version, source_bytes, _ = _workspace_source(workspace)
+    return _decoded_workspace_text(version, source_bytes), version
 
 
 def _node_table(ir: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -622,14 +764,15 @@ class LocalWorkbench:
         return cls(root, secrets.token_urlsafe(32))
 
     def view(self, version_id: str | None = None) -> dict[str, Any]:
-        return build_project_view(self.project_dir, version_id)
+        value = build_project_view(self.project_dir, version_id)
+        return {**value, "request_context": request_context(self.token, self.project_dir, value)}
 
     def adjudicate(self, payload: dict[str, Any]) -> dict[str, Any]:
         adjudicate_from_ui(self.project_dir, payload)
         return self.view()
 
 
-class WorkbenchHTTPServer(ThreadingHTTPServer):
+class WorkbenchHTTPServer(LocalHTTPServer):
     daemon_threads = True
 
     def __init__(self, address: tuple[str, int], app: LocalWorkbench):
@@ -638,7 +781,7 @@ class WorkbenchHTTPServer(ThreadingHTTPServer):
         super().__init__(address, WorkbenchRequestHandler)
 
 
-class WorkbenchRequestHandler(BaseHTTPRequestHandler):
+class WorkbenchRequestHandler(LocalRequestHandler):
     server: WorkbenchHTTPServer
 
     def log_message(self, format: str, *args: object) -> None:
@@ -671,11 +814,12 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         )
 
     def _authorized(self) -> bool:
-        return secrets.compare_digest(
-            self.headers.get("X-Argument-Workbench-Token", ""), self.server.app.token
-        )
+        return self._token_authorized("X-Argument-Workbench-Token")
 
     def do_GET(self) -> None:  # noqa: N802
+        if not self._local_request():
+            self._json(HTTPStatus.FORBIDDEN, {"error": "只接受当前本机地址和同源页面"})
+            return
         parsed = urlsplit(self.path)
         if parsed.path == "/":
             body = render_app_shell(self.server.app.token).encode("utf-8")
@@ -698,28 +842,25 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
+        if not self._local_request():
+            self._json(HTTPStatus.FORBIDDEN, {"error": "只接受当前本机地址和同源页面"})
+            return
         if urlsplit(self.path).path != "/api/adjudications":
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
         if not self._authorized():
             self._json(HTTPStatus.FORBIDDEN, {"error": "local UI token required"})
             return
-        if self.headers.get_content_type() != "application/json":
-            self._json(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"error": "JSON required"})
-            return
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-        except ValueError:
-            length = 0
-        if length <= 0 or length > MAX_REQUEST_BYTES:
-            self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "invalid request size"})
-            return
-        try:
-            payload = parse_json_strict(self.rfile.read(length))
+            payload = parse_json_strict(self._read_json_body(MAX_REQUEST_BYTES))
             if not isinstance(payload, dict):
                 raise WorkbenchError("request body must be an object")
             with self.server.action_lock, project_mutation_lock(self.server.app.project_dir):
+                require_request_context(self, self.server.app.view()["request_context"])
                 result = self.server.app.adjudicate(payload)
+        except LocalHTTPProtocolError as exc:
+            self._json(exc.status, {"error": str(exc)})
+            return
         except (UnicodeDecodeError, json.JSONDecodeError, WorkbenchError) as exc:
             self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             return
@@ -751,68 +892,13 @@ def serve_workbench(
 
 
 def render_app_shell(token: str) -> str:
-    token_json = json.dumps(token)
+    token_json = json.dumps(token).replace("<", "\\u003c")
     return APP_SHELL.replace("__WORKBENCH_TOKEN__", token_json)
 
 
-APP_SHELL = r'''<!doctype html>
-<html lang="zh-Hans">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Argument Workbench</title>
-<style>
-:root{color-scheme:light;--ink:#17211c;--muted:#66736c;--paper:#f7f5ef;--panel:#fffefa;--line:#d9ddd6;--green:#1d5d45;--red:#a33c35;--amber:#9a6517;--blue:#275d8c}
-*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
-button,select,input,textarea{font:inherit}.top{position:sticky;top:0;z-index:4;background:#18392e;color:white;padding:12px 18px;box-shadow:0 2px 12px #0002}.topline{display:flex;gap:16px;align-items:center;justify-content:space-between}.brand{font-weight:700;letter-spacing:.02em}.version{display:flex;align-items:center;gap:8px}.metrics{display:grid;grid-template-columns:repeat(6,minmax(80px,1fr));gap:8px;margin-top:10px}.metric{background:#ffffff14;padding:8px 10px;border-radius:8px}.metric b{display:block;font-size:19px}.metric span{font-size:11px;opacity:.8}
-.workspace{display:grid;grid-template-columns:minmax(360px,1.25fr) minmax(300px,.9fr) minmax(360px,1fr);height:calc(100vh - 126px)}.pane{overflow:auto;border-right:1px solid var(--line);background:var(--panel)}.pane:last-child{border:0}.pane-head{position:sticky;top:0;background:#fffefaeF;backdrop-filter:blur(8px);padding:14px 16px 10px;border-bottom:1px solid var(--line);z-index:2}.pane-head h2{font-size:14px;text-transform:uppercase;letter-spacing:.09em;margin:0}.pane-body{padding:12px 16px 60px}
-.line{display:grid;grid-template-columns:42px 1fr;gap:10px;padding:2px 6px;border-radius:5px;white-space:pre-wrap}.line:hover{background:#edf3ef}.line.active{background:#dbeae2}.ln{color:#9aa29d;text-align:right;user-select:none}.claim-chip,.badge{display:inline-flex;border:1px solid var(--line);border-radius:999px;padding:1px 7px;font-size:11px;margin-left:6px;background:white;cursor:pointer}.claim-list button{width:100%;text-align:left;border:1px solid var(--line);background:white;padding:10px;margin:0 0 8px;border-radius:9px}.claim-list button.active{border-color:var(--green);box-shadow:0 0 0 2px #1d5d4522}.claim-id{font-weight:700;color:var(--green)}.muted{color:var(--muted)}.section{margin:18px 0}.section h3{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 8px}.card{border:1px solid var(--line);background:white;border-radius:10px;padding:11px 12px;margin:0 0 9px}.verdict-fail{border-left:4px solid var(--red)}.verdict-uncertain{border-left:4px solid var(--amber)}.verdict-pass{border-left:4px solid var(--green)}.status{font-size:11px;font-weight:700;text-transform:uppercase}.human{color:var(--blue)}.model{color:var(--amber)}.deterministic{color:var(--green)}
-.relation{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;word-break:break-all}.decision{display:flex;gap:6px;margin-top:10px}.decision button,.history-button{border:1px solid var(--line);background:#f6f7f4;border-radius:7px;padding:5px 9px;cursor:pointer}.decision button:hover{border-color:var(--green)}.history-button{background:#ffffff18;color:white;border-color:#ffffff55}details{margin-top:9px}summary{cursor:pointer;font-weight:600}pre.protocol{white-space:pre-wrap;max-height:280px;overflow:auto;background:#f3f4f0;padding:9px;border-radius:7px;font-size:12px}dialog{border:0;border-radius:12px;box-shadow:0 18px 70px #0005;max-width:720px;width:calc(100% - 32px)}dialog::backdrop{background:#10251c88}label{display:block;margin:10px 0 4px;font-weight:600}textarea,input,select{width:100%;border:1px solid var(--line);border-radius:7px;padding:8px}.dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}.primary{background:var(--green)!important;color:white;border-color:var(--green)!important}.error{background:#ffe8e5;color:#7b241f;padding:9px;border-radius:7px;margin:9px 0}.empty{padding:24px;color:var(--muted);text-align:center}.tabs{display:flex;gap:5px;flex-wrap:wrap}.tabs button{border:0;background:#e9ece7;border-radius:6px;padding:5px 8px;cursor:pointer}.tabs button.active{background:#18392e;color:white}.timeline{border-left:3px solid #cbd8d0;padding-left:14px;margin-left:5px}.timeline .card{position:relative}.timeline .card:before{content:"";position:absolute;left:-22px;top:17px;width:11px;height:11px;border-radius:50%;background:var(--green)}@media(max-width:1050px){.workspace{grid-template-columns:1fr;height:auto}.pane{min-height:60vh;border-right:0;border-bottom:1px solid var(--line)}.metrics{grid-template-columns:repeat(3,1fr)}}
-</style>
-</head>
-<body>
-<header class="top"><div class="topline"><div><div class="brand">Argument Workbench</div><div id="projectTitle"></div></div><div class="version"><button class="history-button" id="historyButton">Argument History</button><label for="version">稿件版本</label><select id="version"></select></div></div><div class="metrics" id="metrics"></div></header>
-<main class="workspace"><section class="pane"><div class="pane-head"><h2>Manuscript · 原文</h2></div><div class="pane-body" id="manuscript"></div></section><section class="pane"><div class="pane-head"><h2>Argument · 论证</h2></div><div class="pane-body"><div id="claims" class="claim-list"></div><div id="claimDetail"></div></div></section><section class="pane"><div class="pane-head"><h2>Review · 审查</h2></div><div class="pane-body"><div id="lensTabs" class="tabs"></div><div id="review"></div></div></section></main>
-<dialog id="decisionDialog"><form method="dialog" id="decisionForm"><h2 id="decisionTitle">人工裁决</h2><div id="decisionError"></div><label for="decisionValue">决定</label><select id="decisionValue"><option value="accept">接受</option><option value="reject">拒绝</option><option value="defer">推迟</option></select><label for="decisionReason">理由（必填）</label><textarea id="decisionReason" rows="3"></textarea><div id="actionFields"><label for="actionType">修改行动</label><select id="actionType"><option value="narrow_claim">收窄主张</option><option value="add_evidence">增加证据</option><option value="add_qualification">增加限定</option><option value="remove_claim">删除主张</option><option value="restructure_argument">重组论证</option><option value="clarify_concept">澄清概念</option><option value="verify_citation">核验引文</option><option value="other">其他</option></select><label for="actionText">行动说明（接受时必填）</label><textarea id="actionText" rows="3"></textarea></div><div class="dialog-actions"><button value="cancel">取消</button><button class="primary" id="saveDecision" value="default">保存正式决定</button></div></form></dialog>
-<dialog id="historyDialog"><form method="dialog"><h2>Argument History</h2><p class="muted">每个数字是可审计的工作流状态，不是稿件质量分数。</p><div id="historyTimeline" class="timeline"></div><div class="dialog-actions"><button class="primary">关闭</button></div></form></dialog>
-<script>
-const TOKEN=__WORKBENCH_TOKEN__;let state=null,selectedClaim=null,selectedLens='all',pendingFinding=null;const $=id=>document.getElementById(id);const esc=s=>{const d=document.createElement('div');d.textContent=s??'';return d.innerHTML};
-async function requestJson(path,options,mutation=false){let r;try{r=await fetch(path,options)}catch(cause){const e=Error('无法连接本地服务，请确认本次启动的页面仍然有效');e.transportFailure=true;throw e}let j;try{j=await r.json()}catch(cause){const e=Error('本地服务返回了无法识别的响应');e.transportFailure=true;throw e}if(!r.ok){const e=Error(j.error||`请求失败（${r.status}）`);e.uncertainMutation=mutation&&r.status>=500;throw e}return j}
-async function load(version){const q=version?'?version='+encodeURIComponent(version):'';state=await requestJson('/api/view'+q,{headers:{'X-Argument-Workbench-Token':TOKEN}});if(!selectedClaim||!state.claims.some(c=>c.id===selectedClaim))selectedClaim=state.claims[0]?.id||null;render()}
-function render(){document.title=state.project.title+' · Argument Workbench';$('projectTitle').textContent=state.project.title+' · '+state.project.source_name;$('version').innerHTML=state.project.versions.map(v=>`<option ${v===state.project.version_id?'selected':''}>${esc(v)}</option>`).join('');const d=state.dashboard;const ms=[['claims','Claims'],['open_findings','未裁决'],['deferred','推迟'],['resolved','已解决'],['accepted','已接受'],['unverified_citations','未核验引文']];$('metrics').innerHTML=ms.map(([k,l])=>`<div class="metric"><b>${d[k]}</b><span>${l}</span></div>`).join('');renderManuscript();renderClaims();renderReview()}
-function renderManuscript(){$('manuscript').innerHTML=state.manuscript.map(l=>`<div class="line ${l.claim_ids.includes(selectedClaim)?'active':''}" data-claims="${l.claim_ids.join(',')}"><span class="ln">${l.number}</span><span>${esc(l.text)}${l.claim_ids.map(id=>`<button class="claim-chip" data-claim="${id}">${id}</button>`).join('')}</span></div>`).join('');document.querySelectorAll('[data-claim]').forEach(b=>b.onclick=()=>selectClaim(b.dataset.claim))}
-function nodeLink(id){const n=state.nodes[id];return n?`<div class="card"><span class="claim-id">${esc(id)}</span> ${esc(n.text)}</div>`:`<div class="card">${esc(id)}</div>`}
-function renderClaims(){$('claims').innerHTML=state.claims.map(c=>`<button class="${c.id===selectedClaim?'active':''}" data-select="${c.id}"><span class="claim-id">${c.id}</span> <span class="badge">${esc(c.role)}</span><div>${esc(c.text)}</div></button>`).join('');document.querySelectorAll('[data-select]').forEach(b=>b.onclick=()=>selectClaim(b.dataset.select));const c=state.claims.find(x=>x.id===selectedClaim);if(!c){$('claimDetail').innerHTML='<div class="empty">尚无 Claim</div>';return}const incoming=c.incoming.map(r=>nodeLink(r.from)+`<div class="relation">${esc(r.id)} · ${esc(r.type)} → ${esc(r.to)}</div>`).join('');const outgoing=c.outgoing.map(r=>nodeLink(r.to)+`<div class="relation">${esc(r.id)} · ${esc(r.from)} → ${esc(r.type)}</div>`).join('');$('claimDetail').innerHTML=`<div class="section"><h3>当前主张</h3><div class="card"><b>${esc(c.source_quote)}</b><p>${esc(c.text)}</p><span class="badge">${esc(c.types.join(' / '))}</span><span class="badge">${esc(c.methods.join(' / '))}</span><p class="muted">${esc(c.position)} · 位置为 deterministic；语义为 model-derived / human-corrected</p></div></div><div class="section"><h3>上游 · Supported by / Assumptions / Citations</h3>${incoming||'<div class="empty">没有上游关系</div>'}</div><div class="section"><h3>下游 · Supports / Qualifies / Contradicts</h3>${outgoing||'<div class="empty">没有下游关系</div>'}</div>`}
-function provenanceTrace(f){const p=f.provenance_trace;const row=(label,value)=>value?`<div class="relation">${label} · ${esc(value)}</div>`:'';return `<details><summary>完整 provenance</summary>${row('Source',p.source_sha256)}${row('Reviewed IR',p.reviewed_ir_sha256)}${row('Review run',p.review_run_sha256)}${row('Lens protocol',p.lens_protocol_sha256)}${row('Model result',p.model_result_sha256)}${row('Finding',p.finding_sha256)}${row('Human decision',p.adjudication_sha256)}${(p.action_sha256s||[]).map((x,i)=>row('RevisionAction '+(i+1),x)).join('')}</details>`}
-function lensBasis(o){const b=o.lens_basis||{},lens=state.lenses.find(l=>l.review_id===o.review_id);const rule=`<p><b>${esc(b.label)}</b></p>${b.question?`<p>检查问题：${esc(b.question)}</p>`:''}${b.failure_condition?`<p>失败条件：${esc(b.failure_condition)}</p>`:''}${b.evidence_policy?`<p class="muted">Evidence policy：${esc(b.evidence_policy)}</p>`:''}`;const protocol=lens?.protocol_text?`<pre class="protocol">${esc(lens.protocol_text)}</pre>`:'';return `<details><summary>Lens 的规则／方法论依据</summary>${rule}${protocol}</details>`}
-function renderHistory(){const versions=state.version_history.map(v=>`<div class="card"><b>${esc(v.version_id)} · ${esc(v.source_name)}</b><p>${v.claims} Claims · ${v.corrections} 人工 correction · ${v.findings.open} 未裁决 · ${v.findings.accept} 接受 · ${v.findings.defer} 推迟 · ${v.unverified_citations} 未核验 Citation</p><div class="relation">Source · ${esc(v.source_sha256)}</div></div>`).join('');const transitions=state.lineage.map(h=>`<div class="card"><b>${esc(h.pair)} · Claim Lineage</b><p>${h.proposals.length} correspondences · ${Object.entries(h.summary||{}).map(([k,v])=>esc(k)+': '+v).join(' · ')}</p><div class="human">${h.proposals.filter(p=>p.human_decision).length}/${h.proposals.length} human-confirmed</div></div>`).join('');const resolutions=state.resolutions.map(r=>`<div class="card"><b>${esc(r.resolution_id)} · ${esc(r.original_finding_id)}</b><p>${esc(r.original_finding.reason)}</p><div>${esc((r.descendant_claims||[]).join(', ')||'removed')} · ${esc(r.human_decision?.final_status||r.proposed_status||'pending')}</div></div>`).join('');$('historyTimeline').innerHTML=versions+transitions+resolutions;$('historyDialog').showModal()}
-function renderReview(){
-  const lenses=[{id:'all',label:'全部 Lenses'},...state.lenses.map(l=>({id:l.review_id,label:l.id}))];
-  $('lensTabs').innerHTML=lenses.map(l=>`<button data-lens="${esc(l.id)}" class="${l.id===selectedLens?'active':''}">${esc(l.label)}</button>`).join('');
-  document.querySelectorAll('[data-lens]').forEach(b=>b.onclick=()=>{selectedLens=b.dataset.lens;renderReview()});
-  const target=state.project.version_id+':'+selectedClaim;
-  const outcomes=state.outcomes.filter(o=>o.target_claim===target&&(selectedLens==='all'||o.review_id===selectedLens));
-  const findings=new Map(state.findings.map(f=>[f.finding_id,f]));
-  const html=outcomes.map(o=>{
-    const f=o.finding_id?findings.get(o.finding_id):null,decision=f?.decision||null;
-    const buttons=f&&state.permissions.can_adjudicate?`<div class="decision"><button data-decide="${esc(f.finding_id)}">${decision?'复议':'人工裁决'}</button></div>`:'';
-    const actions=f?.actions?.map(a=>`<li>${esc(a.action_type)} · ${esc(a.text)}</li>`).join('')||'';
-    return `<div class="card verdict-${esc(o.verdict)}"><div><span class="status">${esc(o.verdict)}</span> · <b>${esc(o.lens.id)}</b> ${o.check_id?'· '+esc(o.check_id):''}</div><p>${esc(o.reason)}</p>${o.basis_refs?`<p class="muted">依据：${esc(o.basis_refs.join(', '))}</p>`:''}${o.consequence?`<p class="muted">影响：${esc(o.consequence)}</p>`:''}${lensBasis(o)}${f?`<div class="human">人工决定：${decision?esc(decision)+' · '+esc(f.human_reason):'尚未裁决'}</div>${actions?'<ul>'+actions+'</ul>':''}${provenanceTrace(f)}`:''}${buttons}</div>`
-  }).join('');
-  const cite=state.citations.filter(c=>(c.dependent_claims||[]).includes(selectedClaim)||state.relations.some(r=>r.from===c.id&&r.to===selectedClaim)).map(c=>`<div class="card"><b>${esc(c.id)} · ${esc(c.text)}</b><div class="${c.verification_state==='verified'?'deterministic':'model'}">${esc(c.verification_state)}</div></div>`).join('');
-  const history=state.lineage.filter(x=>x.pair.includes(state.project.version_id)).flatMap(x=>x.proposals.filter(p=>(p.from_claims||[]).includes(target)||(p.to_claims||[]).includes(target))).map(p=>`<div class="card"><b>${esc(p.relation)}</b> · ${esc((p.from_claims||[]).join(', ')||'new')} → ${esc((p.to_claims||[]).join(', ')||'removed')}<div class="human">${p.human_decision?'人工：'+esc(p.human_decision.decision)+' · '+esc(p.human_decision.human_note):'等待人工确认'}</div></div>`).join('');
-  const resolutions=state.resolutions.filter(r=>(r.descendant_claims||[]).includes(target)||r.original_finding.target_claim===target).map(r=>{const final=r.human_decision?.final_status||'等待人工确认';const actions=r.revision_actions.map(a=>`<li>${esc(a.action_type)} · ${esc(a.text)}</li>`).join('');return `<div class="card"><b>${esc(r.resolution_id)} · ${esc(final)}</b><p>原问题：${esc(r.original_finding.reason)}</p><p class="muted">原 Lens：${esc(r.lens.id)}${r.lens.check_id?' · '+esc(r.lens.check_id):''}</p>${actions?'<ul>'+actions+'</ul>':''}<p>${esc((r.descendant_claims||[]).join(', ')||'removed')} · 重测提案 ${esc(r.proposed_status||'pending')}</p>${r.human_decision?`<div class="human">人工确认：${esc(r.human_decision.reason)}</div>`:''}</div>`}).join('');
-  $('review').innerHTML=(html||'<div class="empty">这个 Claim 在所选 Lens 下没有当前结果</div>')+`<div class="section"><h3>Citation provenance</h3>${cite||'<div class="empty">没有绑定的 Citation provenance</div>'}</div><div class="section"><h3>Claim Lineage</h3>${history||'<div class="empty">尚无跨版本 Lineage</div>'}</div><div class="section"><h3>Finding Resolution</h3>${resolutions||'<div class="empty">没有继承的旧 Finding</div>'}</div>`;
-  document.querySelectorAll('[data-decide]').forEach(b=>b.onclick=()=>openDecision(b.dataset.decide));
-}
-function selectClaim(id){selectedClaim=id;renderManuscript();renderClaims();renderReview();document.querySelector(`.line[data-claims*="${CSS.escape(id)}"]`)?.scrollIntoView({behavior:'smooth',block:'center'})}
-function openDecision(id){pendingFinding=id;const f=state.findings.find(x=>x.finding_id===id);$('decisionTitle').textContent=(f?.decision?'复议 ':'裁决 ')+id;$('decisionValue').value=f?.decision||'accept';$('decisionReason').value=f?.human_reason||'';$('actionText').value='';$('decisionError').innerHTML='';toggleAction();$('decisionDialog').showModal()}
-function toggleAction(){$('actionFields').style.display=$('decisionValue').value==='accept'?'block':'none'}$('decisionValue').onchange=toggleAction;$('version').onchange=()=>{selectedClaim=null;load($('version').value).catch(showFatal)};
-$('historyButton').onclick=renderHistory;
-$('decisionForm').onsubmit=async e=>{if(e.submitter?.value==='cancel')return;e.preventDefault();const decision=$('decisionValue').value;const actions=decision==='accept'?[{action_type:$('actionType').value,text:$('actionText').value.trim()}]:[];const payload={finding_id:pendingFinding,decision,reason:$('decisionReason').value.trim(),actions};try{state=await requestJson('/api/adjudications',{method:'POST',headers:{'Content-Type':'application/json','X-Argument-Workbench-Token':TOKEN},body:JSON.stringify(payload)},true);$('decisionDialog').close();render()}catch(err){const uncertain=err.transportFailure||err.uncertainMutation;if(uncertain){try{await load($('version').value)}catch(ignore){}}const message=uncertain?'本地服务连接中断或发生内部错误；状态已尝试刷新。操作可能已经完成，请先检查当前裁决，不要直接重复提交。':err.message;$('decisionError').innerHTML=`<div class="error">${esc(message)}</div>`}}
-function showFatal(err){document.body.innerHTML=`<div class="error" style="margin:30px">${esc(err.message)}</div>`}load().catch(showFatal);
-</script>
-</body></html>'''
+from studio_web.research import research_shell as _research_shell
+
+APP_SHELL = _research_shell("professional")
 
 
 __all__ = [

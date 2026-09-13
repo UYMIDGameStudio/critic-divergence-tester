@@ -2,7 +2,19 @@
 
 [![Tests](https://github.com/UYMIDGameStudio/critic-divergence-tester/actions/workflows/tests.yml/badge.svg)](https://github.com/UYMIDGameStudio/critic-divergence-tester/actions/workflows/tests.yml)
 
-一个 **local-first、模型无关、零第三方依赖的论证工作台**：普通 AI 给你一篇“改好了”的文章；Argument Workbench 让每一处修改都能追溯到审查发现、由你逐项批准、可以撤销，并能在不可变新版本上复查。
+**0.2.2**：默认繁體中文界面，可切换 English；扩展常用文档格式与非 UTF-8
+编码导入，并改进流程导航、草稿保存、异常恢复和 Windows 安装升级。
+英文、简体中文、繁体中文、德语、法语、日语、俄语及拉丁语文本可进入同一审查
+流程；这表示文本解析能力，不代表这些语言的模型审查质量已经验证。
+当前仍为 **experimental preview**，未签名，也未完成其他设备与远端 CI 验收。
+详细变化和验收边界见 [0.2.2 交付记录](docs/release-engineering-0.2.2.md)，
+安装与升级见 [便携版说明](docs/portable-guide.md)。
+本轮进一步加入 [按文章任务细读、反证核对与可验证修正](docs/review-quality-0.2.2.md)，
+并收紧 IR／协议的原始字节绑定、异常回传归档与跨项目请求隔离。
+
+一个 **本地运行、模型无关的文书与论证审查工作台**：每一处修改都能追溯到审查发现，
+由你逐项批准，再生成独立新版本复查。核心文本流程不依赖第三方 Python 包；
+PDF、扫描件及旧 Office/WPS 格式按需使用额外组件。
 
 它不需要 Claude Code 或 API key。网页聊天、CLI、本地模型都只是可替换的提取／审查执行器；模型负责提出结构和 Finding，人负责校正、接受、拒绝或暂缓，确定性程序负责 provenance、hash binding 和可重建派生物。
 
@@ -25,19 +37,22 @@ py -3 critic_runner.py app ".\结构的替身.md"
 实证、理论、综述、工程研究分型。旧 `studio` 命令是同一工作台的兼容别名。
 详见 [`docs/unified-workbench.md`](docs/unified-workbench.md)。
 
-Document Review Studio 当前标记为 **experimental preview**。本地确定性 Finding 已接通受约束修改与稳定 `check_id` 复审；外部模型复审请求绑定原 critic 的完整 prompt 快照、request、AuditRun、协议摘要和 provider/model。原 Finding 的 Resolution 由人确认；新 Finding 和仍未解决项会成为修订稿版本上的下一轮 open Finding，重新进入裁决和修改。它仍不是正式 V1：除 Gate C 外部用户验证外，原位 DOCX 修订、跨块结构修改和修改闭环的 CLI 对等入口等产品限制仍需解决。它支持 Markdown、TXT、DOCX、文本 PDF 和扫描 PDF；
-上传后必须先确认识别质量和文档上下文，再明确选择“本地确定性预检”或导出/导入当前类型的独立 AI critic（文书 5 个、学术 3 个、综合 8 个）。原始文件
-字节与 SHA-256 永不覆盖，解析警告、页码/表格单元格定位、人工裁决和导出
-审计包都保存在本地项目中。详细限制和环境要求见
-[`docs/document-review-studio.md`](docs/document-review-studio.md)。
-独立 AI 导入默认要求原始响应回显所选请求的 `request_id`、`prompt_sha256`、provider
-和 model；如果模型做不到，可在界面或 CLI 明确选择“普通 JSON（人工关联）”，接受不带
-回显字段的有效 JSON，但会记录较弱的 `response_binding`，不声称响应确由该 prompt 生成。
-两种模式都只记录 `declared_model_metadata`，不冒充直接模型调用。
-识别确认由受保护的 extraction decision 产物授权，`state.json` 只是可重建缓存；
-本地索引可发现普通修改/删除，但强回滚仍需要项目外可信检查点或签名。
+可导入 Markdown/TXT、Word（DOCX/DOCM）、PDF、RTF、HTML、CSV/TSV、ODT、
+Excel（XLSX/XLSM）和 PowerPoint（PPTX/PPTM）。真正的旧二进制 Office/WPS
+文件需要本机 LibreOffice；扫描 PDF 需要 Tesseract、对应语言包及 PDF 渲染组件。
+上传后先核对正文、编码与识别警告，再确认审查上下文。原始字节与 SHA-256
+完整保留，解析范围和格式限制见 [使用说明](docs/document-review-studio.md)。
 
-应用会自动打开本机页面。创建项目后，页面用七步状态条和一个“继续”主提示引导流程：确认识别 → 确认上下文 → 本地预检 → 导出/导入当前类型的独立 AI critic → 人工裁决 → 独立 Action/Hunk 批准 → 修改稿复审与导出。首次裁决视图最多显示 30 个按“同一定位＋同一修改动作”形成的工作组，所有原子 Finding 和独立 critic 理由仍完整保留。修改层按工作组/明确 Finding 集生成 Action；系统可以建议 `replace_block`、前后插入、删除、表格单元格替换或追加章节，但用户必须显式选择并说明操作类型，关键词不会直接授权删除整块。每个 Revision 绑定全部当前 accept/correct/reject/defer 决定；任何决定变化都会使旧版本失效。外部新 Finding 不能直接标为 resolved，而会进入修订稿版本的下一轮。导出中心提供 `修改稿.docx`、`修改稿.md`、`修改说明.md`、`未解决风险.md`、复审结果和完整审计包。
+页面默认用“人工关联”把有效 AI JSON 响应绑定到当前任务；也可选择严格模式，
+要求回显请求编号、协议摘要及声明的模型信息。CLI 默认严格校验。
+两种模式都保留原始响应与绑定记录，不声称应用实际调用过该模型。
+新问题和复审后仍未解决的问题会进入下一轮，最终决定仍由人确认。
+
+应用会自动打开本机页面。“继续”按钮跳转到下一步所需操作；表单草稿按项目、
+文档版本和 AI 任务隔离保存，切换界面语言保留原文、文件名和输入内容。
+流程依次完成识别、上下文、本地预检或独立 AI 审查、人工裁决、逐项修改批准、
+复审与导出。零问题也可导出本轮审查记录。Word 优先保留原文档结构；复杂修改
+无法保留版式时会明确命名为“规范化修改稿”，并附限制说明。
 
 独立 AI 响应导入后即可点击“导出当前 AI 审查”，无需先完成 Finding 裁决。系统会生成明确标注“未经人工裁决”的 Markdown 报告、结构化 JSON、模型原始响应和 ZIP 包，并在页面显示项目内保存位置与完整导出目录；它不会冒充正式审查结论或已批准修改。
 
@@ -80,7 +95,11 @@ Gate A/B 初始化会先在同级的 `.<Gate 名称>.gate-staging` 保留目录�
 - Windows：`%LOCALAPPDATA%\DocumentReviewStudio\projects`
 - macOS/Linux：`$XDG_DATA_HOME/document-review-studio/projects`，未设置时为 `~/.local/share/document-review-studio/projects`
 
-每个项目都可单独复制备份或从项目库页面删除；删除前会二次确认且不可撤销。正式导出位于项目内的 `exports/<application-id>/`，包含可编辑规范化副本、审查报告、结构化结果和完整审计包。环境自检可在首页直接一键修复缺失的 Python PDF 适配器，并在当前项目尚未确认识别时自动重试；CLI 也可运行 `py -3 critic_runner.py doctor --repair`。Tesseract 和语言包仍需按系统提示安装，应用不会静默安装系统软件。
+文书项目可在页面创建可验证备份；删除前会确认并先生成备份，之后可恢复到独立
+项目。正式导出位于项目内的 `exports/`，包括审查报告、结构化结果和审计包。
+首页环境自检显示额外组件状态；源码版可修复缺失的 Python PDF 适配器，CLI 也可
+运行 `py -3 critic_runner.py doctor --repair`。Tesseract、语言包和 LibreOffice 需另行
+安装。安装器的自动备份不包括旧研究项目和未指定的自定义项目库，详见便携版说明。
 
 ## 专业研究 / 高级 CLI
 
@@ -134,7 +153,7 @@ py -3 critic_runner.py ir verify-project .\draft.argument-workbench
 
 ### 第 1 步：准备 Python
 
-需要 Python 3.10 或更高版本。在终端里检查：
+源码版支持 Python 3.10–3.14。在终端里检查：
 
 ```powershell
 # Windows PowerShell
@@ -146,7 +165,9 @@ py -3 --version
 python3 --version
 ```
 
-只要显示 `Python 3.10`、`3.11`、`3.12`、`3.13`、`3.14` 或更高版本即可。Windows 如果提示找不到 `py`，安装 [Python](https://www.python.org/downloads/) 时勾选 **Add Python to PATH**；macOS/Linux 如果提示找不到 `python3`，先用系统的软件管理器安装 Python 3。
+显示 `Python 3.10`、`3.11`、`3.12`、`3.13` 或 `3.14` 即在声明范围内；后续版本尚未验收。
+Windows 如果提示找不到 `py`，安装 [Python](https://www.python.org/downloads/) 时勾选
+**Add Python to PATH**；macOS/Linux 如果提示找不到 `python3`，先安装上述范围内的 Python。
 
 ### 第 2 步：下载项目
 
@@ -159,7 +180,8 @@ cd critic-divergence-tester
 
 不会用 Git：打开 [项目主页](https://github.com/UYMIDGameStudio/critic-divergence-tester)，点击 **Code → Download ZIP**，解压后在该文件夹里打开终端。
 
-本项目没有第三方依赖，因此不需要运行 `pip install`。
+下面的旧文本审查流程无需额外 Python 包。PDF、扫描件和旧 Office/WPS 导入的
+组件要求见 [文档使用说明](docs/document-review-studio.md)。
 
 先运行一次自检，确认 Python、协议文件、学术线配置和当前目录都能正常使用：
 
@@ -782,7 +804,7 @@ py -3 critic_runner.py ir ui $project
 
 先让工具为原稿生成一份**抽取提示词**：
 
-以下命令只需要 Python 3.10 或更高版本。**不要原样输入 `path/to/draft.md`**：它只是文档里的占位写法，仓库中没有这个文件。Windows PowerShell 最不容易输错的方法是先让终端询问真实路径：
+以下命令使用 Python 3.10–3.14。**不要原样输入 `path/to/draft.md`**：它只是文档里的占位写法，仓库中没有这个文件。Windows PowerShell 最不容易输错的方法是先让终端询问真实路径：
 
 ```powershell
 $article = Read-Host "请输入文章的真实完整路径（也可以把文件拖进窗口）"

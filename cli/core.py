@@ -387,20 +387,34 @@ def resolve_manuscript_path(value: object) -> Path:
     return path
 
 
-def read_manuscript_utf8(path: Path) -> tuple[str, bytes]:
+def read_manuscript(path: Path, encoding: str | None = None) -> tuple[str, bytes]:
+    """Decode source text without changing the bytes used by archive hashes."""
+    from document_text_encoding import TextDecodingError, decode_document_text
+
+    raw = path.read_bytes()
     try:
-        text, raw = read_utf8(path)
-    except UnicodeDecodeError as exc:
+        decoded = decode_document_text(raw, encoding)
+    except TextDecodingError as exc:
         raise ValueError(
-            f"稿件不是 UTF-8 编码: {path}\n"
-            "请用记事本的“另存为”功能选择 UTF-8 后重试。"
+            f"无法解码稿件: {path}\n{exc}\n"
+            "请使用 --encoding 指定原文件的实际编码后重试。"
         ) from exc
-    if not text.strip():
+    if not decoded.text.strip():
         raise ValueError(
             f"稿件文件是空的，无法抽取或审查: {path}\n"
-            "请先用记事本粘贴正文并保存为 UTF-8，然后重新运行命令。"
+            "请先加入正文并保存，然后重新运行命令。"
         )
-    return text, raw
+    if decoded.ambiguous:
+        raise ValueError(
+            f"稿件编码存在歧义: {path}\n"
+            "请使用 --encoding 明确选择: " + ", ".join(decoded.candidates)
+        )
+    return decoded.text, raw
+
+
+def read_manuscript_utf8(path: Path) -> tuple[str, bytes]:
+    """Compatibility entry point for callers explicitly requiring UTF-8."""
+    return read_manuscript(path, "utf-8-sig")
 
 
 def atomic_write_bytes(path: Path, data: bytes) -> None:

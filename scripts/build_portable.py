@@ -1,0 +1,92 @@
+"""Build a versioned portable bundle. Requires the pinned release tooling."""
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import importlib.metadata
+import os
+import platform
+import zipfile
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output", type=Path, default=ROOT / "dist")
+    args = parser.parse_args()
+    sys.path.insert(0, str(ROOT))
+    from project_lifecycle import APP_VERSION
+    label = f"DocumentReviewStudio-{APP_VERSION}-{sys.platform}"
+    output = args.output.resolve()
+    target = output / label
+    output.mkdir(parents=True, exist_ok=True)
+    from project_lock import project_mutation_lock
+    with project_mutation_lock(output), tempfile.TemporaryDirectory(prefix="studio-build-", dir=output) as temp:
+        if target.exists():
+            raise SystemExit("Output exists; choose a new output directory to preserve the earlier release")
+        work = Path(temp)
+        release = work / label
+        release.mkdir()
+        command = [sys.executable, "-m", "PyInstaller", "--onedir", "--name", "DocumentReviewStudio", "--distpath", str(work / "dist"), "--workpath", str(work / "build"), "--specpath", str(work), "--paths", str(ROOT), "--noupx"]
+        for name in ("fitz", "pymupdf", "pytesseract", "PIL", "pytest"):
+            command += ["--exclude-module", name]
+        command += ["--hidden-import", "pypdf", "--collect-all", "pypdfium2", "--collect-all", "pypdfium2_raw"]
+        for path in [*ROOT.glob("*.md"), ROOT / "ir", ROOT / "schemas", ROOT / "studio_web", ROOT / "LICENSE"]:
+            command += ["--add-data", f"{path}:{path.name if path.is_dir() else '.'}"]
+        command.append(str(ROOT / "studio_launcher.py"))
+        subprocess.run(command, cwd=ROOT, check=True)
+        bundle = work / "dist" / "DocumentReviewStudio"
+        executable = bundle / ("DocumentReviewStudio.exe" if sys.platform == "win32" else "DocumentReviewStudio")
+        subprocess.run([str(executable), "--self-test"], cwd=work, check=True, timeout=60)
+        shutil.copy2(ROOT / "LICENSE", bundle / "LICENSE")
+        shutil.copytree(ROOT / "docs", bundle / "docs")
+        guide = (ROOT / "docs" / "portable-guide.md").read_text(encoding="utf-8")
+        for name in ("document-review-studio.md", "release-engineering-0.2.1.md", "release-engineering-0.2.2.md"):
+            guide = guide.replace("(" + name, "(docs/" + name)
+        (bundle / "使用说明.md").write_text(guide, encoding="utf-8")
+        if sys.platform == "win32":
+            shutil.copy2(ROOT / "scripts" / "install-portable.ps1", bundle / "安装或升级.ps1")
+            shutil.copy2(ROOT / "scripts" / "uninstall-portable.ps1", bundle / "卸载程序.ps1")
+            shutil.copy2(ROOT / "scripts" / "portable-common.ps1", bundle / "portable-common.ps1")
+        notices = bundle / "third-party-licenses"
+        notices.mkdir()
+        for name in ("pyinstaller", "pypdf", "pypdfium2"):
+            distribution = importlib.metadata.distribution(name)
+            for file in distribution.files or []:
+                if any(part.lower().startswith(("license", "copying")) for part in file.parts):
+                    source = Path(distribution.locate_file(file))
+                    if source.is_file():
+                        destination = notices / name / str(file).replace("/", "_")
+                        destination.parent.mkdir(exist_ok=True)
+                        shutil.copy2(source, destination)
+        python_license = Path(sys.base_prefix) / "LICENSE.txt"
+        if python_license.is_file():
+            shutil.copy2(python_license, notices / "Python-LICENSE.txt")
+        manifest = {"version": APP_VERSION, "platform": sys.platform, "signed": False,
+                    "build": {"python": platform.python_version(), "architecture": platform.machine(),
+                              "dependencies": {name: importlib.metadata.version(name) for name in ("pyinstaller", "pyinstaller-hooks-contrib", "pypdf", "pypdfium2")}},
+                    "files": {path.relative_to(bundle).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted(bundle.rglob("*")) if path.is_file()}}
+        (bundle / "release-manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        app = release / "app"
+        os.rename(bundle, app)
+        archive = release / (label + ".zip")
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zipped:
+            for path in sorted(app.rglob("*")):
+                if path.is_file():
+                    zipped.write(path, label + "/" + path.relative_to(app).as_posix())
+        with zipfile.ZipFile(archive) as zipped:
+            if zipped.testzip() is not None:
+                raise RuntimeError("Generated archive failed its checksum verification")
+        (release / (label + ".sha256")).write_text(hashlib.sha256(archive.read_bytes()).hexdigest() + "  " + archive.name + "\n", encoding="utf-8")
+        # Publish the app, archive and checksum together only after all steps pass.
+        os.rename(release, target)
+    print(target / archive.name)
+
+
+if __name__ == "__main__":
+    main()

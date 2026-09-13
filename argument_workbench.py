@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 import re
 import shutil
@@ -12,6 +13,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
@@ -40,6 +42,8 @@ from project_lock import (
     ProjectMutationLockedError,
     project_mutation_lock as _shared_project_mutation_lock,
 )
+from document_text_encoding import decode_document_text, normalize_encoding
+from project_lifecycle import before_write, recover, transaction
 
 
 DOCUMENT_ID = "D1"
@@ -88,13 +92,24 @@ def parse_json_strict(data: bytes) -> object:
     except UnicodeDecodeError as exc:
         raise WorkbenchError(f"JSON is not UTF-8: {exc}") from exc
     try:
-        return json.loads(text, object_pairs_hook=_json_object)
-    except (json.JSONDecodeError, DuplicateJsonKeyError) as exc:
+        def finite_number(token):
+            number = float(token)
+            if not math.isfinite(number):
+                raise ValueError("JSON numbers must be finite")
+            return number
+
+        value = json.loads(text, object_pairs_hook=_json_object,
+                           parse_constant=finite_number, parse_float=finite_number)
+        # Escaped unpaired surrogates pass json.loads but cannot be persisted
+        # or rendered as UTF-8. Reject them before assigning a valid status.
+        json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        return value
+    except (ValueError, UnicodeError, RecursionError) as exc:
         raise WorkbenchError(f"response is not strict JSON: {exc}") from exc
 
 
 def json_bytes(value: object) -> bytes:
-    return (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    return (json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n").encode("utf-8")
 
 
 def utc_now() -> str:
@@ -102,6 +117,7 @@ def utc_now() -> str:
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
+    before_write(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
@@ -232,6 +248,8 @@ def workspace_paths(
     version_id: str | None = None,
 ) -> WorkspacePaths:
     if isinstance(raw, WorkspacePaths):
+        if (raw.root / ".recovery").exists():
+            recover(raw.root)
         if version_id is None:
             return raw
         return WorkspacePaths(raw.root, _validate_version_id(version_id))
@@ -239,6 +257,8 @@ def workspace_paths(
     if candidate.is_symlink():
         raise WorkbenchError("project directory must not be a symbolic link")
     root = candidate.resolve()
+    if (root / ".recovery").exists():
+        recover(root)
     selected = _validate_version_id(version_id) if version_id is not None else None
     if selected is None:
         versions = list_version_ids(root)
@@ -322,20 +342,250 @@ def _append_history_version(root: Path, version: dict[str, Any], version_bytes: 
     _atomic_write(path, json_bytes(updated))
 
 
+# Commit e9126c8 introduced mandatory history indexes. Earlier source bindings
+# had exactly three fields. These are compatibility signals, not a signature or
+# protection against a party rewriting every file and its hashes on disk.
+_HISTORY_INDEX_INTRODUCED_AT = "2026-08-25T11:39:38+00:00"
+_HISTORY_MIGRATION_NAME = "project-history-migration.json"
+
+
+def _history_timestamp(value: object) -> datetime:
+    if not isinstance(value, str):
+        raise WorkbenchError("history timestamp must be an ISO timestamp")
+    try:
+        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise WorkbenchError("history timestamp must be an ISO timestamp") from exc
+    if timestamp.tzinfo is None:
+        raise WorkbenchError("history timestamp must include its timezone")
+    return timestamp
+
+
+def _derive_legacy_history_index(paths: WorkspacePaths, versions: list[str]) -> dict[str, Any]:
+    """Validate old-format evidence and derive an in-memory index, without writes.
+
+    The caller still runs every existing lifecycle verifier. This helper only
+    recognizes the historical storage format and validates source/version binds;
+    a missing file alone never establishes legacy compatibility.
+    """
+    cutoff = _history_timestamp(_HISTORY_INDEX_INTRODUCED_AT)
+    roots = []
+    for path in (paths.project, paths.document):
+        value, _ = _read_json(path)
+        problems = validate_artifact(value)
+        if problems:
+            raise WorkbenchError("invalid legacy root record: " + "; ".join(problems))
+        roots.append(value)
+    created = [_history_timestamp(record["provenance"]["created_at"]) for record in roots]
+    if created[0] != created[1] or created[0] >= cutoff:
+        raise WorkbenchError("missing history index is not compatible with historical project creation")
+    if versions != [f"V{index}" for index in range(1, len(versions) + 1)] or not versions:
+        raise WorkbenchError("legacy DocumentVersion IDs must be continuous from V1")
+    entries = []
+    previous_time, previous_hash = created[0], None
+    for sequence, version_id in enumerate(versions, 1):
+        version_paths = WorkspacePaths(paths.root, version_id)
+        version, version_bytes = _read_json(version_paths.version)
+        problems = validate_artifact(version)
+        if problems:
+            raise WorkbenchError("invalid legacy version record: " + "; ".join(problems))
+        if set(version["source"]) != {"name", "relative_path", "sha256"}:
+            raise WorkbenchError("missing history index is not compatible with this source-binding format")
+        version_time = _history_timestamp(version["provenance"]["created_at"])
+        if version_time >= cutoff or version_time < previous_time or (sequence == 1 and version_time != created[0]):
+            raise WorkbenchError("missing history index is not compatible with historical version dates")
+        _workspace_source(version_paths)
+        entry = {
+            "sequence": sequence,
+            "version_id": version_id,
+            "version_sha256": sha256_bytes(version_bytes),
+            "source_sha256": version["source"]["sha256"],
+            "previous_entry_sha256": previous_hash,
+            "created_at": version["provenance"]["created_at"],
+        }
+        entry["entry_sha256"] = _history_entry_hash(entry)
+        entries.append(entry)
+        previous_time, previous_hash = version_time, entry["entry_sha256"]
+    return {"artifact": "argument-project-history-index", "schema_version": 1,
+            "lifecycle": "append-only", "entries": entries,
+            "head_sha256": previous_hash, "next_sequence": len(entries) + 1}
+
+
+def _migrate_legacy_history_index(paths: WorkspacePaths, versions: list[str]) -> None:
+    """Called inside the version transaction only after all old records verify."""
+    if paths.history_index.exists() or paths.history_index.is_symlink():
+        return
+    problems = verify_project_versions(paths.root)
+    if problems:
+        raise WorkbenchError("legacy history cannot be migrated: " + "; ".join(problems))
+    index = _derive_legacy_history_index(paths, versions)
+    receipt = {
+        "artifact": "argument-project-history-migration", "schema_version": 1,
+        "algorithm": "legacy-version-chain-index-v1", "migrated_at": utc_now(),
+        "legacy_cutoff": _HISTORY_INDEX_INTRODUCED_AT,
+        "project_sha256": sha256_bytes(paths.project.read_bytes()),
+        "document_sha256": sha256_bytes(paths.document.read_bytes()),
+        "legacy_version_ids": versions,
+        "legacy_prefix_sha256": sha256_bytes(json_bytes(index)),
+    }
+    receipt_bytes = json_bytes(receipt)
+    index["migration_sha256"] = sha256_bytes(receipt_bytes)
+    _write_new(paths.root / _HISTORY_MIGRATION_NAME, receipt_bytes)
+    _write_new(paths.history_index, json_bytes(index))
+
+
+def _verify_history_migration(paths: WorkspacePaths, versions: list[str], history: dict[str, Any]) -> list[str]:
+    migration_path = paths.root / _HISTORY_MIGRATION_NAME
+    if "migration_sha256" not in history:
+        return ["project history migration receipt is not bound by its index"] if migration_path.exists() or migration_path.is_symlink() else []
+    try:
+        receipt, receipt_bytes = _read_json(migration_path)
+        expected_fields = {"artifact", "schema_version", "algorithm", "migrated_at", "legacy_cutoff",
+                           "project_sha256", "document_sha256", "legacy_version_ids", "legacy_prefix_sha256"}
+        legacy_versions = receipt.get("legacy_version_ids")
+        if (set(receipt) != expected_fields or receipt.get("artifact") != "argument-project-history-migration"
+                or type(receipt.get("schema_version")) is not int or receipt["schema_version"] != 1
+                or receipt.get("algorithm") != "legacy-version-chain-index-v1"
+                or receipt.get("legacy_cutoff") != _HISTORY_INDEX_INTRODUCED_AT
+                or not isinstance(legacy_versions, list) or not legacy_versions
+                or legacy_versions != versions[:len(legacy_versions)]):
+            raise WorkbenchError("project history migration receipt fields are invalid")
+        _history_timestamp(receipt["migrated_at"])
+        if sha256_bytes(receipt_bytes) != history["migration_sha256"]:
+            raise WorkbenchError("project history migration receipt hash mismatch")
+        if (receipt["project_sha256"] != sha256_bytes(paths.project.read_bytes())
+                or receipt["document_sha256"] != sha256_bytes(paths.document.read_bytes())):
+            raise WorkbenchError("project history migration root binding mismatch")
+        prefix = _derive_legacy_history_index(paths, legacy_versions)
+        if (receipt["legacy_prefix_sha256"] != sha256_bytes(json_bytes(prefix))
+                or history["entries"][:len(legacy_versions)] != prefix["entries"]):
+            raise WorkbenchError("project history migration legacy prefix mismatch")
+        return []
+    except (OSError, WorkbenchError, KeyError, TypeError, ValueError) as exc:
+        return [f"project history migration: {exc}"]
+
+
+def _verify_history_index(paths: WorkspacePaths, versions: list[str]) -> list[str]:
+    if not paths.history_index.exists() and not paths.history_index.is_symlink():
+        if (paths.root / _HISTORY_MIGRATION_NAME).exists() or (paths.root / _HISTORY_MIGRATION_NAME).is_symlink():
+            return ["project history index is missing after a recorded migration"]
+        try:
+            _derive_legacy_history_index(paths, versions)
+            return []
+        except (OSError, WorkbenchError, KeyError, TypeError, ValueError) as exc:
+            return [f"project history index is missing; legacy compatibility failed: {exc}"]
+    try:
+        history, _ = _read_json(paths.history_index)
+    except (OSError, WorkbenchError) as exc:
+        return [f"project history index: {exc}"]
+    expected_fields = {"artifact", "schema_version", "lifecycle", "entries", "head_sha256", "next_sequence"}
+    if "migration_sha256" in history:
+        expected_fields.add("migration_sha256")
+    entries = history.get("entries")
+    if (set(history) != expected_fields or history.get("artifact") != "argument-project-history-index"
+            or type(history.get("schema_version")) is not int or history["schema_version"] != 1
+            or history.get("lifecycle") != "append-only" or not isinstance(entries, list)
+            or type(history.get("next_sequence")) is not int):
+        return ["project history index fields are invalid"]
+    errors, indexed_versions = [], []
+    previous_hash = None
+    entry_fields = {"sequence", "version_id", "version_sha256", "source_sha256", "previous_entry_sha256", "created_at", "entry_sha256"}
+    for sequence, entry in enumerate(entries, 1):
+        if not isinstance(entry, dict) or set(entry) != entry_fields:
+            errors.append(f"project history index entry {sequence} fields are invalid")
+            continue
+        if type(entry["sequence"]) is not int or entry["sequence"] != sequence:
+            errors.append(f"project history index sequence gap at {sequence}")
+        if entry["previous_entry_sha256"] != previous_hash:
+            errors.append(f"project history index parent mismatch at {sequence}")
+        if entry["entry_sha256"] != _history_entry_hash(entry):
+            errors.append(f"project history index hash mismatch at {sequence}")
+        try:
+            _history_timestamp(entry["created_at"])
+        except WorkbenchError as exc:
+            errors.append(f"project history index entry {sequence}: {exc}")
+        version_id = entry["version_id"]
+        if not isinstance(version_id, str) or re.fullmatch(r"V[1-9][0-9]*", version_id) is None:
+            errors.append(f"project history index entry {sequence} version ID is invalid")
+            continue
+        indexed_versions.append(version_id)
+        try:
+            record, record_bytes = _read_json(paths.versions_dir / version_id / "document-version.json")
+            if sha256_bytes(record_bytes) != entry["version_sha256"]:
+                errors.append(f"project history index version hash mismatch: {version_id}")
+            if not isinstance(record.get("source"), dict) or record["source"].get("sha256") != entry["source_sha256"]:
+                errors.append(f"project history index source hash mismatch: {version_id}")
+        except (OSError, WorkbenchError) as exc:
+            errors.append(f"project history index artifact {version_id}: {exc}")
+        previous_hash = entry["entry_sha256"]
+    if indexed_versions != versions:
+        errors.append("project history index version set does not match on-disk versions")
+    if history["head_sha256"] != previous_hash:
+        errors.append("project history index head mismatch")
+    if history["next_sequence"] != len(entries) + 1:
+        errors.append("project history index next sequence mismatch")
+    errors.extend(_verify_history_migration(paths, versions, history))
+    return errors
+
+
+def _decode_new_source(source_bytes: bytes, encoding: str | None) -> tuple[str, dict[str, Any]]:
+    try:
+        requested = normalize_encoding(encoding)
+        decoded = decode_document_text(source_bytes, requested)
+    except ValueError as exc:
+        raise WorkbenchError(f"manuscript cannot be decoded: {exc}") from exc
+    if decoded.ambiguous:
+        raise WorkbenchError(
+            "manuscript encoding is ambiguous; select an explicit encoding: "
+            + ", ".join(decoded.candidates)
+        )
+    return decoded.text, {
+        "encoding": decoded.encoding,
+        "requested_encoding": requested,
+        "text_sha256": sha256_bytes(decoded.text.encode("utf-8")),
+        "ambiguous": decoded.ambiguous,
+        "candidates": list(decoded.candidates),
+    }
+
+
+def _source_encoding(version: dict[str, Any]) -> str:
+    receipt = version["source"].get("decoding")
+    return receipt["encoding"] if receipt is not None else "utf-8-sig"
+
+
+def _decoded_workspace_text(version: dict[str, Any], source_bytes: bytes) -> str:
+    try:
+        text = decode_document_text(source_bytes, _source_encoding(version)).text
+    except ValueError as exc:
+        raise WorkbenchError(f"bound manuscript decoding failed: {exc}") from exc
+    receipt = version["source"].get("decoding")
+    if receipt is not None:
+        if receipt["ambiguous"]:
+            raise WorkbenchError("bound manuscript encoding requires explicit confirmation")
+        if sha256_bytes(text.encode("utf-8")) != receipt["text_sha256"]:
+            raise WorkbenchError("decoded manuscript text SHA-256 does not match DocumentVersion")
+        if receipt["requested_encoding"] is not None:
+            try:
+                requested = decode_document_text(source_bytes, receipt["requested_encoding"])
+            except ValueError as exc:
+                raise WorkbenchError(f"requested manuscript encoding cannot be reproduced: {exc}") from exc
+            if requested.encoding != receipt["encoding"] or requested.text != text:
+                raise WorkbenchError("requested manuscript encoding does not match its decoding receipt")
+    return text
+
+
 def initialize_workspace(
     manuscript: Path,
     project_dir: Path,
     *,
     title: str | None = None,
+    encoding: str | None = None,
 ) -> WorkspacePaths:
     source_path = manuscript.resolve()
     if manuscript.is_symlink() or not source_path.is_file():
         raise WorkbenchError(f"manuscript must be a regular non-symlink file: {source_path}")
     source_bytes = source_path.read_bytes()
-    try:
-        source_text = source_bytes.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise WorkbenchError(f"manuscript is not UTF-8: {exc}") from exc
+    source_text, decoding = _decode_new_source(source_bytes, encoding)
     if not source_text.strip():
         raise WorkbenchError("manuscript must not be empty")
     if not _safe_source_name(source_path.name):
@@ -347,7 +597,7 @@ def initialize_workspace(
     if project_dir.is_symlink():
         raise WorkbenchError("project path must not be a symbolic link")
     if target.exists():
-        paths = WorkspacePaths(target)
+        paths = workspace_paths(WorkspacePaths(target))
         errors = verify_workspace(paths, allow_incomplete=True)
         if errors:
             raise WorkbenchError("existing project is invalid: " + "; ".join(errors))
@@ -358,6 +608,11 @@ def initialize_workspace(
             or archived_source.read_bytes() != source_bytes
         ):
             raise WorkbenchError("existing project is bound to different manuscript bytes")
+        if _decoded_workspace_text(version, source_bytes) != source_text or (
+            "decoding" in version["source"]
+            and _source_encoding(version) != decoding["encoding"]
+        ):
+            raise WorkbenchError("existing project is bound to a different manuscript decoding")
         return paths
 
     created_at = utc_now()
@@ -409,6 +664,7 @@ def initialize_workspace(
                 "name": source_path.name,
                 "relative_path": source_relative,
                 "sha256": sha256_bytes(source_bytes),
+                "decoding": decoding,
             },
             "parent_version": None,
         }
@@ -439,11 +695,22 @@ def initialize_workspace(
     return WorkspacePaths(target)
 
 
+def _version_transaction(operation):
+    @wraps(operation)
+    def mutate(project_dir, *args, **kwargs):
+        root = project_dir.root if isinstance(project_dir, WorkspacePaths) else Path(project_dir)
+        with transaction(root):
+            return operation(project_dir, *args, **kwargs)
+    return mutate
+
+
+@_version_transaction
 def import_document_version(
     project_dir: WorkspacePaths | Path | str,
     manuscript: Path | str,
     *,
     parent_version: str | None = None,
+    encoding: str | None = None,
 ) -> WorkspacePaths:
     """Append one immutable manuscript version without changing earlier versions."""
     root_paths = workspace_paths(project_dir)
@@ -480,17 +747,17 @@ def import_document_version(
             f"manuscript must be a regular non-symlink file: {resolved_source}"
         )
     source_bytes = resolved_source.read_bytes()
-    try:
-        source_text = source_bytes.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise WorkbenchError(f"manuscript is not UTF-8: {exc}") from exc
+    source_text, decoding = _decode_new_source(source_bytes, encoding)
     if not source_text.strip():
         raise WorkbenchError("manuscript must not be empty")
     if not _safe_source_name(resolved_source.name):
         raise WorkbenchError("manuscript filename is not a safe basename")
-    _, parent_source_bytes, _ = _workspace_source(parent_paths)
-    if source_bytes == parent_source_bytes:
-        raise WorkbenchError("new DocumentVersion must differ from its parent source bytes")
+    parent_version_value, parent_source_bytes, _ = _workspace_source(parent_paths)
+    if (source_bytes == parent_source_bytes
+            and _decoded_workspace_text(parent_version_value, parent_source_bytes) == source_text
+            and ("decoding" not in parent_version_value["source"]
+                 or _source_encoding(parent_version_value) == decoding["encoding"])):
+        raise WorkbenchError("new DocumentVersion must differ from its parent source bytes or decoding")
 
     project, _ = _read_json(root_paths.project)
     document, document_bytes = _read_json(root_paths.document)
@@ -518,6 +785,7 @@ def import_document_version(
             "name": resolved_source.name,
             "relative_path": source_relative,
             "sha256": sha256_bytes(source_bytes),
+            "decoding": decoding,
         },
         "parent_version": selected_parent,
     }
@@ -533,6 +801,7 @@ def import_document_version(
         source_name=resolved_source.name,
         source_sha256=sha256_bytes(source_bytes),
     ).encode("utf-8")
+    _migrate_legacy_history_index(root_paths, versions)
     temporary = Path(
         tempfile.mkdtemp(prefix=f".{next_id}.", dir=target_paths.versions_dir)
     )
@@ -556,12 +825,16 @@ def import_document_version(
 
 def _workspace_source(paths: WorkspacePaths) -> tuple[dict[str, Any], bytes, Path]:
     version, _ = _read_json(paths.version)
+    errors = validate_artifact(version)
+    if errors:
+        raise WorkbenchError("invalid DocumentVersion: " + "; ".join(errors))
     source_path = paths.version_dir / str(version["source"]["relative_path"])
     if source_path.is_symlink() or not source_path.is_file():
         raise WorkbenchError("workspace source is missing or is a symbolic link")
     source_bytes = source_path.read_bytes()
     if sha256_bytes(source_bytes) != version["source"]["sha256"]:
         raise WorkbenchError("workspace source hash does not match document-version")
+    _decoded_workspace_text(version, source_bytes)
     return version, source_bytes, source_path
 
 
@@ -597,7 +870,7 @@ def _structurally_admissible_ir(value: object) -> list[str]:
     if set(value) != IR_KEYS:
         errors.append("raw IR must contain exactly the Argument IR v1 top-level fields")
         return errors
-    if value.get("schema_version") != 1 or value.get("artifact") != "argument-ir":
+    if type(value.get("schema_version")) is not int or value["schema_version"] != 1 or value.get("artifact") != "argument-ir":
         errors.append("raw IR must identify itself as argument-ir schema v1")
     expected = {
         "claims": ("C", CLAIM_KEYS),
@@ -633,6 +906,7 @@ def classify_raw_ir(
     *,
     source_bytes: bytes,
     source_name: str,
+    source_encoding: str | None = None,
 ) -> tuple[str, list[str]]:
     admission_errors = _structurally_admissible_ir(value)
     if admission_errors:
@@ -643,7 +917,7 @@ def classify_raw_ir(
     if source != expected_source:
         return "unusable", ["raw IR source binding does not match this DocumentVersion"]
     full_errors = validate_argument_ir(
-        value, source_bytes=source_bytes, source_name=source_name
+        value, source_bytes=source_bytes, source_name=source_name, source_encoding=source_encoding
     )
     return ("valid" if not full_errors else "correctable"), full_errors
 
@@ -682,6 +956,7 @@ def collect_raw_attempt(
             raw_value,
             source_bytes=source_bytes,
             source_name=str(version["source"]["name"]),
+            source_encoding=_source_encoding(version),
         )
     attempt_id = _next_attempt_id(paths)
     attempt_path = paths.raw_dir / attempt_id
@@ -1076,6 +1351,7 @@ def materialize_reviewed(
             candidate,
             source_bytes=source_bytes,
             source_name=str(version["source"]["name"]),
+            source_encoding=_source_encoding(version),
         )
     except ArgumentIRError as exc:
         raise WorkbenchError(f"Reviewed IR is not yet valid: {exc}") from exc
@@ -1356,7 +1632,7 @@ def verify_workspace(
         try:
             prompt_protocol = _matching_extraction_prompt_protocol(
                 paths.prompt.read_bytes(),
-                source_bytes.decode("utf-8-sig"),
+                _decoded_workspace_text(version, source_bytes),
                 source_name=str(version["source"]["name"]),
                 source_sha256=str(version["source"]["sha256"]),
             )
@@ -1364,7 +1640,7 @@ def verify_workspace(
                 errors.append(
                     "extraction-prompt.md is not a supported deterministic source-bound prompt"
                 )
-        except (UnicodeDecodeError, ArgumentIRError) as exc:
+        except (WorkbenchError, ArgumentIRError) as exc:
             errors.append(f"cannot reproduce extraction prompt: {exc}")
 
     for label, directory in (
@@ -1407,6 +1683,7 @@ def verify_workspace(
                     raw_value,
                     source_bytes=source_bytes,
                     source_name=str(version["source"]["name"]),
+                    source_encoding=_source_encoding(version),
                 )
                 expected_validation = {
                     "status": status,
@@ -1547,56 +1824,11 @@ def verify_project_versions(project_dir: WorkspacePaths | Path | str) -> list[st
         return [str(exc)]
     if not versions:
         return ["project has no DocumentVersion"]
-    try:
-        history, _ = _read_json(root_paths.history_index)
-    except (OSError, WorkbenchError) as exc:
-        errors.append(f"project history index: {exc}")
-        history = {}
-    expected_history_fields = {
-        "artifact", "schema_version", "lifecycle", "entries", "head_sha256", "next_sequence",
-    }
-    entries = history.get("entries", []) if isinstance(history, dict) else []
-    if (
-        set(history) != expected_history_fields
-        or history.get("artifact") != "argument-project-history-index"
-        or history.get("schema_version") != 1
-        or history.get("lifecycle") != "append-only"
-        or not isinstance(entries, list)
-    ):
-        errors.append("project history index fields are invalid")
-        entries = []
-    indexed_versions: list[str] = []
-    previous_entry_hash: str | None = None
-    for expected_sequence, entry in enumerate(entries, 1):
-        if not isinstance(entry, dict):
-            errors.append(f"project history index entry {expected_sequence} is invalid")
-            continue
-        if entry.get("sequence") != expected_sequence:
-            errors.append(f"project history index sequence gap at {expected_sequence}")
-        if entry.get("previous_entry_sha256") != previous_entry_hash:
-            errors.append(f"project history index parent mismatch at {expected_sequence}")
-        if entry.get("entry_sha256") != _history_entry_hash(entry):
-            errors.append(f"project history index hash mismatch at {expected_sequence}")
-        version_id = str(entry.get("version_id", ""))
-        indexed_versions.append(version_id)
-        version_path = root_paths.versions_dir / version_id / "document-version.json"
-        if version_path.is_symlink() or not version_path.is_file():
-            errors.append(f"project history index artifact missing: {version_id}")
-        else:
-            version_bytes = version_path.read_bytes()
-            if sha256_bytes(version_bytes) != entry.get("version_sha256"):
-                errors.append(f"project history index version hash mismatch: {version_id}")
-        previous_entry_hash = entry.get("entry_sha256") if isinstance(entry.get("entry_sha256"), str) else None
-    if indexed_versions != versions:
-        errors.append("project history index version set does not match on-disk versions")
-    if history.get("head_sha256") != previous_entry_hash:
-        errors.append("project history index head mismatch")
-    if history.get("next_sequence") != len(entries) + 1:
-        errors.append("project history index next sequence mismatch")
+    errors.extend(_verify_history_index(root_paths, versions))
     numbers = [int(version_id[1:]) for version_id in versions]
     if numbers != list(range(1, len(versions) + 1)):
         errors.append("DocumentVersion IDs must be continuous from V1")
-    previous_source_hash: str | None = None
+    previous_record: dict[str, Any] | None = None
     for index, version_id in enumerate(versions):
         paths = WorkspacePaths(root_paths.root, version_id)
         version_errors = verify_workspace(paths)
@@ -1611,9 +1843,18 @@ def verify_project_versions(project_dir: WorkspacePaths | Path | str) -> list[st
                 f"{version_id}: parent_version must be {expected_parent!r}"
             )
         source_hash = record.get("source", {}).get("sha256")
-        if previous_source_hash is not None and source_hash == previous_source_hash:
-            errors.append(f"{version_id}: source bytes duplicate its parent version")
-        previous_source_hash = str(source_hash)
+        if previous_record is not None and source_hash == previous_record.get("source", {}).get("sha256"):
+            try:
+                _, source_bytes, _ = _workspace_source(paths)
+                same_text = _decoded_workspace_text(previous_record, source_bytes) == _decoded_workspace_text(record, source_bytes)
+                same_encoding = ("decoding" not in previous_record["source"]
+                                 or _source_encoding(previous_record) == _source_encoding(record))
+                if same_text and same_encoding:
+                    errors.append(f"{version_id}: source bytes and decoding duplicate its parent version")
+            except (OSError, WorkbenchError, KeyError, TypeError):
+                # The workspace verifier already reports malformed source bindings.
+                pass
+        previous_record = record
     try:
         from argument_versioning import verify_structural_diffs
 

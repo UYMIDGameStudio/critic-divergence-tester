@@ -1,6 +1,10 @@
 """Loopback-only browser application for Document Review Studio."""
 
 from __future__ import annotations
+import re
+import tempfile
+from project_lifecycle import APP_VERSION, create_backup, restore_backup, transaction, _atomic
+from project_lock import ProjectMutationLockedError
 
 import base64
 import io
@@ -17,14 +21,16 @@ import zipfile
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlsplit, quote
 
+from argument_ui import LocalHTTPProtocolError, LocalHTTPServer, LocalRequestHandler
+from argument_workbench import WorkbenchError, parse_json_strict
 from document_review_ingest import doctor_dependencies, repair_dependencies
 from document_review_studio import DocumentReviewProject, ReviewStudioError
 from document_review_ui_shell import SHELL_TEMPLATE
+from studio_ui_state import UIStateConflict, document_scope, read_ui_draft, save_ui_draft, read_ui_language, save_ui_language
 from review_profiles import CRITIC_LABELS, DISCIPLINES, RESEARCH_TYPES
 
 
@@ -33,20 +39,10 @@ MAX_REQUEST_BYTES = 42 * 1024 * 1024
 
 
 def _strict_json_payload(data: bytes) -> object:
-    def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
-        value: dict[str, object] = {}
-        for key, item in pairs:
-            if key in value:
-                raise ReviewStudioError(f"JSON 包含重复字段：{key}")
-            value[key] = item
-        return value
-
     try:
-        return json.loads(data.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
-    except UnicodeDecodeError as exc:
-        raise ReviewStudioError(f"请求不是 UTF-8：{exc}") from exc
-    except json.JSONDecodeError as exc:
-        raise ReviewStudioError(f"请求不是有效 JSON：{exc}") from exc
+        return parse_json_strict(data)
+    except WorkbenchError as exc:
+        raise ReviewStudioError(str(exc).replace("duplicate JSON key", "JSON 包含重复字段")) from exc
 
 
 def default_studio_data_dir() -> Path:
@@ -79,7 +75,9 @@ class StudioApp:
             try:
                 project = DocumentReviewProject(path)
                 manifest = project.manifest()
-                rows.append({"directory": path.name, "title": manifest.get("title", path.name), "source_name": manifest.get("source", {}).get("name", ""), "state": project.state()})
+                # Library metadata is a preview; opening a project performs full
+                # verification. Do not re-verify every project on each keystroke.
+                rows.append({"directory": path.name, "title": manifest.get("title", path.name), "source_name": manifest.get("source", {}).get("name", ""), "verification": "on-open"})
             except (OSError, ValueError, KeyError, ReviewStudioError):
                 rows.append({"directory": path.name, "title": path.name, "invalid": True})
         return rows
@@ -88,7 +86,8 @@ class StudioApp:
         selected = self.project.view() if self.project else None
         if selected is not None:
             selected["directory"] = self.project.root.name
-        return {"storage_path": str(self.data_dir), "projects": self.projects(), "selected": selected, "dependencies": doctor_dependencies(), "notice": self.notice}
+            selected["ui_draft"] = read_ui_draft(self.project)
+        return {"storage_path": str(self.data_dir), "projects": self.projects(), "selected": selected, "dependencies": doctor_dependencies(), "notice": self.notice, "app_version": APP_VERSION, "ui_language": read_ui_language(self.data_dir)}
 
     def _project_directory(self, directory: str, *, must_exist: bool) -> Path:
         if not isinstance(directory, str) or Path(directory).name != directory or not directory.endswith(".document-review-studio"):
@@ -108,9 +107,18 @@ class StudioApp:
 
     def delete_project(self, directory: str) -> "StudioApp":
         target = self._project_directory(directory, must_exist=True)
-        shutil.rmtree(target)
+        from project_lock import project_mutation_lock
+        with project_mutation_lock(self.data_dir), project_mutation_lock(target):
+            backup = create_backup(target, self.data_dir / "backups" / (target.name + "-" + secrets.token_hex(8) + ".zip"))
+            _atomic(target / ".deleting", str(backup).encode("utf-8"))
+        # Windows keeps the lock carrier open while locked. Rename under the
+        # library lock after releasing the project handle, then remove that copy.
+        with project_mutation_lock(self.data_dir):
+            trash = self.data_dir / (".deleted-" + secrets.token_hex(8))
+            os.replace(target, trash)
+            shutil.rmtree(trash)
         selected = None if self.project and self.project.root == target else self.project
-        return replace(self, project=selected, notice="本地项目已删除；此操作无法恢复。")
+        return replace(self, project=selected, notice=f"项目已删除；删除前的可恢复备份保存在：{backup}")
 
     def repair_environment(self, names: list[str] | None = None) -> "StudioApp":
         before = {row["name"]: bool(row["available"]) for row in doctor_dependencies()}
@@ -172,10 +180,39 @@ class StudioApp:
         title = payload.get("title")
         if title is not None and not isinstance(title, str):
             raise ReviewStudioError("标题必须是文本")
-        project = DocumentReviewProject.create(self.data_dir, filename=filename, content=content, title=title or None)
+        project = DocumentReviewProject.create(self.data_dir, filename=filename, content=content, title=title or None,
+            encoding=payload.get("encoding"), ocr_language=payload.get("ocr_language", "chi_sim+chi_tra+eng"))
         return replace(self, project=project, notice="文档已导入，请确认识别结果。")
 
     def act(self, payload: dict[str, Any]) -> "StudioApp":
+        expected = payload.get("project_directory")
+        if expected is not None and expected != (self.project.root.name if self.project else None):
+            raise ReviewStudioError("此页面的项目已变化，请刷新后继续，未提交到其他项目")
+        expected_scope = payload.get("document_scope")
+        request_id = payload.get("request_id")
+        if request_id is None or self.project is None or payload.get("action") in {"close_project", "delete_project", "restore_backup", "create_backup"}:
+            if expected_scope is not None and self.project and expected_scope != document_scope(self.project):
+                raise UIStateConflict("此页面的文档版本已变化，未提交修改；请先保存当前草稿再刷新")
+            return self._act(payload)
+        if not isinstance(request_id, str) or not re.fullmatch(r"[a-zA-Z0-9-]{16,80}", request_id):
+            raise ReviewStudioError("操作编号无效")
+        from document_review_studio import _write_tracked, _sha256, canonical_json
+        digest = _sha256(canonical_json({"action": payload.get("action"), "data": payload.get("data"), "document_scope": expected_scope}))
+        path = self.project.root / ".requests" / f"{request_id}.json"
+        with transaction(self.project.root):
+            self.project._ensure_writable()
+            if path.is_file():
+                saved = json.loads(path.read_text(encoding="utf-8"))
+                if saved.get("sha256") != digest:
+                    raise ReviewStudioError("同一操作编号不能重复用于不同内容")
+                return replace(self, notice=saved["notice"])
+            if expected_scope is not None and expected_scope != document_scope(self.project):
+                raise UIStateConflict("此页面的文档版本已变化，未提交修改；请先保存当前草稿再刷新")
+            result = self._act(payload)
+            _write_tracked(self.project.root, path, canonical_json({"sha256": digest, "notice": result.notice}), provenance="committed-ui-request")
+            return result
+
+    def _act(self, payload: dict[str, Any]) -> "StudioApp":
         action, data = payload.get("action"), payload.get("data", {})
         if not isinstance(action, str) or not isinstance(data, dict):
             raise ReviewStudioError("操作请求无效")
@@ -183,6 +220,17 @@ class StudioApp:
             return self.delete_project(str(data.get("directory", "")))
         if action == "close_project":
             return replace(self, project=None, notice=None)
+        if action == "restore_backup":
+            content = base64.b64decode(str(data.get("content_base64", "")), validate=True)
+            with tempfile.TemporaryDirectory(dir=self.data_dir) as temp:
+                archive = Path(temp) / "backup.zip"
+                archive.write_bytes(content)
+                restored = restore_backup(archive, self.data_dir)
+            return replace(self, project=DocumentReviewProject(restored), notice="备份已校验并恢复为独立项目；原项目保持不变。")
+        if action == "create_backup":
+            project = self.require_project()
+            path = create_backup(project.root, self.data_dir / "backups" / (project.root.name + "-" + secrets.token_hex(8) + ".zip"))
+            return replace(self, notice=f"已完成可校验备份：{path}")
         if action == "repair_environment":
             names = data.get("names")
             if names is not None and (not isinstance(names, list) or not all(isinstance(name, str) for name in names)):
@@ -197,7 +245,7 @@ class StudioApp:
         elif action == "confirm_context":
             project.confirm_context(data)
         elif action == "retry_extraction":
-            project.retry_extraction()
+            project.retry_extraction(encoding=data.get("encoding"), ocr_language=data.get("ocr_language"))
         elif action in {"run_audits", "run_local_prechecks"}:
             runs = project.run_local_prechecks(data.get("critics")) or []
             selected_critics = [run.critic for run in runs]
@@ -236,6 +284,14 @@ class StudioApp:
             notice = f"当前 AI 审查已导出：{output}"
         elif action == "decide_finding":
             project.decide_finding(str(data.get("finding_id", "")), str(data.get("decision", "")), reason=str(data.get("reason", "")), corrected_action=data.get("corrected_action"))
+        elif action == "correct_finding_location":
+            project.correct_finding_location(str(data.get("finding_id", "")), str(data.get("block_id", "")), reason=str(data.get("reason", "")))
+            notice = "定位已校正，请重新裁决该问题；旧批准不再授权新位置的修改。"
+        elif action == "decide_finding_batch":
+            project.decide_finding_batch(data.get("finding_ids"), str(data.get("decision", "")), reason=str(data.get("reason", "")))
+            notice = "已分别保存所选问题的人工决定，每条证据和审查理由保持独立。"
+        elif action == "import_revision_draft":
+            project.import_revision_draft(str(data.get("action_id", "")), str(data.get("response", "")))
         elif action == "prepare_bridge":
             project.prepare_revision_plan()
         elif action == "propose_revision_hunk":
@@ -250,6 +306,7 @@ class StudioApp:
                 str(data.get("action_id", "")),
                 str(data.get("operation", "")),
                 reason=str(data.get("reason", "")),
+                block_ids=data.get("block_ids"),
             )
         elif action == "decide_revision_hunk":
             project.decide_revision_hunk(
@@ -285,9 +342,7 @@ class StudioApp:
         return replace(self, notice=notice)
 
 
-class StudioHTTPServer(ThreadingHTTPServer):
-    daemon_threads = True
-
+class StudioHTTPServer(LocalHTTPServer):
     def __init__(self, address: tuple[str, int], app: StudioApp):
         self.app = app
         self.action_lock = threading.RLock()
@@ -295,7 +350,7 @@ class StudioHTTPServer(ThreadingHTTPServer):
         super().__init__(address, StudioRequestHandler)
 
 
-class StudioRequestHandler(BaseHTTPRequestHandler):
+class StudioRequestHandler(LocalRequestHandler):
     server: StudioHTTPServer
 
     def log_message(self, format: str, *args: object) -> None:
@@ -311,7 +366,8 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
         if filename:
-            self.send_header("Content-Disposition", f'attachment; filename="{filename.replace(chr(34), "")}"')
+            fallback = "download" + Path(filename).suffix.encode("ascii", "ignore").decode("ascii")
+            self.send_header("Content-Disposition", f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(filename, safe='')}")
         self.end_headers()
         self.wfile.write(data)
 
@@ -319,12 +375,13 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
         self._send(status, (json.dumps(value, ensure_ascii=False) + "\n").encode("utf-8"), "application/json; charset=utf-8")
 
     def _auth(self) -> bool:
-        return secrets.compare_digest(self.headers.get("X-Document-Review-Token", ""), self.server.app.token)
+        return self._token_authorized("X-Document-Review-Token")
 
     def _record_unexpected_error(self, exc: Exception, *, request_kind: str, action: str | None = None) -> str:
         """Persist a correlation-safe traceback without recording request content."""
         incident_id = f"ERR-{secrets.token_hex(6)}"
-        rendered_traceback = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        frames = traceback.extract_tb(exc.__traceback__)
+        rendered_traceback = type(exc).__name__ + "\n" + "\n".join(f"{Path(frame.filename).name}:{frame.lineno} in {frame.name}" for frame in frames)
         record = {
             "incident_id": incident_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -332,27 +389,32 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             "request_path": urlsplit(self.path).path,
             "action": action,
             "exception_type": type(exc).__name__,
-            "exception_message": str(exc)[:1000],
+            "exception_message": "异常参数未写入日志，以避免记录文档或模型响应内容",
             "traceback": rendered_traceback[-20000:],
         }
         try:
             log_path = self.server.app.data_dir / ".studio-errors.jsonl"
             with self.server.error_log_lock:
                 log_path.parent.mkdir(parents=True, exist_ok=True)
+                if log_path.is_file() and log_path.stat().st_size > 2 * 1024 * 1024:
+                    os.replace(log_path, log_path.with_suffix(".previous.jsonl"))
                 with log_path.open("a", encoding="utf-8", newline="\n") as handle:
                     handle.write(json.dumps(record, ensure_ascii=False) + "\n")
         except OSError:
             pass
-        traceback.print_exception(type(exc), exc, exc.__traceback__)
+        print(f"{incident_id}: {type(exc).__name__}; details in local incident log")
         return incident_id
 
     def do_GET(self) -> None:  # noqa: N802
+        if not self._local_request():
+            self._json(HTTPStatus.FORBIDDEN, {"error": "只接受当前本机地址和同源页面"})
+            return
         parsed = urlsplit(self.path)
         path = parsed.path
         if path == "/":
             self._send(HTTPStatus.OK, render_studio_shell(self.server.app.token).encode("utf-8"), "text/html; charset=utf-8")
             return
-        if path not in {"/api/state", "/api/download", "/api/protocols.zip"}:
+        if path not in {"/api/state", "/api/download", "/api/protocols.zip", "/api/drafting"}:
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
         if not self._auth():
@@ -362,6 +424,12 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             with self.server.action_lock:
                 if path == "/api/state":
                     payload = ("json", self.server.app.view())
+                elif path == "/api/drafting":
+                    query = parse_qs(parsed.query)
+                    project = self.server.app.require_project()
+                    if query.get("project", [""])[0] != project.root.name:
+                        raise ReviewStudioError("项目已变化，请刷新后继续")
+                    payload = ("json", project.revision_drafting_prompt(query.get("action_id", [""])[0]))
                 elif path == "/api/protocols.zip":
                     payload = ("zip", self.server.app.protocol_bundle())
                 else:
@@ -391,24 +459,36 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             )
 
     def do_POST(self) -> None:  # noqa: N802
+        if not self._local_request():
+            self._json(HTTPStatus.FORBIDDEN, {"error": "只接受当前本机地址和同源页面"})
+            return
         path = urlsplit(self.path).path
         request_action: str | None = None
-        if path not in {"/api/upload", "/api/open", "/api/action"}:
+        if path not in {"/api/upload", "/api/open", "/api/action", "/api/draft", "/api/shutdown", "/api/preferences"}:
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
         if not self._auth():
             self._json(HTTPStatus.FORBIDDEN, {"error": "local UI token required"})
             return
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-            if length <= 0 or length > MAX_REQUEST_BYTES:
-                raise ReviewStudioError("请求大小无效")
-            payload = _strict_json_payload(self.rfile.read(length))
+            payload = _strict_json_payload(self._read_json_body(MAX_REQUEST_BYTES))
             if not isinstance(payload, dict):
                 raise ReviewStudioError("请求必须是对象")
+            if path == "/api/shutdown":
+                self._json(HTTPStatus.OK, {"closed": True})
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
+                return
             request_action = payload.get("action") if isinstance(payload.get("action"), str) else None
             with self.server.action_lock:
-                if path == "/api/upload":
+                if path == "/api/preferences":
+                    save_ui_language(self.server.app.data_dir, payload.get("language"))
+                    self._json(HTTPStatus.OK, {"saved": True})
+                    return
+                elif path == "/api/draft":
+                    project = self.server.app.require_project()
+                    self._json(HTTPStatus.OK, save_ui_draft(project, payload))
+                    return
+                elif path == "/api/upload":
                     self.server.app = self.server.app.upload(payload)
                 elif path == "/api/open":
                     self.server.app = self.server.app.open_project(str(payload.get("directory", "")))
@@ -416,6 +496,10 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                     self.server.app = self.server.app.act(payload)
                 response = self.server.app.view()
             self._json(HTTPStatus.CREATED, response)
+        except LocalHTTPProtocolError as exc:
+            self._json(exc.status, {"error": str(exc)})
+        except (ProjectMutationLockedError, UIStateConflict) as exc:
+            self._json(HTTPStatus.CONFLICT, {"error": str(exc)})
         except (UnicodeDecodeError, json.JSONDecodeError, OSError, ValueError, ReviewStudioError) as exc:
             self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except Exception as exc:
@@ -434,7 +518,9 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
 
 
 def render_studio_shell(token: str) -> str:
-    config = {"critics": CRITIC_LABELS, "disciplines": DISCIPLINES, "research_types": RESEARCH_TYPES}
+    from document_review_model import SUPPORTED_EXTENSIONS
+    config = {"critics": CRITIC_LABELS, "disciplines": DISCIPLINES, "research_types": RESEARCH_TYPES,
+              "extensions": sorted(SUPPORTED_EXTENSIONS)}
     return SHELL_TEMPLATE.replace("__TOKEN__", json.dumps(token)).replace("__REVIEW_CONFIG__", json.dumps(config, ensure_ascii=False))
 
 

@@ -21,6 +21,12 @@ def main():
         'document_review_stores.audits', 'document_review_stores.revision',
         'document_review_stores.exports', 'document_review_studio',
         'review_profiles', 'academic_review', 'unified_app',
+        'project_lifecycle', 'document_review_word', 'studio_ui_state', 'studio_web',
+        'document_review_stores.editing', 'cli.maintenance',
+        'studio_selftest', 'studio_startup',
+        'document_text_encoding', 'document_review_office_formats',
+        'document_review_text_formats', 'document_review_legacy', 'studio_web.research',
+        'document_review_quality', 'document_review_pdf_render',
     ):
         module = importlib.import_module(name)
         if Path(module.__file__).resolve().is_relative_to(checkout):
@@ -63,6 +69,8 @@ def main():
         finally:
             server.server_close()
     print('Installed package: imports, protocols, rules, CLI, document/academic workflows and unified server verified')
+    from studio_selftest import run_self_test
+    print(json.dumps(run_self_test()))
 
 
 if __name__ == '__main__':

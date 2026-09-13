@@ -3,8 +3,35 @@
 from __future__ import annotations
 
 from .base import *  # noqa: F401,F403
+from .json_numbers import finite_json_number
+from document_review_quality import CLOSE_READING_PROTOCOL, close_reading_example, quote_matches, validate_close_reading
+from review_profiles import academic_protocol
+from academic_review import academic_precheck_capabilities
 
 class AuditRunStore(_ProjectComponent):
+    def _current_review_binding(self) -> tuple[Path, StructuredDocument, dict[str, Any]]:
+        """Bind a review to its exact IR, context and formal review round."""
+        document_path, document = self._review_document_record()
+        current_round = self.current_review_round()
+        return document_path, document, {
+            "source_sha256": document.source.sha256,
+            "document_sha256": _sha256(document_path.read_bytes()),
+            "document_relative_path": document_path.relative_to(self.root).as_posix(),
+            "context_sha256": _sha256((self.root / "context.json").read_bytes()),
+            "review_round_id": current_round[1]["round_id"] if current_round else None,
+        }
+
+    def _belongs_to_current_review(self, value: Mapping[str, Any], binding: Mapping[str, Any]) -> bool:
+        # Legacy first-round records predate explicit IR/round fields. Their
+        # immutable source/parent receipts remain valid in that first round.
+        # They must never silently become new reviews of a later document.
+        if value.get("source_sha256") != binding["source_sha256"]:
+            return False
+        if value.get("review_round_id") != binding["review_round_id"]:
+            return False
+        return all(key not in value or value[key] == binding[key]
+                   for key in ("document_sha256", "document_relative_path", "context_sha256"))
+
     def review_critics(self) -> tuple[str, ...]:
         context = self.context()
         return profile_critics(context.review_profile if context else "document")
@@ -18,17 +45,19 @@ class AuditRunStore(_ProjectComponent):
     def prompt(self, critic: str) -> str:
         if critic not in CRITIC_DIMENSIONS:
             raise ReviewStudioError("未知审查维度")
-        document = self.document()
         context = self.context()
-        if not document or not context:
+        if not self.document_path.is_file() or not context:
             raise ReviewStudioError("需要先完成识别和上下文确认")
+        _, document, review_binding = self._current_review_binding()
         contract = {
             "critic": critic,
-            "protocol": CRITIC_PROTOCOLS[critic],
-            "source_sha256": document.source.sha256,
+            "protocol": academic_protocol(critic, discipline=context.discipline, research_type=context.research_type)
+            if critic.startswith("academic_") else CRITIC_PROTOCOLS[critic],
+            "close_reading_protocol": CLOSE_READING_PROTOCOL,
+            **review_binding,
             "document_type": context.document_type,
             "required_finding_fields": ["finding_id", "critic", "document_type", "location", "evidence", "issue", "standard", "consequence", "severity", "verification_state", "external_basis", "uncertainties", "suggested_action", "suggested_owner", "blocks_release_or_execution"],
-            "required_response_envelope": ["request_id", "prompt_sha256", "provider", "model"],
+            "required_response_envelope": ["request_id", "prompt_sha256", "provider", "model", "source_sha256"],
             "field_contract": {
                 "severity": ["info", "low", "medium", "high", "critical"],
                 "verification_state": sorted(VERIFICATION_STATES),
@@ -47,7 +76,10 @@ class AuditRunStore(_ProjectComponent):
                     "empty_value": ExternalBasis().to_dict(),
                 },
             },
-            "rules": {"independent": True, "do_not_vote_or_score": True, "location_must_use_block_or_page": True, "legal_screen_never_claims_counsel": True},
+            "rules": {"independent": True, "do_not_vote_or_score": True, "location_must_use_existing_block_id": True, "legal_screen_never_claims_counsel": True,
+                      "evidence": "Quote a contiguous excerpt from the referenced block. Whitespace and Unicode canonical equivalents are allowed; preserve all languages. Do not translate or invent a quotation.",
+                      "location": "Copy the block location or supply only block_id. Do not invent page, table coordinates or character offsets.",
+                      "zero_finding_basis": "If findings is empty, supply a nonempty array of explanatory strings describing the actual inspected scope and checks. An empty result is not a verified pass."},
         }
         return "# Document Review Studio independent AI review\n\nYou are exactly one independent critic. Return strict JSON only. Do not run another critic, merge dimensions, vote, score, or infer external facts without a source.\n\n## Contract and critic-specific protocol\n```json\n" + json.dumps(contract, ensure_ascii=False, indent=2) + "\n```\n\n## Confirmed review context\n```json\n" + json.dumps(context.to_dict(), ensure_ascii=False, indent=2) + "\n```\n\n## Internal document blocks\n```json\n" + json.dumps([block.to_dict() for block in document.blocks], ensure_ascii=False, indent=2) + "\n```\n"
 
@@ -87,23 +119,32 @@ class AuditRunStore(_ProjectComponent):
 
     def _active_audit_run_records(self) -> dict[str, tuple[Path, dict[str, Any], str]]:
         active: dict[str, tuple[Path, dict[str, Any], str]] = {}
+        if not self.document_path.is_file() or not (self.root / "context.json").is_file():
+            return active
+        _, _, binding = self._current_review_binding()
         for critic in CRITIC_DIMENSIONS:
-            records = self._ordered_audit_runs(critic)
+            records = [row for row in self._ordered_audit_runs(critic)
+                       if self._belongs_to_current_review(row[1], binding)]
             if records:
                 active[critic] = records[-1]
         return active
 
     def _critic_origin_binding(self, critic: str) -> dict[str, Any]:
+        active = self._active_audit_run_records().get(critic)
         current_round = self.current_review_round()
-        if current_round:
+        if current_round and (not active or active[1].get("model_label") == "deterministic-local-rules"):
             inherited = current_round[1].get("critic_bindings", {}).get(critic)
             if isinstance(inherited, dict):
                 for field in ("original_prompt_relative_path", "original_request_relative_path", "original_audit_run_relative_path"):
                     path = _safe_child(self.root, str(inherited.get(field, "")))
                     if not path.is_file() or path.is_symlink():
                         raise ReviewStudioError(f"下一轮 critic 原始绑定缺失：{field}")
-                return dict(inherited)
-        active = self._active_audit_run_records().get(critic)
+                result = dict(inherited)
+                original_request = _read_json(_safe_child(self.root, result["original_request_relative_path"]))
+                original_prompt = _safe_child(self.root, result["original_prompt_relative_path"]).read_bytes()
+                result["critic_protocol"] = self._snapshotted_critic_protocol(original_request, original_prompt)
+                result["critic_protocol_sha256"] = _sha256(canonical_json(result["critic_protocol"]))
+                return result
         if not active or active[1].get("model_label") == "deterministic-local-rules":
             raise ReviewStudioError(f"找不到外部 critic 的原始 AuditRun：{critic}")
         run_path, run, run_sha256 = active
@@ -115,9 +156,11 @@ class AuditRunStore(_ProjectComponent):
         prompt_bytes = prompt_path.read_bytes()
         if request.get("critic") != critic or request.get("prompt_file_sha256") != _sha256(prompt_bytes):
             raise ReviewStudioError(f"原 critic request/prompt 绑定无效：{critic}")
+        protocol = self._snapshotted_critic_protocol(request, prompt_bytes)
         return {
             "critic": critic,
-            "critic_protocol_sha256": _sha256(canonical_json(CRITIC_PROTOCOLS[critic])),
+            "critic_protocol": protocol,
+            "critic_protocol_sha256": _sha256(canonical_json(protocol)),
             "original_request_id": request_id,
             "original_request_sha256": _sha256(request_path.read_bytes()),
             "original_request_relative_path": str(request_path.relative_to(self.root)).replace("\\", "/"),
@@ -131,6 +174,24 @@ class AuditRunStore(_ProjectComponent):
             "original_model": metadata.get("model"),
             "original_response_binding": run.get("response_binding"),
         }
+
+    def _snapshotted_critic_protocol(self, request: Mapping[str, Any], prompt_bytes: bytes) -> dict[str, Any]:
+        """Retests apply the original critic, including after a software upgrade."""
+        marker = "## Contract and critic-specific protocol\n```json\n"
+        try:
+            text = prompt_bytes.decode("utf-8")
+            start = text.index(marker) + len(marker)
+            contract, _ = json.JSONDecoder().raw_decode(text[start:])
+            protocol = contract["protocol"]
+            if not isinstance(protocol, dict) or contract.get("critic") != request.get("critic"):
+                raise ValueError("critic/protocol mismatch")
+            if "critic_protocol" in request and request["critic_protocol"] != protocol:
+                raise ValueError("request/prompt protocol mismatch")
+            if "critic_protocol_sha256" in request and request["critic_protocol_sha256"] != _sha256(canonical_json(protocol)):
+                raise ValueError("protocol hash mismatch")
+            return protocol
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ReviewStudioError("原审查协议快照缺失或不一致，不能套用当前版本的标准复审") from exc
 
     def _audit_run_chain_errors(self) -> list[str]:
         errors: list[str] = []
@@ -160,7 +221,7 @@ class AuditRunStore(_ProjectComponent):
         allowed, reasons = self.can_review()
         if not allowed:
             raise ReviewStudioError("；".join(reasons))
-        document = self.document()
+        document_path, document, review_binding = self._current_review_binding()
         context = self.context()
         assert document is not None and context is not None
         selected = self._selected_critics(critics)
@@ -170,14 +231,17 @@ class AuditRunStore(_ProjectComponent):
             run.run_sequence, run.previous_audit_run_sha256 = self._next_audit_binding(critic)
             directory = self.root / "audits" / critic
             prompt_path = directory / f"{run.run_id}.local-precheck-protocol.md"
-            parents = [_parent_ref(self.root, self.document_path, role="structured-document"), _parent_ref(self.root, self.root / "context.json", role="review-context")]
+            parents = [_parent_ref(self.root, document_path, role="structured-document"), _parent_ref(self.root, self.root / "context.json", role="review-context")]
+            current_round = self.current_review_round()
+            if current_round:
+                parents.append(_parent_ref(self.root, current_round[0], role="review-round"))
             _write_tracked(self.root, prompt_path, self.prompt(critic).encode("utf-8"), parents=parents, provenance="deterministic-local-precheck-protocol")
             run_path = directory / f"{run.run_id}.json"
             run_parents = [*parents, _parent_ref(self.root, prompt_path, role="local-precheck-protocol")]
             previous = self._ordered_audit_runs(critic)
             if previous:
                 run_parents.append(_parent_ref(self.root, previous[-1][0], role="previous-audit-run"))
-            _write_tracked(self.root, run_path, canonical_json(run.to_dict()), parents=run_parents, provenance="deterministic-local-precheck")
+            _write_tracked(self.root, run_path, canonical_json({**run.to_dict(), **review_binding}), parents=run_parents, provenance="deterministic-local-precheck")
             self._append_event("local_precheck_created", {"run_id": run.run_id, "critic": critic, "finding_ids": [f.finding_id for f in run.findings]})
             runs.append(run)
         self._update_state(review_state="local_precheck_completed", last_audit_at=_now())
@@ -206,7 +270,11 @@ class AuditRunStore(_ProjectComponent):
         )
 
     def _active_ai_request(self, critic: str) -> tuple[Path, dict[str, Any], str] | None:
-        records = self._ai_request_records(critic)
+        if not self.document_path.is_file() or not (self.root / "context.json").is_file():
+            return None
+        _, _, binding = self._current_review_binding()
+        records = [row for row in self._ai_request_records(critic)
+                   if self._belongs_to_current_review(row[1], binding)]
         return records[-1] if records else None
 
     def _ai_request_chain_errors(self) -> list[str]:
@@ -244,7 +312,11 @@ class AuditRunStore(_ProjectComponent):
         if not provider.strip() or not model.strip():
             raise ReviewStudioError("独立 AI 审查必须记录 provider 和 model")
         selected = self._selected_critics(critics)
-        parents = [_parent_ref(self.root, self.document_path, role="structured-document"), _parent_ref(self.root, self.root / "context.json", role="review-context")]
+        document_path, document, review_binding = self._current_review_binding()
+        parents = [_parent_ref(self.root, document_path, role="structured-document"), _parent_ref(self.root, self.root / "context.json", role="review-context")]
+        current_round = self.current_review_round()
+        if current_round:
+            parents.append(_parent_ref(self.root, current_round[0], role="review-round"))
         rows: list[dict[str, Any]] = []
         for critic in selected:
             base_prompt = self.prompt(critic).encode("utf-8")
@@ -259,7 +331,7 @@ class AuditRunStore(_ProjectComponent):
             response_example = {
                 **envelope,
                 "critic": critic,
-                "source_sha256": self.document().source.sha256,
+                "source_sha256": document.source.sha256,
                 "findings": [{
                     "finding_id": "F1",
                     "critic": critic,
@@ -276,6 +348,7 @@ class AuditRunStore(_ProjectComponent):
                     "suggested_action": "specific revision action",
                     "suggested_owner": "document owner",
                     "blocks_release_or_execution": False,
+                    "check_data": {"close_reading": close_reading_example()},
                 }],
                 "observations": [],
                 "zero_finding_basis": [],
@@ -284,7 +357,11 @@ class AuditRunStore(_ProjectComponent):
             directory = self.root / "ai-requests" / request_id
             prompt_path = directory / "prompt.md"
             _write_tracked(self.root, prompt_path, prompt, parents=parents, provenance="deterministic-ai-protocol")
-            request = {"artifact_type": "independent-ai-review-request", "schema_version": 2, "request_id": request_id, "critic": critic, "provider": normalized_provider, "model": normalized_model, "prompt_sha256": prompt_sha256, "prompt_file_sha256": _sha256(prompt), "source_sha256": self.document().source.sha256, "request_sequence": request_sequence, "previous_request_sha256": previous[2] if previous else None, "created_at": _now(), "lifecycle": "immutable"}
+            request = {"artifact_type": "independent-ai-review-request", "schema_version": 3, "request_id": request_id, "critic": critic, "provider": normalized_provider, "model": normalized_model, "prompt_sha256": prompt_sha256, "prompt_file_sha256": _sha256(prompt), **review_binding, "request_sequence": request_sequence, "previous_request_sha256": previous[2] if previous else None, "created_at": _now(), "lifecycle": "immutable"}
+            protocol_snapshot = self._snapshotted_critic_protocol(request, prompt)
+            request.update({"critic_protocol": protocol_snapshot,
+                            "critic_protocol_sha256": _sha256(canonical_json(protocol_snapshot)),
+                            "close_reading_protocol_version": CLOSE_READING_PROTOCOL["version"]})
             request_path = directory / "request.json"
             request_parents = [*parents, _parent_ref(self.root, prompt_path, role="critic-prompt")]
             if previous:
@@ -306,14 +383,14 @@ class AuditRunStore(_ProjectComponent):
         allowed, reasons = self.can_review()
         if not allowed:
             raise ReviewStudioError("；".join(reasons))
-        document = self.document()
+        _, document, review_binding = self._current_review_binding()
         context = self.context()
         assert document is not None and context is not None
         if critic not in CRITIC_DIMENSIONS:
             raise ReviewStudioError("未知审查维度")
         if model_label and model == "unlabelled":
             model = model_label
-        if binding_mode not in {"strict", "manual_association"}:
+        if not isinstance(binding_mode, str) or binding_mode not in {"strict", "manual_association"}:
             raise ReviewStudioError("AI 响应绑定模式必须是 strict 或 manual_association")
         if not provider.strip() or not model.strip():
             raise ReviewStudioError("模型审查导入必须记录 provider 和 model")
@@ -330,6 +407,8 @@ class AuditRunStore(_ProjectComponent):
         active_request = self._active_ai_request(critic)
         if active_request is None or active_request[1].get("request_id") != request.get("request_id"):
             raise ReviewStudioError("该 AI 请求已被更新协议取代；请使用当前 request")
+        if not self._belongs_to_current_review(request, review_binding):
+            raise ReviewStudioError("该 AI 请求与当前审查文档、IR 或轮次不一致；请重新生成协议")
         for _, prior_run, _ in self._audit_run_records(critic):
             if prior_run.get("declared_model_metadata", {}).get("request_id") == request.get("request_id"):
                 raise ReviewStudioError("该 AI 请求已经导入过结果；需要重跑时请先生成新 request")
@@ -351,8 +430,9 @@ class AuditRunStore(_ProjectComponent):
             return value
 
         try:
-            parsed = json.loads(raw.decode("utf-8-sig"), object_pairs_hook=reject_duplicate)
-        except (UnicodeDecodeError, json.JSONDecodeError, ReviewStudioError) as exc:
+            parsed = json.loads(raw.decode("utf-8-sig"), object_pairs_hook=reject_duplicate,
+                                parse_float=finite_json_number, parse_constant=finite_json_number)
+        except (ValueError, RecursionError) as exc:
             raise ReviewStudioError(f"模型审查返回不是严格 JSON：{exc}") from exc
         if not isinstance(parsed, dict):
             raise ReviewStudioError("模型审查返回必须是 JSON 对象")
@@ -377,14 +457,23 @@ class AuditRunStore(_ProjectComponent):
             raise ReviewStudioError("模型返回的 critic 与提交维度不一致")
         returned_source_sha256 = parsed.get("source_sha256")
         if returned_source_sha256 is not None and returned_source_sha256 != document.source.sha256:
-            raise ReviewStudioError("模型返回的原始文件 SHA-256 与当前任务冲突，不能人工覆盖")
+            raise ReviewStudioError("模型返回的审查文档 SHA-256 与当前任务冲突，不能人工覆盖")
         if binding_mode == "strict" and returned_source_sha256 is None:
             raise ReviewStudioError("严格绑定要求模型回显当前原始文件 SHA-256；也可改用“当前任务人工关联”导入")
         source_echo_verified = returned_source_sha256 == document.source.sha256
         raw_findings = parsed.get("findings")
         if not isinstance(raw_findings, list):
             raise ReviewStudioError("模型返回缺少 findings 数组")
-        block_ids = {block.block_id for block in document.blocks}
+        blocks_by_id = {block.block_id: block for block in document.blocks}
+        # Observations historically permit structured measurements. Preserve
+        # their finite JSON data; only the human-readable zero-result basis
+        # needs a string-list contract for downstream report rendering.
+        observations = parsed.get("observations", [])
+        if not isinstance(observations, list):
+            raise ReviewStudioError("模型返回的 observations 必须是数组")
+        zero_basis = self._response_text_list(parsed, "zero_finding_basis")
+        if not raw_findings and not zero_basis:
+            raise ReviewStudioError("无 Finding 时必须提供非空 zero_finding_basis，说明实际审查范围与检查依据")
         findings: list[Finding] = []
         seen_source_ids: set[str] = set()
         response_normalizations: list[dict[str, Any]] = []
@@ -404,6 +493,8 @@ class AuditRunStore(_ProjectComponent):
             item = dict(item)
             source_finding_id = str(item.get("finding_id", f"finding-{index + 1}"))
             verification = item.get("verification_state")
+            if not isinstance(verification, str):
+                raise ReviewStudioError(f"第 {index + 1} 条 Finding 的 verification_state 必须是文本枚举")
             if verification not in VERIFICATION_STATES:
                 normalized_verification = verification_aliases.get(str(verification).strip().casefold(), "needs-human-verification")
                 response_normalizations.append({"finding_id": source_finding_id, "field": "verification_state", "original": verification, "normalized": normalized_verification, "reason": "unsupported model enum was conservatively downgraded"})
@@ -430,8 +521,13 @@ class AuditRunStore(_ProjectComponent):
                 raise ReviewStudioError(f"第 {index + 1} 条 Finding contract 无效：" + "; ".join(errors))
             if item["critic"] != critic:
                 raise ReviewStudioError(f"第 {index + 1} 条 Finding 跨 critic，拒绝合并")
-            if item["location"].get("block_id") not in block_ids:
+            if item.get("status", "open") != "open":
+                raise ReviewStudioError(f"第 {index + 1} 条 Finding 的 status 必须为 open；人工裁决不能由模型响应代填")
+            if item["document_type"] != context.document_type:
+                raise ReviewStudioError(f"第 {index + 1} 条 Finding 的 document_type 与已确认文档类型不一致")
+            if item["location"].get("block_id") not in blocks_by_id:
                 raise ReviewStudioError(f"第 {index + 1} 条 Finding 定位不到内部 block")
+            self._bind_finding_content(item, blocks_by_id[item["location"]["block_id"]], index + 1, blocks_by_id=blocks_by_id)
             finding = _finding_from_dict(item)
             if finding.finding_id in seen_source_ids:
                 raise ReviewStudioError(f"第 {index + 1} 条 Finding ID 在同一响应中重复")
@@ -441,12 +537,12 @@ class AuditRunStore(_ProjectComponent):
             finding.origin = "model-derived"
             findings.append(finding)
         run_sequence, previous_run_sha256 = self._next_audit_binding(critic)
-        run = AuditRun(stable_id("RUN", document.source.sha256, critic, _now(), secrets.token_hex(4)), critic, document.document_id, document.source.sha256, context, findings, list(parsed.get("observations", [])) if isinstance(parsed.get("observations", []), list) else [], list(parsed.get("zero_finding_basis", [])) if isinstance(parsed.get("zero_finding_basis", []), list) else [], f"manual-import:{provider}/{model}", _now(), run_sequence, previous_run_sha256)
+        run = AuditRun(stable_id("RUN", document.source.sha256, critic, _now(), secrets.token_hex(4)), critic, document.document_id, document.source.sha256, context, findings, observations, zero_basis, f"manual-import:{provider}/{model}", _now(), run_sequence, previous_run_sha256)
         directory = self.root / "audits" / critic
         raw_path = directory / f"{run.run_id}.raw-response.json.txt"
         response_parents = [_parent_ref(self.root, prompt_path, role="critic-prompt"), _parent_ref(self.root, request_path, role="ai-review-request")]
         _write_tracked(self.root, raw_path, raw, parents=response_parents, provenance="model-raw-response")
-        run_value = run.to_dict()
+        run_value = {**run.to_dict(), **review_binding}
         run_value["declared_model_metadata"] = {"provider": provider, "model": model, "request_id": request["request_id"], "prompt_sha256": request["prompt_sha256"], "prompt_file_sha256": request["prompt_file_sha256"], "raw_response_sha256": _sha256(raw), "import_mode": "manual", "response_binding": response_binding}
         if response_binding == "strict-response-envelope":
             association_note = "响应逐项回显并匹配当前导出请求与原件"
@@ -456,6 +552,12 @@ class AuditRunStore(_ProjectComponent):
             association_note = "用户把原始响应导入当前所选请求；请求与原件 SHA 由应用关联，不声称模型曾回显"
         run_value["response_binding"] = {"mode": response_binding, "request_echo_verified": response_binding == "strict-response-envelope", "source_echo_verified": source_echo_verified, "source_associated_by_application": not source_echo_verified, "association_note": association_note}
         run_value["response_normalizations"] = response_normalizations
+        run_value["close_reading_receipt"] = {
+            "protocol_version": CLOSE_READING_PROTOCOL["version"],
+            "findings_with_checked_context_quotes": [f.finding_id for f in findings if "close_reading" in f.check_data],
+            "findings_without_close_reading": [f.finding_id for f in findings if "close_reading" not in f.check_data],
+            "semantic_accuracy": "not-established-by-structural-validation",
+        }
         run_path = directory / f"{run.run_id}.json"
         run_parents = [*response_parents, _parent_ref(self.root, raw_path, role="raw-model-response")]
         previous_runs = self._ordered_audit_runs(critic)
@@ -465,6 +567,40 @@ class AuditRunStore(_ProjectComponent):
         self._append_event("model_audit_imported", {"run_id": run.run_id, "critic": critic, "declared_model_metadata": run_value["declared_model_metadata"], "finding_ids": [finding.finding_id for finding in findings]})
         self._update_state(review_state="ai_review_imported", ai_review_state="imported", last_audit_at=_now())
         return run
+
+    def _response_text_list(self, parsed: Mapping[str, Any], field: str) -> list[str]:
+        values = parsed.get(field, [])
+        if not isinstance(values, list) or any(
+                not isinstance(value, str) or not value.strip() or len(value) > 100_000
+                for value in values):
+            raise ReviewStudioError(f"模型返回的 {field} 必须是非空说明文字组成的数组")
+        return list(values)
+
+    def _bind_finding_content(self, finding: dict[str, Any], block: DocumentBlock, number: int, *, blocks_by_id: Mapping[str, DocumentBlock]) -> None:
+        """Resolve a minimal block reference without trusting extra coordinates.
+
+        Character offsets in the IR refer to the original source, not to an
+        invented offset within an excerpt. Only source locations copied from
+        the selected block are supported by this response protocol.
+        """
+        canonical = make_location(block).to_dict()
+        supplied = finding["location"]
+        for key, value in supplied.items():
+            if key not in canonical:
+                raise ReviewStudioError(f"第 {number} 条 Finding 的 location 含未知定位字段：{key}")
+            if value is None:
+                continue
+            if (isinstance(value, bool) or value != canonical[key]
+                    or isinstance(canonical[key], int) and type(value) is not int
+                    or key == "bbox" and any(isinstance(part, bool) for part in value)):
+                raise ReviewStudioError(f"第 {number} 条 Finding 的定位 {key} 与当前 block 不一致")
+        finding["location"] = canonical
+        if not quote_matches(finding["evidence"], block.text):
+            raise ReviewStudioError(f"第 {number} 条 Finding 的 evidence 不是所选 block 的可核对引文；请修正引文或定位")
+        if "close_reading" in finding.get("check_data", {}):
+            errors = validate_close_reading(finding["check_data"]["close_reading"], blocks_by_id)
+            if errors:
+                raise ReviewStudioError(f"第 {number} 条 Finding 细读证据无效：" + "; ".join(errors))
 
     def _finding(self, critic: str, document: StructuredDocument, context: ReviewContext, block: DocumentBlock, *, check_id: str, check_data: Mapping[str, Any] | None = None, issue: str, standard: str, consequence: str, severity: str = "medium", verification_state: str = "needs-human-verification", suggested_action: str, owner: str = "文档负责人", blocks: bool = False, uncertainties: list[str] | None = None, basis: ExternalBasis | None = None, evidence: str | None = None, competing: list[str] | None = None, observation: str = "") -> Finding:
         finding_id = stable_id("F", document.source.sha256, critic, block.block_id, issue)[:22]
@@ -479,6 +615,7 @@ class AuditRunStore(_ProjectComponent):
         zero_basis: list[str] = []
         if critic.startswith("academic_"):
             findings.extend(self._finding(critic, document, context, block, **details) for block, details in academic_prechecks(critic, document, context))
+            observations.extend(academic_precheck_capabilities(context)["notes"])
             observations.append("仅执行离线文本线索检查；未验证论证有效性、研究结果或来源真实性。引用编号仅支持单项数字标记，作者—年份、范围引用和脚注仍需独立核验。")
             if not findings:
                 zero_basis.append("本地规则未触发提示，不构成学术质量或引用真实性通过；请继续独立 AI 审查和人工核验。")
@@ -537,7 +674,7 @@ class AuditRunStore(_ProjectComponent):
     def findings(self) -> list[Finding]:
         rows: dict[str, Finding] = {}
         current_round = self.current_review_round()
-        sources = [current_round[1]] if current_round else [value for _, value, _ in self._active_audit_run_records().values()]
+        sources = ([current_round[1]] if current_round else []) + [value for _, value, _ in self._active_audit_run_records().values()]
         for value in sources:
             for item in value.get("findings", []):
                 finding = _finding_from_dict(item)
@@ -547,7 +684,12 @@ class AuditRunStore(_ProjectComponent):
         decisions = self._decisions()
         decision_history = self._decision_records()
         current: list[Finding] = []
+        locations = self._location_records()
+        _, review_document = self._review_document_record()
         for item in rows.values():
+            correction = locations.get(item.finding_id)
+            if correction and correction[1].get("source_sha256") == review_document.source.sha256:
+                item = replace(item, location=DocumentLocation(**correction[1]["location"]), evidence=correction[1]["evidence"], uncertainties=[*item.uncertainties, f"人工定位校正 #{correction[1]['sequence']}：{correction[1]['reason']}"], status="open")
             decision = decisions.get(item.finding_id)
             valid_snapshots = {_sha256(canonical_json(item.to_dict()))}
             if decision and int(decision.get("sequence", 0)) > 1:

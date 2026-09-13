@@ -16,6 +16,7 @@ def ir_init_command(args: argparse.Namespace) -> int:
         source_path,
         project_dir,
         title=args.title,
+        encoding=getattr(args, "encoding", None),
     )
     print(f"Argument Workbench project: {paths.root}")
     print(f"Extraction prompt: {paths.prompt}")
@@ -48,11 +49,13 @@ def app_command(args: argparse.Namespace) -> int:
         source_path = Path(args.manuscript).resolve()
         if args.project:
             # Preserve the original explicit destination import contract.
-            initialize_workspace(source_path, Path(args.project), title=args.title)
+            initialize_workspace(source_path, Path(args.project), title=args.title, encoding=getattr(args, "encoding", None))
         else:
             project = DocumentReviewProject.create(
                 Path(args.data_dir or default_studio_data_dir()),
                 filename=source_path.name, content=source_path.read_bytes(), title=args.title,
+                encoding=getattr(args, "encoding", None),
+                ocr_language=getattr(args, "ocr_language", "chi_sim+chi_tra+eng"),
             )
             project_dir = project.root
     server, url = serve_unified_app(
@@ -127,6 +130,7 @@ def ir_import_version_command(args: argparse.Namespace) -> int:
         args.project,
         source_path,
         parent_version=args.parent_version,
+        encoding=getattr(args, "encoding", None),
     )
     print(f"DocumentVersion: {paths.version_id}")
     print(f"Archived source: {paths.version_dir / 'source' / source_path.name}")
@@ -977,7 +981,7 @@ def ir_gate_a_verify_command(args: argparse.Namespace) -> int:
 
 def ir_prepare_command(args: argparse.Namespace) -> int:
     source_path = resolve_manuscript_path(args.manuscript)
-    manuscript, source_bytes = read_manuscript_utf8(source_path)
+    manuscript, source_bytes, source_encoding = _ir_read_source(source_path, args)
     prompt = build_ir_extraction_prompt(
         manuscript,
         source_name=source_path.name,
@@ -997,19 +1001,20 @@ def ir_prepare_command(args: argparse.Namespace) -> int:
 
 def ir_validate_command(args: argparse.Namespace) -> int:
     source_path = resolve_manuscript_path(args.manuscript)
-    _, source_bytes = read_manuscript_utf8(source_path)
+    _, source_bytes, source_encoding = _ir_read_source(source_path, args)
     _, value, _ = _ir_read_json(Path(args.argument_ir), "argument IR")
     errors = validate_argument_ir(
         value,
         source_bytes=source_bytes,
         source_name=source_path.name,
+        source_encoding=source_encoding,
     )
     return _ir_print_validation("argument-ir", errors)
 
 
 def ir_plan_command(args: argparse.Namespace) -> int:
     source_path = resolve_manuscript_path(args.manuscript)
-    _, source_bytes = read_manuscript_utf8(source_path)
+    _, source_bytes, source_encoding = _ir_read_source(source_path, args)
     ir_path, ir_value, ir_bytes = _ir_read_json(
         Path(args.argument_ir), "argument IR"
     )
@@ -1020,6 +1025,7 @@ def ir_plan_command(args: argparse.Namespace) -> int:
         ir_value,
         source_bytes=source_bytes,
         source_name=source_path.name,
+        source_encoding=source_encoding,
     )
     errors.extend(validate_check_library(library_value))
     if errors:
@@ -1028,6 +1034,7 @@ def ir_plan_command(args: argparse.Namespace) -> int:
         ir_value,
         source_bytes=source_bytes,
         source_name=source_path.name,
+        source_encoding=source_encoding,
     )
     plan = build_check_plan(
         normalized_ir,

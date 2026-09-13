@@ -25,9 +25,11 @@ from datetime import date, datetime, timezone
 from functools import wraps
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+from project_lifecycle import before_write, transaction, recover, compatibility, CommitValidationResult
 
 from document_review_ingest import IngestionError, IngestionLimits, ingest_bytes, safe_upload_name
 from academic_review import academic_prechecks
+from document_review_quality import close_reading_markdown
 from document_review_model import (
     AuditRun,
     DocumentBlock,
@@ -70,6 +72,10 @@ def _project_mutation_lock(root: Path):
     try:
         with _shared_project_mutation_lock(root):
             yield
+    except CommitValidationResult:
+        # Preserve the explicit completed-rejection contract across nested
+        # store locks so an enclosing UI transaction can commit the archive.
+        raise
     except (ProjectMutationLockedError, ValueError) as exc:
         raise ReviewStudioError(str(exc)) from exc
 
@@ -77,7 +83,7 @@ def _project_mutation_lock(root: Path):
 def _serialized_mutation(method):
     @wraps(method)
     def wrapped(self, *args, **kwargs):
-        with _project_mutation_lock(self.root):
+        with _project_mutation_lock(self.root), transaction(self.root):
             return method(self, *args, **kwargs)
 
     return wrapped
@@ -162,6 +168,7 @@ def _sha256(data: bytes) -> str:
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
+    before_write(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_symlink():
         raise ReviewStudioError(f"拒绝写入符号链接：{path}")
@@ -363,6 +370,9 @@ class DocumentReviewProject:
             component_type: component_type(self) for component_type in COMPONENT_TYPES
         }
         self._ensure_root()
+        recover(self.root)
+        if self.manifest_path.is_file():
+            compatibility(self.root)
 
     def __getattr__(self, name: str):
         component_type = COMPONENT_BY_METHOD.get(name)
@@ -400,6 +410,8 @@ class DocumentReviewProject:
         title: str | None = None,
         limits: IngestionLimits | None = None,
         ocr: Any | None = None,
+        encoding: str | None = None,
+        ocr_language: str = "chi_sim+chi_tra+eng",
     ) -> "DocumentReviewProject":
         safe_name = safe_upload_name(filename)
         if not isinstance(content, bytes) or not content:
@@ -410,6 +422,14 @@ class DocumentReviewProject:
         storage = Path(data_dir).resolve()
         storage.mkdir(parents=True, exist_ok=True)
         target = storage / _slug(safe_name, _sha256(content))
+        from document_text_encoding import normalize_encoding
+        from document_review_ingest import TesseractOCR
+        encoding = normalize_encoding(encoding)
+        ocr_language = TesseractOCR.normalize_language(ocr_language)
+        if encoding is not None:
+            target = target.with_name(target.stem + "-" + stable_id("encoding", encoding, length=8) + STORE_SUFFIX)
+        if ocr_language != "chi_sim+chi_tra+eng":
+            target = target.with_name(target.stem + "-" + stable_id("ocr", ocr_language, length=8) + STORE_SUFFIX)
         with _project_mutation_lock(storage):
             if target.is_symlink():
                 raise ReviewStudioError("项目路径不得是符号链接")
@@ -435,13 +455,14 @@ class DocumentReviewProject:
                     "source": {"name": safe_name, "sha256": _sha256(content), "bytes": len(content), "relative_path": f"source/{safe_name}"},
                     "created_at": _now(),
                     "original_never_overwritten": True,
+                    "ingestion_options": {"encoding": encoding, "ocr_language": ocr_language},
                 }
                 _write_tracked(staging, staging / "project.json", canonical_json(manifest), parents=[_parent_ref(staging, source_path, role="original-source")])
                 state = {"extraction_state": "unconfirmed", "context_state": "missing", "review_state": "not_started", "read_only": False, "diagnostics": []}
                 _write_new(staging / "state.json", canonical_json(state))
                 project = cls(staging)
                 try:
-                    document = ingest_bytes(safe_name, content, limits=limits, ocr=ocr)
+                    document = ingest_bytes(safe_name, content, limits=limits, ocr=ocr, encoding=encoding, ocr_language=ocr_language)
                 except (IngestionError, OSError, ValueError) as exc:
                     diagnostic = {"schema_version": 1, "kind": "ingestion-failure", "safe": True, "message": str(exc)[:1000], "source_sha256": _sha256(content), "created_at": _now()}
                     _write_tracked(staging, staging / "extraction" / "diagnostic.json", canonical_json(diagnostic), parents=[_parent_ref(staging, source_path, role="original-source")])
@@ -666,7 +687,7 @@ class DocumentReviewProject:
             {"key": "bridge", "label": "受约束修改", "status": "completed" if revision_complete else "in_progress" if bridge_complete else "not_started", "detail": "修改稿已生成并复审" if revision_complete else "逐段修改中" if bridge_complete else "未开始"},
             {"key": "export", "label": "导出结果", "status": "completed" if export_complete else "not_started", "detail": "已有导出文件" if export_complete else "未导出"},
         ]
-        return {"review_critics": {key: CRITIC_LABELS[key] for key in self.review_critics()}, "project": manifest, "product_status": "experimental-preview", "state": state, "extraction": {"available": document is not None, "quality": document.quality.to_dict() if document else {}, "warnings": [warning.to_dict() for warning in document.warnings] if document else [], "blocks": [block.to_dict() for block in document.blocks] if document else [], "total_blocks": len(document.blocks) if document else 0}, "context": self.context().to_dict() if self.context() else {"model_suggestion": self.suggested_document_type()}, "can_review": can_review, "review_blockers": reasons, "ai_requests": ai_requests, "findings": finding_rows, "finding_summary": finding_summary, "attention_queue": attention_queue, "revision_workspace": revision_workspace, "workflow": workflow, "exports": exports}
+        return {"review_critics": {key: CRITIC_LABELS[key] for key in self.review_critics()}, "project": manifest, "product_status": "experimental-preview", "state": state, "extraction": {"available": document is not None, "metadata": document.metadata if document else {}, "quality": document.quality.to_dict() if document else {}, "warnings": [warning.to_dict() for warning in document.warnings] if document else [], "blocks": [block.to_dict() for block in document.blocks] if document else [], "total_blocks": len(document.blocks) if document else 0}, "context": self.context().to_dict() if self.context() else {"model_suggestion": self.suggested_document_type()}, "can_review": can_review, "review_blockers": reasons, "ai_requests": ai_requests, "findings": finding_rows, "finding_summary": finding_summary, "attention_queue": attention_queue, "revision_workspace": revision_workspace, "workflow": workflow, "exports": exports}
 
 
 def _document_from_dict(value: Mapping[str, Any]) -> StructuredDocument:
@@ -700,6 +721,7 @@ def _audit_markdown(audit: Mapping[str, Any]) -> str:
         lines.append("No Finding was produced. This is supported only by the recorded recognition scope and deterministic checks; it is not a guarantee of quality or legality.")
     for finding in audit["findings"]:
         lines.extend([f"### {finding['finding_id']} · {finding['critic']}", "", f"- Location: `{finding['location']['block_id']}` page {finding['location'].get('page') or '-'}", f"- Evidence: {finding['evidence']}", f"- Issue: {finding['issue']}", f"- Standard: {finding['standard']}", f"- Consequence: {finding['consequence']}", f"- Severity: {finding['severity']}; verification: {finding['verification_state']}", f"- Action: {finding['suggested_action']}", ""])
+        lines.extend(close_reading_markdown(finding))
         if finding.get("external_basis", {}).get("unresolved_facts"):
             lines.append("- Unresolved facts: " + "；".join(finding["external_basis"]["unresolved_facts"]))
     lines.extend(["", "## Boundary", "", audit["legal_boundary"], ""])
@@ -729,6 +751,7 @@ def _ai_review_markdown(snapshot: Mapping[str, Any]) -> str:
             continue
         for finding in findings:
             lines.extend([f"### {finding['finding_id']}", "", f"- 位置：`{finding['location']['block_id']}`，page {finding['location'].get('page') or '-'}", f"- 证据：{finding['evidence']}", f"- 问题：{finding['issue']}", f"- 判断标准：{finding['standard']}", f"- 后果：{finding['consequence']}", f"- 严重度：{finding['severity']}", f"- 核实状态：{finding['verification_state']}", f"- 建议动作：{finding['suggested_action']}", ""])
+            lines.extend(close_reading_markdown(finding))
     lines.extend(["## 后续", "", "请回到 Document Review Studio 对每条 Finding 分别接受、修正、拒绝或暂缓；不要把本快照当作已经批准的修改意见。", ""])
     return "\n".join(lines)
 

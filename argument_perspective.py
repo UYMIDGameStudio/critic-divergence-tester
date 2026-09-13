@@ -484,6 +484,8 @@ def _classify_response(
     errors = validate_perspective_lens_results(value)
     if not isinstance(value, dict):
         return "unusable", errors, None
+    if errors:
+        return "unusable", errors, value
     expected_source = {
         "plan_sha256": sha256_bytes(plan_bytes),
         "target_ir_sha256": next(
@@ -555,7 +557,7 @@ def collect_perspective_results(
         )
     review, review_bytes, plan, plan_bytes, _, _ = _read_inputs(paths)
     status, errors, value = _classify_response(response_bytes, plan, plan_bytes)
-    if value is not None:
+    if status == "valid" and value is not None:
         target_ir, _ = _read_json(paths.target_ir)
         errors.extend(_validate_refs_against_ir(value, target_ir))
         status = "valid" if not errors else "unusable"
@@ -715,7 +717,7 @@ def _derive_attempt(
     response_bytes = (attempt_dir / "response.json").read_bytes()
     status, errors, results = _classify_response(response_bytes, plan, plan_bytes)
     target_ir, target_ir_bytes = _read_json(paths.target_ir)
-    if results is not None:
+    if status == "valid" and results is not None:
         errors.extend(_validate_refs_against_ir(results, target_ir))
         status = "valid" if not errors else "unusable"
     if status != "valid" or results is None:
@@ -1146,7 +1148,7 @@ def verify_perspective_reviews(project_dir: Path | str) -> list[str]:
             status, result_errors, result = _classify_response(
                 response_bytes, plan, plan_bytes
             )
-            if result is not None:
+            if status == "valid" and result is not None:
                 result_errors.extend(_validate_refs_against_ir(result, target_ir))
                 status = "valid" if not result_errors else "unusable"
             expected_validation = {"status": status, "errors": result_errors}

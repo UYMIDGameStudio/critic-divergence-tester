@@ -44,14 +44,16 @@ class IngestionState(_ProjectComponent):
                 state["context_state"] = "confirmed" if _read_json(context_path).get("confirmed") is True else "missing"
             except (OSError, ValueError, ReviewStudioError):
                 state["context_state"] = "missing"
-        audit_runs = list((self.root / "audits").glob("*/*.json")) if (self.root / "audits").is_dir() else []
+        # Current review lookup reads immutable IR/context/round records only;
+        # it does not call state(), so this cannot recurse through derivation.
+        try:
+            audit_runs = list(self._active_audit_run_records().values())
+            current_round = self.current_review_round()
+        except (OSError, ValueError, ReviewStudioError):
+            audit_runs, current_round = [], None
         has_ai = False
         has_audit = False
-        for path in audit_runs:
-            try:
-                value = _read_json(path)
-            except (OSError, ValueError, ReviewStudioError):
-                continue
+        for _, value, _ in audit_runs:
             has_audit = True
             if str(value.get("model_label", "")).startswith("manual-import:"):
                 has_ai = True
@@ -60,6 +62,9 @@ class IngestionState(_ProjectComponent):
             state["ai_review_state"] = "imported"
         elif has_audit:
             state["review_state"] = "local_precheck_completed"
+        elif current_round:
+            state["review_state"] = "followup_round_ready"
+            state["ai_review_state"] = "not_started"
         cached_diagnostics = cached.get("diagnostics", [])
         if isinstance(cached_diagnostics, list):
             state["diagnostics"] = cached_diagnostics
@@ -184,7 +189,7 @@ class IngestionState(_ProjectComponent):
             for dirname in (
                 "source", "extraction", EXTRACTION_DECISION_DIR_NAME, "ai-requests",
                 "audits", "finding-decisions", "revision-plans", "action-operation-decisions", "revision-hunks",
-                "hunk-decisions", "revisions", "exports",
+                "hunk-decisions", "revisions", "exports", "finding-locations", "drafting-attempts", ".requests",
             ):
                 directory = self.root / dirname
                 if not directory.is_dir():
@@ -323,6 +328,8 @@ class IngestionState(_ProjectComponent):
             self._update_state(read_only=True, integrity_errors=errors)
 
     def _ensure_writable(self) -> None:
+        if (self.root / ".deleting").exists():
+            raise ReviewStudioError("此项目已进入删除流程；如操作中断，请从项目库 backups 目录恢复到独立项目")
         self._enforce_integrity()
         state = self.state()
         if state.get("read_only"):
@@ -433,14 +440,18 @@ class IngestionState(_ProjectComponent):
         return {"quality": document.quality.to_dict() if document else {}, "warnings": [warning.to_dict() for warning in document.warnings] if document else [], "diagnostics": self.state().get("diagnostics", [])}
 
     @_serialized_mutation
-    def retry_extraction(self) -> dict[str, Any]:
+    def retry_extraction(self, *, encoding: str | None = None, ocr_language: str | None = None) -> dict[str, Any]:
         """Re-run ingestion after optional PDF/OCR dependencies are repaired."""
         self._ensure_writable()
         if self._latest_extraction_decision() is not None:
             raise ReviewStudioError("已经存在识别确认决定；重新识别前请新建项目或显式更换文件")
         manifest = self.manifest()
         source_path = _safe_child(self.root, str(manifest["source"]["relative_path"]))
-        document = ingest_bytes(str(manifest["source"]["name"]), source_path.read_bytes())
+        previous = self.document()
+        options = manifest.get("ingestion_options", {})
+        selected_encoding = encoding or (previous.metadata.get("encoding") if previous else options.get("encoding"))
+        selected_ocr = ocr_language or (previous.metadata.get("ocr", {}).get("language") if previous else None) or options.get("ocr_language", "chi_sim+chi_tra+eng")
+        document = ingest_bytes(str(manifest["source"]["name"]), source_path.read_bytes(), encoding=selected_encoding, ocr_language=selected_ocr)
         if self.document_path.is_file():
             retry_id = stable_id("REX", document.source.sha256, _now(), secrets.token_hex(4))
             retry_path = self.root / "extraction" / "retries" / retry_id / "document.json"
@@ -481,6 +492,38 @@ class IngestionState(_ProjectComponent):
             return "项目执行方案"
         return "专业文档"
 
+    def _snapshot_extraction(self) -> dict[str, Path]:
+        """Freeze the exact recognition inputs before a decision or correction."""
+        current = {"document.json": self.document_path,
+                   "quality.json": self.root / "extraction" / "quality.json",
+                   "warnings.json": self.root / "extraction" / "warnings.json"}
+        content = {name: path.read_bytes() for name, path in current.items()}
+        snapshot_id = stable_id("EXS", *(_sha256(content[name]) for name in sorted(content)))
+        directory = self.root / "extraction" / "snapshots" / snapshot_id
+        snapshots = {name: directory / name for name in current}
+        for name, path in snapshots.items():
+            if path.exists():
+                if path.read_bytes() != content[name]:
+                    raise ReviewStudioError("识别快照内容冲突，请保留项目并检查完整性")
+                continue
+            if name == "document.json":
+                # Reuse the stable provenance of the current document, never
+                # make the immutable snapshot a child of its replaceable alias.
+                parents = _read_json(_integrity_receipt_path(self.document_path))["parents"]
+            else:
+                parents = [_parent_ref(self.root, snapshots["document.json"], role="structured-document")]
+            _write_tracked(self.root, path, content[name], parents=parents, provenance="recognition-decision-snapshot")
+        return snapshots
+
+    def _ensure_extraction_correction_allowed(self) -> None:
+        if (self.root / "context.json").exists() or any((self.root / "audits").glob("*/*.json")):
+            raise ReviewStudioError("文档已经确认上下文或开始审查；请在后续修订中修改，重新识别请新建项目")
+        mutable = {"extraction/document.json", "extraction/quality.json", "extraction/warnings.json"}
+        for path, _, _ in self._extraction_decision_records():
+            receipt = _read_json(_integrity_receipt_path(path))
+            if any(parent.get("relative_path") in mutable for parent in receipt["parents"]):
+                raise ReviewStudioError("旧版识别决定直接绑定当前文件，为保留历史记录，请新建项目后修正识别")
+
     def _append_extraction_decision(self, decision: str, extraction_state: str, *, corrected_text_sha256: str | None = None) -> dict[str, Any]:
         document = self.document()
         if document is None:
@@ -516,11 +559,12 @@ class IngestionState(_ProjectComponent):
             "created_at": _now(),
             "lifecycle": "append-only",
         }
+        snapshots = self._snapshot_extraction()
         parents = [
             _parent_ref(self.root, _safe_child(self.root, self.manifest()["source"]["relative_path"]), role="original-source"),
-            _parent_ref(self.root, self.document_path, role="current-structured-document"),
-            _parent_ref(self.root, quality_path, role="current-extraction-quality"),
-            _parent_ref(self.root, warnings_path, role="current-extraction-warnings"),
+            _parent_ref(self.root, snapshots["document.json"], role="confirmed-structured-document"),
+            _parent_ref(self.root, snapshots["quality.json"], role="confirmed-extraction-quality"),
+            _parent_ref(self.root, snapshots["warnings.json"], role="confirmed-extraction-warnings"),
         ]
         if previous_path is not None:
             parents.append(_parent_ref(self.root, previous_path, role="previous-extraction-decision"))
@@ -543,6 +587,7 @@ class IngestionState(_ProjectComponent):
         if choice in {"confirm", "continue_with_warning"} and any(warning.code in hard_block_codes for warning in document.warnings):
             raise ReviewStudioError("当前 PDF 识别缺少 OCR 或渲染器；不能把残缺文本送入审查，请安装依赖、修正识别文本或更换文件")
         if choice == "correct":
+            self._ensure_extraction_correction_allowed()
             if not isinstance(corrected_text, str) or not corrected_text.strip():
                 raise ReviewStudioError("修正识别文本不能为空")
             corrected_bytes = corrected_text.encode("utf-8")
@@ -555,10 +600,13 @@ class IngestionState(_ProjectComponent):
             corrected.quality.human_corrected = True
             corrected.quality.requires_confirmation = False
             corrected.warnings.extend(document.warnings)
-            original_document_parent = _parent_ref(self.root, self.document_path, role="previous-structured-document")
-            correction_path = self.root / "extraction" / "human-correction.md"
+            original_snapshot = self._snapshot_extraction()
+            original_document_parent = _parent_ref(self.root, original_snapshot["document.json"], role="previous-structured-document")
+            correction_id = stable_id("EXC", _sha256(corrected_bytes), _now(), secrets.token_hex(8))
+            correction_directory = self.root / "extraction" / "corrections" / correction_id
+            correction_path = correction_directory / "human-correction.md"
             _write_tracked(self.root, correction_path, corrected_bytes, parents=[original_document_parent], provenance="human-confirmed")
-            corrected_path = self.root / "extraction" / "document-corrected.json"
+            corrected_path = correction_directory / "document-corrected.json"
             corrected_document_bytes = canonical_json(corrected.to_dict())
             _write_tracked(self.root, corrected_path, corrected_document_bytes, parents=[_parent_ref(self.root, correction_path, role="recognition-correction"), original_document_parent], provenance="human-confirmed-derived")
             _replace_tracked(self.root, self.document_path, corrected_document_bytes, parents=[_parent_ref(self.root, corrected_path, role="current-structured-document")], provenance="human-confirmed-current")

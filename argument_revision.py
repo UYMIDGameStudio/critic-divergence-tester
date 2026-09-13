@@ -11,14 +11,18 @@ import json
 import re
 import difflib
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
 from typing import Any, Iterable
 
 from argument_contracts import sha256_bytes
 from argument_workbench import (
     WorkbenchError,
+    WorkspacePaths,
     _atomic_write,
     _read_json,
+    _workspace_source,
+    _decoded_workspace_text,
     _write_new,
     import_document_version,
     json_bytes,
@@ -27,6 +31,8 @@ from argument_workbench import (
     utc_now,
     workspace_paths,
 )
+from project_lifecycle import transaction
+from project_lock import ProjectMutationLockedError
 
 
 ATOMIZATION_SCHEMA_VERSION = 1
@@ -52,22 +58,28 @@ CHANGE_KINDS = {
 ID = re.compile(r"[A-Z][A-Z0-9]*[1-9][0-9]*\Z")
 
 
+def _revision_mutation(operation):
+    """Publish one complete service result under the shared recovery journal.
+
+    Rejected model responses return a normal AttemptResult after their entire
+    archive is written. Ordinary exceptions, including archive write failures,
+    roll back. Nested DocumentVersion publication shares this transaction.
+    """
+    @wraps(operation)
+    def mutate(project_dir, *args, **kwargs):
+        root = project_dir.root if isinstance(project_dir, WorkspacePaths) else Path(project_dir)
+        try:
+            with transaction(root):
+                return operation(project_dir, *args, **kwargs)
+        except ProjectMutationLockedError as exc:
+            raise WorkbenchError(str(exc)) from exc
+    return mutate
+
+
 def _source(project_dir: Path | str, version_id: str | None = None) -> tuple[Any, dict[str, Any], bytes, str]:
     workspace = workspace_paths(project_dir, version_id)
-    version, _ = _read_json(workspace.version)
-    relative = version.get("source", {}).get("relative_path")
-    if not isinstance(relative, str):
-        raise WorkbenchError("DocumentVersion source path is invalid")
-    path = workspace.version_dir / relative
-    if path.is_symlink() or not path.is_file():
-        raise WorkbenchError("DocumentVersion source must be a regular file")
-    data = path.read_bytes()
-    if sha256_bytes(data) != version.get("source", {}).get("sha256"):
-        raise WorkbenchError("DocumentVersion source hash does not match")
-    try:
-        text = data.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise WorkbenchError(f"DocumentVersion source is not UTF-8: {exc}") from exc
+    version, data, _ = _workspace_source(workspace)
+    text = _decoded_workspace_text(version, data)
     return workspace, version, data, text
 
 
@@ -196,6 +208,7 @@ class AttemptResult:
     repair_prompt: Path | None
 
 
+@_revision_mutation
 def import_review_report(
     project_dir: Path | str,
     report: str | bytes,
@@ -240,7 +253,15 @@ def _latest_dir(directory: Path, prefix: str) -> Path:
     return sorted(candidates)[-1]
 
 
+def _validate_selector(value: str | None, prefix: str, field: str) -> None:
+    """An explicit artifact ID selects inside this project, never a path."""
+    if value is not None and (not isinstance(value, str) or re.fullmatch(prefix + r"[0-9]{4}", value) is None):
+        raise WorkbenchError(f"{field} must be an artifact ID such as {prefix}0001")
+
+
+@_revision_mutation
 def prepare_atomization(project_dir: Path | str, report_id: str | None = None) -> Path:
+    _validate_selector(report_id, "RP", "report_id")
     workspace, version, _, manuscript = _source(project_dir)
     reports = _quick_root(workspace.root, workspace.version_id) / "reports"
     report_dir = reports / report_id if report_id else _latest_dir(reports, "RP")
@@ -327,7 +348,7 @@ def _validate_atomization(value: object, run: dict[str, Any], manuscript: str, r
         if isinstance(item.get("report_quote"), str) and item["report_quote"] not in report:
             errors.append(f"{label}.report_quote does not occur in imported report")
         kind = item.get("location_kind")
-        if kind not in LOCATION_KINDS:
+        if not isinstance(kind, str) or kind not in LOCATION_KINDS:
             errors.append(f"{label}.location_kind is invalid")
         quote = item.get("manuscript_quote")
         if kind == "exact_quote":
@@ -337,7 +358,7 @@ def _validate_atomization(value: object, run: dict[str, Any], manuscript: str, r
                 errors.append(f"{label}.manuscript_quote must occur exactly once")
         elif quote is not None:
             errors.append(f"{label}.manuscript_quote must be null when not exactly located")
-        if item.get("evidence_level") not in EVIDENCE_LEVELS:
+        if not isinstance(item.get("evidence_level"), str) or item["evidence_level"] not in EVIDENCE_LEVELS:
             errors.append(f"{label}.evidence_level is invalid")
         _string_list(item.get("uncertainties"), f"{label}.uncertainties", errors)
         normalized.append(item)
@@ -353,7 +374,9 @@ def _repair_prompt(kind: str, errors: Iterable[str], original: bytes, contract_p
     ).encode("utf-8")
 
 
+@_revision_mutation
 def collect_atomization_result(project_dir: Path | str, response: str | bytes, *, run_id: str | None = None, producer: str = "manual-model-bridge") -> AttemptResult:
+    _validate_selector(run_id, "AR", "run_id")
     workspace, _, _, manuscript = _source(project_dir)
     runs = _quick_root(workspace.root, workspace.version_id) / "atomization-runs"
     run_dir = runs / run_id if run_id else _latest_dir(runs, "AR")
@@ -426,6 +449,7 @@ def current_quick_findings(project_dir: Path | str) -> list[dict[str, Any]]:
     return rows
 
 
+@_revision_mutation
 def append_quick_finding_decision(project_dir: Path | str, finding_id: str, *, decision: str, reason: str, corrections: dict[str, Any] | None = None, action_text: str | None = None, producer: str = "local-workbench-ui") -> str:
     workspace, findings_path, _ = _latest_valid_findings(project_dir)
     findings = {item["finding_id"]: item for item in current_quick_findings(project_dir)}
@@ -466,6 +490,7 @@ def append_quick_finding_decision(project_dir: Path | str, finding_id: str, *, d
     return decision_id
 
 
+@_revision_mutation
 def prepare_revision_generation(project_dir: Path | str) -> Path:
     workflow = _workflow_workspace(project_dir)
     workspace, version, _, manuscript = _source(workflow.root, workflow.version_id)
@@ -526,15 +551,18 @@ def _validate_revision(value: object, run: dict[str, Any], manuscript: str) -> t
         expected_actions = {finding_actions[finding_id] for finding_id in fids if finding_id in finding_actions}
         if set(aids) != expected_actions:
             errors.append(f"{label} Finding–Action bindings do not match")
-        if change.get("change_kind") not in CHANGE_KINDS: errors.append(f"{label}.change_kind is invalid")
+        if not isinstance(change.get("change_kind"), str) or change["change_kind"] not in CHANGE_KINDS: errors.append(f"{label}.change_kind is invalid")
         for field in ("original_quote", "replacement_text", "reason", "verification_note"):
             if not isinstance(change.get(field), str): errors.append(f"{label}.{field} must be text")
         if not isinstance(change.get("reason"), str) or not change["reason"].strip(): errors.append(f"{label}.reason must be non-empty")
         _string_list(change.get("uncertainties"), f"{label}.uncertainties", errors)
         if not isinstance(change.get("fact_change"), bool): errors.append(f"{label}.fact_change must be boolean")
         quote, anchor = change.get("original_quote"), change.get("insertion_anchor")
+        if not isinstance(quote, str):
+            # The field error above rejects this item; location checks require text.
+            continue
         if quote:
-            if change.get("change_kind") in {"insert_before", "insert_after"}: errors.append(f"{label} insertion must use insertion_anchor")
+            if change.get("change_kind") in ("insert_before", "insert_after"): errors.append(f"{label} insertion must use insertion_anchor")
             if manuscript.count(quote) != 1: errors.append(f"{label}.original_quote must occur exactly once")
             else:
                 start = manuscript.index(quote); ranges.append((start, start + len(quote), str(cid)))
@@ -543,7 +571,7 @@ def _validate_revision(value: object, run: dict[str, Any], manuscript: str) -> t
             if not any(isinstance(bound, str) and bound and (bound in quote or quote in bound) for bound in linked_quotes):
                 errors.append(f"{label} is outside the located text of its linked findings")
         else:
-            if change.get("change_kind") not in {"insert_before", "insert_after"}: errors.append(f"{label} empty original_quote requires insertion change_kind")
+            if change.get("change_kind") not in ("insert_before", "insert_after"): errors.append(f"{label} empty original_quote requires insertion change_kind")
             if not isinstance(anchor, str) or not anchor or manuscript.count(anchor) != 1: errors.append(f"{label}.insertion_anchor must occur exactly once")
             else:
                 point = manuscript.index(anchor) + (len(anchor) if change["change_kind"] == "insert_after" else 0); ranges.append((point, point, str(cid)))
@@ -560,7 +588,9 @@ def _validate_revision(value: object, run: dict[str, Any], manuscript: str) -> t
     return errors, normalized
 
 
+@_revision_mutation
 def collect_revision_result(project_dir: Path | str, response: str | bytes, *, run_id: str | None = None, producer: str = "manual-model-bridge") -> AttemptResult:
+    _validate_selector(run_id, "RG", "run_id")
     workflow = _workflow_workspace(project_dir)
     workspace, _, _, manuscript = _source(workflow.root, workflow.version_id)
     runs = _quick_root(workspace.root, workspace.version_id) / "revision-generation-runs"; run_dir = runs / run_id if run_id else _latest_dir(runs, "RG")
@@ -602,6 +632,7 @@ def revision_hunks(project_dir: Path | str) -> list[dict[str, Any]]:
     return [{**change, "decision": decisions.get(change["change_id"]), "proposal_sha256": proposal_sha256} for change in proposal["changes"]]
 
 
+@_revision_mutation
 def append_hunk_decision(project_dir: Path | str, change_id: str, *, decision: str, reason: str, edited_text: str | None = None, producer: str = "local-workbench-ui") -> str:
     workspace, proposal_path, proposal = _latest_proposal(project_dir); changes = {item["change_id"]: item for item in proposal["changes"]}; change_ids = set(changes)
     if change_id not in change_ids or decision not in HUNK_DECISIONS or not reason.strip(): raise WorkbenchError("valid change_id, decision, and reason are required")
@@ -629,6 +660,7 @@ def append_hunk_decision(project_dir: Path | str, change_id: str, *, decision: s
     _write_tracked(workspace.root, directory / f"{decision_id}.json", json_bytes(record)); return decision_id
 
 
+@_revision_mutation
 def apply_approved_hunks(project_dir: Path | str, *, producer: str = "local-workbench-ui") -> dict[str, Any]:
     workspace, proposal_path, proposal = _latest_proposal(project_dir); _, version, source_bytes, text = _source(workspace.root, proposal["manuscript_version_id"])
     if sha256_bytes(source_bytes) != proposal["source_sha256"]: raise WorkbenchError("base manuscript changed after proposal generation")
@@ -663,7 +695,9 @@ def apply_approved_hunks(project_dir: Path | str, *, producer: str = "local-work
     _write_tracked(workspace.root, applications / f"{application_id}.json", json_bytes(record)); return record
 
 
+@_revision_mutation
 def prepare_resolution_review(project_dir: Path | str, application_id: str | None = None) -> Path:
+    _validate_selector(application_id, "AP", "application_id")
     root = workspace_paths(project_dir).root; applications = root / "documents" / "D1" / "revision-applications"
     app_path = applications / f"{application_id}.json" if application_id else _regular_files(applications, "AP*.json")[-1]
     application, app_bytes = _read_json(app_path); _, _, _, manuscript = _source(root, application["output_version_id"])
@@ -692,13 +726,14 @@ def _validate_resolution(value: object, record: dict[str, Any], manuscript: str)
         not isinstance(finding_ids, list)
         or not isinstance(results, list)
         or len(results) != len(finding_ids)
+        or any(not isinstance(item, dict) or not isinstance(item.get("finding_id"), str) for item in results)
         or {item.get("finding_id") for item in results if isinstance(item, dict)} != set(finding_ids)
     ):
         return errors + ["results must cover every selected finding exactly once"], []
     expected = {"finding_id", "proposed_status", "reason", "evidence_quotes", "uncertainties"}
     normalized: list[dict[str, Any]] = []
     for item in results:
-        if not isinstance(item, dict) or set(item) != expected or item.get("proposed_status") not in RESOLUTION_STATUSES or not isinstance(item.get("reason"), str):
+        if not isinstance(item, dict) or set(item) != expected or not isinstance(item.get("proposed_status"), str) or item["proposed_status"] not in RESOLUTION_STATUSES or not isinstance(item.get("reason"), str):
             errors.append("resolution result item is invalid")
             continue
         evidence_quotes = _string_list(item.get("evidence_quotes"), "evidence_quotes", errors)
@@ -710,7 +745,9 @@ def _validate_resolution(value: object, record: dict[str, Any], manuscript: str)
     return errors, normalized
 
 
+@_revision_mutation
 def collect_resolution_result(project_dir: Path | str, response: str | bytes, *, run_id: str | None = None, producer: str = "manual-model-bridge") -> AttemptResult:
+    _validate_selector(run_id, "RR", "run_id")
     root = workspace_paths(project_dir).root; runs = root / "documents" / "D1" / "resolution-runs"; run = runs / run_id if run_id else _latest_dir(runs, "RR"); record, _ = _read_json(run / "record.json")
     raw = response.encode() if isinstance(response, str) else response; attempts = run / "attempts"; attempt_id = _next_id(attempts, "attempt-", ""); target = attempts / attempt_id
     try:
@@ -740,6 +777,7 @@ def _latest_resolution_proposal(project_dir: Path | str, run: Path | None = None
     raise WorkbenchError("no valid resolution proposal exists")
 
 
+@_revision_mutation
 def append_resolution_decision(project_dir: Path | str, finding_id: str, *, status: str, reason: str, producer: str = "local-workbench-ui") -> str:
     root = workspace_paths(project_dir).root
     run, proposal_path, proposal = _latest_resolution_proposal(project_dir)
@@ -750,6 +788,7 @@ def append_resolution_decision(project_dir: Path | str, finding_id: str, *, stat
     value = {"artifact_type": "finding-resolution-decision", "schema_version": 1, "decision_id": decision_id, "finding_id": finding_id, "final_status": status, "reason": reason, "proposal_sha256": sha256_bytes(proposal_path.read_bytes()), "provenance": _provenance("human-confirmed", producer), "lifecycle": "append-only"}; _write_tracked(root, directory / f"{decision_id}.json", json_bytes(value)); return decision_id
 
 
+@_revision_mutation
 def complete_without_revision(project_dir: Path | str, *, reason: str, producer: str = "local-workbench-ui") -> Path:
     """Close a workflow without creating a fake V2 when no revision is selected."""
     if not isinstance(reason, str) or not reason.strip():
@@ -828,12 +867,13 @@ def complete_without_revision(project_dir: Path | str, *, reason: str, producer:
     return export_dir
 
 
+@_revision_mutation
 def export_revision(project_dir: Path | str, application_id: str | None = None) -> Path:
+    _validate_selector(application_id, "AP", "application_id")
     root = workspace_paths(project_dir).root; applications = root / "documents" / "D1" / "revision-applications"; app_path = applications / f"{application_id}.json" if application_id else _regular_files(applications, "AP*.json")[-1]; application, _ = _read_json(app_path)
-    workspace, _, source_bytes, _ = _source(root, application["output_version_id"]); exports = root / "exports" / application["application_id"]
+    workspace, _, source_bytes, output_text = _source(root, application["output_version_id"]); exports = root / "exports" / application["application_id"]
     manuscript = exports / f"{application['output_version_id']}.md"; _atomic_write(manuscript, source_bytes)
     _, _, base_bytes, base_text = _source(root, application["base_version_id"])
-    output_text = source_bytes.decode("utf-8-sig")
     diff_text = "".join(difflib.unified_diff(base_text.splitlines(keepends=True), output_text.splitlines(keepends=True), fromfile=application["base_version_id"], tofile=application["output_version_id"]))
     _atomic_write(exports / "V1-V2.diff", diff_text.encode("utf-8"))
     findings = current_quick_findings(root); resolutions: dict[str, dict[str, Any]] = {}

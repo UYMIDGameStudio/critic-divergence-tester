@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from functools import wraps
+from project_lifecycle import transaction
 
 
 def _serialized_mutation(method):
     @wraps(method)
     def wrapped(self, *args, **kwargs):
-        with _project_mutation_lock(self.root):
+        with _project_mutation_lock(self.root), transaction(self.root):
             return method(self, *args, **kwargs)
 
     return wrapped

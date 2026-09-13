@@ -278,6 +278,10 @@ def _classify(paths: ResolutionPaths, response_bytes: bytes) -> tuple[str, list[
     except WorkbenchError as exc: return "unusable", [str(exc)], None
     errors = validate_artifact(value) if isinstance(value, dict) else ["response must be an object"]
     if not isinstance(value, dict): return "unusable", errors, None
+    if value.get("artifact") != "resolution-retest-results":
+        errors.append("artifact must be resolution-retest-results")
+    if errors:
+        return "unusable", errors, value
     run, _ = _read_json(paths.record); _, finding_bytes = _read_json(paths.root / "original-finding.json"); target_ir, target_ir_bytes = _read_json(paths.root / "target-argument-ir.json"); protocol_bytes = (paths.root / "lens-protocol.json").read_bytes()
     expected_source = {"original_finding_sha256": sha256_bytes(finding_bytes), "target_ir_sha256": sha256_bytes(target_ir_bytes), "lens_protocol_sha256": sha256_bytes(protocol_bytes)}
     if value.get("source") != expected_source: errors.append("source must bind the exact original Finding, descendant IR, and original Lens")

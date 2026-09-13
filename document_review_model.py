@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Mapping
@@ -18,8 +19,10 @@ from review_profiles import ALL_CRITICS, DOCUMENT_CRITICS
 
 
 SCHEMA_VERSION = 1
-SUPPORTED_EXTENSIONS = {".md", ".txt", ".docx", ".pdf"}
-UNSUPPORTED_EXTENSIONS = {".doc", ".docm", ".pages"}
+SUPPORTED_EXTENSIONS = {".md", ".markdown", ".txt", ".text", ".log", ".docx", ".docm", ".pdf",
+                        ".rtf", ".html", ".htm", ".csv", ".tsv", ".odt",
+                        ".xlsx", ".xlsm", ".pptx", ".pptm", ".doc", ".wps", ".xls", ".et", ".ppt", ".dps"}
+UNSUPPORTED_EXTENSIONS = {".pages"}
 # Historical public constant retains the five document defaults. Validation
 # uses ALL_CRITICS; profile routing is owned by review_profiles.
 CRITIC_DIMENSIONS = DOCUMENT_CRITICS
@@ -329,6 +332,8 @@ class AuditRun:
 
 def validate_finding_dict(value: Mapping[str, Any]) -> list[str]:
     """Validate the public Finding contract without coercing model output."""
+    if not isinstance(value, Mapping):
+        return ["Finding must be an object"]
     required = {
         "finding_id", "critic", "document_type", "location", "evidence", "issue",
         "standard", "consequence", "severity", "verification_state", "external_basis",
@@ -339,24 +344,53 @@ def validate_finding_dict(value: Mapping[str, Any]) -> list[str]:
     if missing:
         errors.append("missing fields: " + ", ".join(missing))
     location = value.get("location")
-    if not isinstance(location, Mapping) or not str(location.get("block_id", "")).strip():
+    if (not isinstance(location, Mapping) or not isinstance(location.get("block_id"), str)
+            or not location["block_id"].strip()):
         errors.append("location.block_id is required")
-    if value.get("critic") not in ALL_CRITICS:
+    if isinstance(location, Mapping):
+        for name in ("block_kind", "table_id", "source_path"):
+            if location.get(name) is not None and not isinstance(location[name], str):
+                errors.append(f"location.{name} must be text")
+        for name in ("page", "paragraph", "row", "column", "char_start", "char_end"):
+            number = location.get(name)
+            # Existing paragraph/table offsets are zero-based. Page numbers are
+            # one-based; binding to the actual source supplies the exact offset.
+            minimum = 1 if name == "page" else 0
+            if number is not None and (type(number) is not int or number < minimum):
+                errors.append(f"location.{name} must be an integer >= {minimum}")
+        bbox = location.get("bbox")
+        if bbox is not None and (not isinstance(bbox, (list, tuple)) or len(bbox) != 4
+                or any(type(n) not in (float, int) or (type(n) is float and not math.isfinite(n)) for n in bbox)):
+            errors.append("location.bbox must contain four finite numbers")
+    if not isinstance(value.get("critic"), str) or value["critic"] not in ALL_CRITICS:
         errors.append("critic is not a supported independent dimension")
-    if value.get("severity") not in SEVERITIES:
+    if not isinstance(value.get("severity"), str) or value["severity"] not in SEVERITIES:
         errors.append("severity is invalid")
-    if value.get("verification_state") not in VERIFICATION_STATES:
+    if not isinstance(value.get("verification_state"), str) or value["verification_state"] not in VERIFICATION_STATES:
         errors.append("verification_state 无效；只能使用 " + " | ".join(sorted(VERIFICATION_STATES)))
     if not isinstance(value.get("external_basis"), Mapping):
         errors.append("external_basis 必须是 JSON 对象；没有外部依据时使用 {}，不要使用 null、字符串或数组")
+    else:
+        basis = value["external_basis"]
+        for name in ("jurisdiction", "source_name", "issuing_body", "validity", "locator", "url_or_attachment", "application"):
+            if name in basis and not isinstance(basis[name], str):
+                errors.append(f"external_basis.{name} must be text")
+        facts = basis.get("unresolved_facts", [])
+        if not isinstance(facts, list) or any(not isinstance(item, str) for item in facts):
+            errors.append("external_basis.unresolved_facts must be a list of text")
     if value.get("critic") == "academic_citations" and value.get("verification_state") == "verified":
         basis = value.get("external_basis")
         for field_name in ("source_name", "locator", "url_or_attachment", "application"):
             entry = basis.get(field_name) if isinstance(basis, Mapping) else None
             if not isinstance(entry, str) or not entry.strip():
                 errors.append(f"verified academic citation requires external_basis.{field_name}")
-    if not isinstance(value.get("uncertainties"), list):
-        errors.append("uncertainties must be a list")
+    for name in ("uncertainties", "competing_readings"):
+        items = value.get(name, [] if name == "competing_readings" else None)
+        if not isinstance(items, list) or any(not isinstance(item, str) for item in items):
+            errors.append(f"{name} must be a list of text")
+    for name in ("status", "origin", "required_observation", "proposed_group_id", "source_finding_id"):
+        if name in value and value[name] is not None and not isinstance(value[name], str):
+            errors.append(f"{name} must be text")
     if not isinstance(value.get("blocks_release_or_execution"), bool):
         errors.append("blocks_release_or_execution must be boolean")
     for field_name in (

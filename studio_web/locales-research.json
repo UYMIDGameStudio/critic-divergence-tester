@@ -1,0 +1,1086 @@
+{
+  "text": {
+    "Argument Workbench": {
+      "zh-Hant": "論證研究工作台",
+      "en": "Argument Research Workbench"
+    },
+    "Local-first · model-neutral": {
+      "zh-Hant": "本機保存 · 自選模型",
+      "en": "Stored locally · Use any model"
+    },
+    "普通 AI 给你一篇“改好了”的文章；这里让每一处修改都可追溯、由你批准，并能复查。": {
+      "zh-Hant": "逐項審查、批准並追溯每一處修改，完成後可再次核驗。",
+      "en": "Review, approve and trace each change, then verify the result."
+    },
+    "无法连接本地服务，请确认本次启动的页面仍然有效": {
+      "zh-Hant": "無法連接本機服務，請確認本次啟動的頁面仍然有效",
+      "en": "Cannot connect to the local service. Check that this session is still running."
+    },
+    "本地服务返回了无法识别的响应": {
+      "zh-Hant": "本機服務傳回無法識別的回應",
+      "en": "The local service returned an unreadable response."
+    },
+    "请求失败": {
+      "zh-Hant": "請求失敗",
+      "en": "Request failed"
+    },
+    "本地服务连接中断或发生内部错误；页面已尝试刷新。操作可能已经完成，请先检查当前状态，不要直接重复提交。": {
+      "zh-Hant": "本機服務連線中斷或發生內部錯誤；頁面已嘗試重新整理。操作可能已經完成，請先檢查目前狀態，不要直接重複提交。",
+      "en": "The local service connection was interrupted or an internal error occurred. A refresh was attempted. The operation may have completed; check the current state before submitting again."
+    },
+    "本地服务连接中断或发生内部错误；状态已尝试刷新。操作可能已经完成，请先检查当前裁决，不要直接重复提交。": {
+      "zh-Hant": "本機服務連線中斷或發生內部錯誤；已嘗試重新整理狀態。操作可能已經完成，請先檢查目前裁決，不要直接重複提交。",
+      "en": "The connection was interrupted or an internal error occurred. A refresh was attempted. The decision may have been saved; check it before submitting again."
+    },
+    "这次返回未通过校验，原始内容已保留。": {
+      "zh-Hant": "此次回應未通過驗證，原始內容已保留。",
+      "en": "This response did not pass validation. Its original content has been retained."
+    },
+    "复制修复提示词": {
+      "zh-Hant": "複製修復提示詞",
+      "en": "Copy repair prompt"
+    },
+    "复制提示词，到任意 AI 运行，再把完整返回粘贴回来。": {
+      "zh-Hant": "複製提示詞，交給自選 AI 執行，再貼上完整回應。",
+      "en": "Copy the prompt to your preferred AI, then paste its complete response here."
+    },
+    "复制提示词": {
+      "zh-Hant": "複製提示詞",
+      "en": "Copy prompt"
+    },
+    "在这里粘贴 AI 返回": {
+      "zh-Hant": "在此貼上 AI 回應",
+      "en": "Paste the AI response here"
+    },
+    "校验并保存返回": {
+      "zh-Hant": "驗證並儲存回應",
+      "en": "Validate and save response"
+    },
+    "新建项目": {
+      "zh-Hant": "建立專案",
+      "en": "Create project"
+    },
+    "选择 Markdown/TXT 原稿。文件只保存在本机。": {
+      "zh-Hant": "選擇 Markdown／TXT 原稿。檔案僅保存在本機。",
+      "en": "Choose a Markdown or TXT manuscript. Files stay on this computer."
+    },
+    "项目标题（可选）": {
+      "zh-Hant": "專案標題（選填）",
+      "en": "Project title (optional)"
+    },
+    "原稿": {
+      "zh-Hant": "原稿",
+      "en": "Manuscript"
+    },
+    "导入为不可变 V1": {
+      "zh-Hant": "匯入並保留為 V1 原稿",
+      "en": "Import and preserve as V1"
+    },
+    "打开已有项目": {
+      "zh-Hant": "開啟現有專案",
+      "en": "Open existing project"
+    },
+    "打开": {
+      "zh-Hant": "開啟",
+      "en": "Open"
+    },
+    "校验失败": {
+      "zh-Hant": "驗證失敗",
+      "en": "Validation failed"
+    },
+    "请选择稿件": {
+      "zh-Hant": "請選擇稿件",
+      "en": "Choose a manuscript first."
+    },
+    "当前项目": {
+      "zh-Hant": "目前專案",
+      "en": "Current project"
+    },
+    "唯一下一步": {
+      "zh-Hant": "下一步",
+      "en": "Next step"
+    },
+    "V1 永久保留；模型只能提案，决定权在你。": {
+      "zh-Hant": "V1 原稿永久保留；模型提出建議，由你作出決定。",
+      "en": "V1 is preserved permanently. The model proposes changes; you make the decisions."
+    },
+    "进入专业研究视图（IR、Lens、Citation、lineage）": {
+      "zh-Hant": "開啟專業研究視圖：論證結構、審查視角、引文與版本脈絡",
+      "en": "Open the research view: argument structure, review lenses, citations and version lineage"
+    },
+    "修改链校验失败": {
+      "zh-Hant": "修改歷程驗證失敗",
+      "en": "Change history validation failed"
+    },
+    "项目已强制进入只读状态。修复下列完整性问题前，所有写入操作都会被拒绝。": {
+      "zh-Hant": "專案已進入唯讀狀態。修復以下完整性問題後才能繼續修改。",
+      "en": "This project is read-only. Resolve the following integrity issues before making further changes."
+    },
+    "导入现有审查报告": {
+      "zh-Hant": "匯入現有審查報告",
+      "en": "Import an existing review report"
+    },
+    "支持任意格式。原始报告会永久归档。": {
+      "zh-Hant": "貼上完整報告文字；原始報告將永久歸檔。",
+      "en": "Paste the complete report text. The original report will be archived permanently."
+    },
+    "粘贴 AI 审查报告": {
+      "zh-Hant": "貼上 AI 審查報告",
+      "en": "Paste an AI review report"
+    },
+    "导入并生成原子化提示词": {
+      "zh-Hant": "匯入並準備逐條分析",
+      "en": "Import and prepare finding extraction"
+    },
+    "把报告拆成可核验的发现": {
+      "zh-Hant": "將報告拆成可核驗的發現",
+      "en": "Extract verifiable findings from the report"
+    },
+    "逐条确认发现": {
+      "zh-Hant": "逐條確認發現",
+      "en": "Confirm each finding"
+    },
+    "UNVERIFIED 不会被当成事实。可以直接修正定位、标准和建议动作。": {
+      "zh-Hant": "未核驗內容不會視為事實。可直接修正原文定位、審查標準與建議行動。",
+      "en": "Unverified information is not treated as fact. You can correct the source location, review criterion and proposed action."
+    },
+    "问题": {
+      "zh-Hant": "問題",
+      "en": "Issue"
+    },
+    "原文定位": {
+      "zh-Hant": "原文定位",
+      "en": "Source passage"
+    },
+    "审查标准": {
+      "zh-Hant": "審查標準",
+      "en": "Review criterion"
+    },
+    "建议动作": {
+      "zh-Hant": "建議行動",
+      "en": "Proposed action"
+    },
+    "你的理由": {
+      "zh-Hant": "你的理由",
+      "en": "Your reason"
+    },
+    "接受处理": {
+      "zh-Hant": "接受並處理",
+      "en": "Accept for action"
+    },
+    "拒绝": {
+      "zh-Hant": "拒絕",
+      "en": "Reject"
+    },
+    "暂缓": {
+      "zh-Hant": "暫緩",
+      "en": "Defer"
+    },
+    "当前：": {
+      "zh-Hant": "目前：",
+      "en": "Current: "
+    },
+    "完成理由": {
+      "zh-Hant": "完成理由",
+      "en": "Completion reason"
+    },
+    "确认并生成审计包": {
+      "zh-Hant": "確認並產生稽核資料包",
+      "en": "Confirm and create audit package"
+    },
+    "本轮没有发现": {
+      "zh-Hant": "本輪沒有發現",
+      "en": "No findings in this round"
+    },
+    "本轮没有选中修改项": {
+      "zh-Hant": "本輪未選擇修改項目",
+      "en": "No changes selected in this round"
+    },
+    "可以保留零 finding 结果并合法结束，不创建伪造的 V2。": {
+      "zh-Hant": "可保留本輪無發現的結果並結束，無須建立 V2。",
+      "en": "Keep the no-findings result and complete this round without creating V2."
+    },
+    "所有 finding 均已拒绝或暂缓，可以保留决定链并结束本轮。": {
+      "zh-Hant": "所有發現均已拒絕或暫緩，可保留決定歷程並結束本輪。",
+      "en": "All findings have been rejected or deferred. Keep the decision history and complete this round."
+    },
+    "只为已接受的问题生成方案": {
+      "zh-Hant": "為已接受的問題產生方案",
+      "en": "Prepare changes for accepted issues"
+    },
+    "拒绝和暂缓的发现不会进入提示词。": {
+      "zh-Hant": "提示詞僅包含已接受的發現。",
+      "en": "The prompt includes accepted findings only."
+    },
+    "生成受约束修改提示词": {
+      "zh-Hant": "產生修改提示詞",
+      "en": "Prepare revision prompt"
+    },
+    "获取受约束修改提案": {
+      "zh-Hant": "取得修改提案",
+      "en": "Get a revision proposal"
+    },
+    "逐项审批 diff": {
+      "zh-Hant": "逐項批准修改",
+      "en": "Approve each change"
+    },
+    "每一项都显示 Finding、Action、理由和不确定项。": {
+      "zh-Hant": "每一項均列出發現、行動、理由與不確定事項。",
+      "en": "Each change lists its findings, actions, reasons and uncertainties."
+    },
+    "重新生成指定项": {
+      "zh-Hant": "重新產生指定項目",
+      "en": "Regenerate selected changes"
+    },
+    "复制下面的定向提示词。新提案通过校验后，因 proposal hash 已变化，所有 hunk 都必须重新审批。": {
+      "zh-Hant": "複製定向提示詞。新提案通過驗證後，所有修改項目都須重新批准。",
+      "en": "Copy the targeted prompt. Once a new proposal passes validation, every change requires approval again."
+    },
+    "复制定向提示词": {
+      "zh-Hant": "複製定向提示詞",
+      "en": "Copy targeted prompt"
+    },
+    "粘贴完整的新提案": {
+      "zh-Hant": "貼上完整的新提案",
+      "en": "Paste the complete new proposal"
+    },
+    "校验新提案": {
+      "zh-Hant": "驗證新提案",
+      "en": "Validate new proposal"
+    },
+    "原文": {
+      "zh-Hant": "原文",
+      "en": "Original text"
+    },
+    "建议": {
+      "zh-Hant": "建議",
+      "en": "Proposed change"
+    },
+    "决定理由": {
+      "zh-Hant": "決定理由",
+      "en": "Reason for decision"
+    },
+    "接受": {
+      "zh-Hant": "接受",
+      "en": "Accept"
+    },
+    "编辑后接受": {
+      "zh-Hant": "編輯後接受",
+      "en": "Edit and accept"
+    },
+    "重新生成此项": {
+      "zh-Hant": "重新產生此項",
+      "en": "Regenerate this change"
+    },
+    "插入锚点：": {
+      "zh-Hant": "插入位置：",
+      "en": "Insertion point: "
+    },
+    "未确认：": {
+      "zh-Hant": "尚未確認：",
+      "en": "Unconfirmed: "
+    },
+    "事实/引文变化，需核验：": {
+      "zh-Hant": "事實／引文變更，須核驗：",
+      "en": "Fact or citation change requiring verification: "
+    },
+    "生成不可变 V2": {
+      "zh-Hant": "產生並保留 V2",
+      "en": "Create and preserve V2"
+    },
+    "只应用已批准的 hunks；拒绝项绝不会进入 V2。哈希或范围冲突会安全停止。": {
+      "zh-Hant": "V2 僅套用已批准的修改。如來源內容或修改範圍衝突，操作將停止。",
+      "en": "V2 applies approved changes only. The operation stops if the source content or edit ranges conflict."
+    },
+    "确定生成 V2": {
+      "zh-Hant": "確認產生 V2",
+      "en": "Confirm and create V2"
+    },
+    "复查 V2": {
+      "zh-Hant": "複查 V2",
+      "en": "Recheck V2"
+    },
+    "复用每条 finding 的原始审查标准，不因“文字变了”就宣称已解决。": {
+      "zh-Hant": "沿用每條發現的原始審查標準，核實問題是否已解決。",
+      "en": "Use each finding’s original criterion to check whether the issue is resolved."
+    },
+    "生成复查提示词": {
+      "zh-Hant": "產生複查提示詞",
+      "en": "Prepare recheck prompt"
+    },
+    "用原标准复查 V2": {
+      "zh-Hant": "依原始標準複查 V2",
+      "en": "Recheck V2 against the original criteria"
+    },
+    "确认复查结论": {
+      "zh-Hant": "確認複查結論",
+      "en": "Confirm recheck conclusions"
+    },
+    "最终状态": {
+      "zh-Hant": "最終狀態",
+      "en": "Final status"
+    },
+    "你的确认理由": {
+      "zh-Hant": "你的確認理由",
+      "en": "Reason for confirmation"
+    },
+    "保存人工结论": {
+      "zh-Hant": "儲存人工結論",
+      "en": "Save your conclusion"
+    },
+    "导出文章与审计记录": {
+      "zh-Hant": "匯出文章與稽核紀錄",
+      "en": "Export manuscript and audit records"
+    },
+    "生成导出包": {
+      "zh-Hant": "產生匯出資料包",
+      "en": "Create export package"
+    },
+    "闭环完成": {
+      "zh-Hant": "本輪流程完成",
+      "en": "Review round complete"
+    },
+    "原稿、无修改结论和完整审计记录已生成；没有创建 V2。": {
+      "zh-Hant": "已產生原稿、無修改結論及完整稽核紀錄；未建立 V2。",
+      "en": "The original manuscript, no-change conclusion and complete audit records are ready. No V2 was created."
+    },
+    "V2、修订清单和完整审计记录已生成。": {
+      "zh-Hant": "V2、修訂清單及完整稽核紀錄已產生。",
+      "en": "V2, the revision checklist and complete audit records are ready."
+    },
+    "本地存储：": {
+      "zh-Hant": "本機儲存位置：",
+      "en": "Local storage: "
+    },
+    "文本编码": {
+      "zh-Hant": "文字編碼",
+      "en": "Text encoding"
+    },
+    "自动识别编码": {
+      "zh-Hant": "自動識別編碼",
+      "en": "Detect encoding automatically"
+    },
+    "若编码存在歧义，请选择原文件编码。": {
+      "zh-Hant": "如編碼有歧義，請選擇原始檔案的編碼。",
+      "en": "If detection is ambiguous, select the original file’s encoding."
+    },
+    "未裁决": {
+      "zh-Hant": "未裁決",
+      "en": "Undecided"
+    },
+    "推迟": {
+      "zh-Hant": "暫緩",
+      "en": "Deferred"
+    },
+    "已解决": {
+      "zh-Hant": "已解決",
+      "en": "Resolved"
+    },
+    "已接受": {
+      "zh-Hant": "已接受",
+      "en": "Accepted"
+    },
+    "未核验引文": {
+      "zh-Hant": "未核驗引文",
+      "en": "Unverified citations"
+    },
+    "尚无 Claim": {
+      "zh-Hant": "尚無主張",
+      "en": "No claims yet"
+    },
+    "当前主张": {
+      "zh-Hant": "目前主張",
+      "en": "Selected claim"
+    },
+    "位置为 deterministic；语义为 model-derived / human-corrected": {
+      "zh-Hant": "位置由程式定位；語義由模型提取或經人工修正",
+      "en": "Locations are computed; meaning is extracted by a model or corrected by a person"
+    },
+    "上游 · Supported by / Assumptions / Citations": {
+      "zh-Hant": "上游：支持依據、假設與引文",
+      "en": "Upstream: support, assumptions and citations"
+    },
+    "下游 · Supports / Qualifies / Contradicts": {
+      "zh-Hant": "下游：支持、限定與反駁",
+      "en": "Downstream: support, qualifications and contradictions"
+    },
+    "没有上游关系": {
+      "zh-Hant": "沒有上游關係",
+      "en": "No upstream relations"
+    },
+    "没有下游关系": {
+      "zh-Hant": "沒有下游關係",
+      "en": "No downstream relations"
+    },
+    "完整 provenance": {
+      "zh-Hant": "完整來源紀錄",
+      "en": "Full provenance"
+    },
+    "检查问题：": {
+      "zh-Hant": "檢查問題：",
+      "en": "Review question: "
+    },
+    "失败条件：": {
+      "zh-Hant": "失敗條件：",
+      "en": "Failure condition: "
+    },
+    "Evidence policy：": {
+      "zh-Hant": "證據要求：",
+      "en": "Evidence requirement: "
+    },
+    "Lens 的规则／方法论依据": {
+      "zh-Hant": "審查視角的規則與方法依據（原始協議）",
+      "en": "Rules and methodology (original protocol)"
+    },
+    "人工 correction": {
+      "zh-Hant": "人工修正",
+      "en": "Human corrections"
+    },
+    "未核验 Citation": {
+      "zh-Hant": "未核驗引文",
+      "en": "Unverified citations"
+    },
+    "全部 Lenses": {
+      "zh-Hant": "全部審查視角",
+      "en": "All review lenses"
+    },
+    "复议": {
+      "zh-Hant": "重新裁決",
+      "en": "Reconsider"
+    },
+    "人工裁决": {
+      "zh-Hant": "人工裁決",
+      "en": "Human decision"
+    },
+    "依据：": {
+      "zh-Hant": "依據：",
+      "en": "Basis: "
+    },
+    "影响：": {
+      "zh-Hant": "影響：",
+      "en": "Consequence: "
+    },
+    "人工决定：": {
+      "zh-Hant": "人工決定：",
+      "en": "Human decision: "
+    },
+    "尚未裁决": {
+      "zh-Hant": "尚未裁決",
+      "en": "Not yet decided"
+    },
+    "人工：": {
+      "zh-Hant": "人工：",
+      "en": "Human: "
+    },
+    "等待人工确认": {
+      "zh-Hant": "等待人工確認",
+      "en": "Awaiting human confirmation"
+    },
+    "原问题：": {
+      "zh-Hant": "原問題：",
+      "en": "Original issue: "
+    },
+    "原 Lens：": {
+      "zh-Hant": "原審查視角：",
+      "en": "Original review lens: "
+    },
+    "重测提案": {
+      "zh-Hant": "複查提案",
+      "en": "Recheck proposal"
+    },
+    "人工确认：": {
+      "zh-Hant": "人工確認：",
+      "en": "Human confirmation: "
+    },
+    "这个 Claim 在所选 Lens 下没有当前结果": {
+      "zh-Hant": "此主張在所選審查視角下尚無目前結果",
+      "en": "No current result for this claim under the selected lens"
+    },
+    "没有绑定的 Citation provenance": {
+      "zh-Hant": "沒有綁定的引文來源紀錄",
+      "en": "No linked citation provenance"
+    },
+    "尚无跨版本 Lineage": {
+      "zh-Hant": "尚無跨版本主張脈絡",
+      "en": "No claim lineage across versions yet"
+    },
+    "没有继承的旧 Finding": {
+      "zh-Hant": "沒有沿用的先前發現",
+      "en": "No inherited findings"
+    },
+    "裁决": {
+      "zh-Hant": "裁決",
+      "en": "Decide"
+    },
+    "Argument History": {
+      "zh-Hant": "論證歷程",
+      "en": "Argument history"
+    },
+    "稿件版本": {
+      "zh-Hant": "稿件版本",
+      "en": "Manuscript version"
+    },
+    "Manuscript · 原文": {
+      "zh-Hant": "稿件原文",
+      "en": "Manuscript"
+    },
+    "Argument · 论证": {
+      "zh-Hant": "論證結構",
+      "en": "Argument structure"
+    },
+    "Review · 审查": {
+      "zh-Hant": "審查結果",
+      "en": "Review results"
+    },
+    "决定": {
+      "zh-Hant": "決定",
+      "en": "Decision"
+    },
+    "理由（必填）": {
+      "zh-Hant": "理由（必填）",
+      "en": "Reason (required)"
+    },
+    "修改行动": {
+      "zh-Hant": "修改行動",
+      "en": "Revision action"
+    },
+    "收窄主张": {
+      "zh-Hant": "收窄主張",
+      "en": "Narrow the claim"
+    },
+    "增加证据": {
+      "zh-Hant": "增加證據",
+      "en": "Add evidence"
+    },
+    "增加限定": {
+      "zh-Hant": "增加限定",
+      "en": "Add a qualification"
+    },
+    "删除主张": {
+      "zh-Hant": "刪除主張",
+      "en": "Remove the claim"
+    },
+    "重组论证": {
+      "zh-Hant": "重組論證",
+      "en": "Restructure the argument"
+    },
+    "澄清概念": {
+      "zh-Hant": "釐清概念",
+      "en": "Clarify the concept"
+    },
+    "核验引文": {
+      "zh-Hant": "核驗引文",
+      "en": "Verify the citation"
+    },
+    "其他": {
+      "zh-Hant": "其他",
+      "en": "Other"
+    },
+    "行动说明（接受时必填）": {
+      "zh-Hant": "行動說明（接受時必填）",
+      "en": "Action description (required when accepting)"
+    },
+    "取消": {
+      "zh-Hant": "取消",
+      "en": "Cancel"
+    },
+    "保存正式决定": {
+      "zh-Hant": "儲存正式決定",
+      "en": "Save formal decision"
+    },
+    "每个数字是可审计的工作流状态，不是稿件质量分数。": {
+      "zh-Hant": "數字表示可稽核的流程狀態，用於追蹤工作進度。",
+      "en": "These figures track auditable workflow states and work progress."
+    },
+    "关闭": {
+      "zh-Hant": "關閉",
+      "en": "Close"
+    },
+    "Citation provenance": {
+      "zh-Hant": "引文來源紀錄",
+      "en": "Citation provenance"
+    },
+    "Claim Lineage": {
+      "zh-Hant": "主張版本脈絡",
+      "en": "Claim lineage"
+    },
+    "Finding Resolution": {
+      "zh-Hant": "問題解決紀錄",
+      "en": "Finding resolution"
+    },
+    "Claims": {
+      "zh-Hant": "主張",
+      "en": "Claims"
+    },
+    "Finding ": {
+      "zh-Hant": "發現 ",
+      "en": "Finding "
+    },
+    "Action ": {
+      "zh-Hant": "行動 ",
+      "en": "Action "
+    },
+    "Source": {
+      "zh-Hant": "原始來源",
+      "en": "Source"
+    },
+    "Reviewed IR": {
+      "zh-Hant": "已確認論證結構",
+      "en": "Reviewed argument structure"
+    },
+    "Review run": {
+      "zh-Hant": "審查輪次",
+      "en": "Review run"
+    },
+    "Lens protocol": {
+      "zh-Hant": "審查視角協議",
+      "en": "Lens protocol"
+    },
+    "Model result": {
+      "zh-Hant": "模型結果",
+      "en": "Model result"
+    },
+    "Human decision": {
+      "zh-Hant": "人工決定",
+      "en": "Human decision"
+    },
+    "RevisionAction": {
+      "zh-Hant": "修訂行動",
+      "en": "Revision action"
+    },
+    "correspondences": {
+      "zh-Hant": "對應關係",
+      "en": "correspondences"
+    },
+    "human-confirmed": {
+      "zh-Hant": "人工確認",
+      "en": "human-confirmed"
+    },
+    "生成报告原子化提示词": {
+      "zh-Hant": "準備報告分析提示詞",
+      "en": "Prepare report analysis prompt"
+    },
+    "粘贴 AI 的原子化结果": {
+      "zh-Hant": "貼上 AI 的發現分析結果",
+      "en": "Paste the AI’s extracted findings"
+    },
+    "无修改闭环完成": {
+      "zh-Hant": "無修改流程完成",
+      "en": "No-change review complete"
+    },
+    "确认无可处理发现并完成": {
+      "zh-Hant": "確認沒有須處理的發現並完成",
+      "en": "Confirm there are no actionable findings"
+    },
+    "确认要处理的发现": {
+      "zh-Hant": "確認須處理的發現",
+      "en": "Confirm the findings to address"
+    },
+    "确认本轮不修改并完成": {
+      "zh-Hant": "確認本輪無修改並完成",
+      "en": "Confirm no changes for this round"
+    },
+    "为已选问题生成修改提示词": {
+      "zh-Hant": "為所選問題準備修改提示詞",
+      "en": "Prepare a revision prompt for selected issues"
+    },
+    "粘贴 AI 的受约束修改提案": {
+      "zh-Hant": "貼上 AI 的修改提案",
+      "en": "Paste the AI’s revision proposal"
+    },
+    "逐项审批修改": {
+      "zh-Hant": "逐項批准修改",
+      "en": "Approve each change"
+    },
+    "用原审查标准复查 V2": {
+      "zh-Hant": "依原始標準複查 V2",
+      "en": "Recheck V2 against the original criteria"
+    },
+    "粘贴 AI 的复查结果": {
+      "zh-Hant": "貼上 AI 的複查結果",
+      "en": "Paste the AI’s recheck results"
+    },
+    "修复完整性问题": {
+      "zh-Hant": "修復完整性問題",
+      "en": "Resolve integrity issues"
+    },
+    "Finding": {
+      "zh-Hant": "發現",
+      "en": "Finding"
+    },
+    "继续分析审查报告": {
+      "zh-Hant": "繼續分析審查報告",
+      "en": "Continue analysing the review report"
+    },
+    "原始报告已保存。继续准备提示词即可恢复此步骤。": {
+      "zh-Hant": "原始報告已儲存。繼續準備提示詞即可恢復此步驟。",
+      "en": "The original report is saved. Continue preparing its prompt to resume this step."
+    },
+    "项目校验失败，只读打开": {
+      "zh-Hant": "專案驗證失敗，以唯讀模式開啟",
+      "en": "Project validation failed; opened read-only"
+    },
+    "模型建议": {
+      "zh-Hant": "模型建議",
+      "en": "Model proposal"
+    },
+    "复查原文依据": {
+      "zh-Hant": "複查原文依據",
+      "en": "Source evidence for this review"
+    },
+    "已保存人工结论：": {
+      "zh-Hant": "已儲存人工結論：",
+      "en": "Saved human decision: "
+    },
+    "请选择最终状态": {
+      "zh-Hant": "請選擇最終狀態",
+      "en": "Choose a final status"
+    },
+    "请选择最终状态并填写理由，模型建议不会自动成为人工结论。": {
+      "zh-Hant": "請選擇最終狀態並填寫理由，模型建議不會自動成為人工結論。",
+      "en": "Choose a final status and explain your decision. The model proposal is not a human decision."
+    }
+  },
+  "codes": {
+    "accept": {
+      "zh-Hant": "接受",
+      "en": "Accepted"
+    },
+    "reject": {
+      "zh-Hant": "拒絕",
+      "en": "Rejected"
+    },
+    "defer": {
+      "zh-Hant": "暫緩",
+      "en": "Deferred"
+    },
+    "edit": {
+      "zh-Hant": "編輯後接受",
+      "en": "Edited and accepted"
+    },
+    "regenerate": {
+      "zh-Hant": "重新產生",
+      "en": "Regenerate"
+    },
+    "verified": {
+      "zh-Hant": "已核驗",
+      "en": "Verified"
+    },
+    "unverified": {
+      "zh-Hant": "未核驗",
+      "en": "Unverified"
+    },
+    "UNVERIFIED": {
+      "zh-Hant": "未核驗",
+      "en": "Unverified"
+    },
+    "model-derived": {
+      "zh-Hant": "模型提取",
+      "en": "Model-derived"
+    },
+    "human-corrected": {
+      "zh-Hant": "人工修正",
+      "en": "Human-corrected"
+    },
+    "deterministic": {
+      "zh-Hant": "程式計算",
+      "en": "Computed"
+    },
+    "pass": {
+      "zh-Hant": "通過",
+      "en": "Pass"
+    },
+    "fail": {
+      "zh-Hant": "未通過",
+      "en": "Fail"
+    },
+    "uncertain": {
+      "zh-Hant": "不確定",
+      "en": "Uncertain"
+    },
+    "resolved": {
+      "zh-Hant": "已解決",
+      "en": "Resolved"
+    },
+    "partially_resolved": {
+      "zh-Hant": "部分解決",
+      "en": "Partially resolved"
+    },
+    "unresolved": {
+      "zh-Hant": "未解決",
+      "en": "Unresolved"
+    },
+    "not_evaluated": {
+      "zh-Hant": "未評估",
+      "en": "Not evaluated"
+    },
+    "pending": {
+      "zh-Hant": "待處理",
+      "en": "Pending"
+    },
+    "removed": {
+      "zh-Hant": "已移除",
+      "en": "Removed"
+    },
+    "new": {
+      "zh-Hant": "新增",
+      "en": "New"
+    },
+    "conclusion": {
+      "zh-Hant": "結論",
+      "en": "Conclusion"
+    },
+    "premise": {
+      "zh-Hant": "前提",
+      "en": "Premise"
+    },
+    "intermediate": {
+      "zh-Hant": "中間主張",
+      "en": "Intermediate claim"
+    },
+    "background": {
+      "zh-Hant": "背景",
+      "en": "Background"
+    },
+    "normative": {
+      "zh-Hant": "規範性",
+      "en": "Normative"
+    },
+    "conceptual": {
+      "zh-Hant": "概念性",
+      "en": "Conceptual"
+    },
+    "interpretive": {
+      "zh-Hant": "詮釋性",
+      "en": "Interpretive"
+    },
+    "descriptive": {
+      "zh-Hant": "描述性",
+      "en": "Descriptive"
+    },
+    "causal": {
+      "zh-Hant": "因果性",
+      "en": "Causal"
+    },
+    "predictive": {
+      "zh-Hant": "預測性",
+      "en": "Predictive"
+    },
+    "evaluative": {
+      "zh-Hant": "評價性",
+      "en": "Evaluative"
+    },
+    "conceptual-analysis": {
+      "zh-Hant": "概念分析",
+      "en": "Conceptual analysis"
+    },
+    "interpretive-analysis": {
+      "zh-Hant": "詮釋分析",
+      "en": "Interpretive analysis"
+    },
+    "descriptive-empirical": {
+      "zh-Hant": "描述性實證",
+      "en": "Descriptive empirical"
+    },
+    "causal-observational": {
+      "zh-Hant": "觀察式因果分析",
+      "en": "Observational causal analysis"
+    },
+    "causal-experimental": {
+      "zh-Hant": "實驗式因果分析",
+      "en": "Experimental causal analysis"
+    },
+    "quantitative": {
+      "zh-Hant": "量化",
+      "en": "Quantitative"
+    },
+    "qualitative": {
+      "zh-Hant": "質性",
+      "en": "Qualitative"
+    },
+    "comparative-historical": {
+      "zh-Hant": "比較歷史",
+      "en": "Comparative historical"
+    },
+    "predictive-modeling": {
+      "zh-Hant": "預測建模",
+      "en": "Predictive modeling"
+    },
+    "normative-reasoning": {
+      "zh-Hant": "規範推理",
+      "en": "Normative reasoning"
+    },
+    "evaluative-analysis": {
+      "zh-Hant": "評價分析",
+      "en": "Evaluative analysis"
+    },
+    "unspecified": {
+      "zh-Hant": "未指定",
+      "en": "Unspecified"
+    },
+    "other": {
+      "zh-Hant": "其他",
+      "en": "Other"
+    },
+    "supports": {
+      "zh-Hant": "支持",
+      "en": "Supports"
+    },
+    "contradicts": {
+      "zh-Hant": "反駁",
+      "en": "Contradicts"
+    },
+    "qualifies": {
+      "zh-Hant": "限定",
+      "en": "Qualifies"
+    },
+    "assumes": {
+      "zh-Hant": "假設",
+      "en": "Assumes"
+    },
+    "cites": {
+      "zh-Hant": "引用",
+      "en": "Cites"
+    },
+    "narrow_claim": {
+      "zh-Hant": "收窄主張",
+      "en": "Narrow claim"
+    },
+    "add_evidence": {
+      "zh-Hant": "增加證據",
+      "en": "Add evidence"
+    },
+    "add_qualification": {
+      "zh-Hant": "增加限定",
+      "en": "Add qualification"
+    },
+    "remove_claim": {
+      "zh-Hant": "刪除主張",
+      "en": "Remove claim"
+    },
+    "restructure_argument": {
+      "zh-Hant": "重組論證",
+      "en": "Restructure argument"
+    },
+    "clarify_concept": {
+      "zh-Hant": "釐清概念",
+      "en": "Clarify concept"
+    },
+    "verify_citation": {
+      "zh-Hant": "核驗引文",
+      "en": "Verify citation"
+    },
+    "claim-text-sufficient": {
+      "zh-Hant": "主張文字足以判斷",
+      "en": "Claim text is sufficient"
+    },
+    "upstream-required": {
+      "zh-Hant": "需要上游依據",
+      "en": "Upstream support required"
+    },
+    "citation-required": {
+      "zh-Hant": "需要引文",
+      "en": "Citation required"
+    },
+    "social-science": {
+      "zh-Hant": "社會科學",
+      "en": "Social science"
+    },
+    "methodological-individualism": {
+      "zh-Hant": "方法論個體主義",
+      "en": "Methodological individualism"
+    },
+    "contrastive-explanation": {
+      "zh-Hant": "對比式解釋",
+      "en": "Contrastive explanation"
+    },
+    "same": {
+      "zh-Hant": "相同",
+      "en": "Same"
+    },
+    "modified": {
+      "zh-Hant": "已修改",
+      "en": "Modified"
+    },
+    "split": {
+      "zh-Hant": "拆分",
+      "en": "Split"
+    },
+    "merged": {
+      "zh-Hant": "合併",
+      "en": "Merged"
+    },
+    "added": {
+      "zh-Hant": "新增",
+      "en": "Added"
+    },
+    "unchanged": {
+      "zh-Hant": "未變更",
+      "en": "Unchanged"
+    },
+    "strengthened": {
+      "zh-Hant": "加強",
+      "en": "Strengthened"
+    },
+    "weakened": {
+      "zh-Hant": "減弱",
+      "en": "Weakened"
+    },
+    "reframed": {
+      "zh-Hant": "重新表述",
+      "en": "Reframed"
+    },
+    "导入审查报告": {
+      "zh-Hant": "匯入審查報告",
+      "en": "Import a review report"
+    },
+    "校验原子化结果": {
+      "zh-Hant": "驗證發現提取結果",
+      "en": "Validate extracted findings"
+    },
+    "确认发现": {
+      "zh-Hant": "確認發現",
+      "en": "Confirm findings"
+    },
+    "生成修改提示词": {
+      "zh-Hant": "產生修改提示詞",
+      "en": "Prepare revision prompt"
+    },
+    "校验修改提案": {
+      "zh-Hant": "驗證修改提案",
+      "en": "Validate revision proposal"
+    },
+    "审批修改项": {
+      "zh-Hant": "批准修改項目",
+      "en": "Approve changes"
+    },
+    "生成 V2": {
+      "zh-Hant": "產生 V2",
+      "en": "Create V2"
+    },
+    "生成复查提示词": {
+      "zh-Hant": "產生複查提示詞",
+      "en": "Prepare recheck prompt"
+    },
+    "校验复查结果": {
+      "zh-Hant": "驗證複查結果",
+      "en": "Validate recheck results"
+    },
+    "确认复查结论": {
+      "zh-Hant": "確認複查結論",
+      "en": "Confirm recheck conclusions"
+    },
+    "导出": {
+      "zh-Hant": "匯出",
+      "en": "Export"
+    },
+    "已完成": {
+      "zh-Hant": "已完成",
+      "en": "Completed"
+    }
+  },
+  "项目或任务已变化，请刷新页面并核对内容后再提交": {
+    "zh-Hant": "專案或任務已變更，請重新整理頁面並核對內容後再提交",
+    "en": "The project or task has changed. Refresh the page and check its contents before submitting again."
+  }
+}

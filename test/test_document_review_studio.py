@@ -10,6 +10,7 @@ import threading
 import unittest
 import zipfile
 import zlib
+from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -293,7 +294,8 @@ class DocumentReviewStudioTests(unittest.TestCase):
                 self.assertEqual(incident["request_path"], "/api/action")
                 self.assertEqual(incident["action"], "close_project")
                 self.assertEqual(incident["exception_type"], "RuntimeError")
-                self.assertIn("simulated response failure", incident["traceback"])
+                self.assertIn("RuntimeError", incident["traceback"])
+                self.assertNotIn("simulated response failure", incident["traceback"])
 
                 state_request = Request(
                     url + "api/state",
@@ -365,10 +367,8 @@ class DocumentReviewStudioTests(unittest.TestCase):
             def recognize_pdf_page(self, image, *, page_number, language):
                 return {"text": "OCR fixture text", "confidence": 99, "low_confidence_words": 0, "engine": self.name, "engine_version": self.version, "language": language}
 
-        class Page:
-            def get_pixmap(self, **kwargs): return SimpleNamespace(tobytes=lambda kind: b"png")
-        fake_fitz = SimpleNamespace(open=lambda **kwargs: [Page()], Matrix=lambda x, y: (x, y))
-        with patch("document_review_ingest._pdf_text", return_value=scan), patch.dict("sys.modules", {"fitz": fake_fitz}):
+        renderer = SimpleNamespace(name="fixture-renderer", page_count=1, render_page=lambda page_number, **kwargs: b"png")
+        with patch("document_review_ingest._pdf_text", return_value=scan), patch("document_review_pdf_render.open_pdf_renderer", return_value=nullcontext(renderer)):
             document = ingest_bytes("scan.pdf", b"%PDF-x\n", ocr=OCR())
         self.assertIn("OCR fixture text", document.plain_text)
         self.assertTrue(any(w.code == "ocr-used" for w in document.warnings))
@@ -637,7 +637,7 @@ class DocumentReviewStudioTests(unittest.TestCase):
             project.confirm_extraction("confirm")
             project.confirm_context(self.context())
             request = project.prepare_ai_audits(["expression_ambiguity"], provider="example-provider", model="example-model")[0]
-            payload = {"critic": request["critic"], "source_sha256": project.document().source.sha256, "findings": []}
+            payload = {"critic": request["critic"], "source_sha256": project.document().source.sha256, "findings": [], "zero_finding_basis": ["检查了 Draft text 段落的主语、期限和适用范围；没有足以支持两种竞争读法的文本依据。"]}
             with self.assertRaises(ReviewStudioError):
                 project.collect_model_audit(request["critic"], json.dumps(payload), provider=request["provider"], model=request["model"], request_id=request["request_id"])
             run = project.collect_model_audit(request["critic"], json.dumps(payload), provider=request["provider"], model=request["model"], request_id=request["request_id"], binding_mode="manual_association")
@@ -1072,6 +1072,9 @@ class DocumentReviewStudioTests(unittest.TestCase):
             revision_one = json.loads((revision_one_dir / "revision.json").read_text(encoding="utf-8"))
             external_request = project.external_recheck_status(revision_one["revision_id"])["requests"][0]
             new_finding = self.model_finding(project, critic, "NEW-1", "新发现的验收问题")
+            revised_block = json.loads((revision_one_dir / "document.json").read_text(encoding="utf-8"))["blocks"][0]
+            new_finding["location"] = revised_block["location"]
+            new_finding["evidence"] = revised_block["text"]
             recheck_response = {"request_id": external_request["request_id"], "prompt_sha256": external_request["prompt_sha256"], "revision_id": revision_one["revision_id"], "revised_sha256": revision_one["revised_sha256"], "critic": critic, "resolutions": [{"finding_id": original.finding_id, "state": "still-present", "reason": "责任边界仍不完整", "evidence": "负责人：项目经理。"}], "new_findings": [new_finding]}
             result = project.collect_external_recheck(revision_one["revision_id"], critic, json.dumps(recheck_response, ensure_ascii=False), provider="provider", model="model-v2")
             with self.assertRaisesRegex(ReviewStudioError, "新 Finding 必须进入下一轮"):
@@ -1325,7 +1328,7 @@ class DocumentReviewStudioTests(unittest.TestCase):
         self.assertIn("修正后接受", render_studio_shell("token"))
         self.assertIn("下载全部协议 ZIP", render_studio_shell("token"))
         self.assertIn('id="operation-status"', render_studio_shell("token"))
-        self.assertIn("run_local_prechecks:'本地确定性预检'", render_studio_shell("token"))
+        self.assertRegex(render_studio_shell("token"), r"run_local_prechecks:\s*'本地确定性预检'")
         self.assertIn("正在处理，请稍候", render_studio_shell("token"))
         self.assertIn("重新运行选中的本地预检", render_studio_shell("token"))
 

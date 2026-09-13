@@ -1,0 +1,326 @@
+{
+  "表达清晰度": {
+    "zh-Hant": "表達清晰度",
+    "en": "Clarity"
+  },
+  "执行可行性": {
+    "zh-Hant": "執行可行性",
+    "en": "Feasibility"
+  },
+  "合规风险筛查": {
+    "zh-Hant": "合規風險篩查",
+    "en": "Compliance risk screening"
+  },
+  "治理合理性": {
+    "zh-Hant": "治理合理性",
+    "en": "Governance"
+  },
+  "正式规范性": {
+    "zh-Hant": "正式文件規範",
+    "en": "Professional presentation"
+  },
+  "学术论证与反例": {
+    "zh-Hant": "學術論證與反例",
+    "en": "Arguments and counterexamples"
+  },
+  "研究方法与可复现性": {
+    "zh-Hant": "研究方法與可重現性",
+    "en": "Methods and reproducibility"
+  },
+  "引用与证据核验": {
+    "zh-Hant": "引用與證據查核",
+    "en": "Citations and evidence"
+  },
+  "通用/跨学科": {
+    "zh-Hant": "通用／跨學科",
+    "en": "General / interdisciplinary"
+  },
+  "社会科学": {
+    "zh-Hant": "社會科學",
+    "en": "Social sciences"
+  },
+  "自然科学": {
+    "zh-Hant": "自然科學",
+    "en": "Natural sciences"
+  },
+  "工程研究": {
+    "zh-Hant": "工程研究",
+    "en": "Engineering"
+  },
+  "人文研究": {
+    "zh-Hant": "人文研究",
+    "en": "Humanities"
+  },
+  "实证研究": {
+    "zh-Hant": "實證研究",
+    "en": "Empirical research"
+  },
+  "理论/解释研究": {
+    "zh-Hant": "理論／解釋研究",
+    "en": "Theoretical / interpretive research"
+  },
+  "文献综述": {
+    "zh-Hant": "文獻綜述",
+    "en": "Literature review"
+  },
+  "工程/系统研究": {
+    "zh-Hant": "工程／系統研究",
+    "en": "Engineering / systems research"
+  },
+  "文档识别": {
+    "zh-Hant": "文件辨識",
+    "en": "Document extraction"
+  },
+  "审查上下文": {
+    "zh-Hant": "審查背景",
+    "en": "Review context"
+  },
+  "本地预检": {
+    "zh-Hant": "本機預檢",
+    "en": "Local checks"
+  },
+  "AI 专项审查": {
+    "zh-Hant": "AI 專項審查",
+    "en": "Independent AI review"
+  },
+  "人工裁决": {
+    "zh-Hant": "人工裁決",
+    "en": "Your decisions"
+  },
+  "受约束修改": {
+    "zh-Hant": "逐項修改",
+    "en": "Approved changes"
+  },
+  "导出结果": {
+    "zh-Hant": "匯出結果",
+    "en": "Export"
+  },
+  "待确认": {
+    "zh-Hant": "待確認",
+    "en": "Awaiting confirmation"
+  },
+  "已确认": {
+    "zh-Hant": "已確認",
+    "en": "Confirmed"
+  },
+  "已运行": {
+    "zh-Hant": "已執行",
+    "en": "Completed"
+  },
+  "未运行": {
+    "zh-Hant": "尚未執行",
+    "en": "Not started"
+  },
+  "已导入": {
+    "zh-Hant": "已匯入",
+    "en": "imported"
+  },
+  "已处理": {
+    "zh-Hant": "已處理",
+    "en": "decided"
+  },
+  "暂无 Finding": {
+    "zh-Hant": "尚無審查問題",
+    "en": "No issues yet"
+  },
+  "修改稿已生成并复审": {
+    "zh-Hant": "修改稿已產生並複審",
+    "en": "Revised draft checked"
+  },
+  "逐段修改中": {
+    "zh-Hant": "逐段修改中",
+    "en": "Changes in progress"
+  },
+  "未开始": {
+    "zh-Hant": "尚未開始",
+    "en": "Not started"
+  },
+  "已有导出文件": {
+    "zh-Hant": "已有匯出檔案",
+    "en": "Files available"
+  },
+  "未导出": {
+    "zh-Hant": "尚未匯出",
+    "en": "Not exported"
+  },
+  "本地确定性预检": {
+    "zh-Hant": "本機預檢",
+    "en": "Local checks"
+  },
+  "AI 审查协议生成": {
+    "zh-Hant": "產生 AI 審查協議",
+    "en": "Preparing AI review"
+  },
+  "AI 审查导入": {
+    "zh-Hant": "匯入 AI 審查",
+    "en": "Importing AI review"
+  },
+  "识别确认": {
+    "zh-Hant": "確認辨識",
+    "en": "Confirming extraction"
+  },
+  "上下文确认": {
+    "zh-Hant": "確認背景",
+    "en": "Confirming context"
+  },
+  "修改计划生成": {
+    "zh-Hant": "產生修改計畫",
+    "en": "Preparing revision tasks"
+  },
+  "修改稿生成与复审": {
+    "zh-Hant": "產生修改稿並複審",
+    "en": "Revising and checking"
+  },
+  "可选": {
+    "zh-Hant": "選用",
+    "en": "Optional"
+  },
+  "PDF 文本页解析": {
+    "zh-Hant": "PDF 文字頁解析",
+    "en": "PDF text extraction"
+  },
+  "PDF 坐标、扫描页渲染": {
+    "zh-Hant": "PDF 座標與掃描頁轉換",
+    "en": "PDF coordinates and scanned-page rendering"
+  },
+  "便携版不支持运行时安装 Python 组件；请使用包含所需适配器的发行包或源码版": {
+    "zh-Hant": "可攜版無法在執行時安裝 Python 元件；請使用包含所需元件的發行包或原始碼版",
+    "en": "The portable app cannot install Python components while running. Use a release containing the required adapters, or the source version."
+  },
+  "扫描 PDF OCR（英文、简体、繁体、德语、法语、日语、俄语、拉丁语）": {
+    "zh-Hant": "掃描 PDF 文字辨識（英文、簡體、繁體、德語、法語、日語、俄語、拉丁語）",
+    "en": "Scanned PDF recognition (English, Simplified and Traditional Chinese, German, French, Japanese, Russian and Latin)"
+  },
+  "默认检查 chi_sim+chi_tra+eng；导入时可另选 eng/chi_sim/chi_tra/deu/fra/jpn/rus/lat 组合，只需安装所选语言包。请在操作系统中安装 Tesseract 及相应 traineddata；应用不会自动下载系统组件": {
+    "zh-Hant": "預設檢查 chi_sim+chi_tra+eng；匯入時可另選 eng/chi_sim/chi_tra/deu/fra/jpn/rus/lat 組合，只需安裝所選語言包。請在作業系統中安裝 Tesseract 與對應 traineddata；應用程式不會自動下載系統元件",
+    "en": "The default check uses chi_sim+chi_tra+eng. On import, select any supported eng/chi_sim/chi_tra/deu/fra/jpn/rus/lat combination; only the selected language packs are needed. Install Tesseract and the matching traineddata in your operating system. The app does not download system components automatically."
+  },
+  "旧版 DOC/WPS/XLS/ET/PPT/DPS 文件转换": {
+    "zh-Hant": "舊版 DOC/WPS/XLS/ET/PPT/DPS 檔案轉換",
+    "en": "Legacy DOC/WPS/XLS/ET/PPT/DPS conversion"
+  },
+  "安装本机 LibreOffice 后可重新识别旧格式；现代 Office 格式和文本格式不需要此组件": {
+    "zh-Hant": "在本機安裝 LibreOffice 後可重新辨識舊格式；新版 Office 格式與文字格式不需要此元件",
+    "en": "Install LibreOffice locally to retry legacy formats. Modern Office and text formats do not require it."
+  },
+  "专业论证图谱与历史项目": {
+    "zh-Hant": "專業論證圖譜與歷史專案",
+    "en": "Argument maps and existing research projects"
+  },
+  "新稿审查支持文书和学术稿件。专业项目保留主张、审查标准、引用核验和版本关系；建立论证图谱需先完成主张提取与确认。": {
+    "zh-Hant": "新稿審查支援文書與學術稿件。專業專案保留主張、審查標準、引用核驗與版本關係；建立論證圖譜需先完成主張提取與確認。",
+    "en": "New manuscript review supports professional and academic writing. Research projects preserve claims, review standards, citation checks and version relationships. Argument maps require claim extraction and confirmation first."
+  },
+  "打开专业研究与历史项目": {
+    "zh-Hant": "開啟專業研究與歷史專案",
+    "en": "Open research tools and existing projects"
+  },
+  "选择这次的任务": {
+    "zh-Hant": "選擇這次的任務",
+    "en": "Choose your task"
+  },
+  "新稿审查": {
+    "zh-Hant": "新稿審查",
+    "en": "Review a new manuscript"
+  },
+  "已有审查报告，直接修稿": {
+    "zh-Hant": "已有審查報告，直接修稿",
+    "en": "Revise from an existing review report"
+  },
+  "已有报告修稿支持 Markdown/TXT 原稿；模型提出修改，你逐项批准并复查。": {
+    "zh-Hant": "已有報告修稿支援 Markdown/TXT 原稿；模型提出修改，你逐項批准並複查。",
+    "en": "To revise from an existing report, use a Markdown or TXT manuscript. The model proposes changes; you approve each change and recheck the result."
+  },
+  "扫描 PDF 页面渲染": {
+    "zh-Hant": "掃描 PDF 頁面繪製",
+    "en": "Scanned PDF page rendering"
+  },
+  "PDF 坐标、扫描页渲染（可选兼容组件）": {
+    "zh-Hant": "PDF 座標、掃描頁繪製（選用相容元件）",
+    "en": "PDF coordinates and scanned-page rendering (optional compatibility component)"
+  },
+  "可选兼容组件，按需手动安装；默认页面渲染使用 pypdfium2": {
+    "zh-Hant": "選用相容元件，可按需手動安裝；預設頁面繪製使用 pypdfium2",
+    "en": "Optional compatibility component; install manually if needed. Page rendering uses pypdfium2 by default."
+  },
+  "扫描 PDF 完整识别能力（页面渲染及所选 OCR 语言包）": {
+    "zh-Hant": "掃描 PDF 完整辨識能力（頁面繪製與所選 OCR 語言包）",
+    "en": "Scanned PDF recognition (page rendering and selected OCR language packs)"
+  },
+  "需要页面渲染组件、Tesseract 引擎和所选语言包同时可用": {
+    "zh-Hant": "需要頁面繪製元件、Tesseract 引擎與所選語言包同時可用",
+    "en": "Requires a page renderer, the Tesseract engine and all selected language packs."
+  },
+  "未提供上下文反证核对；请先检查作者是否已在其他段落回答此问题。": {
+    "zh-Hant": "未提供上下文反證核對；請先檢查作者是否已在其他段落回答此問題。",
+    "en": "No contextual counterevidence check was supplied. Check whether another passage already answers this objection."
+  },
+  "细读依据（模型判断）": {
+    "zh-Hant": "細讀依據（模型判斷）",
+    "en": "Close-reading justification (model proposal)"
+  },
+  "作者的实际主张：": {
+    "zh-Hant": "作者的實際主張：",
+    "en": "Author’s actual position: "
+  },
+  "最强辩护：": {
+    "zh-Hant": "最強辯護：",
+    "en": "Strongest defense: "
+  },
+  "仍然存在的问题：": {
+    "zh-Hant": "仍然存在的問題：",
+    "en": "Remaining defect: "
+  },
+  "修正验收方法：": {
+    "zh-Hant": "修正驗收方法：",
+    "en": "Repair acceptance test: "
+  },
+  "引文已核对，判断是否成立仍需你确认。": {
+    "zh-Hant": "引文已核對，判斷是否成立仍需你確認。",
+    "en": "Quoted text was checked. You still need to assess whether the objection holds."
+  },
+  "上下文": {
+    "zh-Hant": "上下文",
+    "en": "Context"
+  },
+  "支持材料": {
+    "zh-Hant": "支持材料",
+    "en": "Support"
+  },
+  "反证材料": {
+    "zh-Hant": "反證材料",
+    "en": "Counterevidence"
+  },
+  "限定条件": {
+    "zh-Hant": "限定條件",
+    "en": "Qualification"
+  },
+  "项目或任务已变化，请刷新页面并核对内容后再提交": {
+    "zh-Hant": "專案或任務已變更，請重新整理頁面並核對內容後再提交",
+    "en": "The project or task has changed. Refresh the page and check its contents before submitting again."
+  },
+  "影响结论、结构或执行链": {
+    "zh-Hant": "影響結論、結構或執行鏈",
+    "en": "Affects the conclusion, structure or execution"
+  },
+  "阻断发布或执行": {
+    "zh-Hant": "阻斷發布或執行",
+    "en": "Blocks publication or execution"
+  },
+  "高严重度": {
+    "zh-Hant": "高嚴重度",
+    "en": "High severity"
+  },
+  " 个独立 critic 指向同一修改动作": {
+    "zh-Hant": " 個獨立 critic 指向同一修改動作",
+    "en": " independent critics point to the same change"
+  },
+  "一般审查项": {
+    "zh-Hant": "一般審查項",
+    "en": "General review issue"
+  },
+  "条计数单位": {
+    "zh-Hant": "條",
+    "en": "issues"
+  }
+}

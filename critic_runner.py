@@ -51,17 +51,21 @@ def parser() -> argparse.ArgumentParser:
         description="Run critic protocols without depending on Claude Code."
     )
     sub = top.add_subparsers(dest="command", required=True)
+    from cli.maintenance import add_maintenance_parser
+    add_maintenance_parser(sub)
 
     app_parser = sub.add_parser(
         "app", help="start the complete local Argument Workbench application"
     )
     app_parser.add_argument(
-        "manuscript", nargs="?", help="optional Markdown/TXT/DOCX/PDF to import into the unified workbench"
+        "manuscript", nargs="?", help="optional supported document to import into the unified workbench"
     )
     app_parser.add_argument(
         "--project", help="existing project directory, or destination when importing a manuscript"
     )
     app_parser.add_argument("--title", help="project title for a new manuscript")
+    app_parser.add_argument("--encoding", default="auto", help="text file encoding (auto, utf-8, gb18030, big5, cp1252, cp1251, shift_jis, etc.)")
+    app_parser.add_argument("--ocr-language", default="chi_sim+chi_tra+eng", help="scan OCR languages joined with +: eng, chi_sim, chi_tra, deu, fra, jpn, rus, lat")
     app_parser.add_argument(
         "--data-dir", help="local project library (default: per-user application data)"
     )
@@ -130,7 +134,8 @@ def parser() -> argparse.ArgumentParser:
         "init",
         help="import a manuscript into a local Argument Workbench V1 project",
     )
-    ir_init_parser.add_argument("manuscript", help="UTF-8 manuscript path")
+    ir_init_parser.add_argument("manuscript", help="manuscript path")
+    ir_init_parser.add_argument("--encoding", default="auto", help="source text encoding; choose explicitly if detection is ambiguous")
     ir_init_parser.add_argument(
         "--project-dir",
         help="project directory (default: <manuscript>.argument-workbench beside source)",
@@ -165,7 +170,8 @@ def parser() -> argparse.ArgumentParser:
     ir_import_version_parser.add_argument(
         "project", help="Argument Workbench project directory"
     )
-    ir_import_version_parser.add_argument("manuscript", help="new UTF-8 manuscript path")
+    ir_import_version_parser.add_argument("manuscript", help="new manuscript path")
+    ir_import_version_parser.add_argument("--encoding", default="auto", help="source text encoding")
     ir_import_version_parser.add_argument(
         "--parent-version",
         help="parent Version ID (default: current latest; branching is not yet supported)",
@@ -930,7 +936,8 @@ def parser() -> argparse.ArgumentParser:
         "prepare",
         help="create a source-bound prompt for extracting Argument IR",
     )
-    ir_prepare_parser.add_argument("manuscript", help="UTF-8 manuscript path")
+    ir_prepare_parser.add_argument("manuscript", help="manuscript path")
+    ir_prepare_parser.add_argument("--encoding", default="auto", help="source text encoding")
     ir_prepare_parser.add_argument(
         "--output", help="output prompt path (default: beside manuscript)"
     )
@@ -940,7 +947,8 @@ def parser() -> argparse.ArgumentParser:
         "validate",
         help="validate an Argument IR against the exact manuscript bytes",
     )
-    ir_validate_parser.add_argument("manuscript", help="UTF-8 manuscript path")
+    ir_validate_parser.add_argument("manuscript", help="manuscript path")
+    ir_validate_parser.add_argument("--encoding", default="auto", help="source text encoding")
     ir_validate_parser.add_argument("argument_ir", help="Argument IR JSON path")
     ir_validate_parser.set_defaults(func=ir_validate_command)
 
@@ -948,7 +956,8 @@ def parser() -> argparse.ArgumentParser:
         "plan",
         help="select method-conditional checks and create an execution prompt",
     )
-    ir_plan_parser.add_argument("manuscript", help="UTF-8 manuscript path")
+    ir_plan_parser.add_argument("manuscript", help="manuscript path")
+    ir_plan_parser.add_argument("--encoding", default="auto", help="source text encoding")
     ir_plan_parser.add_argument("argument_ir", help="validated Argument IR JSON path")
     ir_plan_parser.add_argument(
         "--rules",
@@ -1015,8 +1024,9 @@ def parser() -> argparse.ArgumentParser:
         "quickstart", help="中文交互引导：选择文章和学术线并生成 prompt"
     )
     quickstart_parser.add_argument(
-        "manuscript", nargs="?", help="可选的 UTF-8 文章路径"
+        "manuscript", nargs="?", help="可选的文本文章路径"
     )
+    quickstart_parser.add_argument("--encoding", default="auto", help="稿件编码；自动识别有歧义时请明确选择")
     quickstart_parser.add_argument(
         "--track", choices=ACADEMIC_TRACKS, help="可选；跳过交互式学术线选择"
     )
@@ -1063,7 +1073,8 @@ def parser() -> argparse.ArgumentParser:
         "campaign",
         help="run a serial, isolated multi-protocol calibration campaign",
     )
-    campaign_parser.add_argument("manuscript", help="UTF-8 manuscript path")
+    campaign_parser.add_argument("manuscript", help="text manuscript path")
+    campaign_parser.add_argument("--encoding", default="auto", help="source text encoding; choose explicitly if automatic detection is ambiguous")
     campaign_parser.add_argument(
         "--protocol",
         action="append",

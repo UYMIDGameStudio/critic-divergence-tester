@@ -2,6 +2,9 @@
 
 Status: **not yet run — external participant evidence required**
 
+Session materials are ready in the [Gate C session kit](gate-c-session-kit.md).
+The kit contains empty records only; preparing it does not advance this gate.
+
 The implementation and automated end-to-end fixture do not count as Gate C. This report must be completed with three to five target authors who did not participate in development, using their real manuscript and review report. Until then the product must not be described as Definition-of-Done complete.
 
 ## Controlled comparison
@@ -28,3 +31,5 @@ For every pause, error, request for help, misunderstood label, abandoned step, o
 ## Gate decision
 
 No pass/fail/defer decision has been made. A human product owner may append the decision only after the participant table and friction log contain real evidence.
+
+2026-09-13：项目负责人目前无法安排 3–5 位未参与开发的作者。试用执行包保留，Gate C 继续待验收；本机回归与合成基准不替代这一要求。

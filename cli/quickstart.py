@@ -30,15 +30,9 @@ def quickstart(args: argparse.Namespace) -> int:
         print(f"错误：找不到文章文件：{source_path}", file=sys.stderr)
         return 2
     try:
-        source_text, _ = read_utf8(source_path)
-    except UnicodeDecodeError:
-        print("错误：文章不是 UTF-8 编码，请转换编码后重试。", file=sys.stderr)
-        return 2
-    except OSError as exc:
+        read_manuscript(source_path, getattr(args, "encoding", None))
+    except (OSError, ValueError) as exc:
         print(f"错误：无法读取文章：{exc}", file=sys.stderr)
-        return 2
-    if not source_text.strip():
-        print("错误：文章文件是空的。", file=sys.stderr)
         return 2
 
     track = getattr(args, "track", None)
@@ -71,6 +65,7 @@ def quickstart(args: argparse.Namespace) -> int:
             manuscript=str(source_path),
             runs_dir=getattr(args, "runs_dir", ".critic-runs"),
             allow_test_artifact=False,
+            encoding=getattr(args, "encoding", None),
         )
     )
     prompt_path = run_dir / "prompt.md"
@@ -109,7 +104,8 @@ def positive_integer(raw: str) -> int:
 
 def _add_run_inputs(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("protocol", choices=PROTOCOLS)
-    parser.add_argument("manuscript", help="UTF-8 manuscript path")
+    parser.add_argument("manuscript", help="text manuscript path")
+    parser.add_argument("--encoding", default="auto", help="source text encoding; choose explicitly if automatic detection is ambiguous")
     parser.add_argument(
         "--runs-dir",
         default=".critic-runs",
@@ -124,7 +120,8 @@ def _add_run_inputs(parser: argparse.ArgumentParser) -> None:
 
 def _add_track_inputs(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("track", choices=ACADEMIC_TRACKS)
-    parser.add_argument("manuscript", help="UTF-8 manuscript path")
+    parser.add_argument("manuscript", help="text manuscript path")
+    parser.add_argument("--encoding", default="auto", help="source text encoding; choose explicitly if automatic detection is ambiguous")
     parser.add_argument(
         "--runs-dir",
         default=".critic-runs",

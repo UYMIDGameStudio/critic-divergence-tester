@@ -1,9 +1,9 @@
-# Product Definition of Done audit
+# Product Definition of Done audit — historical scope
 
-This audit closes roadmap item 24 at the current local-first, provider-neutral
+This historical audit closed roadmap item 24 at the original local-first, provider-neutral
 product boundary. It does not claim that extraction, criticism, lineage or
 Citation judgments are true. It establishes that every required human action
-has a non-JSON interaction and that its result remains traceable.
+has a non-JSON interaction and that its result remains traceable. See the [current completion boundary](#current-completion-boundary-022) before treating this historical result as present product completion.
 
 ## End-to-end acceptance matrix
 
@@ -80,3 +80,31 @@ decision is silently overwritten.
 
 These limitations are explicit follow-on UX opportunities. None requires
 pretending that a model judgment is deterministic or bypassing human judgment.
+
+## Current completion boundary (0.2.2)
+
+The matrix above preserves the original acceptance standard and the scope of the
+author-owned Gate A/B audit. It is not a claim that the later ordinary-author
+productization or commercial-delivery requirements have all passed. The retained
+limitations above describe that historical UI, including its single-project
+surface; they are not the current feature inventory.
+
+The current application has three distinct paths: new-manuscript review,
+revision from an existing review report, and the original Claim/IR/Lens research
+workflow. Their entry points and coverage of every original outcome are mapped
+in [the unified workbench guide](unified-workbench.md#三条工作流与原始完成标准).
+The existing-report path and the new academic path do not replace the original
+semantic Lineage, full-Lens retest or four-dimensional Citation contracts.
+
+[The 0.2.2 requirements audit](commercial-requirements-audit-0.2.2.md) separates
+implemented and tested engineering changes from remaining evidence, including
+real historical-project replay. Human confirmation in a browser test remains
+test data; it does not establish independent usability or justify extra work.
+
+[Gate C](gate-c-usability-report.md) still requires three to five independent
+target authors, real manuscripts/reports, the direct-AI comparison, recorded
+friction and a human product-owner decision. Until those records exist, the
+product must not be described as Definition-of-Done complete. The separate
+[external Gate A/B requirement](external-product-gate-validation.md) also
+remains pending. Deferring those human-produced records from an engineering
+iteration does not waive them or invalidate the original author's decisions.

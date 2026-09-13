@@ -16,14 +16,43 @@ from argument_workbench import WorkbenchError, workspace_paths
 
 
 class ArgumentProductAppTests(unittest.TestCase):
+    def test_saved_report_can_resume_after_prompt_preparation_fails(self):
+        import argument_revision
+        with tempfile.TemporaryDirectory() as temp:
+            app = ProductApp.create(temp).import_manuscript({
+                "filename": "draft.md", "title": "Draft", "content": "A supported claim."})
+            write = argument_revision._write_new
+            def fail_after_partial_preparation(path, data):
+                write(path, data)
+                if "atomization-runs" in path.parts and path.name == "record.json":
+                    raise OSError("disk error after writing preparation")
+            with patch("argument_revision._write_new", side_effect=fail_after_partial_preparation):
+                with self.assertRaises(OSError):
+                    app.act({"action": "import_report", "data": {"report": "The claim requires a condition."}})
+            self.assertEqual(app.view()["selected"]["stage"], "atomization_prepare")
+            report_files = list(app.project_dir.rglob("report.md"))
+            self.assertEqual(len(report_files), 1)
+            original = report_files[0].read_bytes()
+            result = app.act({"action": "prepare_atomization", "data": {}})
+            self.assertEqual(result["selected"]["stage"], "atomization_result")
+            self.assertEqual(report_files[0].read_bytes(), original)
+            with self.assertRaises(WorkbenchError):
+                app.act({"action": "prepare_atomization", "data": {}})
+
     @staticmethod
     def _post(url: str, token: str, path: str, payload: dict[str, object]) -> dict[str, object]:
+        context_headers = {}
+        if path in {"api/action", "api/professional/adjudications"}:
+            view_path = "api/professional/view" if "professional" in path else "api/state"
+            with urllib.request.urlopen(urllib.request.Request(url + view_path, headers={"X-Argument-Workbench-Token": token}), timeout=5) as response:
+                context_headers["X-Argument-Project-Context"] = json.loads(response.read())["request_context"]
         request = urllib.request.Request(
             url + path,
             data=json.dumps(payload).encode("utf-8"),
             headers={
                 "Content-Type": "application/json",
                 "X-Argument-Workbench-Token": token,
+                **context_headers,
             },
             method="POST",
         )

@@ -8,6 +8,7 @@ delegated to their domain services rather than implemented in HTTP handlers.
 from __future__ import annotations
 
 import json
+import base64
 import os
 import re
 import secrets
@@ -50,7 +51,11 @@ from argument_workbench import (
     verify_project_versions,
     workspace_paths,
 )
-from argument_ui import adjudicate_from_ui, build_project_view, render_app_shell
+from argument_ui import (
+    LocalHTTPProtocolError, LocalHTTPServer, LocalRequestHandler,
+    adjudicate_from_ui, build_project_view, render_app_shell,
+    request_context, require_request_context,
+)
 
 
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
@@ -112,20 +117,32 @@ def create_uploaded_project(
     filename: str,
     content: bytes,
     title: str | None = None,
+    encoding: str | None = None,
 ) -> Path:
     """Create an immutable V1 from browser-uploaded bytes."""
     safe_name = _safe_upload_name(filename)
     if not content or len(content) > MAX_REQUEST_BYTES:
         raise WorkbenchError("稿件必须非空且不超过 8 MiB")
-    try:
-        text = content.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise WorkbenchError(f"稿件不是 UTF-8：{exc}") from exc
+    from document_text_encoding import decode_document_text
+    decoded = decode_document_text(content, encoding)
+    if decoded.ambiguous:
+        raise WorkbenchError("稿件编码有多个可能解释，请显式选择编码：" + ", ".join(decoded.candidates))
+    text = decoded.text
     if not text.strip():
         raise WorkbenchError("稿件不能为空")
     root = Path(data_dir).resolve()
     root.mkdir(parents=True, exist_ok=True)
-    target = root / _project_slug(safe_name, content)
+    slug = _project_slug(safe_name, content)
+    # A legacy byte stream can have more than one valid interpretation. Preserve
+    # the established UTF-8 project name while separating other decoded texts.
+    try:
+        original_text = content.decode("utf-8-sig")
+    except UnicodeError:
+        original_text = None
+    if decoded.text != original_text:
+        stem = slug.removesuffix(".argument-workbench")
+        slug = f"{stem}-{sha256_bytes(decoded.text.encode('utf-8'))[:10]}.argument-workbench"
+    target = root / slug
     if target.is_symlink():
         raise WorkbenchError("项目路径不得是符号链接")
     if target.exists():
@@ -140,7 +157,7 @@ def create_uploaded_project(
     source = staging / safe_name
     _atomic_write(source, content)
     try:
-        initialize_workspace(source, target, title=title)
+        initialize_workspace(source, target, title=title, encoding=decoded.encoding)
     finally:
         source.unlink(missing_ok=True)
         try:
@@ -222,22 +239,29 @@ class ProductApp:
             "storage_path": str(self.data_dir),
             "projects": self.projects(),
             "selected": selected,
+            "request_context": request_context(self.token, self.project_dir or self.data_dir, {"selected": selected}),
         }
 
     def import_manuscript(self, payload: dict[str, Any]) -> "ProductApp":
-        if set(payload) != {"filename", "content", "title"}:
+        if (not {"filename", "title"}.issubset(payload) or set(payload) - {"filename", "title", "content", "content_base64", "encoding"}
+                or ("content" in payload) == ("content_base64" in payload)):
             raise WorkbenchError("导入请求字段不完整")
-        content = payload.get("content")
+        content = payload.get("content_base64", payload.get("content"))
         if not isinstance(content, str):
             raise WorkbenchError("稿件内容必须是文本")
+        try:
+            raw = base64.b64decode(content, validate=True) if "content_base64" in payload else content.encode("utf-8")
+        except (UnicodeError, ValueError) as exc:
+            raise WorkbenchError("稿件字节编码无效") from exc
         title = payload.get("title")
         if title is not None and not isinstance(title, str):
             raise WorkbenchError("标题必须是文本")
         target = create_uploaded_project(
             self.data_dir,
-            filename=str(payload.get("filename", "")),
-            content=content.encode("utf-8"),
+            filename=payload.get("filename", ""),
+            content=raw,
             title=title or None,
+            encoding=payload.get("encoding"),
         )
         return replace(self, project_dir=target)
 
@@ -261,6 +285,13 @@ class ProductApp:
     def act(self, payload: dict[str, Any]) -> dict[str, Any]:
         if self.project_dir is None:
             raise WorkbenchError("请先创建或打开项目")
+        # Serialize the state check and dispatch for direct API callers too.
+        # Domain services own their transactions: a saved report remains a
+        # complete artifact if the following prompt preparation must be retried.
+        with project_mutation_lock(self.project_dir):
+            return self._act_locked(payload)
+
+    def _act_locked(self, payload: dict[str, Any]) -> dict[str, Any]:
         state = project_state(self.project_dir)
         if state["stage"] == "read_only":
             raise WorkbenchError("项目修改链校验失败，当前只能只读打开：" + "; ".join(state["errors"]))
@@ -268,6 +299,29 @@ class ProductApp:
         data = payload.get("data")
         if not isinstance(action, str) or not isinstance(data, dict) or set(payload) != {"action", "data"}:
             raise WorkbenchError("操作请求无效")
+        text_fields = {
+            "import_report": {"report"}, "collect_atomization": {"response"},
+            "collect_revision": {"response"}, "collect_resolution": {"response"},
+            "decide_finding": {"finding_id", "decision", "reason"},
+            "decide_hunk": {"change_id", "decision", "reason"},
+            "decide_resolution": {"finding_id", "status", "reason"},
+            "complete_without_revision": {"reason"},
+            "prepare_atomization": set(), "prepare_revision": set(),
+            "apply_revision": set(), "prepare_resolution": set(), "export": set(),
+        }
+        optional_fields = {"import_report": {"source_name"},
+                           "decide_finding": {"corrections", "action_text"},
+                           "decide_hunk": {"edited_text"}}
+        required = text_fields.get(action)
+        if (required is None or not required.issubset(data)
+                or set(data) - required - optional_fields.get(action, set())
+                or any(not isinstance(data[field], str) for field in required)):
+            raise WorkbenchError("操作字段或文本类型无效")
+        for field in optional_fields.get(action, set()):
+            if field in data and not (data[field] is None and field != "source_name"):
+                expected = dict if field == "corrections" else str
+                if not isinstance(data[field], expected):
+                    raise WorkbenchError("操作字段或文本类型无效")
         if action == "import_report":
             report = data.get("report")
             source_name = data.get("source_name", "pasted-report.md")
@@ -275,27 +329,31 @@ class ProductApp:
                 raise WorkbenchError("审查报告必须是文本")
             report_id = import_review_report(self.project_dir, report, source_name=source_name)
             prepare_atomization(self.project_dir, report_id)
+        elif action == "prepare_atomization":
+            if state["stage"] != "atomization_prepare" or data:
+                raise WorkbenchError("仅可为已保存且尚未生成提示的报告继续准备")
+            prepare_atomization(self.project_dir)
         elif action == "collect_atomization":
             if not isinstance(data.get("response"), str): raise WorkbenchError("AI 返回必须是文本")
             collect_atomization_result(self.project_dir, data["response"])
         elif action == "decide_finding":
-            append_quick_finding_decision(self.project_dir, str(data.get("finding_id", "")), decision=str(data.get("decision", "")), reason=str(data.get("reason", "")), corrections=data.get("corrections"), action_text=data.get("action_text"))
+            append_quick_finding_decision(self.project_dir, data["finding_id"], decision=data["decision"], reason=data["reason"], corrections=data.get("corrections"), action_text=data.get("action_text"))
         elif action == "prepare_revision": prepare_revision_generation(self.project_dir)
         elif action == "collect_revision":
             if not isinstance(data.get("response"), str): raise WorkbenchError("AI 返回必须是文本")
             collect_revision_result(self.project_dir, data["response"])
         elif action == "decide_hunk":
             edited = data.get("edited_text")
-            append_hunk_decision(self.project_dir, str(data.get("change_id", "")), decision=str(data.get("decision", "")), reason=str(data.get("reason", "")), edited_text=edited if isinstance(edited, str) else None)
+            append_hunk_decision(self.project_dir, data["change_id"], decision=data["decision"], reason=data["reason"], edited_text=edited)
         elif action == "apply_revision": apply_approved_hunks(self.project_dir)
         elif action == "prepare_resolution": prepare_resolution_review(self.project_dir)
         elif action == "collect_resolution":
             if not isinstance(data.get("response"), str): raise WorkbenchError("AI 返回必须是文本")
             collect_resolution_result(self.project_dir, data["response"])
         elif action == "decide_resolution":
-            append_resolution_decision(self.project_dir, str(data.get("finding_id", "")), status=str(data.get("status", "")), reason=str(data.get("reason", "")))
+            append_resolution_decision(self.project_dir, data["finding_id"], status=data["status"], reason=data["reason"])
         elif action == "complete_without_revision":
-            complete_without_revision(self.project_dir, reason=str(data.get("reason", "")))
+            complete_without_revision(self.project_dir, reason=data["reason"])
         elif action == "export": export_revision(self.project_dir)
         else: raise WorkbenchError("未知操作")
         return self.view()
@@ -303,19 +361,21 @@ class ProductApp:
     def professional_view(self, version_id: str | None = None) -> dict[str, Any]:
         if self.project_dir is None:
             raise WorkbenchError("请先打开专业研究项目")
-        return build_project_view(self.project_dir, version_id)
+        value = build_project_view(self.project_dir, version_id)
+        return {**value, "request_context": request_context(self.token, self.project_dir, value)}
 
     def professional_adjudicate(self, payload: dict[str, Any]) -> dict[str, Any]:
         if self.project_dir is None:
             raise WorkbenchError("请先打开专业研究项目")
-        state = project_state(self.project_dir)
-        if state["stage"] == "read_only":
-            raise WorkbenchError("项目修改链校验失败，当前只能只读打开：" + "; ".join(state["errors"]))
-        adjudicate_from_ui(self.project_dir, payload)
-        return self.professional_view()
+        with project_mutation_lock(self.project_dir):
+            state = project_state(self.project_dir)
+            if state["stage"] == "read_only":
+                raise WorkbenchError("项目修改链校验失败，当前只能只读打开：" + "; ".join(state["errors"]))
+            adjudicate_from_ui(self.project_dir, payload)
+            return self.professional_view()
 
 
-class ProductHTTPServer(ThreadingHTTPServer):
+class ProductHTTPServer(LocalHTTPServer):
     daemon_threads = True
 
     def __init__(self, address: tuple[str, int], app: ProductApp):
@@ -324,7 +384,7 @@ class ProductHTTPServer(ThreadingHTTPServer):
         super().__init__(address, ProductRequestHandler)
 
 
-class ProductRequestHandler(BaseHTTPRequestHandler):
+class ProductRequestHandler(LocalRequestHandler):
     server: ProductHTTPServer
 
     def log_message(self, format: str, *args: object) -> None:
@@ -350,9 +410,12 @@ class ProductRequestHandler(BaseHTTPRequestHandler):
         self._send(status, (json.dumps(value, ensure_ascii=False) + "\n").encode(), "application/json; charset=utf-8")
 
     def _authorized(self) -> bool:
-        return secrets.compare_digest(self.headers.get("X-Argument-Workbench-Token", ""), self.server.app.token)
+        return self._token_authorized("X-Argument-Workbench-Token")
 
     def do_GET(self) -> None:  # noqa: N802
+        if not self._local_request():
+            self._json(HTTPStatus.FORBIDDEN, {"error": "只接受当前本机地址和同源页面"})
+            return
         path = urlsplit(self.path).path
         if path == "/":
             self._send(HTTPStatus.OK, render_product_shell(self.server.app.token).encode(), "text/html; charset=utf-8")
@@ -391,6 +454,9 @@ class ProductRequestHandler(BaseHTTPRequestHandler):
         self._json(HTTPStatus.FORBIDDEN if path == "/api/state" else HTTPStatus.NOT_FOUND, {"error": "local UI token required" if path == "/api/state" else "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
+        if not self._local_request():
+            self._json(HTTPStatus.FORBIDDEN, {"error": "只接受当前本机地址和同源页面"})
+            return
         path = urlsplit(self.path).path
         if path not in {"/api/projects", "/api/open", "/api/action", "/api/professional/adjudications"}:
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -398,35 +464,37 @@ class ProductRequestHandler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._json(HTTPStatus.FORBIDDEN, {"error": "local UI token required"})
             return
-        if self.headers.get_content_type() != "application/json":
-            self._json(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"error": "JSON required"})
-            return
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-            if length <= 0 or length > MAX_REQUEST_BYTES:
-                raise WorkbenchError("请求大小无效")
-            payload = parse_json_strict(self.rfile.read(length))
+            payload = parse_json_strict(self._read_json_body(MAX_REQUEST_BYTES))
             if not isinstance(payload, dict):
                 raise WorkbenchError("请求必须是对象")
-            if path == "/api/projects":
-                lock_root = self.server.app.data_dir
-            elif path in {"/api/action", "/api/professional/adjudications"}:
-                lock_root = self.server.app.project_dir
-            else:
-                lock_root = None
-            mutation_guard = project_mutation_lock(lock_root) if lock_root is not None else nullcontext()
-            with self.server.action_lock, mutation_guard:
-                if path == "/api/professional/adjudications":
-                    result = self.server.app.professional_adjudicate(payload)
-                elif path == "/api/projects":
-                    self.server.app = self.server.app.import_manuscript(payload)
-                    result = self.server.app.view()
-                elif path == "/api/open":
-                    self.server.app = self.server.app.open_project(payload)
-                    result = self.server.app.view()
+            # Choose the project lock only after navigation is excluded. Read
+            # the submitted body before this lock so slow clients cannot stall
+            # another user's local tab or the independent Studio interface.
+            with self.server.action_lock:
+                if path == "/api/projects":
+                    lock_root = self.server.app.data_dir
+                elif path in {"/api/action", "/api/professional/adjudications"}:
+                    lock_root = self.server.app.project_dir
                 else:
-                    result = self.server.app.act(payload)
+                    lock_root = None
+                mutation_guard = project_mutation_lock(lock_root) if lock_root is not None else nullcontext()
+                with mutation_guard:
+                    if path == "/api/professional/adjudications":
+                        require_request_context(self, self.server.app.professional_view()["request_context"])
+                        result = self.server.app.professional_adjudicate(payload)
+                    elif path == "/api/projects":
+                        self.server.app = self.server.app.import_manuscript(payload)
+                        result = self.server.app.view()
+                    elif path == "/api/open":
+                        self.server.app = self.server.app.open_project(payload)
+                        result = self.server.app.view()
+                    else:
+                        require_request_context(self, self.server.app.view()["request_context"])
+                        result = self.server.app.act(payload)
             self._json(HTTPStatus.CREATED, result)
+        except LocalHTTPProtocolError as exc:
+            self._json(exc.status, {"error": str(exc)})
         except (UnicodeDecodeError, json.JSONDecodeError, WorkbenchError, OSError, ValueError) as exc:
             self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except Exception:
@@ -434,51 +502,10 @@ class ProductRequestHandler(BaseHTTPRequestHandler):
 
 
 def render_product_shell(token: str) -> str:
-    shell = r'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Argument Workbench</title><style>
-body{margin:0;background:#f4f1eb;color:#23201b;font:16px system-ui,sans-serif}main{max-width:980px;margin:auto;padding:44px 24px}.brand{font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:#735f3d}h1{font:42px Georgia,serif;margin:.3em 0}.card{background:#fff;border:1px solid #d9d1c4;border-radius:16px;padding:24px;margin:18px 0;box-shadow:0 8px 24px #352c1d0d}.next{border-left:5px solid #c28b2c}.muted{color:#6e675d}.error{color:#9a2f27}.warning{color:#8b5b0c}.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}label{display:block;margin:12px 0 6px;font-weight:600}input,button,textarea,select{font:inherit}input[type=text],textarea,select{width:100%;box-sizing:border-box;padding:11px;border:1px solid #bcb3a5;border-radius:8px}textarea{min-height:150px;resize:vertical}button{border:0;border-radius:8px;padding:11px 18px;background:#245a48;color:#fff;cursor:pointer}button.secondary{background:#e9e3d8;color:#332c22}button.danger{background:#8c352e}code{background:#eee8dd;padding:2px 5px;border-radius:4px}.quote{white-space:pre-wrap;background:#f7f3ec;border-radius:10px;padding:14px}.hunk{border-left:4px solid #557b6c}.original{background:#fff0ed}.replacement{background:#edf7f1}.pill{display:inline-block;border-radius:99px;background:#eee8dd;padding:4px 9px;margin:2px;font-size:13px}.hidden{display:none}@media(max-width:700px){.grid{grid-template-columns:1fr}}
-</style></head><body><main><div class="brand">Local-first · model-neutral</div><h1>Argument Workbench</h1><p>普通 AI 给你一篇“改好了”的文章；这里让每一处修改都可追溯、由你批准，并能复查。</p><div id="app"></div></main><script>
-const TOKEN=__TOKEN__,el=document.getElementById('app');let state;
-const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-async function api(path,body){let r;try{r=await fetch(path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json','X-Argument-Workbench-Token':TOKEN},body:body?JSON.stringify(body):undefined})}catch(cause){const e=Error('无法连接本地服务，请确认本次启动的页面仍然有效');e.transportFailure=true;throw e}let j;try{j=await r.json()}catch(cause){const e=Error('本地服务返回了无法识别的响应');e.transportFailure=true;throw e}if(!r.ok){const e=Error(j.error||`请求失败（${r.status}）`);e.uncertainMutation=!!body&&r.status>=500;throw e}return j}
-async function showMutationError(e){const uncertain=e.transportFailure||e.uncertainMutation;if(uncertain){try{state=await api('/api/state');render()}catch(ignore){}}const message=uncertain?'本地服务连接中断或发生内部错误；页面已尝试刷新。操作可能已经完成，请先检查当前状态，不要直接重复提交。':e.message;const x=document.getElementById('err');if(x)x.textContent=message;else alert(message)}
-async function act(action,data={}){try{state=await api('/api/action',{action,data});render()}catch(e){await showMutationError(e)}}
-function copyText(value){navigator.clipboard.writeText(value).catch(()=>{});}
-function errors(attempt){return attempt&&!attempt.valid?`<div class="error"><b>这次返回未通过校验，原始内容已保留。</b><ul>${attempt.errors.map(e=>`<li>${esc(e)}</li>`).join('')}</ul>${attempt.repair_prompt?'<button class="secondary" id="copyRepair">复制修复提示词</button>':''}</div>`:''}
-function promptPaste(title,prompt,attempt,action){return `<div class="card"><h2>${esc(title)}</h2><p>复制提示词，到任意 AI 运行，再把完整返回粘贴回来。</p><p><button id="copyPrompt">复制提示词</button></p><textarea id="response" placeholder="在这里粘贴 AI 返回">${esc(attempt&&!attempt.valid?attempt.raw:'')}</textarea><p><button id="submitResponse">校验并保存返回</button></p>${errors(attempt)}<div id="err" class="error"></div></div>`}
-function home(){el.innerHTML=`<div class="card"><h2>新建项目</h2><p class="muted">选择 Markdown/TXT 原稿。文件只保存在本机。</p><label>项目标题（可选）</label><input id="title" type="text"><label>原稿</label><input id="file" type="file" accept=".md,.txt,text/plain,text/markdown"><p><button id="create">导入为不可变 V1</button></p><div id="err" class="error"></div></div>${state.projects.length?`<div class="card"><h2>打开已有项目</h2>${state.projects.map(p=>`<p class="row"><button class="secondary open" data-dir="${esc(p.path.split(/[\\/]/).pop())}">打开</button><span>${esc(p.title)} · ${esc(p.current_version||'校验失败')}</span></p>`).join('')}</div>`:''}`;document.getElementById('create').onclick=async()=>{try{const f=document.getElementById('file').files[0];if(!f)throw Error('请选择稿件');state=await api('/api/projects',{filename:f.name,content:await f.text(),title:document.getElementById('title').value});render()}catch(e){await showMutationError(e)}};document.querySelectorAll('.open').forEach(b=>b.onclick=async()=>{try{state=await api('/api/open',{directory:b.dataset.dir});render()}catch(e){await showMutationError(e)}})}
-function bindPrompt(prompt,attempt,action){document.getElementById('copyPrompt').onclick=()=>copyText(prompt);document.getElementById('submitResponse').onclick=()=>act(action,{response:document.getElementById('response').value});const repair=document.getElementById('copyRepair');if(repair)repair.onclick=()=>copyText(attempt.repair_prompt)}
-function render(){if(!state.selected){home();return}const p=state.selected;let body=`<div class="card"><div class="muted">当前项目 · ${esc(p.current_version)}</div><h2>${esc(p.title)}</h2><p>${esc(p.source_name)} · <code>${esc(p.source_sha256.slice(0,12))}</code></p>${p.professional_available?'<p><a href="/professional">进入专业研究视图（IR、Lens、Citation、lineage）</a></p>':''}</div><div class="card next"><div class="muted">唯一下一步</div><h2>${esc(p.next_action)}</h2><p>V1 永久保留；模型只能提案，决定权在你。</p></div>`;
-if(p.stage==='read_only')body+=`<div class="card error"><h2>修改链校验失败</h2><p>项目已强制进入只读状态。修复下列完整性问题前，所有写入操作都会被拒绝。</p><ul>${p.errors.map(e=>`<li>${esc(e)}</li>`).join('')}</ul></div>`;
-else if(p.stage==='review_material')body+=`<div class="card"><h2>导入现有审查报告</h2><p class="muted">支持任意格式。原始报告会永久归档。</p><textarea id="report" placeholder="粘贴 AI 审查报告"></textarea><p><button id="importReport">导入并生成原子化提示词</button></p><div id="err" class="error"></div></div>`;
-else if(p.stage==='atomization_result')body+=promptPaste('把报告拆成可核验的发现',p.atomization_prompt,p.atomization_attempt,'collect_atomization');
-else if(p.stage==='findings_confirm')body+=`<div class="card"><h2>逐条确认发现</h2><p>UNVERIFIED 不会被当成事实。可以直接修正定位、标准和建议动作。</p></div>${p.findings.map(f=>`<div class="card"><div class="row"><span class="pill">${esc(f.finding_id)}</span><span class="pill">${esc(f.claim_id)}</span><span class="pill">${esc(f.evidence_level)}</span></div><label>问题</label><textarea id="assert-${esc(f.finding_id)}">${esc(f.assertion)}</textarea><div class="grid"><div><label>原文定位</label><textarea id="quote-${esc(f.finding_id)}">${esc(f.manuscript_quote||'')}</textarea></div><div><label>审查标准</label><textarea id="criterion-${esc(f.finding_id)}">${esc(f.criterion)}</textarea></div></div><label>建议动作</label><textarea id="action-${esc(f.finding_id)}">${esc(f.suggested_action)}</textarea><label>你的理由</label><input id="reason-${esc(f.finding_id)}" type="text"><div class="row"><button class="finding" data-id="${esc(f.finding_id)}" data-decision="accept">接受处理</button><button class="finding danger" data-id="${esc(f.finding_id)}" data-decision="reject">拒绝</button><button class="finding secondary" data-id="${esc(f.finding_id)}" data-decision="defer">暂缓</button>${f.decision?`<span>当前：${esc(f.decision)}</span>`:''}</div></div>`).join('')}<div id="err" class="error"></div>`;
-else if(p.stage==='no_revision')body+=`<div class="card"><h2>${p.completion_kind==='no_findings'?'本轮没有发现':'本轮没有选中修改项'}</h2><p>${p.completion_kind==='no_findings'?'可以保留零 finding 结果并合法结束，不创建伪造的 V2。':'所有 finding 均已拒绝或暂缓，可以保留决定链并结束本轮。'}</p><label>完成理由</label><input id="noRevisionReason" type="text"><p><button id="completeNoRevision">确认并生成审计包</button></p><div id="err" class="error"></div></div>`;
-else if(p.stage==='revision_prepare')body+=`<div class="card"><h2>只为已接受的问题生成方案</h2><p>拒绝和暂缓的发现不会进入提示词。</p><button id="prepareRevision">生成受约束修改提示词</button><div id="err" class="error"></div></div>`;
-else if(p.stage==='revision_result')body+=promptPaste('获取受约束修改提案',p.revision_prompt,p.revision_attempt,'collect_revision');
-else if(p.stage==='hunk_review')body+=`<div class="card"><h2>逐项审批 diff</h2><p>每一项都显示 Finding、Action、理由和不确定项。</p></div>${p.regeneration_prompt?`<div class="card next"><h2>重新生成指定项</h2><p>复制下面的定向提示词。新提案通过校验后，因 proposal hash 已变化，所有 hunk 都必须重新审批。</p><button id="copyRegen">复制定向提示词</button><textarea id="regenResponse" placeholder="粘贴完整的新提案"></textarea><p><button id="submitRegen">校验新提案</button></p></div>`:''}${p.hunks.map(h=>`<div class="card hunk"><div>${h.finding_ids.map(x=>`<span class="pill">Finding ${esc(x)}</span>`).join('')}${h.action_ids.map(x=>`<span class="pill">Action ${esc(x)}</span>`).join('')}</div><div class="grid"><div><h3>原文</h3><div class="quote original">${esc(h.original_quote||`插入锚点：${h.insertion_anchor}`)}</div></div><div><h3>建议</h3><textarea class="replacement" id="edit-${esc(h.change_id)}">${esc(h.replacement_text)}</textarea></div></div><p>${esc(h.reason)}</p>${h.uncertainties.length?`<p class="warning">未确认：${esc(h.uncertainties.join('；'))}</p>`:''}${h.fact_change?`<p class="warning">事实/引文变化，需核验：${esc(h.verification_note)}</p>`:''}<label>决定理由</label><input id="hreason-${esc(h.change_id)}" type="text"><div class="row"><button class="hunkDecision" data-id="${esc(h.change_id)}" data-decision="accept">接受</button><button class="hunkDecision danger" data-id="${esc(h.change_id)}" data-decision="reject">拒绝</button><button class="hunkDecision secondary" data-id="${esc(h.change_id)}" data-decision="edit">编辑后接受</button><button class="hunkDecision secondary" data-id="${esc(h.change_id)}" data-decision="regenerate">重新生成此项</button>${h.decision?`<span>当前：${esc(h.decision.decision)}</span>`:''}</div></div>`).join('')}<div id="err" class="error"></div>`;
-else if(p.stage==='apply_revision')body+=`<div class="card"><h2>生成不可变 V2</h2><p>只应用已批准的 hunks；拒绝项绝不会进入 V2。哈希或范围冲突会安全停止。</p><button id="applyRevision">确定生成 V2</button><div id="err" class="error"></div></div>`;
-else if(p.stage==='resolution_prepare')body+=`<div class="card"><h2>复查 V2</h2><p>复用每条 finding 的原始审查标准，不因“文字变了”就宣称已解决。</p><button id="prepareResolution">生成复查提示词</button><div id="err" class="error"></div></div>`;
-else if(p.stage==='resolution_result')body+=promptPaste('用原标准复查 V2',p.resolution_prompt,p.resolution_attempt,'collect_resolution');
-else if(p.stage==='resolution_confirm')body+=`<div class="card"><h2>确认复查结论</h2></div>${p.resolution_results.map(r=>`<div class="card"><span class="pill">${esc(r.finding_id)}</span><h3>${esc(r.proposed_status)}</h3><p>${esc(r.reason)}</p><label>最终状态</label><select id="status-${esc(r.finding_id)}"><option>resolved</option><option>partially_resolved</option><option>unresolved</option><option>not_evaluated</option></select><label>你的确认理由</label><input id="rreason-${esc(r.finding_id)}" type="text"><button class="resolution" data-id="${esc(r.finding_id)}">保存人工结论</button></div>`).join('')}<div id="err" class="error"></div>`;
-else if(p.stage==='export')body+=`<div class="card"><h2>导出文章与审计记录</h2><button id="export">生成导出包</button><div id="err" class="error"></div></div>`;
-else if(p.stage==='complete')body+=`<div class="card"><h2>闭环完成</h2><p>${p.completion?'原稿、无修改结论和完整审计记录已生成；没有创建 V2。':'V2、修订清单和完整审计记录已生成。'}</p><p><code>${esc(p.export_path)}</code></p></div>`;
-el.innerHTML=body+`<div class="card"><p class="muted">本地存储：${esc(state.storage_path)}</p></div>`;
-if(p.stage==='review_material')document.getElementById('importReport').onclick=()=>act('import_report',{report:document.getElementById('report').value,source_name:'pasted-report.md'});
-if(p.stage==='atomization_result')bindPrompt(p.atomization_prompt,p.atomization_attempt,'collect_atomization');
-if(p.stage==='findings_confirm')document.querySelectorAll('.finding').forEach(b=>b.onclick=()=>{const id=b.dataset.id,decision=b.dataset.decision;act('decide_finding',{finding_id:id,decision,reason:document.getElementById('reason-'+id).value,action_text:document.getElementById('action-'+id).value,corrections:{assertion:document.getElementById('assert-'+id).value,manuscript_quote:document.getElementById('quote-'+id).value||null,criterion:document.getElementById('criterion-'+id).value,suggested_action:document.getElementById('action-'+id).value}})});
-if(p.stage==='no_revision')document.getElementById('completeNoRevision').onclick=()=>act('complete_without_revision',{reason:document.getElementById('noRevisionReason').value});
-if(p.stage==='revision_prepare')document.getElementById('prepareRevision').onclick=()=>act('prepare_revision');
-if(p.stage==='revision_result')bindPrompt(p.revision_prompt,p.revision_attempt,'collect_revision');
-if(p.stage==='hunk_review'){document.querySelectorAll('.hunkDecision').forEach(b=>b.onclick=()=>{const id=b.dataset.id,d=b.dataset.decision;act('decide_hunk',{change_id:id,decision:d,reason:document.getElementById('hreason-'+id).value,edited_text:d==='edit'?document.getElementById('edit-'+id).value:null})});if(p.regeneration_prompt){document.getElementById('copyRegen').onclick=()=>copyText(p.regeneration_prompt);document.getElementById('submitRegen').onclick=()=>act('collect_revision',{response:document.getElementById('regenResponse').value})}}
-if(p.stage==='apply_revision')document.getElementById('applyRevision').onclick=()=>act('apply_revision');
-if(p.stage==='resolution_prepare')document.getElementById('prepareResolution').onclick=()=>act('prepare_resolution');
-if(p.stage==='resolution_result')bindPrompt(p.resolution_prompt,p.resolution_attempt,'collect_resolution');
-if(p.stage==='resolution_confirm')document.querySelectorAll('.resolution').forEach(b=>b.onclick=()=>{const id=b.dataset.id;act('decide_resolution',{finding_id:id,status:document.getElementById('status-'+id).value,reason:document.getElementById('rreason-'+id).value})});
-if(p.stage==='export')document.getElementById('export').onclick=()=>act('export');
-}
-api('/api/state').then(x=>{state=x;render()}).catch(e=>el.innerHTML=`<div class="card error">${esc(e.message)}</div>`)
-</script></body></html>'''
-    return shell.replace("__TOKEN__", json.dumps(token))
+    from studio_web.research import research_shell
+
+    token_json = json.dumps(token).replace("<", "\\u003c")
+    return research_shell("product").replace("__TOKEN__", token_json)
 
 
 def serve_product_app(

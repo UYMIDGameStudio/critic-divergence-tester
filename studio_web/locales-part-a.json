@@ -1,0 +1,650 @@
+{
+  "支持 Word、PDF、Markdown/TXT、RTF、HTML、CSV/TSV、ODT、Excel 和 PowerPoint。旧版 Office/WPS 需要本机 LibreOffice，扫描 PDF 需要 OCR 组件。原文件会完整保留。": {
+    "zh-Hant": "支援 Word、PDF、Markdown/TXT、RTF、HTML、CSV/TSV、ODT、Excel 和 PowerPoint。舊版 Office/WPS 需要本機 LibreOffice，掃描 PDF 需要 OCR 元件。原始檔案會完整保留。",
+    "en": "Supports Word, PDF, Markdown/TXT, RTF, HTML, CSV/TSV, ODT, Excel and PowerPoint. Older Office/WPS files require LibreOffice on this computer; scanned PDFs require OCR components. Original files are preserved in full."
+  },
+  "协议绑定原 critic 的完整 prompt、request、AuditRun 和 provider/model；请导入复审响应并逐项确认原 Finding。": {
+    "zh-Hant": "協定綁定原 critic 的完整 prompt、request、AuditRun 和 provider/model；請匯入複審回應並逐項確認原 Finding。",
+    "en": "The review instructions are bound to the original critic's complete prompt, request, AuditRun and provider/model. Import the follow-up review and confirm each original issue."
+  },
+  "预检会自动生成缺失任务，但不会调用模型。默认由你把响应关联到当前选中的任务，应用负责绑定原件 SHA；严格模式只用于能够准确回显全部机器字段的模型。": {
+    "zh-Hant": "預檢會自動產生缺少的任務，但不會呼叫模型。預設由您將回應關聯至目前選取的任務，應用程式負責綁定原件 SHA；嚴格模式僅適用於能準確回傳全部機器欄位的模型。",
+    "en": "Prechecks create any missing tasks without calling a model. By default, you link the response to the selected task and the app binds it to the original file's SHA. Strict mode requires the model to return every machine field exactly."
+  },
+  "新文书与学术稿件共用上方导入入口。旧论证项目在同一服务中原位打开，保留 Claim、Lens、Citation 和版本历史，不自动迁移或覆盖。": {
+    "zh-Hant": "新文書與學術稿件共用上方匯入入口。舊論證專案會在同一服務中原位開啟，保留 Claim、Lens、Citation 和版本歷史，不會自動遷移或覆寫。",
+    "en": "Use the import area above for new professional and academic documents. Existing argument projects open in place, preserving Claim, Lens, Citation and version history. They are not migrated or overwritten automatically."
+  },
+  "新 Finding 和人工确认仍未解决的旧 Finding 将成为修订稿版本上的 open Finding，重新进入裁决和修改。": {
+    "zh-Hant": "新 Finding 與經人工確認仍未解決的舊 Finding，會成為修訂稿版本中的 open Finding，重新進入裁決與修改。",
+    "en": "New issues and existing issues that the author confirms remain unresolved become open issues in the revised document and enter another round of decisions and revision."
+  },
+  "适配器可一键安装并重新自检；如果当前项目因缺少组件而识别失败，修复后会自动重新识别。系统级 OCR 组件会给出人工安装说明。": {
+    "zh-Hant": "介接元件可一鍵安裝並重新自我檢查；若目前專案因缺少元件而辨識失敗，修復後會自動重新辨識。系統層級 OCR 元件會提供手動安裝說明。",
+    "en": "Install adapters and check them again in one step. If extraction failed because a component was missing, the document is processed again after repair. System OCR components include manual installation instructions."
+  },
+  "无法连接本地服务。请确认启动 Studio 的终端仍在运行，并只使用本次启动自动打开的页面；旧标签页的端口可能已经失效。": {
+    "zh-Hant": "無法連線至本機服務。請確認啟動 Studio 的終端機仍在執行，並使用本次啟動自動開啟的頁面；舊分頁的連接埠可能已失效。",
+    "en": "Cannot connect to the local service. Check that the terminal running Studio is still open, and use the page opened by the current launch. Older tabs may point to an inactive port."
+  },
+  "新 Finding 不能直接标记为已解决；它将进入下一轮 accept/correct/reject/defer 裁决。": {
+    "zh-Hant": "新 Finding 不能直接標記為已解決；它會進入下一輪 accept/correct/reject/defer 裁決。",
+    "en": "New issues cannot be marked resolved immediately. They enter the next accept/correct/reject/defer decision round."
+  },
+  "复跑。外部模型 Finding 必须经过绑定原 critic 的复审、人工 Resolution，并把新问题送入下一轮。": {
+    "zh-Hant": "重新執行。外部模型 Finding 必須經過綁定原 critic 的複審與人工 Resolution，並將新問題送入下一輪。",
+    "en": " identifiers. Issues raised by an external model require a follow-up review bound to the original critic and an author-confirmed resolution. New issues must enter the next round."
+  },
+  "词项覆盖和结构提示，不冒充 AI 专业判断。首次运行后会为同一批 critic 自动生成待执行的独立 AI 任务。": {
+    "zh-Hant": "提供詞項涵蓋與結構提示，不代替 AI 專業判斷。首次執行後，會為同一批 critic 自動建立待執行的獨立 AI 任務。",
+    "en": "Checks term coverage and structure; it does not provide an AI expert assessment. The first run also creates independent AI review tasks for the selected critics."
+  },
+  "绑定工作组和明确 Finding 集。操作类型必须由人显式选择，系统的自然语言推断只显示为建议。": {
+    "zh-Hant": "綁定工作組與明確的 Finding 集合。操作類型必須由使用者明確選取，系統的自然語言推斷僅作為建議。",
+    "en": "is bound to a work group and a specific set of issues. You must choose the operation explicitly; suggestions inferred from the text are advisory."
+  },
+  "支持英文、简体中文、繁体中文、德语、法语、日语、俄语和拉丁语。编码选项适用于文本类文件。": {
+    "zh-Hant": "支援英文、簡體中文、繁體中文、德文、法文、日文、俄文和拉丁文。編碼選項適用於文字類檔案。",
+    "en": "Supports English, Simplified Chinese, Traditional Chinese, German, French, Japanese, Russian and Latin. Encoding options apply to text-based files."
+  },
+  "外部 Resolution 已确认，需继续处理的问题已进入下一轮或本轮没有遗留项。": {
+    "zh-Hant": "外部 Resolution 已確認；需繼續處理的問題已進入下一輪，或本輪已無待處理事項。",
+    "en": "External review resolutions are confirmed. Remaining issues have moved to the next round, or this round has no outstanding issues."
+  },
+  "字段不能为空；日期可填写 YYYY-MM-DD，未知时填写 unknown。": {
+    "zh-Hant": "欄位不能留空；日期可填寫 YYYY-MM-DD，未知時請填 unknown。",
+    "en": "All fields are required. Enter dates as YYYY-MM-DD, or enter unknown if unavailable."
+  },
+  "人工关联不会伪称模型回显了 SHA；原始响应和应用补充的绑定信息会分别留档。": {
+    "zh-Hant": "人工關聯不會聲稱模型已回傳 SHA；原始回應與應用程式補充的綁定資訊會分別留存。",
+    "en": "Manual linking does not claim that the model returned the SHA. The original response and the binding information added by the app are stored separately."
+  },
+  "所有 Action 都必须确认操作类型，并完成最新 Hunk 的批准或驳回。": {
+    "zh-Hant": "所有 Action 都必須確認操作類型，並完成最新 Hunk 的批准或駁回。",
+    "en": "For every revision task, confirm the operation and approve or reject the latest proposed change."
+  },
+  "所有原子 Finding 裁决完成后，才可生成 Action 和 Hunk。": {
+    "zh-Hant": "完成所有原子 Finding 的裁決後，才能產生 Action 和 Hunk。",
+    "en": "Decide every individual issue before creating revision tasks and proposed changes."
+  },
+  "零 Finding 不代表自动确认合规或质量，审查范围仍记录在审计产物中。": {
+    "zh-Hant": "沒有 Finding 不代表已自動確認合規或品質；審查範圍仍會記錄於稽核產物中。",
+    "en": "Finding no issues does not establish compliance or quality. The review scope remains recorded in the audit outputs."
+  },
+  "个承重工作组；归组仅管理注意力，不合并 critic 的理由、证据或决定。": {
+    "zh-Hant": "個關鍵工作組；分組僅用於安排注意力，不會合併 critic 的理由、證據或決定。",
+    "en": " priority work groups. Grouping helps focus attention; each critic's reasoning, evidence and decisions remain separate."
+  },
+  "验证完整备份并恢复为独立项目。已有项目不会被覆盖。较大备份可使用维护工具。": {
+    "zh-Hant": "驗證完整備份並還原為獨立專案。既有專案不會被覆寫。較大的備份可使用維護工具還原。",
+    "en": "Verify a complete backup and restore it as a separate project. Existing projects are preserved. Use the maintenance tools for larger backups."
+  },
+  "操作类型决定已变化，旧 Hunk 失效。请按当前操作提交新的 Hunk。": {
+    "zh-Hant": "操作類型決定已變更，舊 Hunk 已失效。請依目前的操作提交新的 Hunk。",
+    "en": "The operation decision has changed, so the previous proposed change is no longer valid. Submit a new proposal for the current operation."
+  },
+  "核验材料说明（每行一项；只保存说明，不会自动下载 URL 或读取路径）": {
+    "zh-Hant": "核驗資料說明（每行一項；僅儲存說明，不會自動下載 URL 或讀取路徑）",
+    "en": "Verification materials, one item per line. Descriptions only; URLs are not fetched and file paths are not read automatically."
+  },
+  "粘贴可供核验的原文摘录、页码、来源和访问说明；请勿放入敏感原始数据": {
+    "zh-Hant": "貼上可供核驗的原文摘錄、頁碼、來源及存取說明；請勿加入敏感原始資料",
+    "en": "Paste source excerpts, page numbers, references and access notes for verification. Do not include sensitive raw data."
+  },
+  "关键词推断只作为建议；没有这一步人工确认，系统不会接受 Hunk。": {
+    "zh-Hant": "關鍵字推斷僅供建議；未經這一步人工確認，系統不會接受 Hunk。",
+    "en": "Keyword-based suggestions are advisory. A proposed change cannot be submitted until you confirm the operation."
+  },
+  "浏览器恢复支持 30 MiB 以内备份；请使用维护工具恢复较大备份": {
+    "zh-Hant": "瀏覽器可還原 30 MiB 以內的備份；較大的備份請使用維護工具",
+    "en": "Browser restore supports backups up to 30 MiB. Use the maintenance tools for larger backups."
+  },
+  "扫描页需要本机 OCR 引擎、对应语言包及 PDF 渲染组件。": {
+    "zh-Hant": "掃描頁面需要本機 OCR 引擎、對應語言套件及 PDF 轉譯元件。",
+    "en": "Scanned pages require a local OCR engine, the relevant language packs and a PDF rendering component."
+  },
+  "上一步响应中断；已重新读取项目状态，请核对操作是否完成。": {
+    "zh-Hant": "上一步回應中斷；已重新讀取專案狀態，請核對操作是否完成。",
+    "en": "The previous response was interrupted. Project status has been refreshed; check whether the operation completed."
+  },
+  "外部 critic 复审与人工 Resolution": {
+    "zh-Hant": "外部 critic 複審與人工 Resolution",
+    "en": "External critic follow-up and author resolutions"
+  },
+  "条 Finding。再次运行会追加一轮可审计记录。": {
+    "zh-Hant": "條 Finding。再次執行會新增一輪可稽核的記錄。",
+    "en": " issues. Running again adds another auditable review round."
+  },
+  "先逐项勾选问题；批量处理仍为每条问题保存独立决定。": {
+    "zh-Hant": "請先逐項勾選問題；批次處理仍會為每個問題儲存獨立決定。",
+    "en": "Select each issue first. Batch actions still create a separate decision for every issue."
+  },
+  "删除前会自动创建可恢复备份。确定删除这个项目吗？": {
+    "zh-Hant": "刪除前會自動建立可還原的備份。確定要刪除此專案嗎？",
+    "en": "A recoverable backup will be created first. Delete this project?"
+  },
+  "适用地区/司法辖区（不适用填 unknown）": {
+    "zh-Hant": "適用地區／司法管轄區（不適用請填 unknown）",
+    "en": "Region or jurisdiction; enter unknown if not applicable"
+  },
+  "本地确定性 critic 已按稳定 check": {
+    "zh-Hant": "本機確定性 critic 已按穩定 check",
+    "en": "Local deterministic critic checks have rerun using stable check"
+  },
+  "导出完成。文件可直接下载，也可打开所在文件夹。": {
+    "zh-Hant": "匯出完成。可直接下載檔案，或開啟所在資料夾。",
+    "en": "Export complete. Download the files or open their folder."
+  },
+  "请检查英文、中文及其他语言的原文字母和标点。": {
+    "zh-Hant": "請檢查英文、中文及其他語言原文的字母、文字與標點。",
+    "en": "Check that letters, characters and punctuation are preserved in every language in the source."
+  },
+  "无需先裁决 Finding；导出物会明确标记": {
+    "zh-Hant": "不必先裁決 Finding；匯出內容會明確標示",
+    "en": "Issues do not need decisions before export. The export will be clearly marked"
+  },
+  "本轮没有需要外部模型复审的 Finding。": {
+    "zh-Hant": "本輪沒有需要外部模型複審的 Finding。",
+    "en": "No issues in this round require external model follow-up."
+  },
+  "需继续处理的 Finding 已进入下一轮。": {
+    "zh-Hant": "需繼續處理的 Finding 已進入下一輪。",
+    "en": "Issues requiring further work have moved to the next round."
+  },
+  "请恢复可信项目副本后再继续，下载也会被阻止。": {
+    "zh-Hant": "請先還原可信任的專案副本再繼續；下載也會被阻擋。",
+    "en": "Restore a trusted project copy before continuing. Downloads are also blocked."
+  },
+  "请先查看正文和定位；这是正式审查的质量门。": {
+    "zh-Hant": "請先檢查正文與定位；這是正式審查前的品質確認步驟。",
+    "en": "Check the extracted text and its locations before starting the review."
+  },
+  "项目和草稿已保存在本机，可以关闭此页面。": {
+    "zh-Hant": "專案與草稿已儲存在本機，可以關閉此頁面。",
+    "en": "Your project and drafts are saved on this computer. You can close this page."
+  },
+  "浏览器导入支持 30 MiB 以内文件": {
+    "zh-Hant": "瀏覽器可匯入 30 MiB 以內的檔案",
+    "en": "Browser import supports files up to 30 MiB."
+  },
+  "浏览器未允许复制，请展开协议后手动复制": {
+    "zh-Hant": "瀏覽器未允許複製，請展開協定後手動複製",
+    "en": "Clipboard access was denied. Expand the review instructions and copy them manually."
+  },
+  "本地服务响应中断或格式无效（HTTP": {
+    "zh-Hant": "本機服務回應中斷或格式無效（HTTP",
+    "en": "The local response was interrupted or invalid (HTTP"
+  },
+  "研究类型（学术 / 综合模式适用）": {
+    "zh-Hant": "研究類型（適用於學術／綜合模式）",
+    "en": "Research type; academic or combined review"
+  },
+  "新定位需要重新裁决，旧批准会失效。": {
+    "zh-Hant": "新的定位需要重新裁決，舊批准將失效。",
+    "en": "Changing the location requires a new decision and invalidates previous approvals."
+  },
+  "人工 Resolution 理由": {
+    "zh-Hant": "人工 Resolution 理由",
+    "en": "Reason for your resolution"
+  },
+  "进入下一轮 Finding 裁决": {
+    "zh-Hant": "進入下一輪 Finding 裁決",
+    "en": "Start the next issue decision round"
+  },
+  "粘贴 AI 返回的完整 JSON": {
+    "zh-Hant": "貼上 AI 回傳的完整 JSON",
+    "en": "Paste the complete JSON response from the AI."
+  },
+  "全部八种语言（需要相应语言包）": {
+    "zh-Hant": "全部八種語言（需要對應語言套件）",
+    "en": "All eight languages; requires the matching language packs"
+  },
+  "扫描 PDF 的 OCR 语言": {
+    "zh-Hant": "掃描 PDF 的 OCR 語言",
+    "en": "OCR language for scanned PDFs"
+  },
+  "学科（学术 / 综合模式适用）": {
+    "zh-Hant": "學科（適用於學術／綜合模式）",
+    "en": "Discipline; academic or combined review"
+  },
+  "运行预检并生成 AI 审查任务": {
+    "zh-Hant": "執行預檢並產生 AI 審查任務",
+    "en": "Run prechecks and create AI review tasks"
+  },
+  "导出 / 导入独立 AI 审查": {
+    "zh-Hant": "匯出／匯入獨立 AI 審查",
+    "en": "Export and import independent AI reviews"
+  },
+  "模型提议不会自动成为最终决定。": {
+    "zh-Hant": "模型提議不會自動成為最終決定。",
+    "en": "Model suggestions do not become final decisions automatically."
+  },
+  "范围结束段落（范围替换时必选）": {
+    "zh-Hant": "範圍結束段落（替換範圍時必選）",
+    "en": "Last paragraph in the range; required for range replacement"
+  },
+  "人工 Resolution：": {
+    "zh-Hant": "人工 Resolution：",
+    "en": "Author resolution: "
+  },
+  "外部复审原始 JSON 响应": {
+    "zh-Hant": "外部複審的原始 JSON 回應",
+    "en": "Original JSON response from the external follow-up review"
+  },
+  "本 Action 的具体文本": {
+    "zh-Hant": "此 Action 的具體文字",
+    "en": "Replacement text for this revision task"
+  },
+  "本轮没有产生 Finding": {
+    "zh-Hant": "本輪未產生 Finding",
+    "en": "No issues were found in this round"
+  },
+  "对这些问题适用的共同裁决理由": {
+    "zh-Hant": "適用於這些問題的共同裁決理由",
+    "en": "A decision reason that applies to all selected issues"
+  },
+  "更改操作会使旧修改批准失效。": {
+    "zh-Hant": "變更操作會使先前的修改批准失效。",
+    "en": "Changing the operation invalidates previous change approvals."
+  },
+  "进入专业研究视图与兼容工具": {
+    "zh-Hant": "進入專業研究檢視與相容工具",
+    "en": "Open the research workspace and compatibility tools"
+  },
+  "重新生成当前类型的独立协议": {
+    "zh-Hant": "重新產生目前類型的獨立協定",
+    "en": "Regenerate independent review instructions"
+  },
+  "本次复审 provider": {
+    "zh-Hant": "本次複審的 provider",
+    "en": "Provider for this follow-up review"
+  },
+  "本次复审 model/版本": {
+    "zh-Hant": "本次複審的 model／版本",
+    "en": "Model and version for this follow-up review"
+  },
+  "提供修正后的完整审查文本": {
+    "zh-Hant": "提供修正後的完整審查文字",
+    "en": "Enter the complete corrected text for review."
+  },
+  "模型原始 JSON 响应": {
+    "zh-Hant": "模型的原始 JSON 回應",
+    "en": "Original JSON response from the model"
+  },
+  "粘贴当前任务的 JSON": {
+    "zh-Hant": "貼上目前任務的 JSON",
+    "en": "Paste the JSON for the selected task."
+  },
+  "可选环境组件均已就绪。": {
+    "zh-Hant": "所有選用環境元件都已就緒。",
+    "en": "All optional components are ready."
+  },
+  "已完成本地预检，当前有": {
+    "zh-Hant": "已完成本機預檢，目前有",
+    "en": "Local prechecks complete. Current total:"
+  },
+  "重新运行选中的本地预检": {
+    "zh-Hant": "重新執行選取的本機預檢",
+    "en": "Rerun the selected local prechecks"
+  },
+  "生成当前类型的独立协议": {
+    "zh-Hant": "產生目前類型的獨立協定",
+    "en": "Generate independent review instructions"
+  },
+  "模型/版本（仅作声明）": {
+    "zh-Hant": "模型／版本（僅作聲明）",
+    "en": "Model and version; self-reported"
+  },
+  "关联到当前任务（推荐）": {
+    "zh-Hant": "關聯至目前任務（建議）",
+    "en": "Link to the selected task (recommended)"
+  },
+  "条原子 Finding": {
+    "zh-Hant": "條原子 Finding",
+    "en": " individual issues"
+  },
+  "批量处理明确选中的问题": {
+    "zh-Hant": "批次處理明確選取的問題",
+    "en": "Apply a decision to selected issues"
+  },
+  "选中此问题用于批量裁决": {
+    "zh-Hant": "選取此問題以進行批次裁決",
+    "en": "Include this issue in the batch decision"
+  },
+  "说明为什么应定位到此处": {
+    "zh-Hant": "說明為何應定位至此處",
+    "en": "Explain why this is the correct location."
+  },
+  "由 AI 起草此项修改": {
+    "zh-Hant": "由 AI 起草這項修改",
+    "en": "Ask AI to draft this change"
+  },
+  "一键修复可自动修复项": {
+    "zh-Hant": "一鍵修復可自動修復的項目",
+    "en": "Repair available components"
+  },
+  "拟生效 / 投稿日期": {
+    "zh-Hant": "預定生效／投稿日期",
+    "en": "Planned effective or submission date"
+  },
+  "发布者 / 作者机构": {
+    "zh-Hant": "發布者／作者機構",
+    "en": "Publisher or author's organization"
+  },
+  "导出当前 AI 审查": {
+    "zh-Hant": "匯出目前的 AI 審查",
+    "en": "Export current AI reviews"
+  },
+  "模型来源（仅作声明）": {
+    "zh-Hant": "模型來源（僅作聲明）",
+    "en": "Model provider; self-reported"
+  },
+  "下载全部协议 ZIP": {
+    "zh-Hant": "下載全部協定 ZIP",
+    "en": "Download all review instructions as ZIP"
+  },
+  "严格回显校验（高级）": {
+    "zh-Hant": "嚴格回傳欄位驗證（進階）",
+    "en": "Strict returned-field validation (advanced)"
+  },
+  "人工关联（较弱审计）": {
+    "zh-Hant": "人工關聯（稽核強度較低）",
+    "en": "Manual linking (weaker audit trail)"
+  },
+  "原 AuditRun": {
+    "zh-Hant": "原 AuditRun",
+    "en": "Original AuditRun"
+  },
+  "删除操作（文本留空）": {
+    "zh-Hant": "刪除操作（文字留空）",
+    "en": "Deletion; leave the text empty"
+  },
+  "正在安装并重新自检…": {
+    "zh-Hant": "正在安裝並重新自我檢查…",
+    "en": "Installing and checking components…"
+  },
+  "操作可能已经完成。": {
+    "zh-Hant": "操作可能已經完成。",
+    "en": "The operation may already have completed."
+  },
+  "秒），请保留页面…": {
+    "zh-Hant": "秒），請保留頁面…",
+    "en": " seconds); keep this page open…"
+  },
+  "正在处理，请稍候…": {
+    "zh-Hant": "正在處理，請稍候…",
+    "en": " is in progress. Please wait…"
+  },
+  "按所选语言重新识别": {
+    "zh-Hant": "依所選語言重新辨識",
+    "en": "Run OCR again with this language"
+  },
+  "编码识别与乱码调整": {
+    "zh-Hant": "編碼辨識與亂碼調整",
+    "en": "Text encoding and character repair"
+  },
+  "按所选编码重新识别": {
+    "zh-Hant": "依所選編碼重新辨識",
+    "en": "Extract again with this encoding"
+  },
+  "专业研究与历史项目": {
+    "zh-Hant": "專業研究與歷史專案",
+    "en": "Research workspace and existing projects"
+  },
+  "暂时没有可预览正文": {
+    "zh-Hant": "目前沒有可預覽的正文",
+    "en": "No extracted text is available to preview."
+  },
+  "抽取内容与定位预览": {
+    "zh-Hant": "擷取內容與定位預覽",
+    "en": "Preview extracted text and locations"
+  },
+  "或 unknown": {
+    "zh-Hant": "或 unknown",
+    "en": "or unknown"
+  },
+  "已保存在项目目录：": {
+    "zh-Hant": "已儲存於專案目錄：",
+    "en": "Saved in the project directory: "
+  },
+  "新 Finding": {
+    "zh-Hant": "新 Finding",
+    "en": "New issue"
+  },
+  "条 Finding": {
+    "zh-Hant": "條 Finding",
+    "en": " issues"
+  },
+  "提交独立 Hunk": {
+    "zh-Hant": "提交獨立 Hunk",
+    "en": "Submit a proposed change"
+  },
+  "新 Hunk 理由": {
+    "zh-Hant": "新 Hunk 的理由",
+    "en": "Reason for the new proposed change"
+  },
+  "表单草稿保存在本机": {
+    "zh-Hant": "表單草稿儲存在本機",
+    "en": "Form drafts are stored on this computer"
+  },
+  "请选择范围结束段落": {
+    "zh-Hant": "請選取範圍的結束段落",
+    "en": "Choose the last paragraph in the range."
+  },
+  "提示词将在此处显示": {
+    "zh-Hant": "提示詞會顯示於此處",
+    "en": "The drafting prompt will appear here."
+  },
+  "更改操作或重新起草": {
+    "zh-Hant": "變更操作或重新起草",
+    "en": "Change the operation or draft again"
+  },
+  "保存操作并重新起草": {
+    "zh-Hant": "儲存操作並重新起草",
+    "en": "Save the operation and draft again"
+  },
+  "草稿已保存到本机": {
+    "zh-Hant": "草稿已儲存至本機",
+    "en": "Draft saved on this computer"
+  },
+  "自动识别（推荐）": {
+    "zh-Hant": "自動辨識（建議）",
+    "en": "Detect automatically (recommended)"
+  },
+  "英德法及拉丁文字": {
+    "zh-Hant": "英文、德文、法文及拉丁文字",
+    "en": "English, German, French and Latin text"
+  },
+  "扫描文档识别语言": {
+    "zh-Hant": "掃描文件辨識語言",
+    "en": "Language for scanned documents"
+  },
+  "打开专业研究项目": {
+    "zh-Hant": "開啟專業研究專案",
+    "en": "Open research project"
+  },
+  "项目标题（可选）": {
+    "zh-Hant": "專案標題（選填）",
+    "en": "Project title (optional)"
+  },
+  "扫描文件识别选项": {
+    "zh-Hant": "掃描檔案辨識選項",
+    "en": "Scanned document options"
+  },
+  "阻断发布/执行：": {
+    "zh-Hant": "阻擋發布／執行：",
+    "en": "Blocks publication or execution: "
+  },
+  "严格绑定（推荐）": {
+    "zh-Hant": "嚴格綁定（建議）",
+    "en": "Strict binding (recommended)"
+  },
+  "不能安全自动修改": {
+    "zh-Hant": "無法安全地自動修改",
+    "en": "Cannot be changed automatically with confidence"
+  },
+  "人工选择修改操作": {
+    "zh-Hant": "由使用者選擇修改操作",
+    "en": "Choose the revision operation"
+  },
+  "提交新 Hunk": {
+    "zh-Hant": "提交新 Hunk",
+    "en": "Submit a new proposed change"
+  },
+  "提交新的修改文本": {
+    "zh-Hant": "提交新的修改文字",
+    "en": "Enter a new revision"
+  },
+  "生成修改稿并复审": {
+    "zh-Hant": "產生修改稿並複審",
+    "en": "Generate and check the revised document"
+  },
+  "个 critic": {
+    "zh-Hant": "個 critic",
+    "en": " critics"
+  },
+  "生成逐段修改计划": {
+    "zh-Hant": "產生逐段修改計畫",
+    "en": "Create a paragraph revision plan"
+  },
+  "项目已切换为只读": {
+    "zh-Hant": "專案已切換為唯讀",
+    "en": "This project is now read-only"
+  },
+  "导入为待批准修改": {
+    "zh-Hant": "匯入為待批准的修改",
+    "en": "Import as a change awaiting approval"
+  },
+  "本轮流程已完成": {
+    "zh-Hant": "本輪流程已完成",
+    "en": "This review round is complete"
+  },
+  "搜索正文或定位": {
+    "zh-Hant": "搜尋正文或定位",
+    "en": "Search text or locations"
+  },
+  "确认审查上下文": {
+    "zh-Hant": "確認審查背景",
+    "en": "Confirm the review context"
+  },
+  "本地确定性预检": {
+    "zh-Hant": "本機確定性預檢",
+    "en": "Local deterministic prechecks"
+  },
+  "本次复审声明：": {
+    "zh-Hant": "本次複審聲明：",
+    "en": "Follow-up review details: "
+  },
+  "替换表格单元格": {
+    "zh-Hant": "替換表格儲存格",
+    "en": "Replace a table cell"
+  },
+  "导出当前交付物": {
+    "zh-Hant": "匯出目前交付成果",
+    "en": "Export current deliverables"
+  },
+  "辅助后人工提交": {
+    "zh-Hant": "輔助後由使用者提交",
+    "en": "assisted, submitted by the author"
+  },
+  "逐项修改与批准": {
+    "zh-Hant": "逐項修改與批准",
+    "en": "Review and approve each change"
+  },
+  "共同修改动作：": {
+    "zh-Hant": "共同修改動作：",
+    "en": "Shared revision action: "
+  },
+  "仅导出审查结果": {
+    "zh-Hant": "僅匯出審查結果",
+    "en": "Export review findings only"
+  },
+  "打开所在文件夹": {
+    "zh-Hant": "開啟所在資料夾",
+    "en": "Open containing folder"
+  },
+  "复审协议已复制": {
+    "zh-Hant": "複審協定已複製",
+    "en": "Follow-up review instructions copied"
+  },
+  "请选择备份文件": {
+    "zh-Hant": "請選擇備份檔案",
+    "en": "Choose a backup file."
+  },
+  "获取起草提示词": {
+    "zh-Hant": "取得起草提示詞",
+    "en": "Get the drafting prompt"
+  },
+  "工作台已关闭": {
+    "zh-Hant": "工作台已關閉",
+    "en": "Studio is closed"
+  },
+  "草稿未保存：": {
+    "zh-Hant": "草稿尚未儲存：",
+    "en": "Draft not saved: "
+  },
+  "旧版表单草稿": {
+    "zh-Hant": "舊版表單草稿",
+    "en": "Legacy form draft"
+  },
+  "当前表单草稿": {
+    "zh-Hant": "目前表單草稿",
+    "en": "Current form draft"
+  },
+  "文本文件编码": {
+    "zh-Hant": "文字檔案編碼",
+    "en": "Text file encoding"
+  },
+  "修正识别文本": {
+    "zh-Hant": "修正辨識文字",
+    "en": "Correct the extracted text"
+  },
+  "确认识别结果": {
+    "zh-Hant": "確認辨識結果",
+    "en": "Confirm extraction results"
+  },
+  "学术综合审查": {
+    "zh-Hant": "學術綜合審查",
+    "en": "Combined academic review"
+  },
+  "对外正式文件": {
+    "zh-Hant": "對外正式文件",
+    "en": "Final document for external use"
+  },
+  "复制这份协议": {
+    "zh-Hant": "複製這份協定",
+    "en": "Copy these review instructions"
+  },
+  "未经人工裁决": {
+    "zh-Hant": "尚未經人工裁決",
+    "en": "Not yet reviewed by the author"
+  },
+  "响应绑定方式": {
+    "zh-Hant": "回應綁定方式",
+    "en": "Response binding method"
+  },
+  "导入当前结果": {
+    "zh-Hant": "匯入目前結果",
+    "en": "Import the selected result"
+  },
+  "完整专业字段": {
+    "zh-Hant": "完整專業欄位",
+    "en": "Full review details"
+  },
+  "建议责任人：": {
+    "zh-Hant": "建議負責人：",
+    "en": "Suggested owner: "
+  },
+  "人工决定理由": {
+    "zh-Hant": "人工決定理由",
+    "en": "Reason for your decision"
+  },
+  "人工修正动作": {
+    "zh-Hant": "人工修正動作",
+    "en": "Your corrected revision instruction"
+  },
+  "确认部分解决": {
+    "zh-Hant": "確認部分解決",
+    "en": "Confirm partially resolved"
+  }
+}

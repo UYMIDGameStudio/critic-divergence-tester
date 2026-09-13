@@ -39,9 +39,7 @@ class ExportCenter(_ProjectComponent):
     def export_ai_reviews(self) -> Path:
         """Export imported AI reviews before Finding adjudication."""
         self._ensure_writable()
-        document = self.document()
-        if not document:
-            raise ReviewStudioError("没有可绑定的原始文档")
+        _, document = self._review_document_record()
         active_runs = [row for row in self._active_audit_run_records().values() if isinstance(row[1].get("declared_model_metadata"), Mapping)]
         if not active_runs:
             raise ReviewStudioError("尚未导入任何独立 AI 审查结果")
@@ -111,9 +109,18 @@ class ExportCenter(_ProjectComponent):
         allowed, reasons = self.can_review()
         if not allowed:
             raise ReviewStudioError("正式导出前必须完成识别与上下文质量门：" + "；".join(reasons))
-        if not self._active_audit_run_records():
-            raise ReviewStudioError("正式导出前至少要完成一次本地预检或独立 AI 审查")
         document_path, document = self._review_document_record()
+        # A verified immutable follow-up round already carries formal review
+        # findings. _ensure_writable checked its receipt graph above and the
+        # current document lookup checked its revised-source binding.
+        current_round = self.current_review_round()
+        if not self._active_audit_run_records() and not (
+            current_round and current_round[1].get("round_id")
+            and current_round[1].get("base_revised_sha256") == document.source.sha256
+            and isinstance(current_round[1].get("findings"), list)
+            and current_round[1]["findings"]
+        ):
+            raise ReviewStudioError("正式导出前至少要完成一次本地预检或独立 AI 审查")
         findings = self.findings()
         open_findings = [item.finding_id for item in findings if item.status == "open"]
         if open_findings:
@@ -177,10 +184,39 @@ class ExportCenter(_ProjectComponent):
         audit_markdown_path = output / "audit.md"
         _write_tracked(self.root, audit_markdown_path, _audit_markdown(audit).encode("utf-8"), parents=[_parent_ref(self.root, audit_path, role="audit-json")], provenance="deterministic-audit-render")
         if trusted_revision:
-            revised_markdown_path = output / "修改稿.md"
+            unchanged = not trusted_revision[1].get("approved_hunk_ids")
+            document_label = "本轮未修改稿" if unchanged else "修改稿"
+            revised_markdown_path = output / f"{document_label}.md"
             _write_tracked(self.root, revised_markdown_path, draft.encode("utf-8"), parents=[_parent_ref(self.root, trusted_revision[0] / "修改稿.md", role="approved-revised-markdown")], provenance="approved-revision-export")
-            revised_docx_path = output / "修改稿.docx"
-            _write_tracked(self.root, revised_docx_path, _minimal_docx(draft), parents=[_parent_ref(self.root, revised_markdown_path, role="approved-revised-markdown")], provenance="approved-revision-docx-export")
+            revised_docx_path = output / f"{document_label}.docx"
+            word_bytes = _minimal_docx(draft)
+            word_report = {"source_layout_preserved": False, "native_track_changes": False, "message": "由已批准文本生成规范化 Word 副本"}
+            original = self.document()
+            if original.source.extension == ".docx":
+                from document_review_word import preserve_docx, WordEditUnsupported
+                revised_model = _document_from_dict(_read_json(trusted_revision[0] / "document.json"))
+                source_bytes = (self.root / original.source.relative_path).read_bytes()
+                try:
+                    word_bytes, word_report = preserve_docx(source_bytes, original, revised_model)
+                    word_report["message"] = "保留原文档包、未修改样式和附件；修改内容来自已批准版本"
+                except WordEditUnsupported as exc:
+                    revised_docx_path = output / f"规范化{document_label}.docx"
+                    word_report.update({
+                        "normalization_fallback": True,
+                        "requires_layout_review": True,
+                        "fallback_reason": str(exc),
+                        "message": "保格式导出未能完成：" + str(exc) + "。当前文件为规范化副本，未保留原 Word 的图片、页眉页脚及完整排版；交付前需要人工核对版式与非正文内容。原件保留在项目中。",
+                    })
+                if word_report["source_layout_preserved"] and not unchanged:
+                    try:
+                        tracked_bytes, _ = preserve_docx(source_bytes, original, revised_model, tracked=True)
+                        tracked_path = output / "Word修订标记.docx"
+                        _write_tracked(self.root, tracked_path, tracked_bytes, parents=base_parents, provenance="native-word-revisions")
+                        word_report["native_track_changes"] = True
+                    except WordEditUnsupported as exc:
+                        word_report["track_changes_limitation"] = str(exc)
+            _write_tracked(self.root, revised_docx_path, word_bytes, parents=[_parent_ref(self.root, revised_markdown_path, role="approved-revised-markdown"), *base_parents], provenance="approved-revision-docx-export")
+            _write_tracked(self.root, output / "Word导出说明.md", ("# Word 导出说明\n\n" + word_report["message"] + "\n\n" + word_report.get("track_changes_limitation", "") + "\n").encode("utf-8"), parents=[_parent_ref(self.root, revised_docx_path, role="word-output")], provenance="word-capability-report")
             for name in ("修改说明.md", "recheck.json"):
                 source_path = trusted_revision[0] / name
                 if source_path.is_file():
@@ -188,7 +224,7 @@ class ExportCenter(_ProjectComponent):
             unresolved_path = output / "未解决风险.md"
             _write_tracked(self.root, unresolved_path, self._composed_unresolved_report(str(trusted_revision[1]["revision_id"])).encode("utf-8"), parents=[_parent_ref(self.root, trusted_revision[0] / "recheck.json", role="revision-recheck"), *external_evidence_parents], provenance="composed-local-and-external-risk-export")
             capability_path = output / "track-changes-capability.json"
-            _write_tracked(self.root, capability_path, canonical_json({"native_track_changes": False, "revised_document_ready": True, "output_name": "修改稿.docx", "message": "修改稿由已批准 Hunk 生成；提供逐行差异报告，但不冒充 Word 原生 Track Changes"}), parents=[_parent_ref(self.root, revised_docx_path, role="revised-docx")])
+            _write_tracked(self.root, capability_path, canonical_json({**word_report, "revised_document_ready": not unchanged, "completion": "no-change" if unchanged else "revised", "output_name": revised_docx_path.name}), parents=[_parent_ref(self.root, revised_docx_path, role="revised-docx")])
         elif document.source.extension == ".docx":
             docx_bytes = _minimal_docx(draft)
             copy_path = output / "normalized-editable-copy.docx"
@@ -204,6 +240,8 @@ class ExportCenter(_ProjectComponent):
         package_files: list[tuple[str, str]] = []
         with zipfile.ZipFile(package_buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for path in sorted(self.root.rglob("*")):
+                if ".recovery" in path.relative_to(self.root).parts:
+                    continue
                 if path.is_symlink() or not path.is_file() or path.name in {"state.json", ".mutation.lock", "audit-package.zip"}:
                     continue
                 relative = path.relative_to(self.root).as_posix()
@@ -274,6 +312,9 @@ class ExportCenter(_ProjectComponent):
             "difference-report.md": "差异报告",
             "修改稿.md": "修改稿（Markdown）",
             "修改稿.docx": "修改稿（Word）",
+            "规范化修改稿.docx": "规范化修改稿（Word，需人工核对版式）",
+            "规范化本轮未修改稿.docx": "规范化未修改稿（Word，需人工核对版式）",
+            "Word导出说明.md": "Word 保格式情况与交付限制",
             "修改说明.md": "修改说明与逐行差异",
             "未解决风险.md": "未解决风险",
             "recheck.json": "复审结果",

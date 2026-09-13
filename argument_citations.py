@@ -385,6 +385,10 @@ def _classify(
     if not isinstance(value, dict):
         return "unusable", ["response must be a JSON object"], None
     errors = validate_artifact(value)
+    if value.get("artifact") != "citation-audit-results":
+        errors.append("artifact must be citation-audit-results")
+    if errors:
+        return "unusable", errors, value
     run, _ = _read_json(paths.record)
     if value.get("source") != _expected_result_source(paths):
         errors.append("source must bind the exact Citation Audit run, Reviewed IR, and manuscript")

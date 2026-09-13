@@ -5,20 +5,22 @@ from . import ingestion as _ingestion
 from . import audits as _audits
 from . import revision as _revision
 from . import exports as _exports
+from . import editing as _editing
 from .ingestion import IngestionState
 from .audits import AuditRunStore
 from .revision import RevisionPlanBuilder
 from .exports import ExportCenter
+from .editing import EditingTools
 from types import CodeType
 
-COMPONENT_TYPES = (IngestionState, AuditRunStore, RevisionPlanBuilder, ExportCenter)
+COMPONENT_TYPES = (IngestionState, AuditRunStore, RevisionPlanBuilder, ExportCenter, EditingTools)
 COMPONENT_BY_METHOD = {
     name: component_type
     for component_type in COMPONENT_TYPES
     for name, value in component_type.__dict__.items()
     if callable(value) and not name.startswith("__")
 }
-_MODULES = (_base, _ingestion, _audits, _revision, _exports)
+_MODULES = (_base, _ingestion, _audits, _revision, _exports, _editing)
 
 def _referenced_names(code):
     names = set(code.co_names)

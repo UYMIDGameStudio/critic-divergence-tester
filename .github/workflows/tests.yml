@@ -12,7 +12,7 @@ jobs:
   test:
     name: Core without optional PDF/OCR / ${{ matrix.os }} / Python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 5
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -38,6 +38,19 @@ jobs:
           cli
           contracts
           document_review_stores
+          studio_web
+          document_text_encoding.py
+          document_review_office_formats.py
+          document_review_text_formats.py
+          document_review_legacy.py
+          document_review_word.py
+          document_review_pdf_render.py
+          document_review_quality.py
+          project_lifecycle.py
+          studio_ui_state.py
+          studio_selftest.py
+          studio_startup.py
+          studio_launcher.py
           document_review_components.py
           argument_gate_common.py
           project_lock.py
@@ -139,7 +152,7 @@ jobs:
         run: python -I scripts/verify_installed_package.py
 
   pdf-text:
-    name: Real text PDF / PyMuPDF + pypdf
+    name: Real text PDF and page rendering / PDFium + pypdf
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -159,6 +172,9 @@ jobs:
           python -m unittest -v
           test.test_document_review_studio.DocumentReviewStudioTests.test_real_pdf_backend_parses_valid_text_pdf_when_installed
           test.test_document_review_studio.DocumentReviewStudioTests.test_short_text_pdf_is_not_routed_to_ocr
+
+      - name: Verify installed rendering adapter
+        run: python -c "from studio_selftest import run_self_test; result=run_self_test(); assert 'pdf-page-render' in result['checked']; print(result)"
 
   ocr-fixture:
     name: Scanned PDF / fixed mock OCR adapter

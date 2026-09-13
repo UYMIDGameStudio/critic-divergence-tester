@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .base import *  # noqa: F401,F403
+from .json_numbers import finite_json_number
 
 class RevisionPlanBuilder(_ProjectComponent):
     def _decision_records(self) -> dict[str, list[tuple[Path, dict[str, Any], str]]]:
@@ -121,6 +122,9 @@ class RevisionPlanBuilder(_ProjectComponent):
         record = {"artifact_type": "finding-decision", "schema_version": 2, "decision_id": stable_id("FD", finding_id, sequence, decision, _now(), secrets.token_hex(4)), "finding_id": finding_id, "critic": finding.critic, "sequence": sequence, "previous_decision_sha256": previous[2] if previous else None, "decision": decision, "reason": reason.strip(), "corrected_action": corrected_action, "finding_snapshot_sha256": _sha256(canonical_json(authoritative_finding.to_dict())), "created_at": _now(), "lifecycle": "append-only"}
         decision_path = self.root / "finding-decisions" / f"{record['decision_id']}.json"
         parents = [_parent_ref(self.root, self._finding_artifact_path(finding_id), role="audit-run")]
+        location = self._location_records().get(finding_id)
+        if location:
+            parents.append(_parent_ref(self.root, location[0], role="human-location-correction"))
         if previous:
             parents.append(_parent_ref(self.root, previous[0], role="previous-decision"))
         _write_tracked(self.root, decision_path, canonical_json(record), parents=parents, provenance="human-confirmed-append-only")
@@ -336,13 +340,18 @@ class RevisionPlanBuilder(_ProjectComponent):
             action["operation"] = decision[1]["operation"] if decision else None
             action["operation_decision"] = decision[1] if decision else None
             action["operation_decision_sha256"] = decision[2] if decision else None
+            if decision and decision[1].get("block_ids"):
+                _, document = self._review_document_record()
+                action["block_ids"] = decision[1]["block_ids"]
+                action["before_text"] = "\n\n".join(document.block(b).text for b in action["block_ids"])
+                action["before_sha256"] = _sha256(action["before_text"].encode("utf-8"))
             rows.append(action)
         return rows
 
     @_serialized_mutation
-    def set_revision_action_operation(self, action_id: str, operation: str, *, reason: str) -> dict[str, Any]:
+    def set_revision_action_operation(self, action_id: str, operation: str, *, reason: str, block_ids: list[str] | None = None) -> dict[str, Any]:
         self._ensure_writable()
-        allowed = {"replace_block", "insert_before", "insert_after", "delete_block", "replace_table_cell", "append_section"}
+        allowed = {"replace_block", "insert_before", "insert_after", "delete_block", "replace_table_cell", "append_section", "replace_range"}
         if operation not in allowed:
             raise ReviewStudioError("修改操作类型无效")
         if not isinstance(reason, str) or not reason.strip():
@@ -353,6 +362,18 @@ class RevisionPlanBuilder(_ProjectComponent):
         action = next((item for item in plan.get("actions", []) if item.get("action_id") == action_id), None)
         if not action:
             raise ReviewStudioError("找不到修改动作")
+        if operation == "replace_range":
+            _, document = self._review_document_record()
+            if not isinstance(block_ids, list) or len(block_ids) < 2 or len(set(block_ids)) != len(block_ids) or block_ids[0] != action["block_id"]:
+                raise ReviewStudioError("范围修改必须从当前定位开始，明确选择至少两个连续文本块")
+            positions = {b.block_id: i for i, b in enumerate(document.blocks)}
+            if any(b not in positions for b in block_ids):
+                raise ReviewStudioError("范围包含未知定位")
+            indices = [positions[b] for b in block_ids]
+            if indices != list(range(indices[0], indices[0] + len(indices))) or any(document.block(b).kind not in {"paragraph", "heading", "list_item"} for b in block_ids):
+                raise ReviewStudioError("只能选择连续普通文本块，不能跨越表格或图片")
+        elif block_ids:
+            raise ReviewStudioError("只有范围替换允许指定多个文本块")
         if operation == "replace_table_cell" and action.get("block_kind") != "table_cell":
             raise ReviewStudioError("replace_table_cell 只能用于表格单元格锚点")
         if action.get("block_kind") == "table_cell" and operation != "replace_table_cell":
@@ -361,6 +382,8 @@ class RevisionPlanBuilder(_ProjectComponent):
         previous = max(history, key=lambda row: int(row[1].get("sequence", 0))) if history else None
         sequence = int(previous[1]["sequence"]) + 1 if previous else 1
         record = {"artifact_type": "revision-action-operation-decision", "schema_version": 1, "decision_id": stable_id("AOD", plan["plan_id"], action_id, sequence, operation, _now(), secrets.token_hex(4)), "plan_id": plan["plan_id"], "action_id": action_id, "sequence": sequence, "previous_decision_sha256": previous[2] if previous else None, "operation": operation, "reason": reason.strip(), "created_at": _now(), "lifecycle": "append-only"}
+        if block_ids:
+            record["block_ids"] = block_ids
         path = self.root / "action-operation-decisions" / f"{record['decision_id']}.json"
         parents = [_parent_ref(self.root, self.root / "revision-plans" / f"{plan['plan_id']}.json", role="revision-plan")]
         if previous:
@@ -545,12 +568,24 @@ class RevisionPlanBuilder(_ProjectComponent):
         original_by_id = {block.block_id: block for block in document.blocks}
         approved_by_block: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
         append_actions: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        consumed: set[str] = set()
+        range_targets: set[str] = set()
+        for range_action, _, _ in approved:
+            if range_action["operation"] == "replace_range":
+                targets = set(range_action["block_ids"])
+                if range_targets & targets:
+                    raise ReviewStudioError("批准的修改范围重叠，请重新选择")
+                range_targets.update(targets)
+                consumed.update(range_action["block_ids"][1:])
         for action, (_, hunk, _), _ in approved:
             block_id = str(action["block_id"])
             current = original_by_id.get(block_id)
             if current is None:
                 raise ReviewStudioError(f"Hunk 锚点已丢失：{block_id}")
-            if _sha256(current.text.encode("utf-8")) != hunk.get("before_sha256"):
+            if action["operation"] != "replace_range" and block_id in range_targets:
+                raise ReviewStudioError("范围修改与另一项批准修改重叠，请先解决冲突")
+            anchor_text = "\n\n".join(original_by_id[b].text for b in action["block_ids"]) if action["operation"] == "replace_range" else current.text
+            if _sha256(anchor_text.encode("utf-8")) != hunk.get("before_sha256"):
                 raise ReviewStudioError(f"Hunk 锚点内容已变化，拒绝静默应用：{block_id}")
             if hunk.get("operation") != action.get("operation"):
                 raise ReviewStudioError(f"Hunk 操作与 Action 不一致：{action['action_id']}")
@@ -561,30 +596,44 @@ class RevisionPlanBuilder(_ProjectComponent):
             else:
                 approved_by_block.setdefault(block_id, []).append((action, hunk))
         for block_id, rows in approved_by_block.items():
-            destructive = [row for row in rows if row[0]["operation"] in {"replace_block", "replace_table_cell", "delete_block"}]
+            destructive = [row for row in rows if row[0]["operation"] in {"replace_block", "replace_table_cell", "delete_block", "replace_range"}]
             if len(destructive) > 1:
                 raise ReviewStudioError(f"同一锚点存在多个互斥修改，必须先人工选择或重建计划：{block_id}")
 
-        def generated_block(action: Mapping[str, Any], text: str, position: str) -> DocumentBlock:
+        def generated_block(action: Mapping[str, Any], text: str, position: str, *, split_from_block_id: str | None = None) -> DocumentBlock:
             block_id = stable_id("B", plan["plan_id"], action["action_id"], position, text)
             kind = "heading" if text.lstrip().startswith("# ") else "paragraph"
             clean_text = text.lstrip()[2:].strip() if kind == "heading" else text
-            return DocumentBlock(block_id, kind, clean_text, 1 if kind == "heading" else None, DocumentLocation(block_id, kind, source_path="generated"), {"generated_by_action": action["action_id"]})
+            attrs = {"generated_by_action": action["action_id"]}
+            if split_from_block_id is not None:
+                attrs["split_from_block_id"] = split_from_block_id
+            return DocumentBlock(block_id, kind, clean_text, 1 if kind == "heading" else None, DocumentLocation(block_id, kind, source_path="generated"), attrs)
 
         revised_blocks: list[DocumentBlock] = []
         for original in document.blocks:
+            if original.block_id in consumed:
+                continue
             rows = approved_by_block.get(original.block_id, [])
             for action, hunk in rows:
                 if action["operation"] == "insert_before":
-                    revised_blocks.append(generated_block(action, str(hunk["after_text"]), "before"))
-            destructive = next((row for row in rows if row[0]["operation"] in {"replace_block", "replace_table_cell", "delete_block"}), None)
+                    for i, paragraph in enumerate(re.split(r"\n\s*\n", str(hunk["after_text"]))):
+                        revised_blocks.append(generated_block(action, paragraph, f"before-{i}"))
+            destructive = next((row for row in rows if row[0]["operation"] in {"replace_block", "replace_table_cell", "delete_block", "replace_range"}), None)
             if not destructive or destructive[0]["operation"] != "delete_block":
-                revised_blocks.append(replace(original, text=str(destructive[1]["after_text"])) if destructive else original)
+                if destructive and destructive[0]["operation"] != "replace_table_cell":
+                    paragraphs = re.split(r"\n\s*\n", str(destructive[1]["after_text"]))
+                    revised_blocks.append(replace(original, text=paragraphs[0]))
+                    for i, paragraph in enumerate(paragraphs[1:]):
+                        revised_blocks.append(generated_block(destructive[0], paragraph, f"replace-{i}", split_from_block_id=original.block_id))
+                else:
+                    revised_blocks.append(replace(original, text=str(destructive[1]["after_text"])) if destructive else original)
             for action, hunk in rows:
                 if action["operation"] == "insert_after":
-                    revised_blocks.append(generated_block(action, str(hunk["after_text"]), "after"))
+                    for i, paragraph in enumerate(re.split(r"\n\s*\n", str(hunk["after_text"]))):
+                        revised_blocks.append(generated_block(action, paragraph, f"after-{i}"))
         for action, hunk in append_actions:
-            revised_blocks.append(generated_block(action, str(hunk["after_text"]), "append"))
+            for i, paragraph in enumerate(re.split(r"\n\s*\n", str(hunk["after_text"]))):
+                revised_blocks.append(generated_block(action, paragraph, f"append-{i}"))
 
         revised_by_id = {block.block_id: index for index, block in enumerate(revised_blocks)}
         for action, (_, hunk, _), _ in approved:
@@ -596,6 +645,8 @@ class RevisionPlanBuilder(_ProjectComponent):
                 table = revised_blocks[table_index]
                 rows = [list(row) for row in table.attrs.get("rows", [])]
                 row, column = cell.location.row, cell.location.column
+                siblings = [original_by_id[b] for b in table.children if b in original_by_id and original_by_id[b].location and original_by_id[b].location.row == row]
+                column = next((i for i, b in enumerate(siblings) if b.block_id == cell.block_id), column)
                 if row is not None and column is not None and row < len(rows) and column < len(rows[row]):
                     rows[row][column] = str(hunk["after_text"])
                     revised_blocks[table_index] = replace(table, attrs={**table.attrs, "rows": rows})
@@ -709,13 +760,14 @@ class RevisionPlanBuilder(_ProjectComponent):
                 "Return JSON with request_id, prompt_sha256, revision_id, revised_sha256, critic, resolutions, and new_findings.",
                 "Each resolution must contain finding_id, state (resolved|partially-resolved|still-present), reason, and evidence.",
                 "Every newly detected issue must be a full Finding in new_findings; use source_finding_id only when it truly descends from an original Finding.",
+                "A new Finding must quote a contiguous excerpt from its referenced revised block and use the confirmed document_type. Copy its location or provide only block_id; never invent offsets or a human decision status.",
                 "",
                 f"request_id: {request_id}",
                 f"revision_id: {revision_id}",
                 f"revised_sha256: {revised_sha}",
                 "",
                 "## Bound critic definition",
-                json.dumps(CRITIC_PROTOCOLS[critic], ensure_ascii=False, indent=2),
+                json.dumps(origin["critic_protocol"], ensure_ascii=False, indent=2),
                 "",
                 "## Original request/AuditRun binding",
                 json.dumps(origin, ensure_ascii=False, indent=2),
@@ -873,7 +925,7 @@ class RevisionPlanBuilder(_ProjectComponent):
         request = next((item for item in self.external_recheck_requests(revision_id) if item.get("critic") == critic), None)
         if request is None:
             raise ReviewStudioError("该 Revision 没有此 critic 的外部复审请求")
-        if binding_mode not in {"strict", "manual_association"}:
+        if not isinstance(binding_mode, str) or binding_mode not in {"strict", "manual_association"}:
             raise ReviewStudioError("外部复审绑定方式无效")
         if not isinstance(provider, str) or not provider.strip() or not isinstance(model, str) or not model.strip():
             raise ReviewStudioError("外部复审导入必须声明 provider 和 model")
@@ -889,19 +941,23 @@ class RevisionPlanBuilder(_ProjectComponent):
             return value
 
         try:
-            parsed = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicate)
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ReviewStudioError("外部复审响应必须是 UTF-8 JSON") from exc
+            parsed = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicate,
+                                parse_float=finite_json_number, parse_constant=finite_json_number)
+        except (ValueError, RecursionError) as exc:
+            raise ReviewStudioError(f"外部复审响应必须是严格 UTF-8 JSON：{exc}") from exc
         if not isinstance(parsed, dict):
             raise ReviewStudioError("外部复审响应必须是 JSON 对象")
-        envelope = {key: parsed.get(key) for key in ("request_id", "prompt_sha256", "revision_id", "revised_sha256", "critic")}
-        present = {key for key, value in envelope.items() if value is not None}
-        if binding_mode == "strict":
-            expected = {"request_id": request["request_id"], "prompt_sha256": request["prompt_sha256"], "revision_id": revision_id, "revised_sha256": request["revised_sha256"], "critic": critic}
+        expected = {"request_id": request["request_id"], "prompt_sha256": request["prompt_sha256"], "revision_id": revision_id, "revised_sha256": request["revised_sha256"], "critic": critic}
+        envelope = {key: parsed.get(key) for key in expected}
+        present = {key for key in expected if key in parsed}
+        if binding_mode == "strict" or present:
+            if present != set(expected):
+                raise ReviewStudioError("外部复审不能接受不完整的绑定字段")
             if envelope != expected:
                 raise ReviewStudioError("外部复审响应未严格回显当前请求、Revision、文本哈希和 critic")
-        elif present and present != set(envelope):
-            raise ReviewStudioError("普通关联模式不能接受不完整的绑定字段")
+            response_binding = "strict-response-envelope"
+        else:
+            response_binding = "manual-association"
         resolutions = parsed.get("resolutions")
         new_findings = parsed.get("new_findings", [])
         if not isinstance(resolutions, list) or not isinstance(new_findings, list):
@@ -917,7 +973,7 @@ class RevisionPlanBuilder(_ProjectComponent):
             reason, evidence = item.get("reason"), item.get("evidence")
             if finding_id not in expected_ids or finding_id in parsed_ids:
                 raise ReviewStudioError(f"外部 Resolution Finding ID 无效或重复：{finding_id}")
-            if state not in {"resolved", "partially-resolved", "still-present"}:
+            if not isinstance(state, str) or state not in {"resolved", "partially-resolved", "still-present"}:
                 raise ReviewStudioError(f"外部 Resolution 状态无效：{finding_id}")
             if not isinstance(reason, str) or not reason.strip() or not isinstance(evidence, str) or not evidence.strip():
                 raise ReviewStudioError(f"外部 Resolution 必须提供理由和修订稿证据：{finding_id}")
@@ -926,7 +982,8 @@ class RevisionPlanBuilder(_ProjectComponent):
         if parsed_ids != expected_ids:
             raise ReviewStudioError("外部复审必须逐项覆盖请求中的全部原 Finding")
         revised_document = _document_from_dict(_read_json(revision_dir / "document.json"))
-        block_ids = {block.block_id for block in revised_document.blocks}
+        blocks_by_id = {block.block_id: block for block in revised_document.blocks}
+        context = self.context()
         clean_new_findings: list[dict[str, Any]] = []
         known_ids = set(expected_ids)
         for item in new_findings:
@@ -935,13 +992,21 @@ class RevisionPlanBuilder(_ProjectComponent):
             errors = validate_finding_dict(item)
             if errors:
                 raise ReviewStudioError("外部复审 Finding contract invalid: " + "; ".join(errors))
+            item = dict(item)
+            if item.get("status", "open") != "open":
+                raise ReviewStudioError("外部复审新 Finding 的 status 必须为 open，不能代填人工裁决")
+            if not context or item["document_type"] != context.document_type:
+                raise ReviewStudioError("外部复审新 Finding 的 document_type 与已确认文档类型不一致")
+            if item["location"]["block_id"] not in blocks_by_id:
+                raise ReviewStudioError("外部复审新 Finding 的定位不在当前修订稿中")
+            self._bind_finding_content(item, blocks_by_id[item["location"]["block_id"]], len(clean_new_findings) + 1, blocks_by_id=blocks_by_id)
             finding = _finding_from_dict(item)
-            if finding.critic != critic or finding.location.block_id not in block_ids or finding.finding_id in known_ids:
+            if finding.critic != critic or finding.finding_id in known_ids:
                 raise ReviewStudioError("外部复审新 Finding 的 critic、锚点或 ID 无效")
             known_ids.add(finding.finding_id)
             clean_new_findings.append(finding.to_dict())
         result_id = stable_id("RR", request["request_id"], _sha256(raw), _now(), secrets.token_hex(4))
-        result = {"artifact_type": "external-critic-recheck-result", "schema_version": 2, "result_id": result_id, "request_id": request["request_id"], "revision_id": revision_id, "revised_sha256": request["revised_sha256"], "critic": critic, "resolutions": clean_resolutions, "new_findings": clean_new_findings, "declared_model_metadata": {"provider": provider.strip(), "model": model.strip(), "import_mode": "manual", "response_binding": "strict-response-envelope" if binding_mode == "strict" else "manual-association"}, "response_binding": "strict-response-envelope" if binding_mode == "strict" else "manual-association", "raw_response_sha256": _sha256(raw), "created_at": _now(), "lifecycle": "immutable"}
+        result = {"artifact_type": "external-critic-recheck-result", "schema_version": 2, "result_id": result_id, "request_id": request["request_id"], "revision_id": revision_id, "revised_sha256": request["revised_sha256"], "critic": critic, "resolutions": clean_resolutions, "new_findings": clean_new_findings, "declared_model_metadata": {"provider": provider.strip(), "model": model.strip(), "import_mode": "manual", "response_binding": response_binding}, "response_binding": response_binding, "raw_response_sha256": _sha256(raw), "created_at": _now(), "lifecycle": "immutable"}
         result_dir = revision_dir / "external-rechecks" / critic
         raw_path = result_dir / f"{result_id}.raw-response.json"
         result_path = result_dir / f"{result_id}.json"

@@ -65,7 +65,7 @@ def write_run(
 
 def _prepare_bundle(args: argparse.Namespace) -> Path:
     source_path = resolve_manuscript_path(args.manuscript)
-    source_text, source_raw = read_manuscript_utf8(source_path)
+    source_text, source_raw = read_manuscript(source_path, getattr(args, "encoding", None))
     protocol, protocol_raw = load_protocol(args.protocol, args.allow_test_artifact)
     prompt = build_prompt(protocol, source_text, source_path.name)
     timestamp = utc_now()
@@ -131,7 +131,7 @@ def run(
         raise ValueError("max output bytes must be a positive integer")
     if source_snapshot is None:
         source_path = resolve_manuscript_path(args.manuscript)
-        source_text, source_raw = read_manuscript_utf8(source_path)
+        source_text, source_raw = read_manuscript(source_path, getattr(args, "encoding", None))
     else:
         source_path, source_text, source_raw = source_snapshot
     protocol, protocol_raw = (

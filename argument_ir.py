@@ -8,6 +8,8 @@ import json
 import re
 from typing import Any
 
+from document_text_encoding import decode_document_text
+
 
 ARGUMENT_IR_SCHEMA_VERSION = 1
 IR_EXTRACTION_PROTOCOL_VERSION = 2
@@ -315,18 +317,31 @@ def _directed_cycle(adjacency: dict[str, list[str]]) -> list[str] | None:
     return [node for node, degree in indegree.items() if degree > 0]
 
 
+def _json_object_errors(value: object, label: str) -> list[str]:
+    """Reject values that cannot be safely written as protocol JSON."""
+    if not isinstance(value, dict):
+        return [f"{label} must be a JSON object"]
+    try:
+        json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError, UnicodeError, RecursionError):
+        return [f"{label} must contain finite JSON values and valid Unicode text"]
+    return []
+
+
 def validate_argument_ir(
     value: object,
     *,
     source_bytes: bytes | None = None,
     source_name: str | None = None,
+    source_encoding: str | None = None,
 ) -> list[str]:
-    errors: list[str] = []
-    if not isinstance(value, dict):
-        return ["argument IR must be a JSON object"]
+    errors = _json_object_errors(value, "argument IR")
+    if errors:
+        return errors
+    assert isinstance(value, dict)
     if set(value) != IR_KEYS:
         errors.append("argument IR must contain exactly the v1 top-level fields")
-    if value.get("schema_version") != ARGUMENT_IR_SCHEMA_VERSION:
+    if type(value.get("schema_version")) is not int or value["schema_version"] != ARGUMENT_IR_SCHEMA_VERSION:
         errors.append("schema_version must be 1")
     if value.get("artifact") != "argument-ir":
         errors.append("artifact must be argument-ir")
@@ -336,9 +351,9 @@ def validate_argument_ir(
     manuscript_text: str | None = None
     if source_bytes is not None:
         try:
-            manuscript_text = source_bytes.decode("utf-8-sig")
-        except UnicodeDecodeError as exc:
-            errors.append(f"source manuscript is not UTF-8: {exc}")
+            manuscript_text = decode_document_text(source_bytes, source_encoding or "utf-8-sig").text
+        except ValueError as exc:
+            errors.append(f"source manuscript cannot be decoded: {exc}")
 
     source = value.get("source")
     if not isinstance(source, dict) or set(source) != {"name", "sha256"}:
@@ -456,6 +471,9 @@ def validate_argument_ir(
             continue
         source_id = relation.get("from")
         target_id = relation.get("to")
+        if not isinstance(source_id, str) or not isinstance(target_id, str):
+            errors.append(f"{label}.from and .to must be node ID strings")
+            continue
         if source_id == target_id:
             errors.append(f"{label} must not be a self-relation")
         source_node = nodes.get(str(source_id))
@@ -482,10 +500,12 @@ def validate_argument_ir(
         if isinstance(claim.get("id"), str)
     }
     for relation in relations:
-        if relation.get("type") not in {"supports", "qualifies"}:
+        if relation.get("type") not in ("supports", "qualifies"):
             continue
         source_id = relation.get("from")
         target_id = relation.get("to")
+        if not isinstance(source_id, str) or not isinstance(target_id, str):
+            continue
         if source_id in support_adjacency and target_id in support_adjacency:
             support_adjacency[source_id].append(target_id)
     cycle = _directed_cycle(support_adjacency)
@@ -521,16 +541,18 @@ def canonicalize_argument_ir(
     *,
     source_bytes: bytes,
     source_name: str,
+    source_encoding: str | None = None,
 ) -> dict[str, Any]:
     errors = validate_argument_ir(
         value,
         source_bytes=source_bytes,
         source_name=source_name,
+        source_encoding=source_encoding,
     )
     if errors:
         raise ArgumentIRError("; ".join(errors))
     assert isinstance(value, dict)
-    manuscript = source_bytes.decode("utf-8-sig")
+    manuscript = decode_document_text(source_bytes, source_encoding or "utf-8-sig").text
     normalized = copy.deepcopy(value)
     for field in ("claims", "evidence", "assumptions", "citations"):
         for item in normalized[field]:
@@ -539,9 +561,10 @@ def canonicalize_argument_ir(
 
 
 def validate_check_library(value: object) -> list[str]:
-    errors: list[str] = []
-    if not isinstance(value, dict):
-        return ["check library must be a JSON object"]
+    errors = _json_object_errors(value, "check library")
+    if errors:
+        return errors
+    assert isinstance(value, dict)
     if set(value) != {
         "schema_version",
         "artifact",
@@ -552,8 +575,9 @@ def validate_check_library(value: object) -> list[str]:
     }:
         errors.append("check library must contain exactly the v1 fields")
     schema_version = value.get("schema_version")
-    if schema_version not in SUPPORTED_CHECK_LIBRARY_SCHEMA_VERSIONS:
+    if type(schema_version) is not int or schema_version not in SUPPORTED_CHECK_LIBRARY_SCHEMA_VERSIONS:
         errors.append("check library schema_version must be 1, 2, or 3")
+        return errors
     if value.get("artifact") != "argument-check-library":
         errors.append("check library artifact must be argument-check-library")
     if value.get("scope") != "social-science":
@@ -658,6 +682,12 @@ def _node_registry(ir: dict[str, Any]) -> dict[str, tuple[str, dict[str, Any]]]:
 def select_review_claim_ids(
     ir: dict[str, Any], review_scope: str, claim_ids: list[str]
 ) -> list[str]:
+    errors: list[str] = []
+    _validate_string_list(claim_ids, "review scope claim IDs", errors, allow_empty=True)
+    if review_scope not in REVIEW_SCOPES:
+        errors.append(f"review_scope must be one of {REVIEW_SCOPES}")
+    if errors:
+        raise ArgumentIRError("; ".join(errors))
     known_ids = [str(claim["id"]) for claim in ir["claims"]]
     known = set(known_ids)
     if len(claim_ids) != len(set(claim_ids)):
@@ -730,7 +760,13 @@ def build_check_plan(
     assert isinstance(ir, dict)
     assert isinstance(library, dict)
     library_version = int(library["schema_version"])
-    requested_claim_ids = list(claim_ids or [])
+    claim_errors: list[str] = []
+    requested_claim_ids = _validate_string_list(
+        [] if claim_ids is None else claim_ids,
+        "review scope claim IDs", claim_errors, allow_empty=True,
+    )
+    if claim_errors:
+        raise ArgumentIRError("; ".join(claim_errors))
     if library_version == 1 and (
         review_scope != "all" or requested_claim_ids
     ):
@@ -788,10 +824,13 @@ def build_check_plan(
 
 
 def validate_check_plan(value: object) -> list[str]:
-    errors: list[str] = []
-    if not isinstance(value, dict):
-        return ["check plan must be a JSON object"]
+    errors = _json_object_errors(value, "check plan")
+    if errors:
+        return errors
+    assert isinstance(value, dict)
     schema_version = value.get("schema_version")
+    if type(schema_version) is not int or schema_version not in SUPPORTED_CHECK_PLAN_SCHEMA_VERSIONS:
+        return ["check plan schema_version must be 1, 2, or 3"]
     expected_keys = {
         "schema_version",
         "artifact",
@@ -805,8 +844,6 @@ def validate_check_plan(value: object) -> list[str]:
         expected_keys.add("review_scope")
     if set(value) != expected_keys:
         errors.append(f"check plan must contain exactly the v{schema_version} fields")
-    if schema_version not in SUPPORTED_CHECK_PLAN_SCHEMA_VERSIONS:
-        errors.append("check plan schema_version must be 1, 2, or 3")
     if value.get("artifact") != "argument-check-plan":
         errors.append("check plan artifact must be argument-check-plan")
     if value.get("depth") not in CHECK_DEPTHS:
@@ -869,6 +906,9 @@ def validate_check_plan(value: object) -> list[str]:
     }
     check_errors = validate_check_library(selected_library)
     errors.extend(f"checks: {error}" for error in check_errors)
+    # Relation/scope reconstruction requires the embedded objects to be valid.
+    if argument_errors or check_errors:
+        return errors
     checks = selected_checks if isinstance(selected_checks, list) else []
     check_by_id = {
         check["id"]: check
@@ -946,7 +986,9 @@ def validate_check_plan(value: object) -> list[str]:
             errors.append(f"{label}.check_id is invalid")
         elif check_id not in check_by_id:
             errors.append(f"{label}.check_id is not in checks")
-        pair = (task.get("claim_id"), task.get("check_id"))
+        if not isinstance(claim_id, str) or not isinstance(check_id, str):
+            continue
+        pair = (claim_id, check_id)
         if pair in seen_pairs:
             errors.append(f"{label} duplicates a claim/check pair")
         seen_pairs.add(pair)
@@ -1170,8 +1212,10 @@ def validate_check_results(
         return errors
     if not _is_digest(plan_sha256):
         return ["plan_sha256 must be a lowercase SHA-256 digest"]
-    if not isinstance(value, dict):
-        return ["check results must be a JSON object"]
+    errors = _json_object_errors(value, "check results")
+    if errors:
+        return errors
+    assert isinstance(value, dict)
     schema_version = value.get("schema_version")
     if set(value) != {
         "schema_version",
@@ -1182,8 +1226,9 @@ def validate_check_results(
         "results",
     }:
         errors.append("check results must contain exactly the result envelope fields")
-    if schema_version not in SUPPORTED_CHECK_RESULTS_SCHEMA_VERSIONS:
+    if type(schema_version) is not int or schema_version not in SUPPORTED_CHECK_RESULTS_SCHEMA_VERSIONS:
         errors.append("check results schema_version must be 1, 2, or 3")
+        return errors
     elif isinstance(plan, dict) and schema_version != plan.get("schema_version"):
         errors.append("check results schema_version must match the check plan")
     if value.get("artifact") != "argument-check-results":
@@ -1247,6 +1292,9 @@ def validate_check_results(
                 f"{label} must contain exactly the v{schema_version} result fields"
             )
         task_id = result.get("task_id")
+        if not isinstance(task_id, str):
+            errors.append(f"{label}.task_id must be a string in the check plan")
+            continue
         actual_ids.append(task_id)
         task = task_by_id.get(str(task_id))
         if task is None:
@@ -1266,7 +1314,7 @@ def validate_check_results(
             )
             support_refs: list[str] = []
             execution_status = "evaluated"
-            if verdict in {"pass", "fail"} and not basis_refs:
+            if verdict in ("pass", "fail") and not basis_refs:
                 errors.append(f"{label}.evidence_refs is required for {verdict}")
         else:
             execution_status = result.get("execution_status")
@@ -1321,7 +1369,7 @@ def validate_check_results(
                 )
         if not isinstance(consequence, str):
             errors.append(f"{label}.consequence must be a string")
-        elif execution_status == "evaluated" and verdict in {"fail", "uncertain"}:
+        elif execution_status == "evaluated" and verdict in ("fail", "uncertain"):
             if not consequence.strip():
                 errors.append(f"{label}.consequence is required for {verdict}")
         elif consequence.strip():
@@ -1514,12 +1562,13 @@ def build_argument_findings(
 
 
 def validate_argument_findings(value: object) -> list[str]:
-    errors: list[str] = []
-    if not isinstance(value, dict):
-        return ["argument findings must be a JSON object"]
+    errors = _json_object_errors(value, "argument findings")
+    if errors:
+        return errors
+    assert isinstance(value, dict)
     if set(value) != {"schema_version", "artifact", "source", "findings"}:
         errors.append("argument findings must contain exactly the v1 fields")
-    if value.get("schema_version") != ARGUMENT_FINDINGS_SCHEMA_VERSION:
+    if type(value.get("schema_version")) is not int or value.get("schema_version") != ARGUMENT_FINDINGS_SCHEMA_VERSION:
         errors.append("argument findings schema_version must be 1")
     if value.get("artifact") != "argument-findings":
         errors.append("argument findings artifact must be argument-findings")
@@ -1550,7 +1599,7 @@ def validate_argument_findings(value: object) -> list[str]:
         ):
             if not _nonempty_string(finding.get(key)):
                 errors.append(f"{label}.{key} must be a non-empty string")
-        if finding.get("verdict") not in {"fail", "uncertain"}:
+        if finding.get("verdict") not in ("fail", "uncertain"):
             errors.append(f"{label}.verdict must be fail or uncertain")
         evidence_refs = _validate_string_list(
             finding.get("evidence_refs"),
@@ -1569,12 +1618,12 @@ def validate_argument_findings(value: object) -> list[str]:
                 errors.append(f"{evidence_label} has invalid fields")
                 continue
             evidence_ids.append(item.get("node_id"))
-            if item.get("node_kind") not in {
+            if item.get("node_kind") not in (
                 "claim",
                 "evidence",
                 "assumption",
                 "citation",
-            }:
+            ):
                 errors.append(f"{evidence_label}.node_kind is invalid")
             for key in ("node_id", "text", "source_quote", "position"):
                 if not _nonempty_string(item.get(key)):
@@ -1597,7 +1646,7 @@ def build_ir_extraction_prompt(
         raise ArgumentIRError("source_name must be a safe basename")
     if not _is_digest(source_sha256):
         raise ArgumentIRError("source_sha256 must be a lowercase SHA-256 digest")
-    if protocol_version not in SUPPORTED_IR_EXTRACTION_PROTOCOL_VERSIONS:
+    if type(protocol_version) is not int or protocol_version not in SUPPORTED_IR_EXTRACTION_PROTOCOL_VERSIONS:
         raise ArgumentIRError(
             "protocol_version must identify a supported IR extraction protocol"
         )

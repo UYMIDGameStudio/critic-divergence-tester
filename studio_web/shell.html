@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>文書與論證審查工作台 · Experimental Preview</title>
+    <style>
+      __STYLES__
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="brand">Local-first · model-neutral · human-confirmed</div>
+      <div class="row"><h1 id="studio-title">文書與論證審查工作台</h1><span class="pill">experimental preview</span>
+      <label for="ui-language" class="language-label">語言 / Language</label><select id="ui-language" aria-label="Interface language"><option value="zh-Hant">繁體中文</option><option value="en">English</option></select></div>
+      <p class="muted" id="studio-description">匯入並確認內容，完成審查後逐項批准修改。原始檔案完整保留在本機。</p>
+      <div
+        id="operation-status"
+        class="operation-status hidden"
+        role="status"
+        aria-live="polite"
+      ></div>
+      <div id="app"></div>
+    </main>
+    <script>
+      __SCRIPTS__;
+    </script>
+  </body>
+</html>

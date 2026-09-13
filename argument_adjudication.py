@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
 from typing import Any, Callable
 
@@ -42,11 +43,34 @@ from argument_workbench import (
     workspace_paths,
 )
 from critic_workflow import decision_field_errors
+from project_lifecycle import transaction
+from project_lock import ProjectMutationLockedError, project_mutation_lock
 
 
 ADJUDICATION_ID_PATTERN = re.compile(r"AD([0-9]{4})\Z")
 ACTION_ID_PATTERN = re.compile(r"RA([0-9]{4})\Z")
 FINDING_FILE_PATTERN = re.compile(r"F([0-9]{4})\.json\Z")
+
+
+def _adjudication_guard(*, atomic: bool = True):
+    """Serialize service writes; a bundle preserves each completed decision.
+
+    Individual decisions and their derived plan share one recovery transaction.
+    A bundle holds the project lock across its scope/count check and every
+    decision, but commits completed decisions individually for resumability.
+    """
+    def decorate(operation):
+        @wraps(operation)
+        def mutate(project_dir, *args, **kwargs):
+            root = project_dir.root if isinstance(project_dir, WorkspacePaths) else Path(project_dir)
+            guard = transaction if atomic else project_mutation_lock
+            try:
+                with guard(root):
+                    return operation(project_dir, *args, **kwargs)
+            except ProjectMutationLockedError as exc:
+                raise WorkbenchError(str(exc)) from exc
+        return mutate
+    return decorate
 
 
 @dataclass(frozen=True)
@@ -379,6 +403,7 @@ def _validate_decision_input(
         raise WorkbenchError("invalid human decision: " + "; ".join(errors))
 
 
+@_adjudication_guard()
 def append_finding_decision(
     project_dir: Path | str,
     finding_id: str,
@@ -473,26 +498,14 @@ def append_finding_decision(
         paths.actions_dir / f"{value['action_id']}.json"
         for value, _ in action_values
     ]
-    written: list[Path] = []
-    try:
-        _write_new(adjudication_path, adjudication_bytes)
-        written.append(adjudication_path)
-        for action_path, (_, action_bytes) in zip(action_paths, action_values):
-            _write_new(action_path, action_bytes)
-            written.append(action_path)
-        rebuild_revision_plan(paths.workspace)
-    except Exception:
-        for path in reversed(written):
-            path.unlink(missing_ok=True)
-        try:
-            if paths.plan_record.exists() or paths.plan_markdown.exists():
-                rebuild_revision_plan(paths.workspace)
-        except Exception:
-            pass
-        raise
+    _write_new(adjudication_path, adjudication_bytes)
+    for action_path, (_, action_bytes) in zip(action_paths, action_values):
+        _write_new(action_path, action_bytes)
+    rebuild_revision_plan(paths.workspace)
     return adjudication_path, action_paths
 
 
+@_adjudication_guard(atomic=False)
 def append_claim_bundle_decisions(
     project_dir: Path | str,
     *,
@@ -883,6 +896,7 @@ def render_revision_plan(
     return "\n".join(lines)
 
 
+@_adjudication_guard()
 def rebuild_revision_plan(project_dir: Path | str) -> tuple[Path, bool]:
     paths = human_review_paths(project_dir)
     _, record_bytes, markdown, _ = _derive_revision_plan(paths.workspace)
@@ -901,6 +915,7 @@ def rebuild_revision_plan(project_dir: Path | str) -> tuple[Path, bool]:
     return paths.plan_markdown, changed
 
 
+@_adjudication_guard(atomic=False)
 def rebuild_adjudication_cache(project_dir: Path | str) -> tuple[list[Path], bool]:
     paths = human_review_paths(project_dir)
     exists = any(

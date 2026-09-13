@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .base import *  # noqa: F403
+from document_text_encoding import normalize_encoding as _normalize_text_encoding
 
 def validate_project(value: object) -> list[str]:
     errors, item = _validate_base(
@@ -32,6 +33,7 @@ def validate_document(value: object) -> list[str]:
         return errors
     _require_origin(item, {"human-confirmed"}, "argument-document", errors)
     _require_parent_roles(item, {"project"}, errors)
+    _require_parent_artifacts(item, {"project": "argument-project"}, errors)
     for key in ("project_id", "document_id", "title"):
         if not _nonempty(item.get(key)):
             errors.append(f"{key} must be a non-empty string")
@@ -80,13 +82,51 @@ def validate_document_version(value: object) -> list[str]:
     if not isinstance(source, dict):
         errors.append("source must be an object")
     else:
-        _strict_keys(source, {"name", "relative_path", "sha256"}, "source", errors)
+        source_keys = {"name", "relative_path", "sha256"}
+        if "decoding" in source:
+            source_keys.add("decoding")
+        _strict_keys(source, source_keys, "source", errors)
         if not _safe_basename(source.get("name")):
             errors.append("source.name must be a safe basename")
         if not _safe_relative_path(source.get("relative_path")):
             errors.append("source.relative_path must stay inside the version directory")
         if not _digest(source.get("sha256")):
             errors.append("source.sha256 must be a lowercase SHA-256 digest")
+        if "decoding" in source:
+            receipt = source["decoding"]
+            if not isinstance(receipt, dict):
+                errors.append("source.decoding must be an object")
+            else:
+                _strict_keys(receipt, {"encoding", "requested_encoding", "text_sha256", "ambiguous", "candidates"}, "source.decoding", errors)
+                for key in ("encoding", "requested_encoding"):
+                    name = receipt.get(key)
+                    if name is None and key == "requested_encoding":
+                        continue
+                    try:
+                        if not isinstance(name, str) or not name or _normalize_text_encoding(name) != name:
+                            raise ValueError("noncanonical encoding")
+                    except ValueError:
+                        errors.append(f"source.decoding.{key} must be a supported canonical encoding")
+                if not _digest(receipt.get("text_sha256")):
+                    errors.append("source.decoding.text_sha256 must be a lowercase SHA-256 digest")
+                if type(receipt.get("ambiguous")) is not bool:
+                    errors.append("source.decoding.ambiguous must be a boolean")
+                candidates = receipt.get("candidates")
+                if not isinstance(candidates, list) or any(not isinstance(name, str) for name in candidates):
+                    errors.append("source.decoding.candidates must be an array of encoding names")
+                else:
+                    try:
+                        if any(not name or _normalize_text_encoding(name) != name for name in candidates):
+                            raise ValueError("noncanonical candidate")
+                    except ValueError:
+                        errors.append("source.decoding.candidates must contain supported canonical encodings")
+                    if len(candidates) != len(set(candidates)):
+                        errors.append("source.decoding.candidates must be unique")
+                    if receipt.get("ambiguous") is True:
+                        if len(candidates) < 2 or receipt.get("encoding") not in candidates:
+                            errors.append("ambiguous source.decoding must identify competing encodings")
+                    elif candidates:
+                        errors.append("unambiguous source.decoding must have no competing candidates")
     return errors
 
 
@@ -110,6 +150,7 @@ def validate_raw_ir_attempt(value: object) -> list[str]:
         return errors
     _require_origin(item, {"model-derived"}, "raw-ir-attempt", errors)
     _require_parent_roles(item, {"document-version"}, errors)
+    _require_parent_artifacts(item, {"document-version": "document-version"}, errors)
     for key in ("project_id", "document_id", "version_id", "attempt_id"):
         if not _nonempty(item.get(key)):
             errors.append(f"{key} must be a non-empty string")
@@ -125,7 +166,7 @@ def validate_raw_ir_attempt(value: object) -> list[str]:
             "collection",
             errors,
         )
-        if collection.get("method") not in {"file", "terminal-paste"}:
+        if collection.get("method") not in ("file", "terminal-paste"):
             errors.append("collection.method must be file or terminal-paste")
         if not _safe_basename(collection.get("source_name")):
             errors.append("collection.source_name must be a safe basename")
@@ -146,7 +187,7 @@ def validate_raw_ir_attempt(value: object) -> list[str]:
         errors.append("validation must be an object")
     else:
         _strict_keys(validation, {"status", "errors"}, "validation", errors)
-        if validation.get("status") not in {"valid", "correctable", "unusable"}:
+        if validation.get("status") not in ("valid", "correctable", "unusable"):
             errors.append("validation.status must be valid, correctable, or unusable")
         _string_list(validation.get("errors"), "validation.errors", errors)
     return errors
@@ -178,6 +219,10 @@ def validate_ir_correction(value: object) -> list[str]:
     ):
         expected.add("previous-correction")
     _require_parent_roles(item, expected, errors)
+    _require_parent_artifacts(item, {
+        role: "ir-correction" if role == "previous-correction" else role
+        for role in expected
+    }, errors)
     for key in (
         "project_id",
         "document_id",
@@ -204,7 +249,7 @@ def validate_ir_correction(value: object) -> list[str]:
         "set_unverified": {"kind", "items"},
         "revert_correction": {"kind", "target"},
     }
-    if kind not in allowed:
+    if not isinstance(kind, str) or kind not in allowed:
         errors.append(f"operation.kind must be one of {tuple(allowed)}")
         return errors
     _strict_keys(operation, allowed[str(kind)], "operation", errors)
@@ -232,17 +277,17 @@ def validate_ir_correction(value: object) -> list[str]:
             errors.append("update_relation changes may contain only type/from/to")
     if kind == "add_node":
         node_kind = operation.get("node_kind")
-        if node_kind not in {
+        if node_kind not in (
             "claim",
             "evidence",
             "assumption",
             "citation",
-        }:
+        ):
             errors.append("operation.node_kind is invalid")
         node = operation.get("node")
         if not isinstance(node, dict):
             errors.append("operation.node must be an object")
-        elif node_kind in {"claim", "evidence", "assumption", "citation"}:
+        elif node_kind in ("claim", "evidence", "assumption", "citation"):
             expected_node_fields = {
                 "claim": {
                     "text",
@@ -304,6 +349,10 @@ def validate_reviewed_ir_record(value: object) -> list[str]:
             and str(parent.get("role")).startswith("correction-")
         )
     _require_parent_roles(item, expected, errors)
+    _require_parent_artifacts(item, {
+        role: "ir-correction" if role.startswith("correction-") else role
+        for role in expected
+    }, errors)
     for key in ("project_id", "document_id", "version_id", "attempt_id"):
         if not _nonempty(item.get(key)):
             errors.append(f"{key} must be a non-empty string")
@@ -322,12 +371,29 @@ def validate_reviewed_ir_record(value: object) -> list[str]:
     for index, digest in enumerate(hashes):
         if not _digest(digest):
             errors.append(f"correction_sha256s[{index}] is not a SHA-256 digest")
+    correction_parents = [
+        parent for parent in parents if isinstance(parent, dict)
+        and isinstance(parent.get("role"), str) and parent["role"].startswith("correction-")
+    ] if isinstance(parents, list) else []
+    if [parent["role"] for parent in correction_parents] != [
+        f"correction-{index:04d}" for index in range(1, len(correction_parents) + 1)
+    ]:
+        errors.append("correction parents must be continuous and in correction order")
+    if hashes != [parent.get("sha256") for parent in correction_parents]:
+        errors.append("correction_sha256s must match correction parents exactly and in order")
     stable_map = item.get("stable_ref_map")
     if not isinstance(stable_map, dict) or any(
         not _nonempty(key) or not _nonempty(mapped)
         for key, mapped in stable_map.items()
     ):
         errors.append("stable_ref_map must map non-empty stable refs to reviewed IDs")
+    correction_ids = {f"IC{index:04d}" for index in range(1, len(correction_parents) + 1)}
+    deterministic_fields = {
+        "schema_version": "workbench-materializer-v1",
+        "artifact": "workbench-materializer-v1",
+        "source.name": "document-version",
+        "source.sha256": "document-version",
+    }
     field_provenance = item.get("field_provenance")
     if not isinstance(field_provenance, dict):
         errors.append("field_provenance must be an object")
@@ -341,6 +407,26 @@ def validate_reviewed_ir_record(value: object) -> list[str]:
                 errors.append(f"{field}.origin is invalid")
             if not _nonempty(provenance.get("source")):
                 errors.append(f"{field}.source must be a non-empty string")
+                continue
+            origin, source = provenance.get("origin"), provenance["source"]
+            deterministic_source = deterministic_fields.get(field)
+            if re.fullmatch(r"[CEAZR][1-9][0-9]*\.id", field):
+                deterministic_source = "workbench-materializer-v1"
+            elif re.fullmatch(r"[CEAZ][1-9][0-9]*\.position", field):
+                # Historical v1 materialization overwrote this label while
+                # recomputing the actual position deterministically. Preserve
+                # those records; neither representation confers human approval.
+                if origin == "model-derived" and source == "raw-ir-attempt":
+                    continue
+                deterministic_source = "document-version"
+            if deterministic_source is not None:
+                if origin != "deterministic" or source != deterministic_source:
+                    errors.append(f"{field} must have deterministic provenance from {deterministic_source}")
+            elif origin == "human-confirmed":
+                if source not in correction_ids or field == "scope":
+                    errors.append(f"{field} human-confirmed provenance requires a listed correction")
+            elif origin != "model-derived" or source != "raw-ir-attempt" or field.startswith("removed."):
+                errors.append(f"{field} semantics must come from the raw model attempt or a listed human correction")
     return errors
 
 
@@ -426,7 +512,7 @@ def validate_rule_review_run(value: object) -> list[str]:
         "plan",
         "prompt",
     }
-    if schema_version in {2, 3}:
+    if schema_version in (2, 3):
         extra_keys.add("review_scope")
     errors, item = _validate_base(
         value,
@@ -462,7 +548,7 @@ def validate_rule_review_run(value: object) -> list[str]:
     _validate_rule_lens(item.get("lens"), "lens", errors)
     if item.get("depth") not in REVIEW_DEPTHS:
         errors.append(f"depth must be one of {REVIEW_DEPTHS}")
-    if schema_version in {2, 3}:
+    if schema_version in (2, 3):
         review_scope = item.get("review_scope")
         if not isinstance(review_scope, dict):
             errors.append("review_scope must be an object")
@@ -533,7 +619,7 @@ def validate_review_result_attempt(value: object) -> list[str]:
             "collection",
             errors,
         )
-        if collection.get("method") not in {"file", "terminal-paste"}:
+        if collection.get("method") not in ("file", "terminal-paste"):
             errors.append("collection.method must be file or terminal-paste")
         if not _safe_basename(collection.get("source_name")):
             errors.append("collection.source_name must be a safe basename")
@@ -578,10 +664,10 @@ def validate_perspective_lens_protocol(value: object) -> list[str]:
             errors.append("lens.kind must be perspective")
         if lens.get("id") not in PERSPECTIVE_LENSES:
             errors.append(f"lens.id must be one of {PERSPECTIVE_LENSES}")
-    if item.get("legacy_protocol") not in {
+    if item.get("legacy_protocol") not in (
         "critic-individualist",
         "critic-contrastivist",
-    }:
+    ):
         errors.append(
             "legacy_protocol must be critic-individualist or critic-contrastivist"
         )
@@ -730,7 +816,7 @@ def validate_perspective_result_attempt(value: object) -> list[str]:
             "collection",
             errors,
         )
-        if collection.get("method") not in {"file", "terminal-paste"}:
+        if collection.get("method") not in ("file", "terminal-paste"):
             errors.append("collection.method must be file or terminal-paste")
         if not _safe_basename(collection.get("source_name")):
             errors.append("collection.source_name must be a safe basename")
@@ -756,16 +842,17 @@ def validate_perspective_result_attempt(value: object) -> list[str]:
 
 
 def validate_perspective_lens_results(value: object) -> list[str]:
-    errors: list[str] = []
-    if not isinstance(value, dict):
-        return ["perspective-lens-results must be a JSON object"]
+    errors = _json_object_errors(value, "perspective-lens-results")
+    if errors:
+        return errors
+    assert isinstance(value, dict)
     _strict_keys(
         value,
         {"schema_version", "artifact", "source", "status", "unverified", "results"},
         "perspective-lens-results",
         errors,
     )
-    if value.get("schema_version") != 1:
+    if type(value.get("schema_version")) is not int or value.get("schema_version") != 1:
         errors.append("schema_version must be 1")
     if value.get("artifact") != "perspective-lens-results":
         errors.append("artifact must be perspective-lens-results")
@@ -788,7 +875,7 @@ def validate_perspective_lens_results(value: object) -> list[str]:
     unverified = _string_list(value.get("unverified"), "unverified", errors)
     if status == "complete" and unverified:
         errors.append("complete perspective results require unverified=[]")
-    if status in {"partial", "blocked"} and not unverified:
+    if status in ("partial", "blocked") and not unverified:
         errors.append(f"{status} perspective results require concrete unverified items")
     results = value.get("results")
     if not isinstance(results, list):
@@ -838,7 +925,7 @@ def validate_perspective_lens_results(value: object) -> list[str]:
         consequence = result.get("consequence")
         if not isinstance(consequence, str):
             errors.append(f"{label}.consequence must be a string")
-        elif result.get("verdict") in {"fail", "uncertain"} and not consequence.strip():
+        elif result.get("verdict") in ("fail", "uncertain") and not consequence.strip():
             errors.append(f"{label}.actionable verdict requires a consequence")
         elif result.get("verdict") == "pass" and consequence:
             errors.append(f"{label}.pass requires an empty consequence")
@@ -912,7 +999,7 @@ def validate_perspective_review_index(value: object) -> list[str]:
     unverified = _string_list(item.get("unverified"), "unverified", errors)
     if item.get("run_status") == "complete" and unverified:
         errors.append("complete Perspective Review requires unverified=[]")
-    if item.get("run_status") in {"partial", "blocked"} and not unverified:
+    if item.get("run_status") in ("partial", "blocked") and not unverified:
         errors.append(
             f"{item.get('run_status')} Perspective Review requires unverified items"
         )
@@ -922,7 +1009,7 @@ def validate_perspective_review_index(value: object) -> list[str]:
     else:
         _strict_keys(summary, set(FINDING_VERDICTS), "summary", errors)
         if any(
-            not isinstance(summary.get(key), int) or summary.get(key) < 0
+            type(summary.get(key)) is not int or summary.get(key) < 0
             for key in FINDING_VERDICTS
         ):
             errors.append("summary counts must be non-negative integers")
@@ -971,14 +1058,14 @@ def validate_perspective_review_index(value: object) -> list[str]:
             consequence = outcome.get("consequence")
             if not isinstance(consequence, str):
                 errors.append(f"{label}.consequence must be a string")
-            elif verdict in {"fail", "uncertain"} and not consequence.strip():
+            elif verdict in ("fail", "uncertain") and not consequence.strip():
                 errors.append(f"{label}.actionable verdict requires a consequence")
             elif verdict == "pass" and consequence:
                 errors.append(f"{label}.pass requires an empty consequence")
             finding_id = outcome.get("finding_id")
             if verdict == "pass" and finding_id is not None:
                 errors.append(f"{label}.finding_id must be null for pass")
-            if verdict in {"fail", "uncertain"}:
+            if verdict in ("fail", "uncertain"):
                 if not _nonempty(finding_id):
                     errors.append(f"{label}.finding_id is required for actionable verdicts")
                 else:

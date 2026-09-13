@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import io
+import math
 import os
 import re
 import shutil
@@ -41,6 +42,18 @@ MEDIA_TYPES = {
     ".txt": "text/plain",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".pdf": "application/pdf",
+    ".markdown": "text/markdown", ".text": "text/plain", ".log": "text/plain",
+    ".docm": "application/vnd.ms-word.document.macroEnabled.12",
+    ".rtf": "application/rtf", ".html": "text/html", ".htm": "text/html",
+    ".csv": "text/csv", ".tsv": "text/tab-separated-values",
+    ".odt": "application/vnd.oasis.opendocument.text",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".pptm": "application/vnd.ms-powerpoint.presentation.macroEnabled.12",
+    ".doc": "application/msword", ".wps": "application/msword",
+    ".xls": "application/vnd.ms-excel", ".et": "application/vnd.ms-excel",
+    ".ppt": "application/vnd.ms-powerpoint", ".dps": "application/vnd.ms-powerpoint",
 }
 PARSER_VERSION = "document-review-studio-v1"
 W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -66,6 +79,14 @@ class IngestionLimits:
     max_docx_compression_ratio: int = 1000
     max_images: int = 500
     max_ocr_seconds_per_page: int = 45
+    max_ocr_page_pixels: int = 16_000_000
+    max_ocr_page_dimension: int = 8192
+    max_office_rows: int = 10000
+    max_office_columns: int = 1000
+    max_office_cells: int = 50000
+    max_office_slides: int = 1000
+    max_office_sheets: int = 200
+    max_office_text_chars: int = 8000000
 
 
 class OCRAdapter(Protocol):
@@ -87,7 +108,7 @@ def safe_upload_name(name: str) -> str:
     if suffix in UNSUPPORTED_EXTENSIONS:
         raise IngestionError(f"不支持 {suffix}：请先转换为 .docx、.md、.txt 或文本型 PDF")
     if suffix not in SUPPORTED_EXTENSIONS:
-        raise IngestionError("只支持 .md、.txt、.docx 和 .pdf")
+        raise IngestionError("不支持此格式。可导入 Word、PDF、文本、RTF、HTML、CSV/TSV、ODT、Excel 和 PowerPoint；旧 Office 格式需要本机转换组件")
     return candidate
 
 
@@ -95,13 +116,9 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _decode_text(data: bytes) -> str:
-    if b"\x00" in data:
-        raise IngestionError("文本包含二进制控制字节，拒绝作为文本读取")
-    try:
-        return data.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise IngestionError(f"文件不是 UTF-8 文本：{exc}") from exc
+def _decode_text(data: bytes, encoding: str | None = None) -> str:
+    from document_text_encoding import decode_document_text
+    return decode_document_text(data, encoding).text
 
 
 def _binding(name: str, data: bytes) -> RawFileBinding:
@@ -299,7 +316,21 @@ def _docx_xml(archive: _VerifiedZipArchive, name: str) -> ET.Element | None:
         raise IngestionError(f"DOCX XML 损坏：{name}: {exc}") from exc
 
 
-def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits) -> StructuredDocument:
+def _block_identity_sha(source: RawFileBinding, identity_sha256: str | None) -> str:
+    """Separate a validated conversion's bytes from its original IR identity."""
+    if identity_sha256 is None:
+        return source.sha256
+    if not isinstance(identity_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", identity_sha256) is None:
+        raise IngestionError("原件定位身份必须是有效 SHA-256")
+    return identity_sha256
+
+
+def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits, *, identity_sha256: str | None = None) -> StructuredDocument:
+    if len(data) > limits.max_file_bytes:
+        raise IngestionError("DOCX 原件大小超出安全限制")
+    if len(data) != source.byte_size or hashlib.sha256(data).hexdigest() != source.sha256:
+        raise IngestionError("DOCX 原件与不可变来源绑定不一致")
+    identity = _block_identity_sha(source, identity_sha256)
     archive = _zip_safety(data, limits)
     document_xml = _docx_xml(archive, "word/document.xml")
     if document_xml is None:
@@ -335,7 +366,7 @@ def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits) ->
         warnings.append(ExtractionWarning("hyperlinks-present", "low", "DOCX 含超链接；链接目标存在状态已记录"))
 
     def add_block(kind: str, text: str, paragraph: int, *, level: int | None = None, attrs: dict[str, Any] | None = None, page: int | None = None, table_id: str | None = None, row: int | None = None, column: int | None = None) -> DocumentBlock:
-        block_id = _block_id(source.sha256, kind, len(blocks), text, paragraph, table_id, row, column)
+        block_id = _block_id(identity, kind, len(blocks), text, paragraph, table_id, row, column)
         block = DocumentBlock(block_id, kind, text=text, level=level, location=DocumentLocation(block_id, kind, page=page, paragraph=paragraph, table_id=table_id, row=row, column=column, source_path=source.original_name), attrs=attrs or {})
         blocks.append(block)
         mapping.append({"paragraph": paragraph, "block_id": block_id, "kind": kind, "table_id": table_id, "row": row, "column": column})
@@ -368,7 +399,7 @@ def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits) ->
                 add_block("heading" if level else ("list_item" if attrs.get("list") else "paragraph"), text, paragraph_index, level=level, attrs=attrs)
             paragraph_index += 1
         elif child.tag == W_NS + "tbl":
-            table_id = _block_id(source.sha256, "table", len(blocks), "", paragraph_index)
+            table_id = _block_id(identity, "table", len(blocks), "", paragraph_index)
             rows: list[list[str]] = []
             table_block = add_block("table", "", paragraph_index, attrs={"rows": rows, "source": "docx"})
             table_block.location = DocumentLocation(table_id, "table", paragraph=paragraph_index, table_id=table_id, source_path=source.original_name)
@@ -401,14 +432,14 @@ def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits) ->
                 add_block(kind, text, paragraph_index, attrs={"part": part})
                 paragraph_index += 1
     quality = QualitySignals(page_count=1, text_coverage=1.0 if any(b.text.strip() for b in blocks) else 0.0, table_count=sum(b.kind == "table" for b in blocks), tables_parsed=sum(b.kind == "table" for b in blocks), footnote_comment_revision_risk=[w.code for w in warnings], requires_confirmation=True)
-    return StructuredDocument(stable_id("DOC", source.sha256), next((b.text for b in blocks if b.kind == "heading"), Path(source.original_name).stem), source, "docx-xml", PARSER_VERSION, blocks, warnings, quality, mapping, {"revisions_present": revisions, "comments_present": comments, "footnotes_present": footnotes, "hyperlinks_present": hyperlinks, "image_count": len(images), "nested_tables_present": any(b.attrs.get("nested_tables", 0) for b in blocks)})
+    return StructuredDocument(stable_id("DOC", identity), next((b.text for b in blocks if b.kind == "heading"), Path(source.original_name).stem), source, "docx-xml", PARSER_VERSION, blocks, warnings, quality, mapping, {"revisions_present": revisions, "comments_present": comments, "footnotes_present": footnotes, "hyperlinks_present": hyperlinks, "image_count": len(images), "nested_tables_present": any(b.attrs.get("nested_tables", 0) for b in blocks)})
 
 
 def _pdf_backend() -> tuple[str, Any] | None:
     try:
         import fitz  # type: ignore
         return "pymupdf", fitz
-    except ImportError:
+    except (ImportError, OSError):
         pass
     try:
         import pypdf  # type: ignore
@@ -496,6 +527,7 @@ def _pdf_text(data: bytes, source: RawFileBinding, limits: IngestionLimits) -> S
     blank_pages: list[int] = []
     suspected_order = False
     if name == "pymupdf":
+        pdf = None
         try:
             pdf = library.open(stream=data, filetype="pdf")
             if pdf.is_encrypted:
@@ -503,13 +535,14 @@ def _pdf_text(data: bytes, source: RawFileBinding, limits: IngestionLimits) -> S
             if pdf.page_count > limits.max_pdf_pages:
                 raise IngestionError("PDF 页数超过安全限制")
             for page_number, page in enumerate(pdf, start=1):
-                page_dict = page.get_text("dict")
+                page_dict = page.get_text("dict", flags=library.TEXTFLAGS_DICT & ~library.TEXT_PRESERVE_IMAGES)
                 blocks_data = page_dict.get("blocks", [])
                 texts: list[str] = []
                 for block_data in blocks_data:
                     if block_data.get("type") != 0:
                         continue
-                    text = "".join(span.get("text", "") for line in block_data.get("lines", []) for span in line.get("spans", [])).strip()
+                    text = "\n".join("".join(span.get("text", "") for span in line.get("spans", []))
+                                     for line in block_data.get("lines", [])).strip()
                     if not text:
                         continue
                     texts.append(text)
@@ -526,6 +559,9 @@ def _pdf_text(data: bytes, source: RawFileBinding, limits: IngestionLimits) -> S
             raise
         except Exception as exc:
             raise IngestionError(f"PDF 解析器失败，未生成审查输入：{exc}") from exc
+        finally:
+            if pdf is not None:
+                pdf.close()
     else:
         try:
             reader = library.PdfReader(io.BytesIO(data), strict=False)
@@ -565,38 +601,81 @@ def _pdf_text(data: bytes, source: RawFileBinding, limits: IngestionLimits) -> S
     return StructuredDocument(stable_id("DOC", source.sha256), Path(source.original_name).stem, source, name, PARSER_VERSION, blocks, warnings, quality, mapping, {"pdf_kind": "scanned" if scanned_pages == page_count else ("mixed" if scanned_pages else "text"), "page_text_lengths": [len(value) for value in page_texts], "coordinates_available": name == "pymupdf"})
 
 
+def _tesseract_executable() -> str | None:
+    found = shutil.which("tesseract")
+    if found:
+        return found
+    if sys.platform == "win32":
+        roots = [Path(base) / "Tesseract-OCR" for key in ("ProgramFiles", "ProgramFiles(x86)")
+                 if (base := os.environ.get(key))]
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            roots.extend([Path(local) / "Tesseract-OCR", Path(local) / "Programs/Tesseract-OCR"])
+        for root in roots:
+            candidate = root / "tesseract.exe"
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
+def _ocr_creationflags() -> int:
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+
+
 class TesseractOCR:
     """Small subprocess adapter; the domain layer never imports Tesseract."""
 
     name = "tesseract"
     version = "unknown"
+    DEFAULT_LANGUAGE = "chi_sim+chi_tra+eng"
+    SUPPORTED_LANGUAGES = ("eng", "chi_sim", "chi_tra", "deu", "fra", "jpn", "rus", "lat")
 
-    def __init__(self, executable: str | None = None, *, renderer: Any | None = None, timeout_seconds: int = 45):
-        self.executable = executable or shutil.which("tesseract")
+    @staticmethod
+    def normalize_language(language: str) -> str:
+        if not isinstance(language, str):
+            raise IngestionError("OCR 语言必须是语言代码或用 + 连接的组合")
+        parts = [part.strip().lower() for part in language.split("+")]
+        if not parts or any(part not in TesseractOCR.SUPPORTED_LANGUAGES for part in parts) or len(set(parts)) != len(parts):
+            raise IngestionError("OCR 语言组合无效；请选择 eng、chi_sim、chi_tra、deu、fra、jpn、rus、lat，不可重复")
+        return "+".join(parts)
+
+    def __init__(self, executable: str | None = None, *, renderer: Any | None = None, timeout_seconds: int = 45, language: str = DEFAULT_LANGUAGE):
+        self.language = self.normalize_language(language)
+        self.executable = executable or _tesseract_executable()
         self.renderer = renderer
         self.timeout_seconds = max(1, int(timeout_seconds))
         if self.executable:
             try:
-                output = subprocess.run([self.executable, "--version"], capture_output=True, text=True, timeout=5, check=False).stdout.splitlines()
+                output = subprocess.run([self.executable, "--version"], capture_output=True, text=True,
+                                        encoding="utf-8", errors="replace", timeout=5, check=False,
+                                        creationflags=_ocr_creationflags()).stdout.splitlines()
                 self.version = output[0].strip() if output else "unknown"
             except (OSError, subprocess.SubprocessError):
                 self.version = "unknown"
 
     def available(self) -> tuple[bool, str]:
+        return self._available_for(self.language)
+
+    def _available_for(self, language: str) -> tuple[bool, str]:
         if not self.executable:
-            return False, "未发现 tesseract；安装 Tesseract 5.x 及 chi_sim、chi_tra、eng 语言包"
+            return False, "未发现 tesseract；请安装 Tesseract 5.x 和所选语言包：" + language
         try:
-            langs = subprocess.run([self.executable, "--list-langs"], capture_output=True, text=True, timeout=5, check=False).stdout.splitlines()
+            result = subprocess.run([self.executable, "--list-langs"], capture_output=True, text=True, encoding="utf-8", timeout=5, check=False,
+                                    creationflags=_ocr_creationflags())
+            if result.returncode != 0:
+                return False, f"无法读取 Tesseract 语言包状态（退出码 {result.returncode}）"
+            langs = result.stdout.splitlines()
             installed = {line.strip() for line in langs if line.strip() and not line.casefold().startswith("list of available")}
-            missing = sorted({"chi_sim", "chi_tra", "eng"} - installed)
+            missing = sorted(set(language.split("+")) - installed)
             if missing:
-                return False, "Tesseract 已安装但缺少语言包：" + ", ".join(missing)
-        except (OSError, subprocess.SubprocessError):
+                return False, "Tesseract 已安装，但缺少本次选择的语言包：" + ", ".join(missing)
+        except (OSError, subprocess.SubprocessError, UnicodeError):
             return False, "无法读取 Tesseract 语言包状态"
-        return True, f"{self.name} {self.version}"
+        return True, f"{self.name} {self.version}；所选语言：{language}"
 
     def recognize_pdf_page(self, page_bytes: bytes, *, page_number: int, language: str) -> dict[str, Any]:
-        available, detail = self.available()
+        language = self.normalize_language(language)
+        available, detail = self._available_for(language)
         if not available:
             raise ParserUnavailable(detail)
         with tempfile.TemporaryDirectory(prefix="document-review-ocr-") as temp:
@@ -605,7 +684,8 @@ class TesseractOCR:
             input_path.write_bytes(page_bytes)
             command = [self.executable or "tesseract", str(input_path), str(output_base), "--psm", "3", "-l", language, "tsv"]
             try:
-                result = subprocess.run(command, capture_output=True, text=True, timeout=self.timeout_seconds, check=False)
+                result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                        timeout=self.timeout_seconds, check=False, creationflags=_ocr_creationflags())
             except subprocess.TimeoutExpired as exc:
                 raise IngestionError(f"OCR 第 {page_number} 页超时") from exc
             if result.returncode != 0:
@@ -613,24 +693,37 @@ class TesseractOCR:
             tsv_path = Path(str(output_base) + ".tsv")
             if not tsv_path.is_file():
                 raise IngestionError(f"OCR 第 {page_number} 页未生成结构化结果")
-            lines = tsv_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            if tsv_path.stat().st_size > 16 * 1024 * 1024:
+                raise IngestionError(f"OCR 第 {page_number} 页结构化输出超过安全上限")
+            try:
+                lines = tsv_path.read_text(encoding="utf-8").splitlines()
+            except UnicodeError as exc:
+                raise IngestionError(f"OCR 第 {page_number} 页输出不是有效 UTF-8，未接受损坏文字") from exc
             words: list[str] = []
+            text_lines: list[list[str]] = []
+            previous_line = None
             confidences: list[float] = []
             for line in lines[1:]:
                 cells = line.split("\t")
                 if len(cells) < 12 or not cells[11].strip():
                     continue
                 words.append(cells[11].strip())
+                line_id = tuple(cells[1:5])
+                if line_id != previous_line:
+                    text_lines.append([])
+                    previous_line = line_id
+                text_lines[-1].append(cells[11].strip())
                 try:
-                    confidences.append(float(cells[10]))
+                    confidence = float(cells[10])
+                    confidences.append(confidence if math.isfinite(confidence) and 0 <= confidence <= 100 else 0.0)
                 except ValueError:
-                    pass
-            text = " ".join(words)
+                    confidences.append(0.0)
+            text = "\n".join(" ".join(line) for line in text_lines)
             low = sum(value < 60 for value in confidences)
             return {"page": page_number, "text": text, "low_confidence_words": low, "word_count": len(words), "confidence": min(confidences) if confidences else 0.0, "engine": self.name, "engine_version": self.version, "language": language}
 
 
-def ingest_bytes(name: str, data: bytes, *, limits: IngestionLimits | None = None, ocr: OCRAdapter | None = None, ocr_language: str = "chi_sim+chi_tra+eng") -> StructuredDocument:
+def ingest_bytes(name: str, data: bytes, *, limits: IngestionLimits | None = None, ocr: OCRAdapter | None = None, ocr_language: str = "chi_sim+chi_tra+eng", encoding: str | None = None) -> StructuredDocument:
     limits = limits or IngestionLimits()
     safe_name = safe_upload_name(name)
     if not isinstance(data, bytes):
@@ -641,55 +734,85 @@ def ingest_bytes(name: str, data: bytes, *, limits: IngestionLimits | None = Non
         raise IngestionError(f"文件超过 {limits.max_file_bytes // (1024 * 1024)} MiB 安全上限")
     source = _binding(safe_name, data)
     suffix = source.extension
-    if suffix in {".md", ".txt"}:
-        return _text_blocks(_decode_text(data), source, parser="plain-text")
-    if suffix == ".docx":
-        return _parse_docx(data, source, limits)
+    if suffix in {".md", ".markdown", ".txt", ".text", ".log"}:
+        from document_text_encoding import decode_document_text
+        decoded = decode_document_text(data, encoding)
+        warnings = []
+        if decoded.ambiguous:
+            warnings.append(ExtractionWarning("encoding-ambiguous", "high",
+                "文件编码存在多个可能解释，请检查预览；如有乱码可选择编码重新识别。",
+                details={"selected": decoded.encoding, "candidates": decoded.candidates}))
+        document = _text_blocks(decoded.text, source, parser="plain-text", warnings=warnings)
+        document.metadata.update({"encoding": decoded.encoding, "encoding_ambiguous": decoded.ambiguous,
+                                  "encoding_candidates": list(decoded.candidates)})
+        return document
+    if suffix in {".rtf", ".html", ".htm", ".csv", ".tsv"}:
+        from document_review_text_formats import parse_text_format
+        return parse_text_format(data, source, limits, encoding=encoding)
+    if suffix in {".odt", ".xlsx", ".xlsm", ".pptx", ".pptm"}:
+        from document_review_office_formats import parse_office
+        return parse_office(data, source, limits)
+    if suffix in {".doc", ".wps", ".xls", ".et", ".ppt", ".dps"}:
+        from document_review_legacy import parse_legacy
+        return parse_legacy(data, source, limits, encoding=encoding)
+    if suffix in {".docx", ".docm"}:
+        document = _parse_docx(data, source, limits)
+        if suffix == ".docm":
+            document.warnings.append(ExtractionWarning("macros-not-executed", "info", "仅提取文档正文，宏内容保持在原件中，不会执行"))
+        return document
     if suffix == ".pdf":
         document = _pdf_text(data, source, limits)
         scan_pages = [warning for warning in document.warnings if warning.code == "scan-pages-detected"]
         if scan_pages:
             scan_page_numbers = {page for warning in scan_pages for page in warning.details.get("pages", [])}
-            adapter = ocr or TesseractOCR(timeout_seconds=limits.max_ocr_seconds_per_page)
+            adapter = ocr or TesseractOCR(timeout_seconds=limits.max_ocr_seconds_per_page, language=ocr_language)
             available, detail = adapter.available()
             document.quality.ocr_available = available
             if not available:
                 document.warnings.append(ExtractionWarning("ocr-unavailable", "critical", detail))
                 document.quality.requires_confirmation = True
                 return document
-            # The adapter is intentionally page-oriented. PyMuPDF is used only
-            # when available to render pages; a missing renderer is a hard stop.
-            try:
-                import fitz  # type: ignore
-            except ImportError as exc:
-                document.warnings.append(ExtractionWarning("pdf-renderer-unavailable", "critical", "扫描 PDF 需要 PyMuPDF 进行页渲染；请安装 pymupdf"))
-                document.quality.ocr_available = False
-                return document
-            pdf = fitz.open(stream=data, filetype="pdf")
+            from document_review_pdf_render import PDFRenderError, PDFRendererUnavailable, open_pdf_renderer
             ocr_blocks: list[DocumentBlock] = []
             recognized_pages: set[int] = set()
             low_confidence = 0
-            for page_number, page in enumerate(pdf, start=1):
-                if scan_page_numbers and page_number not in scan_page_numbers:
-                    continue
-                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-                result = adapter.recognize_pdf_page(pix.tobytes("png"), page_number=page_number, language=ocr_language)
-                text = str(result.get("text", "")).strip()
-                low_confidence += int(result.get("low_confidence_words", 0))
-                if not text:
-                    if page_number not in document.quality.blank_pages:
-                        document.quality.blank_pages.append(page_number)
-                    continue
-                recognized_pages.add(page_number)
-                block_id = _block_id(source.sha256, "ocr_block", len(document.blocks) + len(ocr_blocks), text, page_number)
-                block = DocumentBlock(block_id, "paragraph", text=text, location=DocumentLocation(block_id, "ocr_block", page=page_number, paragraph=len(document.blocks) + len(ocr_blocks), source_path=source.original_name), attrs={"ocr": True, "confidence": result.get("confidence", 0), "engine": result.get("engine", adapter.name), "engine_version": result.get("engine_version", adapter.version), "language": result.get("language", ocr_language)})
-                ocr_blocks.append(block)
-                document.source_to_block.append({"page": page_number, "block_id": block_id, "ocr": True, "confidence": result.get("confidence", 0)})
-            document.blocks = [block for block in document.blocks if block.location and block.location.page not in scan_page_numbers and block.location.page not in document.quality.blank_pages] + ocr_blocks
+            try:
+                with open_pdf_renderer(data, max_pages=limits.max_pdf_pages,
+                                       max_pixels=limits.max_ocr_page_pixels,
+                                       max_dimension=limits.max_ocr_page_dimension) as renderer:
+                    renderer_name = renderer.name
+                    pages_to_ocr = scan_page_numbers or set(range(1, renderer.page_count + 1))
+                    for page_number in sorted(pages_to_ocr):
+                        # 300 DPI preserves small CJK glyphs; native pixel and
+                        # dimension limits are still checked before rendering.
+                        result = adapter.recognize_pdf_page(renderer.render_page(page_number, scale=300 / 72), page_number=page_number, language=ocr_language)
+                        text = str(result.get("text", "")).strip()
+                        low_confidence += int(result.get("low_confidence_words", 0))
+                        if not text:
+                            if page_number not in document.quality.blank_pages:
+                                document.quality.blank_pages.append(page_number)
+                            continue
+                        recognized_pages.add(page_number)
+                        block_id = _block_id(source.sha256, "ocr_block", len(document.blocks) + len(ocr_blocks), text, page_number)
+                        block = DocumentBlock(block_id, "paragraph", text=text, location=DocumentLocation(block_id, "ocr_block", page=page_number, paragraph=len(document.blocks) + len(ocr_blocks), source_path=source.original_name), attrs={"ocr": True, "confidence": result.get("confidence", 0), "engine": result.get("engine", adapter.name), "engine_version": result.get("engine_version", adapter.version), "language": result.get("language", ocr_language)})
+                        ocr_blocks.append(block)
+                        document.source_to_block.append({"page": page_number, "block_id": block_id, "ocr": True, "confidence": result.get("confidence", 0)})
+            except PDFRendererUnavailable as exc:
+                document.warnings.append(ExtractionWarning("pdf-renderer-unavailable", "critical", str(exc)))
+                document.quality.ocr_available = False
+                return document
+            except PDFRenderError as exc:
+                raise IngestionError(str(exc)) from exc
+            # Stable page ordering preserves text blocks on mixed PDFs between
+            # OCR pages. Keeping the appended OCR order would move page 1 last.
+            document.blocks.extend(ocr_blocks)
+            document.blocks.sort(key=lambda block: block.location.page if block.location and block.location.page is not None else 0)
+            document.source_to_block.sort(key=lambda item: item.get("page", 0))
             document.quality.blank_pages = sorted(page for page in document.quality.blank_pages if page not in recognized_pages)
             document.quality.ocr_low_confidence_blocks = low_confidence
             document.quality.text_coverage = min(1.0, sum(len(block.text) for block in document.blocks) / max(1, document.quality.page_count * 1200))
-            document.metadata["ocr"] = {"engine": adapter.name, "version": adapter.version, "language": ocr_language, "human_corrected": False}
+            document.metadata["ocr"] = {"engine": adapter.name, "version": adapter.version, "language": ocr_language, "human_corrected": False,
+                                        "renderer": renderer_name, "render_dpi": 300, "render_scale": 300 / 72, "temporary_grayscale": True}
             document.warnings.append(ExtractionWarning("ocr-used", "medium", f"扫描页使用 {adapter.name}；低置信词数 {low_confidence}"))
         return document
     raise IngestionError("未实现的文件类型")
@@ -697,6 +820,7 @@ def ingest_bytes(name: str, data: bytes, *, limits: IngestionLimits | None = Non
 
 _REPAIRABLE_PYTHON_PACKAGES = {
     "pypdf": "pypdf>=5.0,<7.0",
+    "pypdfium2": "pypdfium2>=5.13,<6.0",
     "pymupdf": "pymupdf>=1.24,<2.0",
 }
 
@@ -706,20 +830,34 @@ def doctor_dependencies() -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for package, label, optional, purpose, license_name in (
         ("pypdf", "pypdf", True, "PDF 文本页解析", "BSD-3-Clause"),
-        ("fitz", "pymupdf", True, "PDF 坐标、扫描页渲染", "AGPL-3.0-or-later / commercial"),
+        ("pypdfium2", "pypdfium2", True, "扫描 PDF 页面渲染", "Apache-2.0 / BSD-3-Clause; PDFium BSD-style"),
+        ("fitz", "pymupdf", True, "PDF 坐标、扫描页渲染（可选兼容组件）", "AGPL-3.0-or-later / commercial"),
     ):
         repair_spec = _REPAIRABLE_PYTHON_PACKAGES[label]
-        base = {"name": label, "available": False, "optional": optional, "purpose": purpose, "license": license_name, "repairable": True, "repair_key": label, "install": f"python -m pip install {repair_spec}"}
+        base = {"name": label, "available": False, "optional": optional, "purpose": purpose, "license": license_name, "repairable": label != "pymupdf" and not getattr(sys, "frozen", False), "repair_key": label, "install": f"python -m pip install {repair_spec}"}
+        if label == "pymupdf":
+            base["repair_hint"] = "可选兼容组件，按需手动安装；默认页面渲染使用 pypdfium2"
+        if getattr(sys, "frozen", False):
+            base["repair_hint"] = "便携版不支持运行时安装 Python 组件；请使用包含所需适配器的发行包或源码版"
         try:
             module = __import__(package)
             base.update({"available": True, "version": getattr(module, "__version__", "installed")})
             base.pop("install", None)
-        except ImportError:
+        except (ImportError, OSError):
             pass
         rows.append(base)
     ocr = TesseractOCR()
     available, detail = ocr.available()
-    rows.append({"name": "tesseract", "available": available, "optional": True, "purpose": "扫描 PDF OCR（chi_sim/chi_tra/eng）", "license": "Apache-2.0 engine; language-data terms vary", "detail": detail, "repairable": False, "repair_key": "tesseract", "repair_hint": "需要在操作系统中安装 Tesseract 5.x 及 chi_sim、chi_tra、eng 语言包；应用不会静默安装系统软件"})
+    rows.append({"name": "tesseract", "available": available, "optional": True, "purpose": "扫描 PDF OCR（英文、简体、繁体、德语、法语、日语、俄语、拉丁语）", "license": "Apache-2.0 engine; language-data terms vary", "detail": detail, "repairable": False, "repair_key": "tesseract", "repair_hint": "默认检查 chi_sim+chi_tra+eng；导入时可另选 eng/chi_sim/chi_tra/deu/fra/jpn/rus/lat 组合，只需安装所选语言包。请在操作系统中安装 Tesseract 及相应 traineddata；应用不会自动下载系统组件"})
+    renderer_available = any(row["available"] and row["name"] in {"pypdfium2", "pymupdf"} for row in rows)
+    rows.append({"name": "pdf-ocr", "available": available and renderer_available, "optional": True,
+                 "purpose": "扫描 PDF 完整识别能力（页面渲染及所选 OCR 语言包）", "repairable": False,
+                 "detail": detail if renderer_available else "缺少页面渲染组件，安装 Tesseract 后仍需 pypdfium2 才能识别扫描 PDF",
+                 "repair_hint": "需要页面渲染组件、Tesseract 引擎和所选语言包同时可用"})
+    from document_review_legacy import find_libreoffice
+    rows.append({"name": "LibreOffice", "available": bool(find_libreoffice()), "optional": True,
+                 "purpose": "旧版 DOC/WPS/XLS/ET/PPT/DPS 文件转换", "repairable": False,
+                 "repair_hint": "安装本机 LibreOffice 后可重新识别旧格式；现代 Office 格式和文本格式不需要此组件"})
     return rows
 
 
@@ -729,6 +867,8 @@ def repair_dependency(name: str) -> list[dict[str, Any]]:
     System OCR engines are intentionally excluded: installing them requires a
     platform package manager and language-data consent outside this app.
     """
+    if getattr(sys, "frozen", False):
+        raise IngestionError("便携版不支持运行时安装 Python 组件，请使用包含所需适配器的发行包")
     package = _REPAIRABLE_PYTHON_PACKAGES.get(name)
     if package is None:
         raise IngestionError(f"依赖 {name} 不支持应用内自动修复；请按环境提示处理")

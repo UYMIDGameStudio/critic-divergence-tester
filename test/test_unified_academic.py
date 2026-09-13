@@ -70,7 +70,12 @@ class AcademicReviewTests(unittest.TestCase):
                 self.assertIn("[2]", missing.evidence)
                 self.assertEqual(missing.location.block_id, project.document().blocks[1].block_id)
                 method_checks = [f.check_id for f in findings if f.critic == "academic_methods"]
-                self.assertTrue(any(f"methods.{kind}." in check for check in method_checks))
+                # A missing keyword is not proof of a missing method. Type-specific
+                # scrutiny belongs in the independent semantic review protocol.
+                self.assertEqual(method_checks, [])
+                prompt = project.prompt("academic_methods")
+                self.assertIn('"research_type": "' + kind + '"', prompt)
+                self.assertIn('"confirmed_scope"', prompt)
                 if kind != "empirical":
                     self.assertFalse(any("empirical" in check for check in method_checks))
                 self.assertTrue(all(f.verification_state == "cannot-confirm" for f in findings))
@@ -152,7 +157,7 @@ class UnifiedServerTests(unittest.TestCase):
 
             try:
                 home = request("")
-                self.assertIn("文书与学术工作台", home)
+                self.assertIn("文書與論證審查工作台", home)
                 self.assertIn("review_profile", home)
                 state = json.loads(request("api/state"))
                 self.assertEqual(state["research_projects"][0]["directory"], legacy.name)

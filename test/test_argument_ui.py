@@ -26,6 +26,12 @@ RULES = REPO_ROOT / "ir" / "social-science-checks.json"
 
 
 class ArgumentUITests(unittest.TestCase):
+    @staticmethod
+    def http_context(url, token):
+        request = urllib.request.Request(url + "api/view", headers={"X-Argument-Workbench-Token": token})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return json.loads(response.read())["request_context"]
+
     def make_project(self, root: Path):
         workspace = workbench.initialize_workspace(
             FIXTURE / "manuscript.md",
@@ -245,6 +251,7 @@ class ArgumentUITests(unittest.TestCase):
                 headers={
                     "Content-Type": "application/json",
                     "X-Argument-Workbench-Token": server.app.token,
+                    "X-Argument-Project-Context": self.http_context(url, server.app.token),
                 },
                 method="POST",
             )
@@ -286,6 +293,7 @@ class ArgumentUITests(unittest.TestCase):
                 headers={
                     "Content-Type": "application/json",
                     "X-Argument-Workbench-Token": server.app.token,
+                    "X-Argument-Project-Context": self.http_context(url, server.app.token),
                 },
                 method="POST",
             )

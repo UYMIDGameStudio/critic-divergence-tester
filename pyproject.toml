@@ -4,15 +4,26 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "critic-divergence-tester"
-version = "0.1.0"
+version = "0.2.2"
 description = "Local-first, model-neutral argument and document review workbench"
 requires-python = ">=3.10,<3.15"
 license = "MIT"
 dependencies = []
 
 [tool.setuptools]
-packages = ["cli", "contracts", "document_review_stores"]
+packages = ["cli", "contracts", "document_review_stores", "studio_web"]
 py-modules = [
+  "project_lifecycle",
+  "document_review_word",
+  "document_review_pdf_render",
+  "studio_ui_state",
+  "studio_launcher",
+  "studio_selftest",
+  "studio_startup",
+  "document_text_encoding",
+  "document_review_office_formats",
+  "document_review_text_formats",
+  "document_review_legacy",
   "academic_review",
   "argument_adjudication",
   "argument_app",
@@ -41,6 +52,7 @@ py-modules = [
   "document_review_ingest",
   "document_review_components",
   "document_review_model",
+  "document_review_quality",
   "document_review_studio",
   "document_review_ui",
   "document_review_ui_shell",
@@ -49,6 +61,9 @@ py-modules = [
   "unified_app",
 ]
 
+[tool.setuptools.package-data]
+studio_web = ["*.html", "*.css", "*.js", "*.json"]
+
 [tool.setuptools.data-files]
 "." = ["build-verifier.md", "citation-auditor.md", "critic-contrastivist.md", "critic-engineering.md", "critic-individualist.md", "critic-natural-science.md", "critic-social-science.md", "diff-reviewer.md", "divergence-test.md"]
 "ir" = ["ir/social-science-checks.json"]
@@ -56,23 +71,22 @@ py-modules = [
 
 [project.scripts]
 critic-divergence-tester = "critic_runner:main"
+document-review-studio = "studio_launcher:main"
 
 [project.optional-dependencies]
 # Kept optional so the existing Markdown/TXT workflow remains zero-install.
 # The adapters report their state through `critic_runner.py doctor`.
 pdf = [
   "pypdf>=5.0,<7.0",
-  "pymupdf>=1.24,<2.0",
+  "pypdfium2>=5.13,<6.0",
 ]
 ocr = [
-  "pytesseract>=0.3.10,<0.4",
-  "pillow>=10.0,<13.0",
+  "pypdf>=5.0,<7.0",
+  "pypdfium2>=5.13,<6.0",
 ]
 all = [
   "pypdf>=5.0,<7.0",
-  "pymupdf>=1.24,<2.0",
-  "pytesseract>=0.3.10,<0.4",
-  "pillow>=10.0,<13.0",
+  "pypdfium2>=5.13,<6.0",
 ]
 
 [tool.pytest.ini_options]

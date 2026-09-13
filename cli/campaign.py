@@ -67,7 +67,7 @@ def campaign(args: argparse.Namespace) -> int:
     }
 
     source_path = resolve_manuscript_path(args.manuscript)
-    source_text, source_raw = read_manuscript_utf8(source_path)
+    source_text, source_raw = read_manuscript(source_path, getattr(args, "encoding", None))
     source_snapshot = (source_path, source_text, source_raw)
     campaign_started_at = utc_now()
     campaign_dir = new_run_dir(Path(args.campaigns_dir), "campaign")

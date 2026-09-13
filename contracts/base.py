@@ -10,6 +10,7 @@ by findings, adjudications, revision actions, and claim lineage.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -214,6 +215,16 @@ def _string_list(
     return result
 
 
+def _json_object_errors(value: object, label: str) -> list[str]:
+    if not isinstance(value, dict):
+        return [f"{label} must be a JSON object"]
+    try:
+        json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError, UnicodeError, RecursionError):
+        return [f"{label} must contain finite JSON values and valid Unicode text"]
+    return []
+
+
 def _validate_base(
     value: object,
     *,
@@ -222,9 +233,10 @@ def _validate_base(
     extra_keys: set[str],
     schema_versions: tuple[int, ...] = (SCHEMA_VERSION,),
 ) -> tuple[list[str], dict[str, Any] | None]:
-    errors: list[str] = []
-    if not isinstance(value, dict):
-        return [f"{artifact} must be a JSON object"], None
+    errors = _json_object_errors(value, artifact)
+    if errors:
+        return errors, None
+    assert isinstance(value, dict)
     _strict_keys(
         value,
         {
@@ -239,7 +251,7 @@ def _validate_base(
         artifact,
         errors,
     )
-    if value.get("schema_version") not in schema_versions:
+    if type(value.get("schema_version")) is not int or value.get("schema_version") not in schema_versions:
         errors.append(
             "schema_version must be one of "
             + ", ".join(str(version) for version in schema_versions)
@@ -276,7 +288,8 @@ def _validate_base(
                 errors.append(f"{label} must be an object")
                 continue
             _strict_keys(parent, {"role", "artifact", "sha256"}, label, errors)
-            roles.append(parent.get("role"))
+            if isinstance(parent.get("role"), str):
+                roles.append(parent["role"])
             for key in ("role", "artifact"):
                 if not _nonempty(parent.get(key)):
                     errors.append(f"{label}.{key} must be a non-empty string")
@@ -323,7 +336,10 @@ def _require_origin(
     value: dict[str, Any], allowed: set[str], label: str, errors: list[str]
 ) -> None:
     provenance = value.get("provenance")
-    if isinstance(provenance, dict) and provenance.get("origin") not in allowed:
+    if isinstance(provenance, dict) and (
+        not isinstance(provenance.get("origin"), str)
+        or provenance["origin"] not in allowed
+    ):
         errors.append(f"{label} provenance.origin must be one of {sorted(allowed)}")
 
 
