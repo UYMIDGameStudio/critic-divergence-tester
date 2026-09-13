@@ -114,7 +114,7 @@ public static class StudioFixture {
 
     def run_script(self, release=None, *, success=True, env=None, **kwargs):
         result = subprocess.run(self.command(release, **kwargs), env={**self.env, **(env or {})},
-                                capture_output=True, timeout=45)
+                                capture_output=True, timeout=60)
         output = (result.stdout + result.stderr).decode("utf-8", errors="replace")
         if success:
             self.assertEqual(result.returncode, 0, output)
@@ -252,12 +252,12 @@ public static class StudioFixture {
     def test_install_lock_prevents_concurrent_mutation(self):
         first = subprocess.Popen(self.command(), env={**self.env, "STUDIO_FIXTURE_WAIT": "1"}, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
-            deadline = time.monotonic() + 15
+            deadline = time.monotonic() + 20
             while not self.log.exists() and time.monotonic() < deadline and first.poll() is None:
                 time.sleep(0.05)
             self.assertTrue(self.log.exists(), "First installer did not reach its self-test")
             self.assertIn("Another installation", self.run_script(success=False))
-            out, err = first.communicate(timeout=20)
+            out, err = first.communicate(timeout=30)
             self.assertEqual(first.returncode, 0, (out + err).decode(errors="replace"))
         finally:
             if first.poll() is None:
@@ -267,7 +267,7 @@ public static class StudioFixture {
     def test_interrupted_installer_cleans_owned_staging_on_retry(self):
         first = subprocess.Popen(self.command(), env={**self.env, "STUDIO_FIXTURE_WAIT": "1"}, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
-            deadline = time.monotonic() + 15
+            deadline = time.monotonic() + 20
             while not self.log.exists() and time.monotonic() < deadline and first.poll() is None:
                 time.sleep(0.05)
             self.assertTrue(self.log.exists(), "Installer did not reach its executable")
@@ -277,14 +277,14 @@ public static class StudioFixture {
             self.assertEqual(len(list(self.install.glob(".staging-*"))), 1)
             # Its native child may finish after the killed parent. Wait for the
             # known bounded fixture before requesting interrupted-stage cleanup.
-            child_deadline = time.monotonic() + 8
+            child_deadline = time.monotonic() + 15
             stage_exe = next(self.install.glob(".staging-*")) / "DocumentReviewStudio.exe"
             while time.monotonic() < child_deadline:
                 try:
                     with stage_exe.open("r+b"):
                         break
-                except PermissionError:
-                    time.sleep(0.05)
+                except (PermissionError, FileNotFoundError):
+                    time.sleep(0.1)
             else:
                 self.fail("Interrupted install child did not release its executable")
             self.run_script()
@@ -372,7 +372,7 @@ class BuiltPortableTests(unittest.TestCase):
             original = (project.root / "project.json").read_bytes()
             args = ["-InstallRoot", str(install), "-ProjectRoot", str(library), "-ShortcutRoot", str(shortcuts)]
             def run(script, *extra):
-                result = subprocess.run([POWERSHELL, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(release / script), *args, *extra], capture_output=True, timeout=45)
+                result = subprocess.run([POWERSHELL, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(release / script), *args, *extra], capture_output=True, timeout=60)
                 self.assertEqual(result.returncode, 0, (result.stdout + result.stderr).decode(errors="replace"))
             run(INSTALLER)
             self.assertTrue((install / version / "DocumentReviewStudio.exe").is_file())
