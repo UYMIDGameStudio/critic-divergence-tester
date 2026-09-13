@@ -306,7 +306,7 @@ public static class StudioFixture {
         outside.mkdir()
         (outside / "keep.txt").write_bytes(b"keep outside")
         junction = self.install / "0.2.1" / "linked"
-        result = subprocess.run(ps_command("$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path " + quote(junction) + " -Target " + quote(outside) + " | Out-Null"), capture_output=True, timeout=15)
+        result = subprocess.run(ps_command("$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path " + quote(junction) + " -Target " + quote(outside) + " | Out-Null"), capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         try:
             self.assertIn("Linked paths", self.run_script(uninstall=True, success=False))
@@ -339,7 +339,7 @@ public static class StudioFixture {
         marker = outside / "keep.txt"
         marker.write_bytes(b"do not touch")
         junction = self.release / "linked"
-        result = subprocess.run(ps_command("$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path " + quote(junction) + " -Target " + quote(outside) + " | Out-Null"), capture_output=True, timeout=15)
+        result = subprocess.run(ps_command("$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path " + quote(junction) + " -Target " + quote(outside) + " | Out-Null"), capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         try:
             self.assertIn("Linked paths", self.run_script(success=False))
@@ -347,7 +347,7 @@ public static class StudioFixture {
         finally:
             os.rmdir(junction)
         junction = self.root / "linked-install"
-        result = subprocess.run(ps_command("$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path " + quote(junction) + " -Target " + quote(outside) + " | Out-Null"), capture_output=True, timeout=15)
+        result = subprocess.run(ps_command("$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path " + quote(junction) + " -Target " + quote(outside) + " | Out-Null"), capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         try:
             self.assertIn("Linked paths", self.run_script(success=False, install=junction / "Programs"))
@@ -372,7 +372,7 @@ class BuiltPortableTests(unittest.TestCase):
             original = (project.root / "project.json").read_bytes()
             args = ["-InstallRoot", str(install), "-ProjectRoot", str(library), "-ShortcutRoot", str(shortcuts)]
             def run(script, *extra):
-                result = subprocess.run([POWERSHELL, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(release / script), *args, *extra], capture_output=True, timeout=180)
+                result = subprocess.run([POWERSHELL, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(release / script), *args, *extra], capture_output=True, timeout=45)
                 self.assertEqual(result.returncode, 0, (result.stdout + result.stderr).decode(errors="replace"))
             run(INSTALLER)
             self.assertTrue((install / version / "DocumentReviewStudio.exe").is_file())
