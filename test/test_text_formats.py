@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import hashlib
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -42,6 +43,32 @@ def hex_run(text, encoding):
 
 
 class DelimitedTextTests(unittest.TestCase):
+    def test_real_padding_limit_blocks_extraction_but_keeps_original_project(self):
+        from document_review_studio import DocumentReviewProject
+        raw = (",".join(["x"] * 1000) + "\n" + "short\n" * 50).encode()
+        with tempfile.TemporaryDirectory() as temp:
+            project = DocumentReviewProject.create(temp, filename="ragged.csv", content=raw)
+            self.assertEqual(project.state()["extraction_state"], "blocked")
+            self.assertIn("补齐", project.state()["diagnostics"][0])
+            self.assertEqual((project.root / "source/ragged.csv").read_bytes(), raw)
+            self.assertFalse((project.root / "extraction/document.json").exists())
+            self.assertEqual(project.integrity_errors(), [])
+
+    def test_ragged_table_padding_is_bounded_in_both_row_orders(self):
+        for extension, separator in ((".csv", ","), (".tsv", "\t")):
+            rows = [separator.join(["wide"] * 4), "one", "two", "three"]
+            for ordered in (rows, list(reversed(rows))):
+                with self.subTest(extension=extension, rows=ordered), patch("document_review_text_formats.MAX_BLOCKS", 12):
+                    with self.assertRaisesRegex(IngestionError, "补齐.*安全上限"):
+                        parse(extension, "\n".join(ordered))
+
+    def test_ragged_padding_at_limit_preserves_cells_and_locations(self):
+        with patch("document_review_text_formats.MAX_BLOCKS", 12):
+            document = parse(".csv", "a,b,c,d\nsecond\nlast")
+        self.assertEqual(document.blocks[0].attrs["rows"], [["a", "b", "c", "d"], ["second", "", "", ""], ["last", "", "", ""]])
+        last = next(block for block in document.blocks if block.text == "last")
+        self.assertEqual((last.location.row, last.location.column), (2, 0))
+
     def test_csv_quotes_multiline_and_stable_cell_locations(self):
         raw = b'name,note,formula\r\n"Doe, Jane","first\r\nsecond ""quoted""",=1+1\r\nlast,,42\r\n'
         document = parse(".csv", raw)
@@ -95,6 +122,17 @@ class DelimitedTextTests(unittest.TestCase):
 
 
 class HTMLTextTests(unittest.TestCase):
+    def test_sparse_spans_and_multiple_tables_share_expanded_cell_limit(self):
+        sparse = '<table><tr><td rowspan="4">tall</td><td colspan="3">wide</td></tr></table>'
+        table = '<table><tr><td colspan="7">text</td></tr></table>'
+        for html in (sparse, table * 2):
+            with self.subTest(html=html), patch("document_review_text_formats.MAX_BLOCKS", 12):
+                with self.assertRaisesRegex(IngestionError, "补齐.*安全上限"):
+                    parse(".html", html)
+        with patch("document_review_text_formats.MAX_BLOCKS", 14):
+            document = parse(".html", table * 2)
+        self.assertEqual([b.attrs["rows"] for b in document.blocks if b.kind == "table"], [[["text"] + [""] * 6]] * 2)
+
     def test_titles_paragraphs_lists_tables_and_no_active_content(self):
         html = '''<!doctype html><html><head><title>Review &amp; evidence</title>
         <style>body:after { content: "DO NOT EXTRACT" }</style></head><body>

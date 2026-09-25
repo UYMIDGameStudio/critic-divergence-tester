@@ -51,6 +51,7 @@ class _DocumentBuilder:
         self.warnings = []
         self.metadata = {}
         self.title = ""
+        self.table_slots = 0
 
     def warn(self, code, message, *, severity="medium", **details):
         if not any(w.code == code for w in self.warnings):
@@ -81,10 +82,19 @@ class _DocumentBuilder:
         self.mapping[-1]["table_id"] = table.block_id
         grid = []
         occupied = set()
+        width = 0
+
+        def check_extent(height, columns):
+            # Padding ragged rows and sparse spans also allocates cells. Count
+            # the complete rectangle, across all tables, before growing it.
+            if self.table_slots + height * columns > MAX_BLOCKS:
+                _fail("表格补齐后的总单元格数量超过安全上限")
+
         for row_index, cells in enumerate(rows):
             if row_index >= MAX_TABLE_ROWS:
                 _fail("表格行数超过安全上限")
             column = 0
+            check_extent(max(len(grid), row_index + 1), width)
             while len(grid) <= row_index:
                 grid.append([])
             for cell in cells:
@@ -94,6 +104,8 @@ class _DocumentBuilder:
                     _fail("表格列数或跨行范围超过安全上限")
                 if len(occupied) + cell.rowspan * cell.colspan > MAX_BLOCKS:
                     _fail("表格展开后的单元格过多")
+                width = max(width, column + cell.colspan)
+                check_extent(max(len(grid), row_index + cell.rowspan), width)
                 for r in range(row_index, row_index + cell.rowspan):
                     while len(grid) <= r:
                         grid.append([])
@@ -109,9 +121,9 @@ class _DocumentBuilder:
                                  attrs={"row_span": cell.rowspan, "grid_span": cell.colspan, "header": cell.header})
                 table.children.append(block.block_id)
                 column += cell.colspan
-        width = max(map(len, grid), default=0)
         for row in grid:
             row.extend([""] * (width - len(row)))
+        self.table_slots += len(grid) * width
         table.attrs["rows"] = grid
 
     def finish(self):
