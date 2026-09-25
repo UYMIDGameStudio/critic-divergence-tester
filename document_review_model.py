@@ -9,6 +9,7 @@ serialisable contracts; parsers and review heuristics live elsewhere.
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import math
 import re
@@ -435,7 +436,12 @@ def make_location(block: DocumentBlock, **overrides: Any) -> DocumentLocation:
 def model_to_markdown(document: StructuredDocument) -> str:
     """Render a conservative editable draft from the internal model."""
     def cell_text(value):
-        return str(value).replace("\\", "\\\\").replace("|", "\\|")
+        # Keep one physical Markdown row, and prevent source text from becoming
+        # active HTML. Escape ampersands before adding our break/entity syntax.
+        escaped = (html.escape(str(value), quote=False).replace("\\", "\\\\")
+                   .replace("`", "\\`").replace("|", "\\|")
+                   .replace("\r", "&#13;").replace("\n", "<br>"))
+        return re.sub(r"^[ \t]+|[ \t]+$", lambda match: "".join(f"&#{ord(char)};" for char in match.group()), escaped)
 
     lines: list[str] = []
     for block in document.blocks:

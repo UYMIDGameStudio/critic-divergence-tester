@@ -8,6 +8,7 @@ parser into an apparently successful extraction.
 from __future__ import annotations
 
 import hashlib
+import html
 import importlib
 import io
 import math
@@ -135,6 +136,61 @@ def _block_id(source_hash: str, kind: str, ordinal: int, text: str, *location: o
     return stable_id("B", source_hash, kind, ordinal, text, *location)
 
 
+_MARKDOWN_CELL_SPECIAL = re.compile(r"[\\`<&]")
+
+
+def _markdown_cell_text(value: str) -> str:
+    """Decode table escapes and breaks while keeping code-span text literal."""
+    output = io.StringIO()
+    code_width = None
+    i = 0
+    while i < len(value):
+        special = _MARKDOWN_CELL_SPECIAL.search(value, i)
+        if special is None:
+            output.write(value[i:])
+            break
+        output.write(value[i:special.start()])
+        i = special.start()
+        char = value[i]
+        if char == "`":
+            end = i + 1
+            while end < len(value) and value[end] == "`":
+                end += 1
+            width = end - i
+            if code_width is None:
+                code_width = width
+            elif code_width == width:
+                code_width = None
+            output.write(value[i:end])
+            i = end
+            continue
+        if code_width is None:
+            if char == "\\" and i + 1 < len(value) and value[i + 1] in "\\|`<&":
+                output.write(value[i + 1])
+                i += 2
+                continue
+            if char == "<":
+                tag = re.match(r"<br[ \t]*/?>", value[i:i + 16], re.I)
+                if tag:
+                    output.write("\n")
+                    i += tag.end()
+                    continue
+            if char == "&":
+                entity = re.match(r"&(?:#[xX][0-9a-fA-F]{1,8}|#[0-9]{1,10}|[A-Za-z][A-Za-z0-9]{1,31});", value[i:i + 35])
+                if entity:
+                    output.write(html.unescape(entity.group()))
+                    i += entity.end()
+                    continue
+        # GFM permits an escaped pipe even inside a table's code span.
+        if code_width is not None and value[i:i + 2] == "\\|":
+            output.write("|")
+            i += 2
+            continue
+        output.write(char)
+        i += 1
+    return output.getvalue()
+
+
 def _markdown_row(line: str, *, max_cells: int) -> tuple[list[str], bool]:
     """Split unescaped pipes, removing only the optional outer delimiters."""
     line = line.strip()
@@ -145,7 +201,7 @@ def _markdown_row(line: str, *, max_cells: int) -> tuple[list[str], bool]:
         value.write(line[start:match.start()])
         token = match.group()
         if token == "|":
-            cells.append(value.getvalue().strip())
+            cells.append(_markdown_cell_text(value.getvalue().strip()))
             # Allow the two optional boundary delimiters without constructing
             # an unbounded list for a single hostile table row.
             if len(cells) > max_cells + 2:
@@ -154,11 +210,11 @@ def _markdown_row(line: str, *, max_cells: int) -> tuple[list[str], bool]:
             has_pipe = True
             end_pipe = match.end() == len(line)
         else:
-            value.write(token[1])
+            value.write(token)
             end_pipe = False
         start = match.end()
     value.write(line[start:])
-    cells.append(value.getvalue().strip())
+    cells.append(_markdown_cell_text(value.getvalue().strip()))
     if line.startswith("|"):
         cells.pop(0)
     if end_pipe:
