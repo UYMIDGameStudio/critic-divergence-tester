@@ -184,7 +184,7 @@ model's reasoning and sources still require human review in the document's langu
 
 | Format | Extracted content and important limits |
 | --- | --- |
-| Markdown/TXT (`.md`, `.markdown`, `.txt`, `.text`, `.log`) | Text blocks and headings with source-line locations; supported text encodings can be selected explicitly. |
+| Markdown/TXT (`.md`, `.markdown`, `.txt`, `.text`, `.log`) | Text blocks and headings with source-line locations; supported text encodings can be selected explicitly. Defaults: 250,000 source lines and 50,000 structured blocks, including table containers/cells. Markdown tables also share the document-wide 50,000-cell budget, with at most 10,000 rows per table and 1,000 columns per row. Oversized input is rejected without truncating the source. |
 | CSV/TSV | Quoted delimiters and multiline cells are parsed as cells with stable row/column locations. These are stored text values; formulas are not executed. |
 | HTML/HTM | Static headings, paragraphs, lists and tables. Scripts, styles, templates and recognized hidden content are omitted. No scripts run and no external resources are fetched; this is not a browser rendering or a full CSS layout analysis. |
 | RTF | Text, Unicode escapes, code pages and basic paragraph structure. Embedded images/objects and unsupported destinations are omitted with warnings; complex tables/layout are not preserved. |

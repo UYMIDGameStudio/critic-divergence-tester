@@ -88,6 +88,8 @@ class IngestionLimits:
     max_office_slides: int = 1000
     max_office_sheets: int = 200
     max_office_text_chars: int = 8000000
+    max_text_blocks: int = 50000
+    max_text_lines: int = 250000
 
 
 class OCRAdapter(Protocol):
@@ -133,41 +135,57 @@ def _block_id(source_hash: str, kind: str, ordinal: int, text: str, *location: o
     return stable_id("B", source_hash, kind, ordinal, text, *location)
 
 
-def _markdown_row(line: str) -> tuple[list[str], bool]:
+def _markdown_row(line: str, *, max_cells: int) -> tuple[list[str], bool]:
     """Split unescaped pipes, removing only the optional outer delimiters."""
     line = line.strip()
-    cells, value = [], []
+    cells, value = [], io.StringIO()
     has_pipe = end_pipe = False
-    i = 0
-    while i < len(line):
-        char = line[i]
-        if char == "\\" and i + 1 < len(line) and line[i + 1] in "\\|":
-            value.append(line[i + 1])
-            i += 2
-            end_pipe = False
-            continue
-        if char == "|":
-            cells.append("".join(value).strip())
-            value = []
-            has_pipe = end_pipe = True
+    start = 0
+    for match in re.finditer(r"\\[\\|]|\|", line):
+        value.write(line[start:match.start()])
+        token = match.group()
+        if token == "|":
+            cells.append(value.getvalue().strip())
+            # Allow the two optional boundary delimiters without constructing
+            # an unbounded list for a single hostile table row.
+            if len(cells) > max_cells + 2:
+                raise IngestionError("Markdown 表格列数超过安全上限")
+            value = io.StringIO()
+            has_pipe = True
+            end_pipe = match.end() == len(line)
         else:
-            value.append(char)
+            value.write(token[1])
             end_pipe = False
-        i += 1
-    cells.append("".join(value).strip())
+        start = match.end()
+    value.write(line[start:])
+    cells.append(value.getvalue().strip())
     if line.startswith("|"):
         cells.pop(0)
     if end_pipe:
         cells.pop()
+    if len(cells) > max_cells:
+        raise IngestionError("Markdown 表格列数超过安全上限")
     return cells, has_pipe
 
 
-def _text_blocks(text: str, source: RawFileBinding, *, parser: str, warnings: list[ExtractionWarning] | None = None) -> StructuredDocument:
+def _text_blocks(text: str, source: RawFileBinding, *, parser: str, warnings: list[ExtractionWarning] | None = None, limits: IngestionLimits | None = None) -> StructuredDocument:
+    limits = limits or IngestionLimits()
+    # Count before splitlines allocates one string per line, including blank
+    # lines and fenced content that may produce very few structured blocks.
+    line_count = last_end = 0
+    for ending in re.finditer(r"\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]", text):
+        line_count += 1
+        last_end = ending.end()
+        if line_count > limits.max_text_lines:
+            raise IngestionError("文本行数超过安全上限，请拆分原稿后导入")
+    if line_count + int(last_end < len(text)) > limits.max_text_lines:
+        raise IngestionError("文本行数超过安全上限，请拆分原稿后导入")
     warnings = list(warnings or [])
     blocks: list[DocumentBlock] = []
     mapping: list[dict[str, Any]] = []
     paragraph = 0
     offset = 0
+    table_cells = 0
     # Offsets count characters in the decoded original, including each actual
     # line terminator. CRLF occupies two characters and must not be normalized.
     lines = text.splitlines(keepends=True)
@@ -179,6 +197,8 @@ def _text_blocks(text: str, source: RawFileBinding, *, parser: str, warnings: li
         if not line.strip():
             i += 1
             continue
+        if len(blocks) >= limits.max_text_blocks:
+            raise IngestionError("文本块数量超过安全上限，请拆分原稿后导入")
         fence = re.fullmatch(r" {0,3}(`{3,}|~{3,})(.*)", line)
         if fence and not (fence[1][0] == "`" and "`" in fence[2]):
             closing = re.compile(r" {0,3}" + re.escape(fence[1][0]) + "{" + str(len(fence[1])) + r",}[ \t]*")
@@ -202,9 +222,10 @@ def _text_blocks(text: str, source: RawFileBinding, *, parser: str, warnings: li
         heading = re.match(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$", line)
         list_item = re.match(r"^\s*(?:(\d+)[.)]|[-*+])\s+(.+)$", line)
         next_line = lines[i + 1] if i + 1 < len(lines) else ""
-        possible_table = not heading and not list_item and not line.lstrip().startswith(">") and ("|" in line or "|" in next_line)
-        header, header_pipe = _markdown_row(line) if possible_table else ([], False)
-        delimiter, delimiter_pipe = _markdown_row(next_line) if possible_table else ([], False)
+        possible_table = (not heading and not list_item and not line.lstrip().startswith(">")
+                          and ("|" in line or "|" in next_line) and re.fullmatch(r"[\s:|\-]+", next_line))
+        header, header_pipe = _markdown_row(line, max_cells=limits.max_office_columns) if possible_table else ([], False)
+        delimiter, delimiter_pipe = _markdown_row(next_line, max_cells=limits.max_office_columns) if possible_table else ([], False)
         table = ((header_pipe or delimiter_pipe) and bool(header) and len(header) == len(delimiter)
                  and all(re.fullmatch(r":?-+:?", cell) for cell in delimiter))
         kind = "paragraph"
@@ -222,16 +243,27 @@ def _text_blocks(text: str, source: RawFileBinding, *, parser: str, warnings: li
         if table:
             rows: list[list[str]] = []
             row_source_lines: list[int] = []
+            pending_cells = 0
             j = i
             while j < len(lines) and lines[j].strip():
-                cells, has_pipe = _markdown_row(lines[j])
-                if j > i + 1 and (not has_pipe or re.match(r" {0,3}(?:`{3,}|~{3,}|#{1,6}\s|>|[-+*]\s|[0-9]+[.)]\s)", lines[j])):
+                if j > i + 1 and ("|" not in lines[j] or re.match(r" {0,3}(?:`{3,}|~{3,}|#{1,6}\s|>|[-+*]\s|[0-9]+[.)]\s)", lines[j])):
+                    break
+                cells, has_pipe = _markdown_row(lines[j], max_cells=limits.max_office_columns)
+                if j > i + 1 and not has_pipe:
                     break
                 if j != i + 1:
+                    pending_cells += len(cells)
+                    if len(rows) + 1 > limits.max_office_rows:
+                        raise IngestionError("Markdown 表格行数超过安全上限")
+                    if table_cells + pending_cells > limits.max_office_cells:
+                        raise IngestionError("Markdown 表格总单元格数量超过安全上限")
+                    if len(blocks) + 1 + pending_cells > limits.max_text_blocks:
+                        raise IngestionError("文本块数量超过安全上限，请拆分原稿后导入")
                     rows.append(cells)
                     row_source_lines.append(j + 1)
                 offset += len(lines[j]) if j != i else 0
                 j += 1
+            table_cells += pending_cells
             if any(len(row) != len(header) for row in rows) and not any(w.code == "markdown-ragged-table" for w in warnings):
                 warnings.append(ExtractionWarning("markdown-ragged-table", "medium",
                     "Markdown 表格各行列数不同，已保留全部单元格而未丢弃多余内容；请对照原文核对。"))
@@ -811,7 +843,7 @@ def ingest_bytes(name: str, data: bytes, *, limits: IngestionLimits | None = Non
             warnings.append(ExtractionWarning("encoding-ambiguous", "high",
                 "文件编码存在多个可能解释，请检查预览；如有乱码可选择编码重新识别。",
                 details={"selected": decoded.encoding, "candidates": decoded.candidates}))
-        document = _text_blocks(decoded.text, source, parser="plain-text", warnings=warnings)
+        document = _text_blocks(decoded.text, source, parser="plain-text", warnings=warnings, limits=limits)
         document.metadata.update({"encoding": decoded.encoding, "encoding_ambiguous": decoded.ambiguous,
                                   "encoding_candidates": list(decoded.candidates)})
         return document
