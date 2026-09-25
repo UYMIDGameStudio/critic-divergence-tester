@@ -434,6 +434,9 @@ def make_location(block: DocumentBlock, **overrides: Any) -> DocumentLocation:
 
 def model_to_markdown(document: StructuredDocument) -> str:
     """Render a conservative editable draft from the internal model."""
+    def cell_text(value):
+        return str(value).replace("\\", "\\\\").replace("|", "\\|")
+
     lines: list[str] = []
     for block in document.blocks:
         if block.kind == "heading":
@@ -450,10 +453,10 @@ def model_to_markdown(document: StructuredDocument) -> str:
         elif block.kind == "table":
             rows = block.attrs.get("rows") or []
             if rows:
-                lines.append("| " + " | ".join(str(cell) for cell in rows[0]) + " |")
+                lines.append("| " + " | ".join(cell_text(cell) for cell in rows[0]) + " |")
                 lines.append("| " + " | ".join("---" for _ in rows[0]) + " |")
                 for row in rows[1:]:
-                    lines.append("| " + " | ".join(str(cell) for cell in row) + " |")
+                    lines.append("| " + " | ".join(cell_text(cell) for cell in row) + " |")
         elif block.text:
             lines.append(block.text)
         if lines and lines[-1] != "":

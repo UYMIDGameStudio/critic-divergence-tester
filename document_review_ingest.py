@@ -133,6 +133,35 @@ def _block_id(source_hash: str, kind: str, ordinal: int, text: str, *location: o
     return stable_id("B", source_hash, kind, ordinal, text, *location)
 
 
+def _markdown_row(line: str) -> tuple[list[str], bool]:
+    """Split unescaped pipes, removing only the optional outer delimiters."""
+    line = line.strip()
+    cells, value = [], []
+    has_pipe = end_pipe = False
+    i = 0
+    while i < len(line):
+        char = line[i]
+        if char == "\\" and i + 1 < len(line) and line[i + 1] in "\\|":
+            value.append(line[i + 1])
+            i += 2
+            end_pipe = False
+            continue
+        if char == "|":
+            cells.append("".join(value).strip())
+            value = []
+            has_pipe = end_pipe = True
+        else:
+            value.append(char)
+            end_pipe = False
+        i += 1
+    cells.append("".join(value).strip())
+    if line.startswith("|"):
+        cells.pop(0)
+    if end_pipe:
+        cells.pop()
+    return cells, has_pipe
+
+
 def _text_blocks(text: str, source: RawFileBinding, *, parser: str, warnings: list[ExtractionWarning] | None = None) -> StructuredDocument:
     warnings = list(warnings or [])
     blocks: list[DocumentBlock] = []
@@ -150,9 +179,34 @@ def _text_blocks(text: str, source: RawFileBinding, *, parser: str, warnings: li
         if not line.strip():
             i += 1
             continue
+        fence = re.fullmatch(r" {0,3}(`{3,}|~{3,})(.*)", line)
+        if fence and not (fence[1][0] == "`" and "`" in fence[2]):
+            closing = re.compile(r" {0,3}" + re.escape(fence[1][0]) + "{" + str(len(fence[1])) + r",}[ \t]*")
+            j = i + 1
+            while j < len(lines):
+                offset += len(lines[j])
+                ended = closing.fullmatch(lines[j].rstrip("\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029"))
+                j += 1
+                if ended:
+                    break
+            end = offset - (len(lines[j - 1]) - len(lines[j - 1].rstrip("\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029")))
+            value = text[start:end]
+            block_id = _block_id(source.sha256, "paragraph", len(blocks), value, i + 1)
+            blocks.append(DocumentBlock(block_id, "paragraph", text=value,
+                location=DocumentLocation(block_id, "paragraph", paragraph=paragraph, char_start=start, char_end=end, source_path=source.original_name),
+                attrs={"source_line": i + 1, "source_end_line": j, "fenced_code": True, "info_string": fence[2].strip()}))
+            mapping.append({"source_line": i + 1, "source_end_line": j, "block_id": block_id, "char_start": start, "char_end": end})
+            paragraph += 1
+            i = j
+            continue
         heading = re.match(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$", line)
         list_item = re.match(r"^\s*(?:(\d+)[.)]|[-*+])\s+(.+)$", line)
-        table = "|" in line and i + 1 < len(lines) and re.match(r"^\s*\|?\s*:?-{3,}", lines[i + 1])
+        next_line = lines[i + 1] if i + 1 < len(lines) else ""
+        possible_table = not heading and not list_item and not line.lstrip().startswith(">") and ("|" in line or "|" in next_line)
+        header, header_pipe = _markdown_row(line) if possible_table else ([], False)
+        delimiter, delimiter_pipe = _markdown_row(next_line) if possible_table else ([], False)
+        table = ((header_pipe or delimiter_pipe) and bool(header) and len(header) == len(delimiter)
+                 and all(re.fullmatch(r":?-+:?", cell) for cell in delimiter))
         kind = "paragraph"
         level = None
         value = line.strip()
@@ -169,13 +223,18 @@ def _text_blocks(text: str, source: RawFileBinding, *, parser: str, warnings: li
             rows: list[list[str]] = []
             row_source_lines: list[int] = []
             j = i
-            while j < len(lines) and "|" in lines[j] and lines[j].strip():
-                cells = [cell.strip() for cell in lines[j].strip().strip("|").split("|")]
-                if not all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells):
+            while j < len(lines) and lines[j].strip():
+                cells, has_pipe = _markdown_row(lines[j])
+                if j > i + 1 and (not has_pipe or re.match(r" {0,3}(?:`{3,}|~{3,}|#{1,6}\s|>|[-+*]\s|[0-9]+[.)]\s)", lines[j])):
+                    break
+                if j != i + 1:
                     rows.append(cells)
                     row_source_lines.append(j + 1)
                 offset += len(lines[j]) if j != i else 0
                 j += 1
+            if any(len(row) != len(header) for row in rows) and not any(w.code == "markdown-ragged-table" for w in warnings):
+                warnings.append(ExtractionWarning("markdown-ragged-table", "medium",
+                    "Markdown 表格各行列数不同，已保留全部单元格而未丢弃多余内容；请对照原文核对。"))
             table_id = _block_id(source.sha256, "table", len(blocks), "|".join("|".join(row) for row in rows), i + 1)
             table_block = DocumentBlock(
                 table_id,
@@ -215,7 +274,9 @@ def _text_blocks(text: str, source: RawFileBinding, *, parser: str, warnings: li
         mapping.append({"source_line": i + 1, "block_id": block_id, "char_start": start, "char_end": start + len(line)})
         paragraph += 1
         i += 1
-    quality = QualitySignals(page_count=1, text_coverage=min(1.0, 1.0 if text.strip() else 0.0), requires_confirmation=True)
+    tables = sum(block.kind == "table" for block in blocks)
+    quality = QualitySignals(page_count=1, text_coverage=min(1.0, 1.0 if text.strip() else 0.0),
+                             table_count=tables, tables_parsed=tables, requires_confirmation=True)
     return StructuredDocument(
         document_id=stable_id("DOC", source.sha256),
         title=next((b.text for b in blocks if b.kind == "heading"), Path(source.original_name).stem),

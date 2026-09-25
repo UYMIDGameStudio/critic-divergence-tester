@@ -6,8 +6,8 @@
 由你逐项批准，再生成独立新版本复查。核心文本流程不依赖第三方 Python 包；
 PDF、扫描件及旧 Office/WPS 格式按需使用额外组件。
 
-**0.2.11** 修复 CRLF 换行造成的原文字符定位偏移，以及 Markdown 表格分隔线
-之后的单元格行号偏差。见 [0.2.11 修复记录](docs/release-engineering-0.2.11.md)，
+**0.2.12** 修复 Markdown 表格的转义竖线、空单元格和横线数据丢失，并保留代码
+围栏内容，避免示例标题混入正文结构。见 [0.2.12 修复记录](docs/release-engineering-0.2.12.md)，
 安装与升级见 [便携版说明](docs/portable-guide.md)。
 
 [对抗深审](docs/adversarial-review.md)让已有批评经过独立辩护与证据复核；
@@ -21,7 +21,7 @@ PDF、扫描件及旧 Office/WPS 格式按需使用额外组件。
 当前仍为 **experimental preview**，未签名，其他设备与真实作者试用仍待验收。
 远端自动验证结果以相应提交的 Actions 记录为准。
 
-此前修复记录：[文件名保护](docs/release-engineering-0.2.10.md)、[表格导入容量保护](docs/release-engineering-0.2.9.md)、[浏览器启动与双语维护提示](docs/release-engineering-0.2.8.md)、[删除中断与备份恢复](docs/release-engineering-0.2.7.md)、
+此前修复记录：[原文定位](docs/release-engineering-0.2.11.md)、[文件名保护](docs/release-engineering-0.2.10.md)、[表格导入容量保护](docs/release-engineering-0.2.9.md)、[浏览器启动与双语维护提示](docs/release-engineering-0.2.8.md)、[删除中断与备份恢复](docs/release-engineering-0.2.7.md)、
 [深审历史读取](docs/release-engineering-0.2.6.md)、[Windows 路径保护](docs/release-engineering-0.2.5.md)、
 [Unicode 安装与卸载](docs/release-engineering-0.2.4.md)、[基础交付与验收边界](docs/release-engineering-0.2.3.md)。
 
