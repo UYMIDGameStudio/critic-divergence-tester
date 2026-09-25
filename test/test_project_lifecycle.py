@@ -21,6 +21,93 @@ def write(path, data):
 
 
 class ProjectLifecycleTests(unittest.TestCase):
+    def test_interrupted_delete_marker_does_not_disable_restored_backup(self):
+        from document_review_studio import DocumentReviewProject
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project = DocumentReviewProject.create(root / "library", filename="draft.txt", content=b"Author material")
+            marker = project.root / ".deleting"
+            marker.write_text("interrupted deletion", encoding="utf-8")
+            archive = lifecycle.create_backup(project.root, root / "backup.zip")
+            with zipfile.ZipFile(archive) as zipped:
+                self.assertNotIn("project/.deleting", zipped.namelist())
+            restored = DocumentReviewProject(lifecycle.restore_backup(archive, root / "restored"))
+            restored.confirm_extraction("confirm")
+            self.assertFalse((restored.root / ".deleting").exists())
+            self.assertTrue(marker.exists(), "Backup must not resume editing of the original pending deletion")
+
+    def test_legacy_backup_deletion_marker_is_verified_but_not_restored(self):
+        from document_review_studio import DocumentReviewProject
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project = DocumentReviewProject.create(root / "library", filename="draft.txt", content=b"Author material")
+            archive = lifecycle.create_backup(project.root, root / "clean.zip")
+            with zipfile.ZipFile(archive) as zipped:
+                entries = {name: zipped.read(name) for name in zipped.namelist()}
+            marker = b"old interrupted deletion"
+            manifest = json.loads(entries["backup.json"])
+            manifest["files"][".deleting"] = {"bytes": len(marker), "sha256": hashlib.sha256(marker).hexdigest()}
+            entries["backup.json"] = json.dumps(manifest).encode()
+            entries["project/.deleting"] = marker
+            for tampered in (True, False):
+                old = root / ("bad.zip" if tampered else "old.zip")
+                with zipfile.ZipFile(old, "w") as zipped:
+                    for name, data in entries.items():
+                        zipped.writestr(name, b"X" * len(marker) if tampered and name == "project/.deleting" else data)
+                if tampered:
+                    with self.assertRaisesRegex(ValueError, "备份校验失败"):
+                        lifecycle.restore_backup(old, root / "restored")
+                else:
+                    restored = DocumentReviewProject(lifecycle.restore_backup(old, root / "restored"))
+                    restored.confirm_extraction("confirm")
+                    self.assertFalse((restored.root / ".deleting").exists())
+                    self.assertEqual(restored.document().source.sha256, project.document().source.sha256)
+
+    def test_failed_delete_rename_restores_editability_and_keeps_backup(self):
+        from document_review_studio import DocumentReviewProject
+        from document_review_ui import StudioApp
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project = DocumentReviewProject.create(root / "library", filename="draft.txt", content=b"Author material")
+            app = StudioApp.create(project.root.parent, project.root)
+            original_replace = os.replace
+
+            def fail_rename(source, target):
+                if Path(target).name.startswith(".deleted-"):
+                    raise PermissionError("simulated Windows sharing violation")
+                return original_replace(source, target)
+
+            with patch("document_review_ui.os.replace", side_effect=fail_rename):
+                with self.assertRaisesRegex(PermissionError, "sharing violation"):
+                    app.delete_project(project.root.name)
+            project._ensure_writable()
+            self.assertFalse((project.root / ".deleting").exists())
+            backups = list((project.root.parent / "backups").glob("*.zip"))
+            self.assertEqual(len(backups), 1)
+            restored = DocumentReviewProject(lifecycle.restore_backup(backups[0], root / "restored"))
+            restored._ensure_writable()
+            self.assertEqual(restored.document().source.sha256, project.document().source.sha256)
+            project.confirm_extraction("confirm")
+            app.delete_project(project.root.name)
+            self.assertFalse(project.root.exists())
+
+    def test_backup_rejects_directory_disguised_as_deletion_marker(self):
+        from document_review_studio import DocumentReviewProject
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project = DocumentReviewProject.create(root / "library", filename="draft.txt", content=b"Author material")
+            marker = project.root / ".deleting"
+            marker.mkdir()
+            (marker / "unexpected.txt").write_bytes(b"preserve this")
+            with self.assertRaisesRegex(ValueError, "删除标记必须为文件"):
+                lifecycle.create_backup(project.root, root / "backup.zip")
+            self.assertFalse((root / "backup.zip").exists())
+            self.assertEqual((marker / "unexpected.txt").read_bytes(), b"preserve this")
+
     def test_explicit_completed_validation_archive_is_committed(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve()

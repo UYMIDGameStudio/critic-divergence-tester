@@ -20,7 +20,7 @@ from pathlib import Path, PurePosixPath
 
 from project_lock import project_mutation_lock
 
-APP_VERSION = "0.2.6"
+APP_VERSION = "0.2.7"
 PROJECT_SCHEMA = 1
 JOURNAL = ".recovery"
 MAX_BACKUP_BYTES = 1024 * 1024 * 1024
@@ -307,6 +307,11 @@ def create_backup(root, destination):
         if errors:
             raise ValueError("项目未通过完整性验证，拒绝生成可信备份：" + "; ".join(errors[:3]))
         entries = _files(root)
+        # A pending UI deletion is runtime state, never part of a restored
+        # manuscript. Still inventory it first so links cannot evade checks.
+        if any(name.casefold().startswith(".deleting/") for name in entries):
+            raise ValueError("项目删除标记必须为文件")
+        entries = {name: path for name, path in entries.items() if name.casefold() != ".deleting"}
         if len(entries) > MAX_BACKUP_FILES or sum(p.stat().st_size for p in entries.values()) > MAX_BACKUP_BYTES:
             raise ValueError("项目超过备份容量限制")
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -357,6 +362,8 @@ def restore_backup(archive_path, library):
                 staging.mkdir()
                 for relative, entry in manifest["files"].items():
                     target = _project_child(staging, relative)
+                    if relative.casefold().startswith(".deleting/"):
+                        raise ValueError("备份包含无效删除标记路径")
                     if not _hash_entry(entry) or type(entry.get("bytes")) is not int or entry["bytes"] < 0:
                         raise ValueError("备份文件清单字段无效")
                     if archive.getinfo("project/" + relative).file_size != entry["bytes"]:
@@ -364,7 +371,10 @@ def restore_backup(archive_path, library):
                     data = archive.read("project/" + relative)
                     if len(data) != entry["bytes"] or hashlib.sha256(data).hexdigest() != entry["sha256"]:
                         raise ValueError("备份校验失败：" + relative)
-                    _atomic(target, data)
+                    # Older backups could include this runtime marker. Verify
+                    # its bytes like every entry, but never reactivate deletion.
+                    if relative.casefold() != ".deleting":
+                        _atomic(target, data)
             compatibility(staging)
             errors = DocumentReviewProject(staging).integrity_errors()
             if errors:

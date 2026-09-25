@@ -2,7 +2,10 @@
 
 [![Tests](https://github.com/UYMIDGameStudio/critic-divergence-tester/actions/workflows/tests.yml/badge.svg)](https://github.com/UYMIDGameStudio/critic-divergence-tester/actions/workflows/tests.yml)
 
-**0.2.6**：减少对抗深审历史的重复文件读取，保留每次读取的完整性校验与实时状态。
+**0.2.7**：修复删除中断后的可编辑性和备份恢复，旧备份中的删除标记不再阻断恢复项目。
+见 [0.2.7 恢复修复记录](docs/release-engineering-0.2.7.md)。
+
+0.2.6 减少对抗深审历史的重复文件读取，保留每次读取的完整性校验与实时状态。
 见 [0.2.6 优化记录](docs/release-engineering-0.2.6.md)。
 
 0.2.5 补齐 Windows 长短路径别名的目录重叠保护和旧安装记录兼容，

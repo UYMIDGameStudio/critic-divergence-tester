@@ -205,6 +205,6 @@ class UnifiedServerTests(unittest.TestCase):
             server, url = serve_unified_app(data_dir=root, project_dir=legacy, open_browser=False)
             try:
                 self.assertTrue(url.endswith("/research/"))
-                self.assertEqual(server.research_app.project_dir, legacy)
+                self.assertTrue(server.research_app.project_dir.samefile(legacy))
             finally:
                 server.server_close()

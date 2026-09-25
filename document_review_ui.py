@@ -108,14 +108,26 @@ class StudioApp:
     def delete_project(self, directory: str) -> "StudioApp":
         target = self._project_directory(directory, must_exist=True)
         from project_lock import project_mutation_lock
-        with project_mutation_lock(self.data_dir), project_mutation_lock(target):
-            backup = create_backup(target, self.data_dir / "backups" / (target.name + "-" + secrets.token_hex(8) + ".zip"))
-            _atomic(target / ".deleting", str(backup).encode("utf-8"))
-        # Windows keeps the lock carrier open while locked. Rename under the
-        # library lock after releasing the project handle, then remove that copy.
         with project_mutation_lock(self.data_dir):
+            with project_mutation_lock(target):
+                backup = create_backup(target, self.data_dir / "backups" / (target.name + "-" + secrets.token_hex(8) + ".zip"))
+                marker = target / ".deleting"
+                marker_created = not marker.exists()
+                if marker_created:
+                    _atomic(marker, str(backup).encode("utf-8"))
+            # Windows requires releasing the project handle before rename.
+            # Keep the library lock throughout so another delete cannot race.
             trash = self.data_dir / (".deleted-" + secrets.token_hex(8))
-            os.replace(target, trash)
+            try:
+                os.replace(target, trash)
+            except OSError:
+                # If publication failed, restore the previously editable state.
+                # A marker from an earlier interrupted deletion remains intact.
+                if marker_created:
+                    with project_mutation_lock(target):
+                        if marker.is_file() and not marker.is_symlink() and marker.read_bytes() == str(backup).encode("utf-8"):
+                            marker.unlink()
+                raise
             shutil.rmtree(trash)
         selected = None if self.project and self.project.root == target else self.project
         return replace(self, project=selected, notice=f"项目已删除；删除前的可恢复备份保存在：{backup}")
