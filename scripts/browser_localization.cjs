@@ -150,6 +150,49 @@ async function main() {
       dependencyText.every(text => !/[\u3400-\u9fff]/u.test(text)), dependencyText);
     await screenshot('01b-home-english');
 
+    stage = 'backup recovery errors in both interface languages';
+    for (const [locale, expected] of [['en', 'full project backup ZIP'], ['zh-Hant', '完整專案備份 ZIP']]) {
+      await language(page, locale);
+      const filename = '確認原文 · invalid.zip';
+      await page.locator('#backup-file').setInputFiles({name: filename, mimeType: 'application/zip', buffer: Buffer.from('not a ZIP')});
+      const rejected = page.waitForResponse(response => response.url().endsWith('/api/action')
+        && response.request().postDataJSON()?.action === 'restore_backup');
+      await page.locator('#restore-backup').click();
+      assert.equal((await rejected).status(), 400);
+      await idle(page);
+      assert.ok((await page.locator('#err').innerText()).includes(expected));
+      assert.equal(await page.locator('#backup-file').evaluate(input => input.files[0].name), filename);
+      check('invalid_backup_has_actionable_' + locale + '_message', true);
+    }
+    const missingMaintenanceTranslations = await page.evaluate(() => [...maintenanceErrorLiterals]
+      .filter(key => !UI_MESSAGES[key]?.en || !UI_MESSAGES[key]?.['zh-Hant']));
+    assert.deepEqual(missingMaintenanceTranslations, []);
+    check('maintenance_error_catalogue_complete', true);
+    const originalDiagnostic = '確認原文 / 确认识别.txt <img src=x onerror="window.__maintenanceInjected=true">';
+    const injectedFailure = async route => {
+      if (route.request().postDataJSON()?.action === 'restore_backup') {
+        return route.fulfill({status: 400, contentType: 'application/json', body: JSON.stringify({error: originalDiagnostic})});
+      }
+      return route.continue();
+    };
+    await page.route('**/api/action', injectedFailure);
+    for (const [locale, guidance] of [['en', 'Restoration could not finish.'], ['zh-Hant', '恢復未能完成。']]) {
+      await language(page, locale);
+      const rejected = page.waitForResponse(response => response.url().endsWith('/api/action')
+        && response.request().postDataJSON()?.action === 'restore_backup');
+      await page.locator('#restore-backup').click();
+      assert.equal((await rejected).status(), 400);
+      await idle(page);
+      const message = await page.locator('#err').innerText();
+      assert.ok(message.startsWith(guidance));
+      assert.ok(message.endsWith(originalDiagnostic));
+      assert.equal(await page.locator('#err img').count(), 0);
+      assert.equal(await page.evaluate(() => Boolean(window.__maintenanceInjected)), false);
+      check('unknown_maintenance_diagnostic_preserved_and_inert_' + locale, true);
+    }
+    await page.unroute('**/api/action', injectedFailure);
+    await language(page, 'en');
+
     stage = 'selected file and title across language changes';
     const paragraphs = [
       'English: The garden is quiet. Export and Save draft are original words.',

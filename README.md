@@ -2,34 +2,28 @@
 
 [![Tests](https://github.com/UYMIDGameStudio/critic-divergence-tester/actions/workflows/tests.yml/badge.svg)](https://github.com/UYMIDGameStudio/critic-divergence-tester/actions/workflows/tests.yml)
 
-**0.2.7**：修复删除中断后的可编辑性和备份恢复，旧备份中的删除标记不再阻断恢复项目。
-见 [0.2.7 恢复修复记录](docs/release-engineering-0.2.7.md)。
-
-0.2.6 减少对抗深审历史的重复文件读取，保留每次读取的完整性校验与实时状态。
-见 [0.2.6 优化记录](docs/release-engineering-0.2.6.md)。
-
-0.2.5 补齐 Windows 长短路径别名的目录重叠保护和旧安装记录兼容，
-详见 [0.2.5 修复记录](docs/release-engineering-0.2.5.md)。
-
-0.2.4 修复 Windows 不同系统编码下的 Unicode 路径安装和快捷方式卸载；
-损坏的快捷方式会在卸载删除程序前被检出，指向其他程序的快捷方式保留。
-见 [0.2.4 修复记录](docs/release-engineering-0.2.4.md)。
-
-0.2.3 加入[对抗深审](docs/adversarial-review.md)，让已有批评经过独立辩护与证据复核，
-保留、缩小、撤回或材料不足均为待人工决定的建议。学术稿件是重点使用场景，文书使用同一流程和各自的标准。
-默认繁體中文界面，可切换 English；支持常用文档格式与非 UTF-8
-编码导入，并改进流程导航、草稿保存、异常恢复和 Windows 安装升级。
-英文、简体中文、繁体中文、德语、法语、日语、俄语及拉丁语文本可进入同一审查
-流程；这表示文本解析能力，不代表这些语言的模型审查质量已经验证。
-当前仍为 **experimental preview**，未签名，也未完成其他设备与远端 CI 验收。
-详细变化和验收边界见 [0.2.3 交付记录](docs/release-engineering-0.2.3.md)，
-安装与升级见 [便携版说明](docs/portable-guide.md)。
-此前已加入 [按文章任务细读、反证核对与可验证修正](docs/review-quality-0.2.2.md)，
-并收紧 IR／协议的原始字节绑定、异常回传归档与跨项目请求隔离。
-
 一个 **本地运行、模型无关的文书与论证审查工作台**：每一处修改都能追溯到审查发现，
 由你逐项批准，再生成独立新版本复查。核心文本流程不依赖第三方 Python 包；
 PDF、扫描件及旧 Office/WPS 格式按需使用额外组件。
+
+**0.2.8** 修复自动端口被浏览器阻止造成的启动失败，并补齐备份、恢复和删除的
+繁體中文／English 错误提示。见 [0.2.8 修复记录](docs/release-engineering-0.2.8.md)，
+安装与升级见 [便携版说明](docs/portable-guide.md)。
+
+[对抗深审](docs/adversarial-review.md)让已有批评经过独立辩护与证据复核；
+保留、缩小、撤回或材料不足均为待人工决定的建议。学术稿件是重点使用场景，
+文书使用同一流程和各自的标准。审查结合[按文章任务细读、反证核对与可验证修正](docs/review-quality-0.2.2.md)，
+并通过 IR／协议绑定原始字节、归档异常回传、隔离跨项目请求。
+
+默认繁體中文界面，可切换 English；支持常用文档格式和非 UTF-8 编码。
+英文、简体中文、繁体中文、德语、法语、日语、俄语及拉丁语文本可进入同一审查
+流程；这表示文本解析能力，不代表这些语言的模型审查质量已经验证。
+当前仍为 **experimental preview**，未签名，其他设备与真实作者试用仍待验收。
+远端自动验证结果以相应提交的 Actions 记录为准。
+
+此前修复记录：[删除中断与备份恢复](docs/release-engineering-0.2.7.md)、
+[深审历史读取](docs/release-engineering-0.2.6.md)、[Windows 路径保护](docs/release-engineering-0.2.5.md)、
+[Unicode 安装与卸载](docs/release-engineering-0.2.4.md)、[基础交付与验收边界](docs/release-engineering-0.2.3.md)。
 
 它不需要 Claude Code 或 API key。网页聊天、CLI、本地模型都只是可替换的提取／审查执行器；模型负责提出结构和 Finding，人负责校正、接受、拒绝或暂缓，确定性程序负责 provenance、hash binding 和可重建派生物。
 

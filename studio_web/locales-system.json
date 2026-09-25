@@ -319,6 +319,86 @@
     "zh-Hant": "一般審查項",
     "en": "General review issue"
   },
+  "备份格式无效：请选择工作台生成的完整项目备份 ZIP，审查导出包不是恢复备份": {
+    "zh-Hant": "請選擇工作台產生的完整專案備份 ZIP。審查匯出包不能用來恢復專案。",
+    "en": "Choose a full project backup ZIP created by this app. A review export package cannot restore a project."
+  },
+  "不支持的备份格式": {
+    "zh-Hant": "不支援這份備份的格式。請選擇工作台產生的完整專案備份。",
+    "en": "This backup format is not supported. Choose a full project backup created by this app."
+  },
+  "项目超过备份容量限制": {
+    "zh-Hant": "專案超過備份容量限制。原專案仍保留，請先檢查專案大小。",
+    "en": "The project exceeds the backup size limit. The original project is kept; check its size before retrying."
+  },
+  "备份清单过大": {
+    "zh-Hant": "備份清單超過大小限制，無法恢復這份備份。",
+    "en": "The backup inventory exceeds the size limit. This backup cannot be restored."
+  },
+  "备份条目重复或数量超限": {
+    "zh-Hant": "備份包含重複項目或過多檔案。請改用另一份完整備份。",
+    "en": "The backup has duplicate entries or too many files. Use another complete backup."
+  },
+  "备份体积超限、包含链接或加密条目": {
+    "zh-Hant": "備份超過容量限制，或包含不支援的連結／加密項目。請使用工作台產生的完整備份。",
+    "en": "The backup is too large or contains unsupported links or encrypted entries. Use a complete backup created by this app."
+  },
+  "备份文件与清单不一致": {
+    "zh-Hant": "備份檔案與清單不一致。請使用完整且未被修改的備份。",
+    "en": "The backup files do not match its inventory. Use a complete, unmodified backup."
+  },
+  "备份文件清单字段无效": {
+    "zh-Hant": "備份清單資料無效。請使用另一份完整備份。",
+    "en": "The backup inventory is invalid. Use another complete backup."
+  },
+  "备份校验失败：文件长度与清单不符": {
+    "zh-Hant": "備份校驗失敗：檔案大小與清單不符。請使用未損壞的備份。",
+    "en": "Backup verification failed: a file size does not match the inventory. Use an intact backup."
+  },
+  "备份项目名称无效": {
+    "zh-Hant": "備份中的專案名稱無效。請使用工作台產生的完整備份。",
+    "en": "The backup contains an invalid project name. Use a complete backup created by this app."
+  },
+  "备份必须保存到项目外的新文件，不覆盖已有文件": {
+    "zh-Hant": "請將備份儲存為專案目錄外的新檔案；已有檔案不會被覆寫。",
+    "en": "Save the backup as a new file outside the project directory. Existing files are not overwritten."
+  },
+  "备份目标不能是链接": {
+    "zh-Hant": "備份位置不能是連結。請選擇一般本機檔案位置。",
+    "en": "The backup destination cannot be a link. Choose a regular local file location."
+  },
+  "项目删除标记必须为文件": {
+    "zh-Hant": "專案的刪除狀態異常，備份已停止。請保留原專案及現有備份供檢查。",
+    "en": "The project's deletion state is invalid, so the backup was stopped. Keep the original project and existing backups for inspection."
+  },
+  "备份包含无效删除标记路径": {
+    "zh-Hant": "備份包含無效的刪除狀態資料，恢復已停止。請使用另一份完整備份。",
+    "en": "The backup contains invalid deletion-state data, so restoration was stopped. Use another complete backup."
+  },
+  "恢复目标名称连续冲突，请稍后重试": {
+    "zh-Hant": "恢復時無法建立唯一的專案名稱。請稍後重試。",
+    "en": "A unique project name could not be created during restoration. Try again shortly."
+  },
+  "请在本次修改完成后创建备份，不能备份尚未提交的项目状态": {
+    "zh-Hant": "請等本次修改完成後再建立備份。未完成的專案狀態不能備份。",
+    "en": "Wait for the current change to finish before creating a backup. An unfinished project state cannot be backed up."
+  },
+  "备份未能完成。请保留原项目，检查保存位置和可用空间后重试。": {
+    "zh-Hant": "備份未能完成。請保留原專案，檢查儲存位置和可用空間後重試。",
+    "en": "The backup could not finish. Keep the original project, then check the destination and available space before retrying."
+  },
+  "恢复未能完成。请保留现有项目，并根据以下诊断检查备份文件后重试。": {
+    "zh-Hant": "恢復未能完成。請保留現有專案，並根據以下診斷檢查備份檔案後重試。",
+    "en": "Restoration could not finish. Keep existing projects and check the backup using the diagnostic below before retrying."
+  },
+  "删除未能完成。请保留项目库中的备份，刷新并确认项目状态后再操作。": {
+    "zh-Hant": "刪除未能完成。請保留專案庫中的備份，重新整理並確認專案狀態後再操作。",
+    "en": "Deletion could not finish. Keep the backups in the project library, then refresh and check the project state before continuing."
+  },
+  "原始诊断：": {
+    "zh-Hant": "原始診斷：",
+    "en": "Original diagnostic: "
+  },
   "条计数单位": {
     "zh-Hant": "條",
     "en": "issues"

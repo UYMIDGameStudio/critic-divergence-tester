@@ -48,6 +48,16 @@ from argument_workbench import (
 
 MAX_REQUEST_BYTES = 1024 * 1024
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
+# Fetch Standard, port blocking: https://fetch.spec.whatwg.org/#port-blocking
+# Port zero remains our request for automatic allocation, never a published URL.
+BROWSER_BLOCKED_PORTS = frozenset({
+    0, 1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69,
+    77, 79, 87, 95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123,
+    135, 137, 139, 143, 161, 179, 389, 427, 465, 512, 513, 514, 515, 526, 530,
+    531, 532, 540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995,
+    1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566,
+    6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080,
+})
 
 
 class LocalHTTPProtocolError(Exception):
@@ -76,7 +86,22 @@ class LocalHTTPServer(ThreadingHTTPServer):
 
     def __init__(self, address, handler):
         self.connection_slots = threading.BoundedSemaphore(self.max_connections)
-        super().__init__(address, handler)
+        if address[1] and address[1] in BROWSER_BLOCKED_PORTS:
+            raise ValueError("Port blocked by web browsers; use --port 0 for automatic selection.")
+        for _ in range(32):
+            super().__init__(address, handler, bind_and_activate=False)
+            try:
+                self.server_bind()
+                if self.server_address[1] not in BROWSER_BLOCKED_PORTS:
+                    self.server_activate()
+                    return
+            except BaseException:
+                self.server_close()
+                raise
+            # Do not listen on or publish a browser-blocked allocation. A fresh
+            # socket lets the OS select again without a probe/rebind race.
+            self.server_close()
+        raise OSError("Could not allocate a browser-accessible local port; try again.")
 
     def process_request(self, request, client_address):
         if not self.connection_slots.acquire(blocking=False):

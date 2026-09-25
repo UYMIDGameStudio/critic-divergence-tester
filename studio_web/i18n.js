@@ -91,3 +91,28 @@ function serviceDetails(message) {
   // original content visible on demand instead of translating those values.
   return `<details class="card"><summary>${uiLocale === 'en' ? 'Operation details' : '操作詳情'}</summary><div class="quote">${esc(message)}</div></details>`;
 }
+
+const maintenanceErrorLiterals = new Set([
+  '备份格式无效：请选择工作台生成的完整项目备份 ZIP，审查导出包不是恢复备份',
+  '不支持的备份格式', '项目超过备份容量限制', '备份清单过大',
+  '备份条目重复或数量超限', '备份体积超限、包含链接或加密条目',
+  '备份文件与清单不一致', '备份文件清单字段无效',
+  '备份校验失败：文件长度与清单不符', '备份项目名称无效',
+  '备份必须保存到项目外的新文件，不覆盖已有文件', '备份目标不能是链接',
+  '项目删除标记必须为文件', '备份包含无效删除标记路径',
+  '恢复目标名称连续冲突，请稍后重试',
+  '请在本次修改完成后创建备份，不能备份尚未提交的项目状态',
+]);
+
+function maintenanceErrorMessage(message, action) {
+  const raw = String(message ?? '');
+  // Only complete, known system messages can be translated. Unknown details
+  // can contain filenames or source text and must remain verbatim and inert.
+  if (maintenanceErrorLiterals.has(raw)) return UI_MESSAGES[raw]?.[uiLocale] || raw;
+  const guidance = {
+    create_backup: '备份未能完成。请保留原项目，检查保存位置和可用空间后重试。',
+    restore_backup: '恢复未能完成。请保留现有项目，并根据以下诊断检查备份文件后重试。',
+    delete_project: '删除未能完成。请保留项目库中的备份，刷新并确认项目状态后再操作。',
+  };
+  return tr(guidance[action] || '操作失败') + '\n' + tr('原始诊断：') + raw;
+}

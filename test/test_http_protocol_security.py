@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch
 
 from argument_app import ProductRequestHandler, create_uploaded_project, serve_product_app
-from argument_ui import WorkbenchRequestHandler, serve_workbench
+from argument_ui import LocalHTTPServer, WorkbenchRequestHandler, serve_workbench
 from document_review_ui import StudioRequestHandler
 from unified_app import UnifiedRequestHandler, serve_unified_app
 
@@ -60,6 +60,64 @@ def request(server, path="/api/state", *, method="GET", payload=None, headers=()
 
 
 class HTTPProtocolSecurityTests(unittest.TestCase):
+    def test_auto_port_retries_browser_blocked_allocation_and_closes_old_socket(self):
+        bind = LocalHTTPServer.server_bind
+        sockets = []
+
+        def first_allocation_is_blocked(server):
+            bind(server)
+            sockets.append(server.socket)
+            if len(sockets) == 1:
+                server.server_address = (server.server_address[0], 6669)
+
+        with patch.object(LocalHTTPServer, "server_bind", first_allocation_is_blocked):
+            server = LocalHTTPServer(("127.0.0.1", 0), WorkbenchRequestHandler)
+        try:
+            self.assertGreaterEqual(len(sockets), 2)
+            self.assertTrue(all(sock.fileno() == -1 for sock in sockets[:-1]))
+            self.assertEqual(server.server_address, server.socket.getsockname())
+            self.assertNotEqual(server.server_address[1], 6669)
+            self.assertEqual(server.socket.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN), 1)
+        finally:
+            server.server_close()
+
+    def test_explicit_browser_blocked_port_is_rejected_before_opening_socket(self):
+        for port in (22, 6000, 6669, 10080):
+            with self.subTest(port=port), patch("argument_ui.socket.socket") as create:
+                with self.assertRaisesRegex(ValueError, "blocked by web browsers"):
+                    LocalHTTPServer(("127.0.0.1", port), WorkbenchRequestHandler)
+                create.assert_not_called()
+
+    def test_bad_port_retries_are_bounded_without_listening_or_leaking_sockets(self):
+        bind = LocalHTTPServer.server_bind
+        sockets = []
+
+        def blocked(server):
+            bind(server)
+            sockets.append(server.socket)
+            server.server_address = (server.server_address[0], 6669)
+
+        with patch.object(LocalHTTPServer, "server_bind", blocked), patch.object(LocalHTTPServer, "server_activate") as listen:
+            with self.assertRaisesRegex(OSError, "browser-accessible"):
+                LocalHTTPServer(("127.0.0.1", 0), WorkbenchRequestHandler)
+        self.assertLessEqual(len(sockets), 32)
+        self.assertGreater(len(sockets), 1)
+        self.assertTrue(all(sock.fileno() == -1 for sock in sockets))
+        listen.assert_not_called()
+
+    def test_port_bind_failure_closes_socket_and_preserves_error(self):
+        sockets = []
+
+        def failed(server):
+            sockets.append(server.socket)
+            raise OSError("injected bind failure")
+
+        with patch.object(LocalHTTPServer, "server_bind", failed):
+            with self.assertRaisesRegex(OSError, "injected bind failure"):
+                LocalHTTPServer(("127.0.0.1", 0), WorkbenchRequestHandler)
+        self.assertEqual(len(sockets), 1)
+        self.assertEqual(sockets[0].fileno(), -1)
+
     def test_research_shell_never_exposes_token_for_foreign_host(self):
         with running() as (server, _):
             status, body = request(server, "/", headers=[("Host", f"rebind.example:{server.server_address[1]}")])

@@ -34,7 +34,9 @@ async function api(path, body) {
     const errorText = value.error || tr('操作失败');
     const error = Error(['prepare_adversarial_review', 'prepare_adversarial_assessment',
       'import_adversarial_response'].includes(body?.action)
-      ? adversarialErrorMessage(errorText) : errorText);
+      ? adversarialErrorMessage(errorText)
+      : ['create_backup', 'restore_backup', 'delete_project'].includes(body?.action)
+        ? maintenanceErrorMessage(errorText, body.action) : errorText);
     error.uncertainMutation = Boolean(body) && response.status >= 500;
     throw error;
   }
