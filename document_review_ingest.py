@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Protocol
 from xml.etree import ElementTree as ET
+from document_file_names import is_portable_file_name
 
 from document_review_model import (
     DocumentBlock,
@@ -101,6 +102,8 @@ class OCRAdapter(Protocol):
 def safe_upload_name(name: str) -> str:
     if not isinstance(name, str) or not name:
         raise IngestionError("文件名无效")
+    if not is_portable_file_name(name):
+        raise IngestionError("文件名含路径、保留名称或不支持的字符，请重命名原文件后重新导入")
     candidate = Path(name).name
     suffix = Path(candidate).suffix.casefold()
     if candidate != name or "\\" in name or not candidate or any(ord(c) < 32 or ord(c) == 127 for c in candidate):

@@ -31,7 +31,9 @@ async function api(path, body) {
     throw error;
   }
   if (!response.ok) {
-    const errorText = value.error || tr('操作失败');
+    const rawError = value.error || tr('操作失败');
+    const errorText = path === '/api/upload' && rawError === '文件名含路径、保留名称或不支持的字符，请重命名原文件后重新导入'
+      ? tr(rawError) : rawError;
     const error = Error(['prepare_adversarial_review', 'prepare_adversarial_assessment',
       'import_adversarial_response'].includes(body?.action)
       ? adversarialErrorMessage(errorText)

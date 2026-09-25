@@ -42,6 +42,7 @@ jobs:
           document_review_stores
           studio_web
           document_text_encoding.py
+          document_file_names.py
           document_review_office_formats.py
           document_review_text_formats.py
           document_review_legacy.py

@@ -24,7 +24,7 @@ def main():
         'project_lifecycle', 'document_review_word', 'studio_ui_state', 'studio_web',
         'document_review_stores.editing', 'cli.maintenance',
         'studio_selftest', 'studio_startup',
-        'document_text_encoding', 'document_review_office_formats',
+        'document_text_encoding', 'document_file_names', 'document_review_office_formats',
         'document_review_text_formats', 'document_review_legacy', 'studio_web.research',
         'document_review_quality', 'document_review_pdf_render',
         'document_review_adversarial', 'document_review_stores.adversarial',

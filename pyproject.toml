@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "critic-divergence-tester"
-version = "0.2.9"
+version = "0.2.10"
 description = "Local-first, model-neutral argument and document review workbench"
 requires-python = ">=3.10,<3.15"
 license = "MIT"
@@ -52,6 +52,7 @@ py-modules = [
   "document_review_ingest",
   "document_review_components",
   "document_review_model",
+  "document_file_names",
   "document_review_quality",
   "document_review_adversarial",
   "document_review_studio",

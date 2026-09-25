@@ -23,6 +23,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from argument_contracts import sha256_bytes
+from document_file_names import is_portable_file_name
 from argument_revision import (
     append_hunk_decision,
     append_quick_finding_decision,
@@ -73,7 +74,7 @@ def default_data_dir() -> Path:
 
 
 def _safe_upload_name(name: object) -> str:
-    if not isinstance(name, str):
+    if not is_portable_file_name(name):
         raise WorkbenchError("稿件文件名无效")
     candidate = Path(name).name
     if (

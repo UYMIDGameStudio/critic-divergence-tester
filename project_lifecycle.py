@@ -19,8 +19,9 @@ from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
 from project_lock import project_mutation_lock
+from document_file_names import is_device_name
 
-APP_VERSION = "0.2.9"
+APP_VERSION = "0.2.10"
 PROJECT_SCHEMA = 1
 JOURNAL = ".recovery"
 MAX_BACKUP_BYTES = 1024 * 1024 * 1024
@@ -63,14 +64,14 @@ def _atomic(path, data):
 
 
 def _child(root, name):
-    if not isinstance(name, str) or not name or re.search(r'[\x00-\x1f<>:"\\|?*]', name):
+    if not isinstance(name, str) or not name or re.search(r'[\x00-\x1f\x7f\ud800-\udfff<>:"\\|?*]', name):
         raise ValueError("备份/恢复路径无效")
     parts = PurePosixPath(name).parts
     if PurePosixPath(name).as_posix() != name:
         raise ValueError("备份/恢复路径必须使用唯一规范形式")
     if name.startswith("/") or any(p in {"", ".", ".."} or p.endswith((".", " ")) for p in parts):
         raise ValueError("备份/恢复路径越界")
-    if any(re.fullmatch(r"(?i)(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?", p) for p in parts):
+    if any(is_device_name(p) for p in parts):
         raise ValueError("备份包含保留文件名")
     target = root.joinpath(*parts)
     for path in (target, *target.parents):

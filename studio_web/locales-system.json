@@ -399,6 +399,10 @@
     "zh-Hant": "原始診斷：",
     "en": "Original diagnostic: "
   },
+  "文件名含路径、保留名称或不支持的字符，请重命名原文件后重新导入": {
+    "zh-Hant": "檔案名稱含路徑、保留名稱或不支援的字元，請重新命名原檔案後再匯入。",
+    "en": "The filename contains a path, reserved name or unsupported character. Rename the original file and import it again."
+  },
   "条计数单位": {
     "zh-Hant": "條",
     "en": "issues"

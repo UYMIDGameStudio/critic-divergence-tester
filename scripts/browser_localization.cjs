@@ -193,6 +193,20 @@ async function main() {
     await page.unroute('**/api/action', injectedFailure);
     await language(page, 'en');
 
+    stage = 'unsafe filenames are rejected with bilingual guidance';
+    for (const [locale, expected] of [['en', 'Rename the original file'], ['zh-Hant', '請重新命名原檔案']]) {
+      await language(page, locale);
+      await page.locator('#file').setInputFiles({name: 'NUL.txt', mimeType: 'text/plain', buffer: Buffer.from('Original manuscript.')});
+      const rejected = page.waitForResponse(response => response.url().endsWith('/api/upload'));
+      await page.locator('#upload').click();
+      assert.equal((await rejected).status(), 400);
+      await idle(page);
+      assert.ok((await page.locator('#err').innerText()).includes(expected));
+      assert.equal(await page.locator('#file').evaluate(input => input.files[0].name), 'NUL.txt');
+      check('unsafe_filename_rejected_with_' + locale + '_guidance', true);
+    }
+    await language(page, 'en');
+
     stage = 'selected file and title across language changes';
     const paragraphs = [
       'English: The garden is quiet. Export and Save draft are original words.',
