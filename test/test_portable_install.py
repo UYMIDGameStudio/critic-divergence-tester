@@ -49,6 +49,9 @@ public static class StudioFixture {
         var root = AppDomain.CurrentDomain.BaseDirectory;
         var log = Environment.GetEnvironmentVariable("STUDIO_FIXTURE_LOG");
         if (!String.IsNullOrEmpty(log)) File.AppendAllText(log, root + "|" + String.Join("|", args) + "\n");
+        var cwdLog = Environment.GetEnvironmentVariable("STUDIO_FIXTURE_CWD_LOG");
+        if (!String.IsNullOrEmpty(cwdLog)) File.WriteAllText(cwdLog, Environment.CurrentDirectory);
+        if (args.Length == 0) return 0;
         var action = args.Length == 1 ? args[0] : args[1];
         if (Environment.GetEnvironmentVariable("STUDIO_FIXTURE_FAIL") == action) return 17;
         if (action == "--self-test") {
@@ -168,6 +171,25 @@ public static class StudioFixture {
                 self.assert_no_partial_install()
         self.run_script()
 
+    def test_shortcut_launches_unicode_target_and_working_directory(self):
+        # The supplementary character is outside every legacy ANSI code page,
+        # reproducing English Windows + Chinese paths on other Windows locales.
+        self.install = self.root / "\U0001f9ea \u65e5\u672c\u8a9e \u0440\u0443\u0441\u0441\u043a\u0438\u0439" / "Programs"
+        self.shortcuts = self.root / "\U0001f9ea shortcuts"
+        self.run_script()
+        cwd_log = self.root / "working-directory.txt"
+        shortcut = self.shortcuts / "Document Review Studio.lnk"
+        command = "$ErrorActionPreference='Stop'; Start-Process -FilePath " + quote(shortcut) + " -WindowStyle Hidden -Wait"
+        result = subprocess.run(ps_command(command), env={**self.env, "STUDIO_FIXTURE_CWD_LOG": str(cwd_log)},
+                                capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        installed = self.install / "0.2.1"
+        self.assertEqual(Path(cwd_log.read_text(encoding="utf-8-sig")), installed)
+        self.assertEqual(self.log.read_text(encoding="utf-8").splitlines()[-1], str(installed) + "\\|")
+        self.run_script(uninstall=True)
+        self.assertFalse(shortcut.exists())
+        self.assertFalse(installed.exists())
+
     def test_shortcut_failure_rolls_back_published_version_and_receipt(self):
         self.shortcuts.mkdir(parents=True)
         blocker = self.shortcuts / "Document Review Studio.lnk"
@@ -179,6 +201,27 @@ public static class StudioFixture {
         self.assertTrue(blocker.is_dir())
         blocker.rmdir()
         self.run_script()
+
+    def test_uninstall_preserves_foreign_shortcut_and_rejects_corrupt_shortcut_before_removal(self):
+        self.run_script()
+        shortcut = self.shortcuts / "Document Review Studio.lnk"
+        shortcut.write_bytes(b"not a shell link")
+        receipt = (self.install / ".installation.json").read_bytes()
+        self.run_script(uninstall=True, success=False)
+        self.assertTrue((self.install / "0.2.1" / "DocumentReviewStudio.exe").exists())
+        self.assertEqual((self.install / ".installation.json").read_bytes(), receipt)
+        self.assertEqual(shortcut.read_bytes(), b"not a shell link")
+        foreign = self.root / "\U0001f9ea other.exe"
+        shutil.copy2(self.executable, foreign)
+        command = "$ErrorActionPreference='Stop'; . " + quote(ROOT / "scripts/portable-common.ps1")
+        command += "; Set-PortableShortcut " + quote(self.shortcuts) + " " + quote(foreign) + " " + quote(self.root)
+        result = subprocess.run(ps_command(command), capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        shortcut_bytes = shortcut.read_bytes()
+        self.run_script(uninstall=True)
+        self.assertEqual(shortcut.read_bytes(), shortcut_bytes)
+        self.assertTrue(foreign.exists())
+        self.assertFalse((self.install / "0.2.1").exists())
 
     def test_failed_upgrade_preserves_previous_shortcut_and_receipt(self):
         self.run_script()
@@ -366,7 +409,8 @@ class BuiltPortableTests(unittest.TestCase):
         release = Path(os.environ["STUDIO_PORTABLE_RELEASE"]).resolve()
         version = json.loads((release / "release-manifest.json").read_text(encoding="utf-8"))["version"]
         with tempfile.TemporaryDirectory(prefix="studio-real-install-") as directory:
-            root = Path(directory)
+            root = Path(directory) / "\u4e2d\u6587 \U0001f9ea real package"
+            root.mkdir()
             install, library, shortcuts = root / "Programs", root / "Projects", root / "Shortcuts"
             project = DocumentReviewProject.create(library, filename="draft.md", content=b"# Real package\n\nAuthor material.")
             original = (project.root / "project.json").read_bytes()

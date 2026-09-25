@@ -30,15 +30,18 @@ try {
             $targets += $target
         }
     }
-    # Verify every registered version before deleting any, preserving unknown files.
-    foreach ($target in $targets) { Remove-PortableTree $target $InstallRoot }
     $shortcutPath = Join-Path $ShortcutRoot 'Document Review Studio.lnk'
     Assert-PortableUnlinked $shortcutPath
+    $removeShortcut = $false
     if ([IO.File]::Exists($shortcutPath)) {
-        $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcutPath)
+        Initialize-PortableShortcut
+        $shortcutTarget = [StudioPortable.UnicodeShortcut]::ReadTarget($shortcutPath)
         $owned = @($receipt.versions | ForEach-Object { Join-Path (Join-Path $InstallRoot $_) 'DocumentReviewStudio.exe' })
-        if ($owned -contains $shortcut.TargetPath) { [IO.File]::Delete($shortcutPath) }
+        $removeShortcut = $owned -contains $shortcutTarget
     }
+    # Verify every registered version and the shortcut before deleting any.
+    foreach ($target in $targets) { Remove-PortableTree $target $InstallRoot }
+    if ($removeShortcut) { [IO.File]::Delete($shortcutPath) }
     [IO.File]::Delete((Join-Path $InstallRoot '.installation.json'))
     Write-Output 'Registered program versions removed. Projects, backups and unregistered files were preserved.'
 } finally { $lock.Dispose() }

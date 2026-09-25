@@ -20,7 +20,7 @@ from pathlib import Path, PurePosixPath
 
 from project_lock import project_mutation_lock
 
-APP_VERSION = "0.2.3"
+APP_VERSION = "0.2.4"
 PROJECT_SCHEMA = 1
 JOURNAL = ".recovery"
 MAX_BACKUP_BYTES = 1024 * 1024 * 1024

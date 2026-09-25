@@ -2,7 +2,11 @@
 
 [![Tests](https://github.com/UYMIDGameStudio/critic-divergence-tester/actions/workflows/tests.yml/badge.svg)](https://github.com/UYMIDGameStudio/critic-divergence-tester/actions/workflows/tests.yml)
 
-**0.2.3**：加入[对抗深审](docs/adversarial-review.md)，让已有批评经过独立辩护与证据复核，
+**0.2.4**：修复 Windows 不同系统编码下的 Unicode 路径安装和快捷方式卸载；
+损坏的快捷方式会在卸载删除程序前被检出，指向其他程序的快捷方式保留。
+见 [0.2.4 修复记录](docs/release-engineering-0.2.4.md)。
+
+0.2.3 加入[对抗深审](docs/adversarial-review.md)，让已有批评经过独立辩护与证据复核，
 保留、缩小、撤回或材料不足均为待人工决定的建议。学术稿件是重点使用场景，文书使用同一流程和各自的标准。
 默认繁體中文界面，可切换 English；支持常用文档格式与非 UTF-8
 编码导入，并改进流程导航、草稿保存、异常恢复和 Windows 安装升级。

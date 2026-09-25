@@ -208,6 +208,68 @@ function Write-PortableAtomic([string] $Path, [byte[]] $Bytes) {
     }
 }
 
+function Initialize-PortableShortcut {
+        # WScript.Shell rejects paths outside the system ANSI code page. Use
+        # IShellLinkW explicitly so an English Windows installation can install
+        # into Chinese (or other Unicode) directories without changing locale.
+        if (-not ('StudioPortable.UnicodeShortcut' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+using System.Text;
+namespace StudioPortable {
+    [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+    internal class ShellLink {}
+
+    [ComImport, Guid("000214F9-0000-0000-C000-000000000046"),
+     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IShellLinkW {
+        void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int count, IntPtr data, uint flags);
+        void GetIDList(out IntPtr pidl);
+        void SetIDList(IntPtr pidl);
+        void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder text, int count);
+        void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string text);
+        void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int count);
+        void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string path);
+        void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder text, int count);
+        void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string text);
+        void GetHotkey(out short hotkey);
+        void SetHotkey(short hotkey);
+        void GetShowCmd(out int command);
+        void SetShowCmd(int command);
+        void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int count, out int index);
+        void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string path, int index);
+        void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string path, uint reserved);
+        void Resolve(IntPtr window, uint flags);
+        void SetPath([MarshalAs(UnmanagedType.LPWStr)] string path);
+    }
+
+    public static class UnicodeShortcut {
+        public static string ReadTarget(string file) {
+            object instance = new ShellLink();
+            try {
+                ((IPersistFile)instance).Load(file, 0);
+                var path = new StringBuilder(32768);
+                ((IShellLinkW)instance).GetPath(path, path.Capacity, IntPtr.Zero, 4);
+                return path.ToString();
+            } finally { Marshal.FinalReleaseComObject(instance); }
+        }
+        public static void Save(string file, string target, string workingDirectory) {
+            object instance = new ShellLink();
+            try {
+                var link = (IShellLinkW)instance;
+                link.SetPath(target);
+                link.SetWorkingDirectory(workingDirectory);
+                ((IPersistFile)instance).Save(file, true);
+            } finally { Marshal.FinalReleaseComObject(instance); }
+        }
+    }
+}
+'@
+        }
+}
+
 function Set-PortableShortcut([string] $Root, [string] $Target, [string] $WorkingDirectory) {
     Assert-PortableUnlinked $Root
     [IO.Directory]::CreateDirectory($Root) | Out-Null
@@ -215,10 +277,8 @@ function Set-PortableShortcut([string] $Root, [string] $Target, [string] $Workin
     Assert-PortableUnlinked $path
     $temp = Join-Path $Root ('.studio-' + [guid]::NewGuid().ToString('N') + '.lnk')
     try {
-        $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($temp)
-        $shortcut.TargetPath = $Target
-        $shortcut.WorkingDirectory = $WorkingDirectory
-        $shortcut.Save()
+        Initialize-PortableShortcut
+        [StudioPortable.UnicodeShortcut]::Save($temp, $Target, $WorkingDirectory)
         if ([IO.File]::Exists($path)) { [IO.File]::Replace($temp, $path, [NullString]::Value) }
         else { [IO.File]::Move($temp, $path) }
     } finally {

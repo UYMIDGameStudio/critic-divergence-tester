@@ -1,4 +1,4 @@
-# 本地便携版 · 0.2.3
+# 本地便携版 · 0.2.4
 
 解压完整发行 ZIP，在包含 `DocumentReviewStudio.exe` 的目录中双击程序。
 程序会打开本机浏览器页面；请保留同目录的 `_internal`、安装脚本与发行清单。
@@ -97,4 +97,5 @@ Word 净稿优先保留原文档包，支持普通段落、连续段落和简单
 当前构建**未做发行者代码签名**。清单与 ZIP 摘要可发现文件不一致，不能认证发布者。
 其他设备、远端 CI、特定 WPS 变体和复杂 Word 排版仍需进一步验收。
 本机真实 DOC/XLS/PPT 转换、Word 修订、最终回归和发行包证据见
-[0.2.3 交付工程记录](release-engineering-0.2.3.md)。当前保留 experimental preview 标识。
+[0.2.3 交付工程记录](release-engineering-0.2.3.md)及
+[0.2.4 安装修复记录](release-engineering-0.2.4.md)。当前保留 experimental preview 标识。
