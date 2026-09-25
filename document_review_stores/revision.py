@@ -600,6 +600,19 @@ class RevisionPlanBuilder(_ProjectComponent):
             if len(destructive) > 1:
                 raise ReviewStudioError(f"同一锚点存在多个互斥修改，必须先人工选择或重建计划：{block_id}")
 
+        def list_attributes(block: DocumentBlock) -> dict[str, Any]:
+            item_id = block.attrs.get("list_item_id")
+            if not (isinstance(item_id, str) and item_id):
+                if block.kind != "list_item":
+                    return {}
+                item_id = stable_id("LI", block.block_id)
+            # Transfer semantic membership, never the source coordinates of
+            # the paragraph being split into newly generated text.
+            attributes = {key: block.attrs[key] for key in (
+                "ordered", "list_marker", "list_ordinal", "list_id", "list_depth", "parent_list_item_id"
+            ) if key in block.attrs}
+            return {**attributes, "list_item_id": item_id}
+
         def generated_block(action: Mapping[str, Any], text: str, position: str, *, split_from_block_id: str | None = None) -> DocumentBlock:
             block_id = stable_id("B", plan["plan_id"], action["action_id"], position, text)
             kind = "heading" if text.lstrip().startswith("# ") else "paragraph"
@@ -607,6 +620,7 @@ class RevisionPlanBuilder(_ProjectComponent):
             attrs = {"generated_by_action": action["action_id"]}
             if split_from_block_id is not None:
                 attrs["split_from_block_id"] = split_from_block_id
+                attrs.update(list_attributes(original_by_id[split_from_block_id]))
             return DocumentBlock(block_id, kind, clean_text, 1 if kind == "heading" else None, DocumentLocation(block_id, kind, source_path="generated"), attrs)
 
         revised_blocks: list[DocumentBlock] = []
@@ -622,7 +636,8 @@ class RevisionPlanBuilder(_ProjectComponent):
             if not destructive or destructive[0]["operation"] != "delete_block":
                 if destructive and destructive[0]["operation"] != "replace_table_cell":
                     paragraphs = re.split(r"\n\s*\n", str(destructive[1]["after_text"]))
-                    revised_blocks.append(replace(original, text=paragraphs[0]))
+                    membership = list_attributes(original) if len(paragraphs) > 1 else {}
+                    revised_blocks.append(replace(original, text=paragraphs[0], attrs={**original.attrs, **membership}))
                     for i, paragraph in enumerate(paragraphs[1:]):
                         revised_blocks.append(generated_block(destructive[0], paragraph, f"replace-{i}", split_from_block_id=original.block_id))
                 else:
@@ -634,6 +649,22 @@ class RevisionPlanBuilder(_ProjectComponent):
         for action, hunk in append_actions:
             for i, paragraph in enumerate(re.split(r"\n\s*\n", str(hunk["after_text"]))):
                 revised_blocks.append(generated_block(action, paragraph, f"append-{i}"))
+
+        # A block deletion removes only that paragraph. Remaining fragments of
+        # the same item retain its number and get exactly one visible start.
+        seen_items: set[str] = set()
+        for index, block in enumerate(revised_blocks):
+            item_id = block.attrs.get("list_item_id")
+            if not isinstance(item_id, str) or not item_id:
+                continue
+            first = bool(block.text.strip()) and item_id not in seen_items
+            if first:
+                seen_items.add(item_id)
+            kind = ("list_item" if first else "paragraph") if block.kind in {"paragraph", "list_item"} else block.kind
+            attributes = {**block.attrs, "list_item_start": first, "list_continuation": not first}
+            if kind != block.kind or attributes != block.attrs:
+                location = replace(block.location, block_kind=kind) if block.location else None
+                revised_blocks[index] = replace(block, kind=kind, location=location, attrs=attributes)
 
         revised_by_id = {block.block_id: index for index, block in enumerate(revised_blocks)}
         for action, (_, hunk, _), _ in approved:
