@@ -807,18 +807,53 @@ def _difference_report(before: str, after: str) -> str:
     return "# V1/V2 difference report\n\n```diff\n" + diff + "```\n\nNative Word Track Changes are not claimed. Review the audit JSON and the existing constrained revision chain before approval.\n"
 
 
-def _minimal_docx(markdown: str) -> bytes:
-    paragraphs: list[str] = []
-    for raw in markdown.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("|---"):
+def _minimal_docx(markdown: str, *, document: StructuredDocument | None = None) -> bytes:
+    """Generate a normalized Word copy from trusted structure, not Markdown lines."""
+    document = document or ingest_bytes("normalized.md", markdown.encode("utf-8"))
+
+    def paragraph(value: str, *, level: int | None = None) -> str:
+        if re.search(r"[\x00-\x08\x0b\x0e-\x1f\ud800-\udfff\ufffe\uffff]", value):
+            raise ReviewStudioError("规范化 Word 文本含不支持的控制字符")
+        runs = []
+        for part in re.split(r"(\r\n|[\r\n\t\f])", value):
+            if part in {"\r\n", "\r", "\n"}:
+                runs.append("<w:br/>")
+            elif part == "\t":
+                runs.append("<w:tab/>")
+            elif part == "\f":
+                runs.append('<w:br w:type="page"/>')
+            elif part:
+                runs.append(f'<w:t xml:space="preserve">{html.escape(part)}</w:t>')
+        properties = f'<w:pPr><w:keepNext/><w:outlineLvl w:val="{max(0, min((level or 1) - 1, 8))}"/></w:pPr>' if level else ""
+        emphasis = "<w:rPr><w:b/></w:rPr>" if level else ""
+        return f'<w:p>{properties}<w:r>{emphasis}{"".join(runs)}</w:r></w:p>'
+
+    body_parts = []
+    for block in document.blocks:
+        if block.kind == "table_cell":
             continue
-        if line.startswith("#"):
-            line = line.lstrip("#").strip()
-        elif re.match(r"^(?:[-*]|\d+\.)\s+", line):
-            line = re.sub(r"^(?:[-*]|\d+\.)\s+", "", line)
-        paragraphs.append(line)
-    body = "".join(f'<w:p><w:r><w:t xml:space="preserve">{html.escape(line)}</w:t></w:r></w:p>' for line in paragraphs)
+        if block.kind == "table":
+            rows = block.attrs.get("rows") or []
+            if not rows:
+                continue
+            columns = max(1, max(len(row) for row in rows))
+            width = max(1, 9000 // columns)
+            borders = "".join(f'<w:{edge} w:val="single" w:sz="4" w:color="auto"/>' for edge in ("top", "left", "bottom", "right", "insideH", "insideV"))
+            table = [f'<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/><w:tblBorders>{borders}</w:tblBorders></w:tblPr>',
+                     '<w:tblGrid>' + ''.join(f'<w:gridCol w:w="{width}"/>' for _ in range(columns)) + '</w:tblGrid>']
+            for row in rows:
+                cells = row or [""]
+                missing = columns - len(cells)
+                properties = f'<w:trPr><w:gridAfter w:val="{missing}"/></w:trPr>' if missing else ""
+                table.append('<w:tr>' + properties + ''.join(
+                    f'<w:tc><w:tcPr><w:tcW w:w="{width}" w:type="dxa"/></w:tcPr>{paragraph(str(cell))}</w:tc>' for cell in cells) + '</w:tr>')
+            body_parts.append(''.join(table) + '</w:tbl>')
+        elif block.kind == "page_break":
+            body_parts.append(paragraph("\f"))
+        elif block.text:
+            prefix = ("1. " if block.attrs.get("ordered") else "- ") if block.kind == "list_item" else "> " if block.kind == "blockquote" else ""
+            body_parts.append(paragraph(prefix + block.text, level=block.level if block.kind == "heading" else None))
+    body = "".join(body_parts)
     document_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>{body}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>'''.encode("utf-8")
     content_types = b'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>'''
     rels = b'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>'''

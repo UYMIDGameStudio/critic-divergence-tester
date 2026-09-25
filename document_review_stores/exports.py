@@ -271,12 +271,12 @@ class ExportCenter(_ProjectComponent):
             revised_markdown_path = output / f"{document_label}.md"
             _write_tracked(self.root, revised_markdown_path, draft.encode("utf-8"), parents=[_parent_ref(self.root, trusted_revision[0] / "修改稿.md", role="approved-revised-markdown")], provenance="approved-revision-export")
             revised_docx_path = output / f"{document_label}.docx"
-            word_bytes = _minimal_docx(draft)
+            revised_model = _document_from_dict(_read_json(trusted_revision[0] / "document.json"))
+            word_bytes = _minimal_docx(draft, document=revised_model)
             word_report = {"source_layout_preserved": False, "native_track_changes": False, "message": "由已批准文本生成规范化 Word 副本"}
             original = self.document()
             if original.source.extension == ".docx":
                 from document_review_word import preserve_docx, WordEditUnsupported
-                revised_model = _document_from_dict(_read_json(trusted_revision[0] / "document.json"))
                 source_bytes = (self.root / original.source.relative_path).read_bytes()
                 try:
                     word_bytes, word_report = preserve_docx(source_bytes, original, revised_model)
@@ -297,7 +297,7 @@ class ExportCenter(_ProjectComponent):
                         word_report["native_track_changes"] = True
                     except WordEditUnsupported as exc:
                         word_report["track_changes_limitation"] = str(exc)
-            _write_tracked(self.root, revised_docx_path, word_bytes, parents=[_parent_ref(self.root, revised_markdown_path, role="approved-revised-markdown"), *base_parents], provenance="approved-revision-docx-export")
+            _write_tracked(self.root, revised_docx_path, word_bytes, parents=[_parent_ref(self.root, revised_markdown_path, role="approved-revised-markdown"), _parent_ref(self.root, trusted_revision[0] / "document.json", role="approved-revised-document"), *base_parents], provenance="approved-revision-docx-export")
             _write_tracked(self.root, output / "Word导出说明.md", ("# Word 导出说明\n\n" + word_report["message"] + "\n\n" + word_report.get("track_changes_limitation", "") + "\n").encode("utf-8"), parents=[_parent_ref(self.root, revised_docx_path, role="word-output")], provenance="word-capability-report")
             for name in ("修改说明.md", "recheck.json"):
                 source_path = trusted_revision[0] / name
@@ -308,7 +308,7 @@ class ExportCenter(_ProjectComponent):
             capability_path = output / "track-changes-capability.json"
             _write_tracked(self.root, capability_path, canonical_json({**word_report, "revised_document_ready": not unchanged, "completion": "no-change" if unchanged else "revised", "output_name": revised_docx_path.name}), parents=[_parent_ref(self.root, revised_docx_path, role="revised-docx")])
         elif document.source.extension == ".docx":
-            docx_bytes = _minimal_docx(draft)
+            docx_bytes = _minimal_docx(draft, document=document)
             copy_path = output / "normalized-editable-copy.docx"
             _write_tracked(self.root, copy_path, docx_bytes, parents=[_parent_ref(self.root, draft_path, role="normalized-markdown")], provenance="normalized-editable-copy")
             difference_path = output / "difference-report.md"
