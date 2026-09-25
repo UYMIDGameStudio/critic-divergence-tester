@@ -852,7 +852,9 @@ def _minimal_docx(markdown: str, *, document: StructuredDocument | None = None) 
         elif block.kind == "page_break":
             body_parts.append(paragraph("\f"))
         elif block.text:
-            prefix = (list_marker(block) + " ") if block.kind == "list_item" else "> " if block.kind == "blockquote" else ""
+            prefix = (list_marker(block) + " ") if block.kind == "list_item" or block.attrs.get("list_item_start") is True else ""
+            if block.kind == "blockquote":
+                prefix = "> " + prefix
             body_parts.append(paragraph(prefix + block.text, level=block.level if block.kind == "heading" else None))
     body = "".join(body_parts)
     document_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>{body}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>'''.encode("utf-8")

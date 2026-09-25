@@ -1,4 +1,4 @@
-# 本地便携版 · 0.2.16
+# 本地便携版 · 0.2.17
 
 解压完整发行 ZIP，在包含 `DocumentReviewStudio.exe` 的目录中双击程序。
 程序会打开本机浏览器页面；请保留同目录的 `_internal`、安装脚本与发行清单。
@@ -110,4 +110,5 @@ Word 净稿优先保留原文档包，支持普通段落、连续段落和简单
 [0.2.13 文本容量保护](release-engineering-0.2.13.md)及
 [0.2.14 多行单元格导出](release-engineering-0.2.14.md)及
 [0.2.15 Word 结构导出](release-engineering-0.2.15.md)及
-[0.2.16 原稿编号保留](release-engineering-0.2.16.md)。当前保留 experimental preview 标识。
+[0.2.16 原稿编号保留](release-engineering-0.2.16.md)及
+[0.2.17 HTML 列表语义](release-engineering-0.2.17.md)。当前保留 experimental preview 标识。

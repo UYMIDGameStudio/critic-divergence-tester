@@ -437,7 +437,7 @@ def list_marker(block: DocumentBlock) -> str:
     """Retain textual source identifiers, with a safe fallback for older IR."""
     ordered = bool(block.attrs.get("ordered"))
     marker = block.attrs.get("list_marker")
-    if isinstance(marker, str) and re.fullmatch(r"\d+[.)]" if ordered else r"[-*+]", marker):
+    if isinstance(marker, str) and re.fullmatch(r"(?:-?\d+[.)]|[A-Za-z]{1,64}\.)" if ordered else r"[-*+]", marker):
         return marker
     return "1." if ordered else "-"
 
@@ -454,12 +454,13 @@ def model_to_markdown(document: StructuredDocument) -> str:
 
     lines: list[str] = []
     for block in document.blocks:
+        item_prefix = list_marker(block) + " " if block.attrs.get("list_item_start") is True else ""
         if block.kind == "heading":
-            lines.append("#" * max(1, min(block.level or 1, 6)) + " " + block.text)
+            lines.append("#" * max(1, min(block.level or 1, 6)) + " " + item_prefix + block.text)
         elif block.kind == "list_item":
             lines.append(f"{list_marker(block)} {block.text}")
         elif block.kind == "blockquote":
-            lines.append("> " + block.text)
+            lines.append("> " + item_prefix + block.text)
         elif block.kind == "page_break":
             lines.append("\\page")
         elif block.kind == "table_cell":
@@ -472,7 +473,7 @@ def model_to_markdown(document: StructuredDocument) -> str:
                 for row in rows[1:]:
                     lines.append("| " + " | ".join(cell_text(cell) for cell in row) + " |")
         elif block.text:
-            lines.append(block.text)
+            lines.append(item_prefix + block.text)
         if lines and lines[-1] != "":
             lines.append("")
     return "\n".join(lines).rstrip() + "\n"

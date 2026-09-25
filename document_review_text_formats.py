@@ -238,6 +238,35 @@ class _HTMLTable:
         self.cells = []
 
 
+def _html_list_integer(value):
+    match = re.match(r"[ \t\r\n\f]*([+-]?[0-9]+)", value or "")
+    if match is None:
+        return None
+    if len(match[1].lstrip("+-")) > 64:
+        _fail("HTML 列表编号超过安全长度上限")
+    return int(match[1])
+
+
+def _html_list_label(number, style):
+    if style in {"a", "A"} and number > 0:
+        letters = []
+        while number:
+            number, digit = divmod(number - 1, 26)
+            letters.append(chr(ord("a") + digit))
+        label = "".join(reversed(letters))
+        return (label.upper() if style == "A" else label) + "."
+    if style in {"i", "I"} and 1 <= number <= 3999:
+        parts = []
+        for value, numeral in ((1000, "M"), (900, "CM"), (500, "D"), (400, "CD"),
+                               (100, "C"), (90, "XC"), (50, "L"), (40, "XL"),
+                               (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")):
+            count, number = divmod(number, value)
+            parts.append(numeral * count)
+        label = "".join(parts)
+        return (label.lower() if style == "i" else label) + "."
+    return str(number) + "."
+
+
 class _HTMLReader(HTMLParser):
     def __init__(self, builder):
         super().__init__(convert_charrefs=True)
@@ -248,6 +277,39 @@ class _HTMLReader(HTMLParser):
         self.table = None
         self.title_parts = []
         self.elements = 0
+        self.lists = []
+        self.list_scopes = {}
+        self.list_items = {}
+
+    def start_list(self, tag, attrs):
+        if tag in {"ol", "ul"}:
+            scope = {"id": f"html-list-{self.elements}", "ordered": tag == "ol",
+                     "start": _html_list_integer(attrs.get("start")) if tag == "ol" else None,
+                     "reversed": tag == "ol" and "reversed" in attrs,
+                     "style": attrs.get("type", "1"), "depth": len(self.list_scopes), "items": []}
+            scope["parent_item"] = self.list_items[max(self.list_items)]["id"] if self.list_items else None
+            self.lists.append(scope)
+            self.list_scopes[len(self.stack)] = scope
+        elif tag == "li" and self.list_scopes:
+            scope = self.list_scopes[max(self.list_scopes)]
+            item = {"id": f"html-item-{self.elements}", "scope": scope, "blocks": [],
+                    "value": _html_list_integer(attrs.get("value")) if scope["ordered"] else None,
+                    "style": attrs.get("type", scope["style"])}
+            scope["items"].append(item)
+            self.list_items[len(self.stack)] = item
+
+    def finish_lists(self):
+        for scope in self.lists:
+            number = scope["start"]
+            if number is None:
+                number = len(scope["items"]) if scope["reversed"] else 1
+            for item in scope["items"]:
+                if item["value"] is not None:
+                    number = item["value"]
+                marker = _html_list_label(number, item["style"]) if scope["ordered"] else "-"
+                for block in item["blocks"]:
+                    block.attrs.update(list_marker=marker, list_ordinal=number if scope["ordered"] else None)
+                number += -1 if scope["reversed"] else 1
 
     @property
     def hidden(self):
@@ -264,12 +326,35 @@ class _HTMLReader(HTMLParser):
         block = next((tag for tag in reversed(tags) if tag in _HTML_BLOCK), "p")
         kind = "heading" if re.fullmatch("h[1-6]", block) else "list_item" if block == "li" else "blockquote" if block == "blockquote" else "paragraph"
         ordered = next((tag == "ol" for tag in reversed(tags) if tag in {"ol", "ul"}), False)
-        self.builder.add(kind, text, line=self.line, level=int(block[1]) if kind == "heading" else None,
-                         attrs={"html_tag": block, "preserve_whitespace": preserve, "ordered": ordered})
+        properties = {"html_tag": block, "preserve_whitespace": preserve, "ordered": ordered}
+        item = self.list_items[max(self.list_items)] if self.list_items else None
+        if item is not None and self.list_scopes and item["scope"] is self.list_scopes[max(self.list_scopes)]:
+            first = not item["blocks"]
+            properties.update(list_id=item["scope"]["id"], list_item_id=item["id"],
+                              list_depth=item["scope"]["depth"], list_item_start=first,
+                              parent_list_item_id=item["scope"]["parent_item"],
+                              list_continuation=not first, ordered=item["scope"]["ordered"])
+            if kind in {"paragraph", "list_item"}:
+                kind = "list_item" if first else "paragraph"
+        else:
+            item = None
+        added = self.builder.add(kind, text, line=self.line, level=int(block[1]) if kind == "heading" else None,
+                                 attrs=properties)
+        if item is not None:
+            item["blocks"].append(added)
 
     def handle_starttag(self, tag, attrs):
         # HTML permits omitted end tags. Close common optional elements at
         # structural boundaries instead of accumulating fictitious nesting.
+        if self.hidden and tag == "li":
+            for name, _ in reversed(self.stack):
+                if name in {"ol", "ul"}:
+                    break
+                if name == "li":
+                    # The end-tag guard still prevents escape from a hidden
+                    # template/embedded object inside this item.
+                    self.handle_endtag("li")
+                    break
         if (tag == "body" and any(name == "head" for name, _ in self.stack)
                 and not any(name in (_HTML_HIDDEN - {"head", "title"}) | _HTML_EMBEDDED for name, _ in self.stack)):
             self.handle_endtag("head")
@@ -299,6 +384,15 @@ class _HTMLReader(HTMLParser):
             self.builder.warn("html-embedded-omitted", "HTML 中的嵌入对象、画布或媒体内容未执行或解析；请另行提供需要审查的正文。", severity="high")
         if not hidden:
             self._start_visible(tag, values)
+            if not self.table:
+                self.start_list(tag, values)
+            elif tag == "li":
+                self.builder.warn("html-table-list-linearized", "表格内列表按单元格文本展开，列表编号与层级需对照原件核对。")
+        elif (tag == "li" and not self.hidden and not self.table and "hidden" not in values
+              and not re.search(r"(?:^|;)\s*display\s*:\s*none\b", style, re.I)):
+            # aria-hidden and visibility:hidden suppress extracted content but
+            # still occupy an ordinal; display:none / hidden do not render it.
+            self.start_list(tag, values)
         if tag not in _HTML_VOID:
             self.stack.append((tag, hidden))
 
@@ -348,6 +442,11 @@ class _HTMLReader(HTMLParser):
                           if name in (_HTML_HIDDEN - {"head", "title"}) | _HTML_EMBEDDED
                           or (hidden and (i == 0 or not self.stack[i - 1][1]))]
             if boundaries and index < max(boundaries):
+                boundary = max(boundaries)
+                owner = next((i for i in range(boundary - 1, -1, -1) if self.stack[i][0] in {"ol", "ul"}), None)
+                if tag in {"ol", "ul"} and self.stack[boundary][0] == "li" and owner == index:
+                    self.handle_endtag("li")
+                    self.handle_endtag(tag)
                 return
         hidden = self.stack[index][1]
         if not hidden:
@@ -368,6 +467,10 @@ class _HTMLReader(HTMLParser):
             elif tag in _HTML_BLOCK:
                 self.flush()
         del self.stack[index:]
+        for mapping in (self.list_scopes, self.list_items):
+            for depth in list(mapping):
+                if depth >= index:
+                    del mapping[depth]
 
     def handle_data(self, text):
         tags = {tag for tag, _ in self.stack}
@@ -396,6 +499,7 @@ class _HTMLReader(HTMLParser):
             self.builder.table(self.table.rows, line=self.table.line)
             self.builder.warn("html-unclosed-table", "HTML 表格没有完整闭合，已按可识别的行和单元格提取，请核对。")
         self.flush()
+        self.finish_lists()
         self.builder.title = re.sub(r"\s+", " ", "".join(self.title_parts)).strip()
 
 
