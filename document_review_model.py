@@ -433,6 +433,20 @@ def make_location(block: DocumentBlock, **overrides: Any) -> DocumentLocation:
     )
 
 
+def document_location_contract(document: StructuredDocument) -> dict[str, Any]:
+    revised = bool(document.metadata.get("revision_of"))
+    return {
+        "coordinate_basis": "historical-parent-document" if revised else "imported-document",
+        "quote_source": "current block.text",
+        "instruction": (
+            "For a revised document, locations retain historical parent-document anchors or identify generated blocks; "
+            "they are not offsets in the revised Markdown and do not prove edited text occurred in the original file. "
+            "Use current block IDs and text for findings."
+            if revised else "Use the supplied block IDs and extracted text; do not invent source coordinates."
+        ),
+    }
+
+
 def list_marker(block: DocumentBlock) -> str:
     """Retain textual source identifiers, with a safe fallback for older IR."""
     ordered = bool(block.attrs.get("ordered"))
@@ -484,5 +498,5 @@ __all__ = [
     "ExtractionWarning", "FINDING_DECISIONS", "Finding", "QualitySignals", "RawFileBinding",
     "ReviewContext", "SCHEMA_VERSION", "SEVERITIES", "StructuredDocument", "SUPPORTED_EXTENSIONS",
     "UNSUPPORTED_EXTENSIONS", "VERIFICATION_STATES", "canonical_json", "make_location",
-    "list_marker", "model_to_markdown", "stable_id", "validate_finding_dict",
+    "document_location_contract", "list_marker", "model_to_markdown", "stable_id", "validate_finding_dict",
 ]

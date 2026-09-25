@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .base import *  # noqa: F401,F403
 from .json_numbers import finite_json_number
+from document_review_model import document_location_contract
 
 class RevisionPlanBuilder(_ProjectComponent):
     def _decision_records(self) -> dict[str, list[tuple[Path, dict[str, Any], str]]]:
@@ -540,7 +541,7 @@ class RevisionPlanBuilder(_ProjectComponent):
         """Materialize only approved, anchor-verified Hunks and run local rechecks."""
         self._ensure_writable()
         plan = self.revision_plan()
-        _, document = self._review_document_record()
+        source_document_path, document = self._review_document_record()
         context = self.context()
         if not plan or not document or not context:
             raise ReviewStudioError("修改计划、结构化文档或审查上下文缺失")
@@ -685,14 +686,38 @@ class RevisionPlanBuilder(_ProjectComponent):
         revised_markdown = model_to_markdown(provisional)
         revised_sha = _sha256(revised_markdown.encode("utf-8"))
         revised_source = replace(document.source, original_name="修改稿.md", extension=".md", media_type="text/markdown", byte_size=len(revised_markdown.encode("utf-8")), sha256=revised_sha, relative_path="generated")
-        revised_document = replace(provisional, document_id=stable_id("DOC", revised_sha), source=revised_source, metadata={**document.metadata, "revision_of": document.document_id, "revision_plan_id": plan["plan_id"]})
+        # Source coordinates remain historical anchors. Bind that interpretation
+        # to the exact parent IR instead of implying offsets in rendered Markdown.
+        original_mapping: dict[str, list[dict[str, Any]]] = {}
+        for row in document.source_to_block:
+            original_mapping.setdefault(row["block_id"], []).append(row)
+        revised_mapping: list[dict[str, Any]] = []
+        for block in revised_blocks:
+            original = original_by_id.get(block.block_id)
+            if original is None:
+                revised_mapping.append({"block_id": block.block_id, "kind": block.kind, "coordinate_basis": "generated",
+                    **{key: block.attrs[key] for key in ("generated_by_action", "split_from_block_id") if key in block.attrs}})
+                continue
+            anchors = original_mapping.get(block.block_id)
+            if not anchors:
+                anchors = [{key: value for key, value in (original.location.to_dict() if original.location else {}).items() if value is not None}]
+            for anchor in anchors:
+                revised_mapping.append({**anchor, "block_id": block.block_id, "kind": block.kind,
+                    "coordinate_basis": "parent-document-anchor", "text_changed_from_parent": block.text != original.text})
+        map_parent = {"document_id": document.document_id, "relative_path": source_document_path.relative_to(self.root).as_posix(),
+                      "sha256": _sha256(source_document_path.read_bytes())}
+        revised_document = replace(provisional, document_id=stable_id("DOC", revised_sha), source=revised_source,
+            source_to_block=revised_mapping, metadata={**document.metadata, "revision_of": document.document_id,
+                "revision_plan_id": plan["plan_id"], "source_map_basis": "revision-provenance-v1", "source_map_parent": map_parent,
+                "character_offset_basis": "historical-parent-document", "source_location_version": 3})
         binding_hashes = [decision_row[2] for _, _, decision_row in approved] + [decisions[hunks[action_id][1]["hunk_id"]][2] for action_id in actions if decisions[hunks[action_id][1]["hunk_id"]][1].get("decision") == "reject"]
         revision_id = stable_id("REV", plan["plan_id"], *sorted(binding_hashes))
         output = self.root / "revisions" / revision_id
         if (output / "revision.json").is_file():
             return output
         plan_path = self.root / "revision-plans" / f"{plan['plan_id']}.json"
-        parents = [_parent_ref(self.root, plan_path, role="revision-plan")]
+        parents = [_parent_ref(self.root, plan_path, role="revision-plan"),
+                   _parent_ref(self.root, source_document_path, role="base-structured-document")]
         for _, hunk_row, decision_row in approved:
             parents.extend([_parent_ref(self.root, hunk_row[0], role="approved-hunk"), _parent_ref(self.root, decision_row[0], role="hunk-decision")])
         for action_id in actions:
@@ -792,6 +817,7 @@ class RevisionPlanBuilder(_ProjectComponent):
                 "Each resolution must contain finding_id, state (resolved|partially-resolved|still-present), reason, and evidence.",
                 "Every newly detected issue must be a full Finding in new_findings; use source_finding_id only when it truly descends from an original Finding.",
                 "A new Finding must quote a contiguous excerpt from its referenced revised block and use the confirmed document_type. Copy its location or provide only block_id; never invent offsets or a human decision status.",
+                "The Revised document blocks below are the current source for IDs, text and locations. The original prompt snapshot is historical evidence, not the current manuscript.",
                 "",
                 f"request_id: {request_id}",
                 f"revision_id: {revision_id}",
@@ -809,8 +835,12 @@ class RevisionPlanBuilder(_ProjectComponent):
                 "## Original Findings",
                 json.dumps(original_rows, ensure_ascii=False, indent=2),
                 "",
-                "## Revised document",
-                revised_markdown,
+                "## Revised document location contract",
+                json.dumps(document_location_contract(revised_document), ensure_ascii=False, indent=2),
+                "",
+                "## Revised document blocks\n```json",
+                json.dumps([block.to_dict() for block in revised_document.blocks], ensure_ascii=False, indent=2),
+                "```",
             ])
             prompt_sha256 = _sha256(base_prompt.encode("utf-8"))
             envelope = {"request_id": request_id, "prompt_sha256": prompt_sha256, "revision_id": revision_id, "revised_sha256": revised_sha, "critic": critic}

@@ -54,7 +54,7 @@ def main():
         shutil.copy2(ROOT / "LICENSE", bundle / "LICENSE")
         shutil.copytree(ROOT / "docs", bundle / "docs")
         guide = (ROOT / "docs" / "portable-guide.md").read_text(encoding="utf-8")
-        for name in ("document-review-studio.md", "release-engineering-0.2.1.md", "release-engineering-0.2.2.md", "release-engineering-0.2.3.md", "release-engineering-0.2.4.md", "release-engineering-0.2.5.md", "release-engineering-0.2.6.md", "release-engineering-0.2.7.md", "release-engineering-0.2.8.md", "release-engineering-0.2.9.md", "release-engineering-0.2.10.md", "release-engineering-0.2.11.md", "release-engineering-0.2.12.md", "release-engineering-0.2.13.md", "release-engineering-0.2.14.md", "release-engineering-0.2.15.md", "release-engineering-0.2.16.md", "release-engineering-0.2.17.md", "release-engineering-0.2.18.md", "release-engineering-0.2.19.md"):
+        for name in ("document-review-studio.md", "release-engineering-0.2.1.md", "release-engineering-0.2.2.md", "release-engineering-0.2.3.md", "release-engineering-0.2.4.md", "release-engineering-0.2.5.md", "release-engineering-0.2.6.md", "release-engineering-0.2.7.md", "release-engineering-0.2.8.md", "release-engineering-0.2.9.md", "release-engineering-0.2.10.md", "release-engineering-0.2.11.md", "release-engineering-0.2.12.md", "release-engineering-0.2.13.md", "release-engineering-0.2.14.md", "release-engineering-0.2.15.md", "release-engineering-0.2.16.md", "release-engineering-0.2.17.md", "release-engineering-0.2.18.md", "release-engineering-0.2.19.md", "release-engineering-0.2.20.md"):
             guide = guide.replace("(" + name, "(docs/" + name)
         (bundle / "使用说明.md").write_text(guide, encoding="utf-8")
         if sys.platform == "win32":

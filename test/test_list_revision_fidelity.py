@@ -1,5 +1,6 @@
 """Approved edits retain list identity without editing the immutable source IR."""
 import json
+import hashlib
 import tempfile
 import unittest
 import zipfile
@@ -121,3 +122,30 @@ class ListRevisionFidelityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             project, _, blocks, _ = self.revise(temp, operation='delete_block', after='', decision='reject')
             self.assertEqual(blocks, [b.to_dict() for b in project.document().blocks])
+
+    def test_revision_source_map_covers_only_live_blocks(self):
+        for operation, after in (('delete_block', ''), ('replace_block', 'New premise\n\nNew detail')):
+            with self.subTest(operation=operation), tempfile.TemporaryDirectory() as temp:
+                _, revision, blocks, _ = self.revise(temp, source=HTML + '<table><tr><td>Cell</td></tr></table>', operation=operation, after=after)
+                saved = json.loads((revision / 'document.json').read_text(encoding='utf-8'))
+                self.assertEqual({row['block_id'] for row in saved['source_to_block']}, {b['block_id'] for b in blocks})
+
+    def test_revision_map_distinguishes_generated_text_from_parent_anchors(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project, revision, blocks, _ = self.revise(temp)
+            saved = json.loads((revision / 'document.json').read_text(encoding='utf-8'))
+            parent = saved['metadata']['source_map_parent']
+            self.assertEqual(parent['sha256'], hashlib.sha256(project.document_path.read_bytes()).hexdigest())
+            self.assertEqual(parent['relative_path'], project.document_path.relative_to(project.root).as_posix())
+            self.assertEqual(saved['metadata']['character_offset_basis'], 'historical-parent-document')
+            rows = {r['block_id']: r for r in saved['source_to_block']}
+            by_text = {b['text']: rows[b['block_id']] for b in blocks}
+            generated = by_text['Supporting detail']
+            self.assertEqual(generated['coordinate_basis'], 'generated')
+            self.assertIn('generated_by_action', generated)
+            self.assertIn('split_from_block_id', generated)
+            self.assertNotIn('source_line', generated)
+            self.assertNotIn('char_start', generated)
+            self.assertTrue(by_text['明确 Alpha']['text_changed_from_parent'])
+            self.assertFalse(by_text['Tail']['text_changed_from_parent'])
+            self.assertEqual(by_text['Tail']['coordinate_basis'], 'parent-document-anchor')

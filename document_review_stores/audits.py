@@ -7,6 +7,7 @@ from .json_numbers import finite_json_number
 from document_review_quality import CLOSE_READING_PROTOCOL, close_reading_example, quote_matches, validate_close_reading
 from review_profiles import academic_protocol
 from academic_review import academic_precheck_capabilities
+from document_review_model import document_location_contract
 
 class AuditRunStore(_ProjectComponent):
     def _current_review_binding(self) -> tuple[Path, StructuredDocument, dict[str, Any]]:
@@ -54,6 +55,7 @@ class AuditRunStore(_ProjectComponent):
             "protocol": academic_protocol(critic, discipline=context.discipline, research_type=context.research_type)
             if critic.startswith("academic_") else CRITIC_PROTOCOLS[critic],
             "close_reading_protocol": CLOSE_READING_PROTOCOL,
+            "document_location_contract": document_location_contract(document),
             **review_binding,
             "document_type": context.document_type,
             "required_finding_fields": ["finding_id", "critic", "document_type", "location", "evidence", "issue", "standard", "consequence", "severity", "verification_state", "external_basis", "uncertainties", "suggested_action", "suggested_owner", "blocks_release_or_execution"],

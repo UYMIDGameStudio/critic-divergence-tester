@@ -136,6 +136,7 @@ class AdversarialReviewTests(unittest.TestCase):
         self.assertEqual(self.prepare()["session_id"], session["session_id"])
         self.assertIn(LANGUAGES, session["requests"][0]["prompt"])
         self.assertIn("fresh conversation", session["requests"][0]["prompt"])
+        self.assertIn('imported-document', session['requests'][0]['prompt'])
         self.assertEqual(self.project.findings()[0].to_dict(), initial)
         with self.assertRaisesRegex(studio.ReviewStudioError, "先导入"):
             self.assess(session)
@@ -333,6 +334,7 @@ class AdversarialReviewTests(unittest.TestCase):
             session = self.project.prepare_adversarial_review(carried.finding_id, provider="p", model="m")
         self.assertEqual(session["source_sha256"], revision["revised_sha256"])
         self.assertEqual(session["review_round_id"], followup["round_id"])
+        self.assertIn('historical-parent-document', session['requests'][0]['prompt'])
         self.assertEqual(session["critic_origin"]["original_request_id"], original_request["request_id"])
         self.assertNotEqual(session["critic_origin"]["critic_protocol"]["objective"], changed["objective"])
         self.assertEqual(self.project.integrity_errors(), [])

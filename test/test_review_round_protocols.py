@@ -60,14 +60,14 @@ class ReviewRoundProtocolTests(unittest.TestCase):
             provider="provider", model="model", request_id=request["request_id"], **kwargs,
         )
 
-    def followup(self, *, start=True):
+    def followup(self, *, start=True, revised_text=None):
         initial_request = self.request()
         original_run = self.collect(initial_request, self.response(initial_request))
         original = original_run.findings[0]
         self.project.decide_finding(original.finding_id, "accept", reason="需要补充")
         action = self.project.prepare_revision_plan()["actions"][0]
         self.project.set_revision_action_operation(action["action_id"], action["operation_suggestion"], reason="确认")
-        hunk = self.project.propose_revision_hunk(action["action_id"], "负责人：项目经理；" + LANGUAGES, rationale="明确责任")
+        hunk = self.project.propose_revision_hunk(action["action_id"], revised_text if revised_text is not None else "负责人：项目经理；" + LANGUAGES, rationale="明确责任")
         self.project.decide_revision_hunk(hunk["hunk_id"], "approve", reason="核对修改")
         revision_dir = self.project.finalize_revision()
         revision = json.loads((revision_dir / "revision.json").read_text(encoding="utf-8"))
@@ -96,6 +96,7 @@ class ReviewRoundProtocolTests(unittest.TestCase):
         self.assertEqual(request["document_sha256"], hashlib.sha256(document_path.read_bytes()).hexdigest())
         self.assertIn("负责人：项目经理", request["prompt"])
         self.assertIn(LANGUAGES, request["prompt"])
+        self.assertIn('historical-parent-document', request['prompt'])
         run = self.collect(request, self.response(request))
         self.assertEqual(run.source_sha256, revision["revised_sha256"])
         self.assertEqual(run.document_id, document.document_id)
@@ -108,6 +109,21 @@ class ReviewRoundProtocolTests(unittest.TestCase):
         for finding in self.project.findings():
             self.project.decide_finding(finding.finding_id, "defer", reason="保留到后续处理")
         self.project.export()
+        self.assertEqual(self.project.integrity_errors(), [])
+
+    def test_external_recheck_can_locate_generated_blocks_using_only_its_prompt(self):
+        original_ids = {b.block_id for b in self.project.document().blocks}
+        _, revision, request, payload = self.followup(start=False, revised_text='负责人：项目经理\n\nGenerated evidence paragraph')
+        serialized = request['prompt'].split('## Revised document blocks\n```json\n', 1)[1].split('\n```', 1)[0]
+        blocks = json.loads(serialized)
+        generated = next(b for b in blocks if b['text'] == 'Generated evidence paragraph')
+        self.assertNotIn(generated['block_id'], original_ids)
+        finding = self.finding(identity='GENERATED-FINDING')
+        finding.update(location=generated['location'], evidence=generated['text'])
+        payload['new_findings'] = [finding]
+        result = self.project.collect_external_recheck(revision['revision_id'], CRITIC, json.dumps(payload, ensure_ascii=False), provider='provider', model='recheck-model')
+        self.assertEqual(result['new_findings'][0]['location']['block_id'], generated['block_id'])
+        self.assertIn('historical-parent-document', request['prompt'])
         self.assertEqual(self.project.integrity_errors(), [])
 
     def test_followup_without_fresh_audit_can_export_valid_round(self):

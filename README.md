@@ -6,8 +6,8 @@
 由你逐项批准，再生成独立新版本复查。核心文本流程不依赖第三方 Python 包；
 PDF、扫描件及旧 Office/WPS 格式按需使用额外组件。
 
-**0.2.19** 修复批准修订后的列表结构：拆分段落保留条目归属，删除条目首段后，
-剩余内容仍保留原编号；独立插入段落不会被自动归入原条目。见 [0.2.19 修复记录](docs/release-engineering-0.2.19.md)，
+**0.2.20** 重建修订稿的来源映射，区分历史定位与生成内容；外部复审协议提供当前
+段落及准确 ID，让新增问题能够直接定位到修订后的内容。见 [0.2.20 修复记录](docs/release-engineering-0.2.20.md)，
 安装与升级见 [便携版说明](docs/portable-guide.md)。
 
 [对抗深审](docs/adversarial-review.md)让已有批评经过独立辩护与证据复核；
@@ -21,7 +21,7 @@ PDF、扫描件及旧 Office/WPS 格式按需使用额外组件。
 当前仍为 **experimental preview**，未签名，其他设备与真实作者试用仍待验收。
 远端自动验证结果以相应提交的 Actions 记录为准。
 
-此前修复记录：[审查界面编号显示](docs/release-engineering-0.2.18.md)、[HTML 列表语义](docs/release-engineering-0.2.17.md)、[原稿编号保留](docs/release-engineering-0.2.16.md)、[Word 结构导出](docs/release-engineering-0.2.15.md)、[多行单元格导出](docs/release-engineering-0.2.14.md)、[文本容量保护](docs/release-engineering-0.2.13.md)、[Markdown 内容保留](docs/release-engineering-0.2.12.md)、[原文定位](docs/release-engineering-0.2.11.md)、[文件名保护](docs/release-engineering-0.2.10.md)、[表格导入容量保护](docs/release-engineering-0.2.9.md)、[浏览器启动与双语维护提示](docs/release-engineering-0.2.8.md)、[删除中断与备份恢复](docs/release-engineering-0.2.7.md)、
+此前修复记录：[修订后条目归属](docs/release-engineering-0.2.19.md)、[审查界面编号显示](docs/release-engineering-0.2.18.md)、[HTML 列表语义](docs/release-engineering-0.2.17.md)、[原稿编号保留](docs/release-engineering-0.2.16.md)、[Word 结构导出](docs/release-engineering-0.2.15.md)、[多行单元格导出](docs/release-engineering-0.2.14.md)、[文本容量保护](docs/release-engineering-0.2.13.md)、[Markdown 内容保留](docs/release-engineering-0.2.12.md)、[原文定位](docs/release-engineering-0.2.11.md)、[文件名保护](docs/release-engineering-0.2.10.md)、[表格导入容量保护](docs/release-engineering-0.2.9.md)、[浏览器启动与双语维护提示](docs/release-engineering-0.2.8.md)、[删除中断与备份恢复](docs/release-engineering-0.2.7.md)、
 [深审历史读取](docs/release-engineering-0.2.6.md)、[Windows 路径保护](docs/release-engineering-0.2.5.md)、
 [Unicode 安装与卸载](docs/release-engineering-0.2.4.md)、[基础交付与验收边界](docs/release-engineering-0.2.3.md)。
 

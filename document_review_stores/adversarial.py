@@ -14,6 +14,7 @@ from document_review_adversarial import (
     response_example, validate_response,
 )
 from document_review_quality import quote_matches
+from document_review_model import document_location_contract
 from project_lifecycle import CommitValidationResult
 
 
@@ -153,6 +154,7 @@ class AdversarialReviewStore(_ProjectComponent):
             "challenge": session["challenge"], "defense": defense["result"] if defense else None,
             "confirmed_context": self.context().to_dict(),
             "document_blocks": [block.to_dict() for block in document.blocks],
+            "document_location_contract": document_location_contract(document),
             "response_contract_version": session["response_contract_version"],
             "result_contract_example": session["response_examples"][stage],
             "limits": "All results are model-proposed. The application checks binding and quote provenance, not semantic correctness or external factual verification.",
