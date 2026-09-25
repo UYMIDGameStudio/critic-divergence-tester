@@ -1,4 +1,4 @@
-# 本地便携版 · 0.2.2
+# 本地便携版 · 0.2.3
 
 解压完整发行 ZIP，在包含 `DocumentReviewStudio.exe` 的目录中双击程序。
 程序会打开本机浏览器页面；请保留同目录的 `_internal`、安装脚本与发行清单。
@@ -47,7 +47,7 @@ Office/WPS 文件需要本机 LibreOffice。选择一个语言或文件扩展名
 .\DocumentReviewStudio.exe app --data-dir 'D:\ReviewLibrary'
 ```
 
-0.2.2 保留现有项目 schema，不自动重写旧审计产物；新增字段和记录有各自的校验。
+0.2.3 保留现有项目 schema，不自动重写旧审计产物；对抗深审记录有独立协议与校验。
 遇到不支持的项目格式会拒绝打开。
 升级后需要回退时，启动保留的旧程序版本，并将升级前备份恢复到独立项目库。
 不要让旧程序继续修改已经由新版增加了新功能记录的项目。
@@ -97,4 +97,4 @@ Word 净稿优先保留原文档包，支持普通段落、连续段落和简单
 当前构建**未做发行者代码签名**。清单与 ZIP 摘要可发现文件不一致，不能认证发布者。
 其他设备、远端 CI、特定 WPS 变体和复杂 Word 排版仍需进一步验收。
 本机真实 DOC/XLS/PPT 转换、Word 修订、最终回归和发行包证据见
-[0.2.2 交付工程记录](release-engineering-0.2.2.md)。当前保留 experimental preview 标识。
+[0.2.3 交付工程记录](release-engineering-0.2.3.md)。当前保留 experimental preview 标识。

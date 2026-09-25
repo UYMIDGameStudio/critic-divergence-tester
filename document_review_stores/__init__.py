@@ -6,21 +6,23 @@ from . import audits as _audits
 from . import revision as _revision
 from . import exports as _exports
 from . import editing as _editing
+from . import adversarial as _adversarial
 from .ingestion import IngestionState
 from .audits import AuditRunStore
 from .revision import RevisionPlanBuilder
 from .exports import ExportCenter
 from .editing import EditingTools
+from .adversarial import AdversarialReviewStore
 from types import CodeType
 
-COMPONENT_TYPES = (IngestionState, AuditRunStore, RevisionPlanBuilder, ExportCenter, EditingTools)
+COMPONENT_TYPES = (IngestionState, AuditRunStore, RevisionPlanBuilder, ExportCenter, EditingTools, AdversarialReviewStore)
 COMPONENT_BY_METHOD = {
     name: component_type
     for component_type in COMPONENT_TYPES
     for name, value in component_type.__dict__.items()
     if callable(value) and not name.startswith("__")
 }
-_MODULES = (_base, _ingestion, _audits, _revision, _exports, _editing)
+_MODULES = (_base, _ingestion, _audits, _revision, _exports, _editing, _adversarial)
 
 def _referenced_names(code):
     names = set(code.co_names)
@@ -72,6 +74,7 @@ __all__ = [
     "AuditRunStore",
     "RevisionPlanBuilder",
     "ExportCenter",
+    "AdversarialReviewStore",
     "COMPONENT_TYPES",
     "COMPONENT_BY_METHOD",
     "bind_studio_globals",

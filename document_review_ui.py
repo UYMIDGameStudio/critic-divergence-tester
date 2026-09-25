@@ -158,7 +158,8 @@ class StudioApp:
         if project.integrity_errors():
             raise ReviewStudioError("项目完整性校验失败，拒绝导出 AI 协议")
         requests = project.ai_requests()
-        if not requests:
+        deep_reviews = [session for session in project.adversarial_reviews() if session["current"]]
+        if not requests and not deep_reviews:
             raise ReviewStudioError("请先导出独立 AI 审查协议")
         output = io.BytesIO()
         with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -167,6 +168,12 @@ class StudioApp:
                 archive.writestr(f"{safe_name}/prompt.md", request["prompt"])
                 metadata = {key: value for key, value in request.items() if key not in {"prompt", "completed"}}
                 archive.writestr(f"{safe_name}/request.json", json.dumps(metadata, ensure_ascii=False, indent=2) + "\n")
+            for session in deep_reviews:
+                for request in session["requests"]:
+                    folder = f"adversarial/{session['session_id']}/{request['stage']}"
+                    archive.writestr(folder + "/prompt.md", request["prompt"])
+                    metadata = {key: value for key, value in request.items() if key != "prompt"}
+                    archive.writestr(folder + "/request.json", json.dumps(metadata, ensure_ascii=False, indent=2) + "\n")
         return output.getvalue()
 
     def upload(self, payload: dict[str, Any]) -> "StudioApp":
@@ -268,6 +275,22 @@ class StudioApp:
             notice += "。AI 任务仅包含待执行协议，尚未调用模型。"
         elif action == "prepare_ai_audits":
             project.prepare_ai_audits(data.get("critics"), provider=str(data.get("provider", "")), model=str(data.get("model", "")))
+        elif action == "prepare_adversarial_review":
+            project.prepare_adversarial_review(
+                str(data.get("finding_id", "")),
+                provider=data.get("provider", ""), model=data.get("model", ""),
+                restart=data.get("restart", False),
+            )
+        elif action == "prepare_adversarial_assessment":
+            project.prepare_adversarial_assessment(
+                str(data.get("session_id", "")),
+                provider=data.get("provider", ""), model=data.get("model", ""),
+            )
+        elif action == "import_adversarial_response":
+            project.collect_adversarial_response(
+                str(data.get("session_id", "")), data.get("response", ""),
+                request_id=str(data.get("request_id", "")),
+            )
         elif action == "import_ai_audit":
             run = project.collect_model_audit(str(data.get("critic", "")), str(data.get("response", "")), provider=str(data.get("provider", "")), model=str(data.get("model", "")), request_id=str(data.get("request_id", "")) or None, binding_mode=str(data.get("binding_mode", "strict")))
             run_path = project.root / "audits" / run.critic / f"{run.run_id}.json"

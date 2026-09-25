@@ -2,7 +2,7 @@
   "name": "document-review-studio-browser-tests",
   "private": true,
   "scripts": {
-    "test:browser": "node scripts/browser_e2e.cjs && node scripts/browser_state_regression.cjs && node scripts/browser_localization.cjs && node scripts/browser_research_localization.cjs && node scripts/browser_close_reading.cjs && node scripts/browser_http_security.cjs"
+    "test:browser": "node scripts/browser_e2e.cjs && node scripts/browser_state_regression.cjs && node scripts/browser_localization.cjs && node scripts/browser_research_localization.cjs && node scripts/browser_close_reading.cjs && node scripts/browser_adversarial.cjs && node scripts/browser_http_security.cjs"
   },
   "devDependencies": {
     "playwright": "1.62.1"

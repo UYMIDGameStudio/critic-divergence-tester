@@ -31,7 +31,10 @@ async function api(path, body) {
     throw error;
   }
   if (!response.ok) {
-    const error = Error(value.error || tr('操作失败'));
+    const errorText = value.error || tr('操作失败');
+    const error = Error(['prepare_adversarial_review', 'prepare_adversarial_assessment',
+      'import_adversarial_response'].includes(body?.action)
+      ? adversarialErrorMessage(errorText) : errorText);
     error.uncertainMutation = Boolean(body) && response.status >= 500;
     throw error;
   }

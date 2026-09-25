@@ -4,10 +4,14 @@
 > 本文主要记录原文书五维度和共用底层流程；学术三维度、综合八维度与兼容策略
 > 见 [统一工作台说明](unified-workbench.md)。
 
-> Version 0.2.2 — **experimental preview**. Deterministic local Findings have a stable
+> Version 0.2.3 — **experimental preview**. Deterministic local Findings have a stable
 > check-ID revision/recheck loop. External-model Findings have a critic-bound
 > recheck request/import and human Resolution loop. This is still not formal
 > V1: Gate C evidence and the product limitations below remain open.
+
+For targeted independent defense and evidence assessment of an imported finding,
+see [Adversarial deep review](adversarial-review.md). The same workflow supports
+academic papers and documents while preserving their different review standards.
 
 Document Review Studio is the document-first workflow in this repository. It
 keeps the uploaded bytes separate from the internal review representation and
@@ -188,7 +192,7 @@ model's reasoning and sources still require human review in the document's langu
 | ODT | Paragraphs, lists and tables from the document package; the output is a normalized review representation. |
 | Excel (`.xlsx`, `.xlsm`) | Worksheets and cell locations, including marked hidden sheets. Formula values come from the file's saved cache and may be stale; missing caches are warned about. No formulas, macros or external workbook links are executed. |
 | PowerPoint (`.pptx`, `.pptm`) | Slide text, tables and speaker notes in presentation order, with hidden-slide markers. Animations, chart rendering and visual layout are not reproduced. |
-| Old Office/WPS (`.doc`, `.wps`, `.xls`, `.et`, `.ppt`, `.dps`) | Recognizable RTF/HTML/OOXML content is parsed directly; real legacy binary files require a local LibreOffice conversion. Missing or failed conversion is reported. Actual binary Office/WPS conversion has not yet been tested in this release environment. |
+| Old Office/WPS (`.doc`, `.wps`, `.xls`, `.et`, `.ppt`, `.dps`) | Recognizable RTF/HTML/OOXML content is parsed directly; real legacy binary files require local LibreOffice conversion. Missing or failed conversion is reported. Binary DOC/XLS/PPT samples passed local 0.2.2 acceptance; native WPS specimens remain unverified. |
 | Text PDF | Prefers optional `pypdf`/`PyMuPDF`. The conservative built-in fallback only handles simple literal text and explicitly lacks coordinates, table reconstruction and reliable reading order. |
 | Scanned PDF | Requires a PDF rendering component, Tesseract and each selected OCR language pack. Recognition quality must be checked before review. |
 
@@ -372,10 +376,9 @@ inherit the critic's suggested action.
 
 ## Release evidence and remaining work
 
-The [0.2.1 delivery record](release-engineering-0.2.1.md) covers the current parser,
-draft, research IR and installer changes. The [0.2 record](release-engineering-0.2.md)
-remains a dated account of the preceding release. The local Chrome localization
-scenario passed 16 checks; it does not establish full model quality, real binary
-Office conversion, OCR quality, all Word layouts or support on other devices.
-The portable build remains unsigned. The final full-suite/build results and
-release artifact location are pending completion of the release acceptance run.
+The [0.2.3 delivery record](release-engineering-0.2.3.md) covers adversarial deep
+review and its verification. The [0.2.2 record](release-engineering-0.2.2.md)
+preserves the preceding parser, IR, real Office/OCR and installation evidence.
+Those checks do not establish model accuracy, all document layouts or operation
+on independent end-user devices. The portable build remains unsigned, and the
+independent-author acceptance gate remains open.

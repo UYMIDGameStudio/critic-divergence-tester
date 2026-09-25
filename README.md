@@ -2,14 +2,16 @@
 
 [![Tests](https://github.com/UYMIDGameStudio/critic-divergence-tester/actions/workflows/tests.yml/badge.svg)](https://github.com/UYMIDGameStudio/critic-divergence-tester/actions/workflows/tests.yml)
 
-**0.2.2**：默认繁體中文界面，可切换 English；扩展常用文档格式与非 UTF-8
+**0.2.3**：加入[对抗深审](docs/adversarial-review.md)，让已有批评经过独立辩护与证据复核，
+保留、缩小、撤回或材料不足均为待人工决定的建议。学术稿件是重点使用场景，文书使用同一流程和各自的标准。
+默认繁體中文界面，可切换 English；支持常用文档格式与非 UTF-8
 编码导入，并改进流程导航、草稿保存、异常恢复和 Windows 安装升级。
 英文、简体中文、繁体中文、德语、法语、日语、俄语及拉丁语文本可进入同一审查
 流程；这表示文本解析能力，不代表这些语言的模型审查质量已经验证。
 当前仍为 **experimental preview**，未签名，也未完成其他设备与远端 CI 验收。
-详细变化和验收边界见 [0.2.2 交付记录](docs/release-engineering-0.2.2.md)，
+详细变化和验收边界见 [0.2.3 交付记录](docs/release-engineering-0.2.3.md)，
 安装与升级见 [便携版说明](docs/portable-guide.md)。
-本轮进一步加入 [按文章任务细读、反证核对与可验证修正](docs/review-quality-0.2.2.md)，
+此前已加入 [按文章任务细读、反证核对与可验证修正](docs/review-quality-0.2.2.md)，
 并收紧 IR／协议的原始字节绑定、异常回传归档与跨项目请求隔离。
 
 一个 **本地运行、模型无关的文书与论证审查工作台**：每一处修改都能追溯到审查发现，

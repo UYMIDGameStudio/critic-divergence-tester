@@ -5,6 +5,78 @@ from __future__ import annotations
 from .base import *  # noqa: F401,F403
 
 class ExportCenter(_ProjectComponent):
+    def _followup_ai_export_runs(self) -> list[tuple[Path, dict[str, Any], Path]]:
+        """Project inherited findings from their exact external recheck result."""
+        current_round = self.current_review_round()
+        if not current_round:
+            return []
+        record = current_round[1]
+        sources = {item["finding_id"]: item["source_result_id"] for item in record["finding_sources"]}
+        runs = []
+        # The base revision is historical after its follow-up begins. Read the
+        # immutable paths bound by that round, not the current-edit authorization
+        # lookup, which correctly refuses to mutate a prior revision.
+        base = _safe_child(self.root, record["base_document_relative_path"]).parent
+        for result_id in sorted(set(sources.values())):
+            findings = [item for item in record["findings"] if sources.get(item["finding_id"]) == result_id]
+            critics = {item["critic"] for item in findings}
+            if len(critics) != 1:
+                raise ReviewStudioError("下一轮问题与外部复审来源不一致")
+            critic = next(iter(critics))
+            relative = (base / "external-rechecks" / critic / (result_id + ".json")).relative_to(self.root).as_posix()
+            path = _safe_child(self.root, relative)
+            result = _read_json(path)
+            if (result.get("result_id") != result_id or result.get("critic") != critic
+                    or result.get("revision_id") != record["base_revision_id"]
+                    or result.get("revised_sha256") != record["base_revised_sha256"]):
+                raise ReviewStudioError("下一轮问题与外部复审版本绑定不一致")
+            run = {"run_id": result["result_id"], "critic": result["critic"],
+                   "origin": "external-recheck-followup", "review_round_id": record["round_id"],
+                   "declared_model_metadata": result["declared_model_metadata"],
+                   "response_binding": result.get("response_binding", {}), "findings": findings}
+            runs.append((path, run, path.with_name(result["result_id"] + ".raw-response.json")))
+        return runs
+
+    def _export_adversarial_reviews(self, output: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Include current challenges and every recorded exchange, verbatim."""
+        snapshots = []
+        parents = []
+        sessions = self.adversarial_reviews()
+        by_id = {session["session_id"]: session for session in sessions}
+        included = {session["session_id"] for session in sessions if session["current"]}
+        pending = list(included)
+        while pending:
+            previous = by_id[pending.pop()].get("supersedes_session_id")
+            if previous and previous in by_id and previous not in included:
+                included.add(previous)
+                pending.append(previous)
+        for session in sessions:
+            if session["session_id"] not in included:
+                continue
+            session_path = _safe_child(self.root, session["relative_path"])
+            snapshot = {key: value for key, value in session.items() if key != "requests"}
+            snapshot["requests"] = [
+                {key: value for key, value in request.items() if key not in {"prompt", "response_example"}}
+                for request in session["requests"]
+            ]
+            artifacts = []
+            for path in sorted(session_path.parent.rglob("*")):
+                if INTEGRITY_RECEIPT_DIR in path.relative_to(session_path.parent).parts:
+                    continue
+                if path.is_symlink():
+                    raise ReviewStudioError("对抗深审记录不能包含链接")
+                if not path.is_file():
+                    continue
+                parent = _parent_ref(self.root, path, role="adversarial-review-artifact")
+                relative = path.relative_to(self.root).as_posix()
+                data = path.read_bytes()
+                _write_tracked(self.root, output / relative, data, parents=[parent], provenance="verbatim-adversarial-review-export")
+                parents.append(parent)
+                artifacts.append({"relative_path": relative, "sha256": _sha256(data)})
+            snapshot["artifacts"] = artifacts
+            snapshots.append(snapshot)
+        return snapshots, parents
+
     def _composed_unresolved_report(self, revision_id: str) -> str:
         revision_dir = self._revision_directory(revision_id)
         recheck = _read_json(revision_dir / "recheck.json")
@@ -41,42 +113,49 @@ class ExportCenter(_ProjectComponent):
         self._ensure_writable()
         _, document = self._review_document_record()
         active_runs = [row for row in self._active_audit_run_records().values() if isinstance(row[1].get("declared_model_metadata"), Mapping)]
-        if not active_runs:
+        export_runs = [(path, run, path.parent / f"{run['run_id']}.raw-response.json.txt") for path, run, _ in active_runs]
+        export_runs.extend(self._followup_ai_export_runs())
+        if not export_runs:
             raise ReviewStudioError("尚未导入任何独立 AI 审查结果")
         export_id = stable_id("AIEXP", document.source.sha256, _now(), secrets.token_hex(4))
         output = self.root / "exports" / export_id
         output.mkdir(parents=True, exist_ok=False)
-        run_parents = [_parent_ref(self.root, path, role="ai-audit-run") for path, _, _ in active_runs]
+        run_parents = [_parent_ref(self.root, path, role="ai-review-result") for path, _, _ in export_runs]
+        current_round = self.current_review_round()
+        if current_round:
+            run_parents.append(_parent_ref(self.root, current_round[0], role="review-round"))
         raw_parents: list[dict[str, Any]] = []
         raw_exports: list[dict[str, Any]] = []
-        for run_path, run, _ in active_runs:
+        for run_path, run, raw_path in export_runs:
             critic = str(run["critic"])
             run_id = str(run["run_id"])
-            raw_path = run_path.parent / f"{run_id}.raw-response.json.txt"
             if not raw_path.is_file() or raw_path.is_symlink():
                 raise ReviewStudioError(f"AI 审查原始响应缺失：{critic}/{run_id}")
             raw_parent = _parent_ref(self.root, raw_path, role="raw-model-response")
             raw_parents.append(raw_parent)
-            exported_raw = output / "原始响应" / f"{critic}.json.txt"
+            raw_name = f"{critic}-{run_id}" if run.get("origin") == "external-recheck-followup" else critic
+            exported_raw = output / "原始响应" / f"{raw_name}.json.txt"
             raw_data = raw_path.read_bytes()
             _write_tracked(self.root, exported_raw, raw_data, parents=[raw_parent], provenance="verbatim-model-response-export")
             raw_exports.append({"critic": critic, "run_id": run_id, "relative_path": str(exported_raw.relative_to(output)).replace("\\", "/"), "sha256": _sha256(raw_data)})
-        findings = [item for _, run, _ in active_runs for item in run.get("findings", [])]
+        findings = [item for _, run, _ in export_runs for item in run.get("findings", [])]
+        adversarial_reviews, adversarial_parents = self._export_adversarial_reviews(output)
         snapshot = {
             "artifact_type": "independent-ai-review-snapshot",
             "schema_version": 1,
             "export_id": export_id,
             "status": "unadjudicated-review-snapshot",
             "source": document.source.to_dict(),
-            "runs": [run for _, run, _ in active_runs],
+            "runs": [run for _, run, _ in export_runs],
             "findings": findings,
+            "adversarial_reviews": adversarial_reviews,
             "raw_responses": raw_exports,
             "finding_count": len(findings),
             "human_decisions_included": False,
             "created_at": _now(),
         }
         json_path = output / "AI审查结果.json"
-        _write_tracked(self.root, json_path, canonical_json(snapshot), parents=[*run_parents, *raw_parents], provenance="deterministic-ai-review-snapshot")
+        _write_tracked(self.root, json_path, canonical_json(snapshot), parents=[*run_parents, *raw_parents, *adversarial_parents], provenance="deterministic-ai-review-snapshot")
         report_path = output / "AI审查报告.md"
         _write_tracked(self.root, report_path, _ai_review_markdown(snapshot).encode("utf-8"), parents=[_parent_ref(self.root, json_path, role="ai-review-snapshot")], provenance="deterministic-ai-review-render")
         manifest = {
@@ -88,7 +167,7 @@ class ExportCenter(_ProjectComponent):
             "report_relative_path": str(report_path.relative_to(self.root)).replace("\\", "/"),
             "result_relative_path": str(json_path.relative_to(self.root)).replace("\\", "/"),
             "finding_count": len(findings),
-            "critic_count": len(active_runs),
+            "critic_count": len({run["critic"] for _, run, _ in export_runs}),
             "created_at": snapshot["created_at"],
         }
         manifest_path = output / "ai-review-export.json"
@@ -178,6 +257,9 @@ class ExportCenter(_ProjectComponent):
             chain_parents.append(_parent_ref(self.root, current_round[0], role="current-review-round"))
         audit = {"artifact_type": "document-review-export", "schema_version": 2, "product_status": "experimental-preview", "export_id": export_id, "source": document.source.to_dict(), "parser": {"name": document.parser_name, "version": document.parser_version}, "quality": document.quality.to_dict(), "warnings": [warning.to_dict() for warning in document.warnings], "audit_runs": runs, "findings": [finding.to_dict() for finding in findings], "decisions": list(decisions.values()), "review_round": current_round[1] if current_round else None, "revision": trusted_revision[1] if trusted_revision else None, "external_recheck": external_recheck, "review_context": self.context().to_dict(), "independent_critics": list(self.review_critics()), "scores": None, "legal_boundary": "合规筛查不是律师意见；无来源材料时只能输出待核实问题", "created_at": _now()}
         audit_path = output / "audit.json"
+        adversarial_reviews, adversarial_parents = self._export_adversarial_reviews(output)
+        audit["adversarial_reviews"] = adversarial_reviews
+        chain_parents.extend(adversarial_parents)
         _write_tracked(self.root, audit_path, canonical_json(audit), parents=chain_parents, provenance="deterministic-audit-export")
         quality_path = output / "quality-report.json"
         _write_tracked(self.root, quality_path, canonical_json({"source": document.source.to_dict(), "quality": document.quality.to_dict(), "warnings": [warning.to_dict() for warning in document.warnings]}), parents=base_parents, provenance="deterministic-quality-export")

@@ -27,6 +27,7 @@ def main():
         'document_text_encoding', 'document_review_office_formats',
         'document_review_text_formats', 'document_review_legacy', 'studio_web.research',
         'document_review_quality', 'document_review_pdf_render',
+        'document_review_adversarial', 'document_review_stores.adversarial',
     ):
         module = importlib.import_module(name)
         if Path(module.__file__).resolve().is_relative_to(checkout):

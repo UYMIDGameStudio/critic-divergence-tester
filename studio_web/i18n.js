@@ -71,6 +71,11 @@ function changeLanguage(event) {
     });
   renderLanguageHeader();
   render();
+  // Completed operation notices belong to the old locale. Keep failures visible,
+  // but replace an obsolete success toast with the current language change.
+  if (operationBox.classList.contains('success')) {
+    operationStatus(uiLocale === 'en' ? 'Interface language changed.' : '介面語言已切換。', 'success');
+  }
   for (const saved of inputs) {
     const element = document.getElementById(saved.id);
     if (!element) continue;

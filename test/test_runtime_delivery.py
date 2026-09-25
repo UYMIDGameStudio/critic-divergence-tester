@@ -22,7 +22,7 @@ class InstalledRuntimeSelfTests(unittest.TestCase):
         self.assertTrue(result["passed"])
         self.assertTrue({"browser-assets", "research-browser-assets", "professional-browser-assets",
                          "ui-locales", "eight-language-import", "big5-research-import", "research-ir",
-                         "research-product-view", "research-workbench", "research-http"} <= set(result["checked"]))
+                         "research-product-view", "research-workbench", "research-http", "adversarial-review"} <= set(result["checked"]))
 
     def test_assets_load_from_a_zip_package_outside_the_source_directory(self):
         # This is a small importlib-resources fixture, not a release build. A

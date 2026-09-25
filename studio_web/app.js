@@ -11,6 +11,9 @@ const receiptedActions = new Set([
   'run_local_prechecks',
   'prepare_ai_audits',
   'import_ai_audit',
+  'prepare_adversarial_review',
+  'prepare_adversarial_assessment',
+  'import_adversarial_response',
   'export_ai_reviews',
   'decide_finding',
   'correct_finding_location',
@@ -36,6 +39,7 @@ function render() {
   else home();
   bind();
   bindRevision();
+  bindAdversarial();
   bindImportControls();
   bindDelivery();
   bindWorkflowNavigation();

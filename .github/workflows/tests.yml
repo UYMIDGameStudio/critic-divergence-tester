@@ -46,6 +46,7 @@ jobs:
           document_review_word.py
           document_review_pdf_render.py
           document_review_quality.py
+          document_review_adversarial.py
           project_lifecycle.py
           studio_ui_state.py
           studio_selftest.py
@@ -146,7 +147,11 @@ jobs:
           python critic_runner.py studio-import-ai --help
 
       - name: Build and install the distributable package
-        run: python -m pip install --no-deps .
+        run: |
+          python -m pip install setuptools==80.10.2 wheel==0.48.0
+          python -m unittest test.test_wheel_delivery -v
+          python scripts/build_wheel.py
+          python -c "from pathlib import Path; import subprocess, sys; wheels = list(Path('dist').glob('*.whl')); assert len(wheels) == 1; subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-deps', str(wheels[0])])"
 
       - name: Verify installed package without checkout imports
         run: python -I scripts/verify_installed_package.py

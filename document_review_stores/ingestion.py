@@ -188,7 +188,7 @@ class IngestionState(_ProjectComponent):
                     protected.add(path)
             for dirname in (
                 "source", "extraction", EXTRACTION_DECISION_DIR_NAME, "ai-requests",
-                "audits", "finding-decisions", "revision-plans", "action-operation-decisions", "revision-hunks",
+                "audits", "adversarial-reviews", "finding-decisions", "revision-plans", "action-operation-decisions", "revision-hunks",
                 "hunk-decisions", "revisions", "exports", "finding-locations", "drafting-attempts", ".requests",
             ):
                 directory = self.root / dirname

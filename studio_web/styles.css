@@ -222,6 +222,24 @@ button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
+.adversarial-review {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--green2);
+}
+.adversarial-review > summary { font-weight: 600; }
+.adversarial-session + .adversarial-session,
+.adversarial-start,
+.adversarial-next {
+  border-top: 1px solid var(--line);
+  margin-top: 14px;
+  padding-top: 10px;
+}
+.adversarial-stage { margin-bottom: 16px; }
+.adversarial-session small { overflow-wrap: anywhere; }
+.adversarial-prompt { white-space: pre-wrap; overflow-wrap: anywhere; }
+.operation-status.failure, #err { white-space: pre-line; }
 details {
   margin: 8px 0;
 }

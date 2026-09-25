@@ -49,6 +49,8 @@ def run_self_test() -> dict:
         project.confirm_context(ReviewContext(document_type="document", jurisdiction="unknown",
             effective_date="unknown", publisher_type="author", audience="editors").to_dict())
         project.run_local_prechecks(["expression_ambiguity"])
+        _check_adversarial_pipeline(project)
+        checked.append("adversarial-review")
         research_project = _check_research_pipeline(root / "library")
         checked.extend(["big5-research-import", "research-ir", "research-product-view", "research-workbench"])
         backup = create_backup(project.root, root / "backup.zip")
@@ -108,6 +110,37 @@ def run_self_test() -> dict:
             server.server_close()
         checked.append("research-http")
     return {"passed": True, "checked": checked}
+
+
+def _check_adversarial_pipeline(project) -> None:
+    """Prove packaged modules can persist all stages; no model quality claim."""
+    from document_review_adversarial import ENVELOPE_FIELDS, response_example
+    document = project._review_document_record()[1]
+    block = document.blocks[-1]
+    request = project.prepare_ai_audits(["expression_ambiguity"], provider="self-test", model="fixture")[0]
+    finding = {
+        "finding_id": "SELFTEST", "critic": "expression_ambiguity", "document_type": "document",
+        "location": {"block_id": block.block_id}, "evidence": block.text,
+        "issue": "Synthetic challenge", "standard": "Synthetic test criterion",
+        "consequence": "Synthetic consequence", "severity": "low", "verification_state": "model-proposed",
+        "external_basis": {}, "uncertainties": [], "suggested_action": "Inspect the source",
+        "suggested_owner": "author", "blocks_release_or_execution": False,
+    }
+    response = {key: request[key] for key in ("request_id", "prompt_sha256", "provider", "model", "source_sha256", "critic")}
+    response["findings"] = [finding]
+    run = project.collect_model_audit("expression_ambiguity", json.dumps(response),
+                                      provider="self-test", model="fixture", request_id=request["request_id"])
+    session = project.prepare_adversarial_review(run.findings[0].finding_id, provider="self-test", model="defender")
+    for stage in ("defense", "assessment"):
+        if stage == "assessment":
+            session = project.prepare_adversarial_assessment(session["session_id"], provider="self-test", model="assessor")
+        request = session["requests"][-1]
+        result = response_example(stage)
+        result["context_evidence"][0].update(block_id=block.block_id, quote=block.text)
+        payload = {**{key: request[key] for key in ENVELOPE_FIELDS}, "result": result}
+        session = project.collect_adversarial_response(session["session_id"], json.dumps(payload), request_id=request["request_id"])
+    if session["status"] != "completed" or project.findings()[0].status != "open" or project.integrity_errors():
+        raise RuntimeError("Packaged adversarial workflow failed or changed human decision authority")
 
 
 def _check_language_imports(library: Path) -> None:

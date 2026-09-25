@@ -657,6 +657,18 @@ class DocumentReviewProject:
             finding_rows = []
             attention_queue = {"default_limit": 30, "total_groups": 0, "hidden_groups": 0, "groups": []}
         ai_requests = self.ai_requests()
+        # A damaged exchange must not hide the read-only recovery interface.
+        # Never project untrusted stage text after the integrity gate failed.
+        adversarial_reviews = [] if state.get("read_only") else self.adversarial_reviews()
+        adversarial_eligible_ids = set()
+        if not state.get("read_only"):
+            for _, run, _ in self._active_audit_run_records().values():
+                if run.get("model_label") != "deterministic-local-rules" and isinstance(run.get("declared_model_metadata"), Mapping):
+                    adversarial_eligible_ids.update(item["finding_id"] for item in run.get("findings", []))
+            current_round = self.current_review_round()
+            if current_round:
+                adversarial_eligible_ids.update(item["finding_id"] for item in current_round[1].get("findings", [])
+                                               if item.get("origin") in {"external-recheck-carried-forward", "external-recheck-new-finding"})
         findings_total = len(finding_rows)
         finding_summary = {
             "total": findings_total,
@@ -687,7 +699,7 @@ class DocumentReviewProject:
             {"key": "bridge", "label": "受约束修改", "status": "completed" if revision_complete else "in_progress" if bridge_complete else "not_started", "detail": "修改稿已生成并复审" if revision_complete else "逐段修改中" if bridge_complete else "未开始"},
             {"key": "export", "label": "导出结果", "status": "completed" if export_complete else "not_started", "detail": "已有导出文件" if export_complete else "未导出"},
         ]
-        return {"review_critics": {key: CRITIC_LABELS[key] for key in self.review_critics()}, "project": manifest, "product_status": "experimental-preview", "state": state, "extraction": {"available": document is not None, "metadata": document.metadata if document else {}, "quality": document.quality.to_dict() if document else {}, "warnings": [warning.to_dict() for warning in document.warnings] if document else [], "blocks": [block.to_dict() for block in document.blocks] if document else [], "total_blocks": len(document.blocks) if document else 0}, "context": self.context().to_dict() if self.context() else {"model_suggestion": self.suggested_document_type()}, "can_review": can_review, "review_blockers": reasons, "ai_requests": ai_requests, "findings": finding_rows, "finding_summary": finding_summary, "attention_queue": attention_queue, "revision_workspace": revision_workspace, "workflow": workflow, "exports": exports}
+        return {"review_critics": {key: CRITIC_LABELS[key] for key in self.review_critics()}, "project": manifest, "product_status": "experimental-preview", "state": state, "extraction": {"available": document is not None, "metadata": document.metadata if document else {}, "quality": document.quality.to_dict() if document else {}, "warnings": [warning.to_dict() for warning in document.warnings] if document else [], "blocks": [block.to_dict() for block in document.blocks] if document else [], "total_blocks": len(document.blocks) if document else 0}, "context": self.context().to_dict() if self.context() else {"model_suggestion": self.suggested_document_type()}, "can_review": can_review, "review_blockers": reasons, "ai_requests": ai_requests, "adversarial_reviews": adversarial_reviews, "adversarial_eligible_finding_ids": sorted(adversarial_eligible_ids), "findings": finding_rows, "finding_summary": finding_summary, "attention_queue": attention_queue, "revision_workspace": revision_workspace, "workflow": workflow, "exports": exports}
 
 
 def _document_from_dict(value: Mapping[str, Any]) -> StructuredDocument:
@@ -715,6 +727,34 @@ def _finding_from_dict(value: Mapping[str, Any]) -> Finding:
     return Finding(value["finding_id"], value["critic"], value["document_type"], location, value["evidence"], value["issue"], value["standard"], value["consequence"], value["severity"], value["verification_state"], basis, list(value["uncertainties"]), value["suggested_action"], value["suggested_owner"], value["blocks_release_or_execution"], value.get("status", "open"), value.get("origin", "model-derived"), list(value.get("competing_readings", [])), value.get("required_observation", ""), value.get("proposed_group_id"), value.get("source_finding_id"), value.get("check_id"), dict(value.get("check_data", {})))
 
 
+def _adversarial_review_markdown(sessions: Iterable[Mapping[str, Any]]) -> list[str]:
+    sessions = list(sessions)
+    if not sessions:
+        return []
+    lines = ["## Adversarial deep review", "",
+             "These are model proposals. Source excerpts and task bindings were checked; semantic accuracy and completeness are not established. Human decisions remain separate.", ""]
+    for session in sessions:
+        lines.extend([f"### {session['finding_id']} · {session['session_id']}", "",
+                      f"- Status: {session['status']}; current: {session['current']}",
+                      f"- Original critic: {session['critic']}", ""])
+        for request in session.get("requests", []):
+            lines.append(f"- {request['stage']}: {request['provider']} / {request['model']} (declared)")
+        for stage, fields in (
+            ("defense", ("author_position", "strongest_defense", "limitations")),
+            ("assessment", ("disposition", "reasons", "remaining_issue", "minimal_repair", "repair_test")),
+        ):
+            result = session.get(stage)
+            if not result:
+                continue
+            lines.extend(["", f"#### {stage.capitalize()}", ""])
+            for key in fields:
+                lines.append(f"- {key.replace('_', ' ').capitalize()}: {result.get(key, '')}")
+            for anchor in result.get("context_evidence", []):
+                lines.append(f"- Source `{anchor['block_id']}`: {anchor['quote']}")
+        lines.extend(["", f"Exchange records: `{session['relative_path']}`", ""])
+    return lines
+
+
 def _audit_markdown(audit: Mapping[str, Any]) -> str:
     lines = ["# Document Review Studio audit report", "", f"Source: `{audit['source']['original_name']}`", f"SHA-256: `{audit['source']['sha256']}`", "", "## Recognition quality", "", f"- Text coverage: {audit['quality'].get('text_coverage', 0):.2f}", f"- Blank pages: {audit['quality'].get('blank_pages', [])}", f"- OCR low-confidence blocks: {audit['quality'].get('ocr_low_confidence_blocks', 0)}", f"- Reading order suspected: {audit['quality'].get('suspected_reading_order', False)}", "", "## Independent findings", ""]
     if not audit["findings"]:
@@ -724,6 +764,7 @@ def _audit_markdown(audit: Mapping[str, Any]) -> str:
         lines.extend(close_reading_markdown(finding))
         if finding.get("external_basis", {}).get("unresolved_facts"):
             lines.append("- Unresolved facts: " + "；".join(finding["external_basis"]["unresolved_facts"]))
+    lines.extend(_adversarial_review_markdown(audit.get("adversarial_reviews", [])))
     lines.extend(["", "## Boundary", "", audit["legal_boundary"], ""])
     return "\n".join(lines)
 
@@ -737,13 +778,17 @@ def _ai_review_markdown(snapshot: Mapping[str, Any]) -> str:
         "",
         f"- 原始文件：`{source['original_name']}`",
         f"- 原始文件 SHA-256：`{source['sha256']}`",
-        f"- 已导入 critic：{len(snapshot['runs'])}",
+        f"- 已导入 critic：{len({run['critic'] for run in snapshot['runs']})}",
         f"- Finding：{snapshot['finding_count']}",
         "",
     ]
     for run in snapshot["runs"]:
         metadata = run.get("declared_model_metadata", {})
-        lines.extend([f"## {run['critic']}", "", f"- Provider / model：{metadata.get('provider', '未声明')} / {metadata.get('model', '未声明')}", f"- Run：`{run['run_id']}`", f"- Response binding：{run.get('response_binding', {}).get('mode', '未记录')}", ""])
+        binding = run.get("response_binding")
+        binding_label = binding.get("mode", "未记录") if isinstance(binding, Mapping) else binding or "未记录"
+        lines.extend([f"## {run['critic']}", "", f"- Provider / model：{metadata.get('provider', '未声明')} / {metadata.get('model', '未声明')}", f"- Run：`{run['run_id']}`", f"- Response binding：{binding_label}", ""])
+        if run.get("origin") == "external-recheck-followup":
+            lines.extend(["本组问题继承自外部复审；本轮尚待逐项人工裁决。", ""])
         findings = run.get("findings", [])
         if not findings:
             basis = "；".join(run.get("zero_finding_basis", [])) or "模型未提供零 Finding 检查依据"
@@ -752,6 +797,7 @@ def _ai_review_markdown(snapshot: Mapping[str, Any]) -> str:
         for finding in findings:
             lines.extend([f"### {finding['finding_id']}", "", f"- 位置：`{finding['location']['block_id']}`，page {finding['location'].get('page') or '-'}", f"- 证据：{finding['evidence']}", f"- 问题：{finding['issue']}", f"- 判断标准：{finding['standard']}", f"- 后果：{finding['consequence']}", f"- 严重度：{finding['severity']}", f"- 核实状态：{finding['verification_state']}", f"- 建议动作：{finding['suggested_action']}", ""])
             lines.extend(close_reading_markdown(finding))
+    lines.extend(_adversarial_review_markdown(snapshot.get("adversarial_reviews", [])))
     lines.extend(["## 后续", "", "请回到 Document Review Studio 对每条 Finding 分别接受、修正、拒绝或暂缓；不要把本快照当作已经批准的修改意见。", ""])
     return "\n".join(lines)
 

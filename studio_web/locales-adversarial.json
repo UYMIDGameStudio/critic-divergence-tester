@@ -1,0 +1,350 @@
+{
+  "独立辩护任务生成": {
+    "zh-Hant": "獨立辯護任務生成",
+    "en": "Preparing the independent defense task"
+  },
+  "证据复核任务生成": {
+    "zh-Hant": "證據複核任務生成",
+    "en": "Preparing the evidence assessment task"
+  },
+  "深审响应导入": {
+    "zh-Hant": "深審回應匯入",
+    "en": "Importing the deep-review response"
+  },
+  "独立辩护": {
+    "zh-Hant": "獨立辯護",
+    "en": "Independent defense"
+  },
+  "证据复核": {
+    "zh-Hant": "證據複核",
+    "en": "Evidence assessment"
+  },
+  "响应已导入": {
+    "zh-Hant": "回應已匯入",
+    "en": "Response imported"
+  },
+  "等待模型响应": {
+    "zh-Hant": "等待模型回應",
+    "en": "Waiting for a model response"
+  },
+  "声明的模型：": {
+    "zh-Hant": "聲明的模型：",
+    "en": "Declared model: "
+  },
+  "查看这份深审协议": {
+    "zh-Hant": "查看這份深審協議",
+    "en": "View this deep-review protocol"
+  },
+  "粘贴完整响应，保留协议中的任务绑定字段": {
+    "zh-Hant": "貼上完整回應，保留協議中的任務綁定欄位",
+    "en": "Paste the complete response, preserving the task-binding fields in the protocol"
+  },
+  "导入这份深审响应": {
+    "zh-Hant": "匯入這份深審回應",
+    "en": "Import this deep-review response"
+  },
+  "等待独立辩护": {
+    "zh-Hant": "等待獨立辯護",
+    "en": "Waiting for independent defense"
+  },
+  "辩护已导入，待生成复核任务": {
+    "zh-Hant": "辯護已匯入，待生成複核任務",
+    "en": "Defense imported; prepare the assessment task next"
+  },
+  "等待证据复核": {
+    "zh-Hant": "等待證據複核",
+    "en": "Waiting for evidence assessment"
+  },
+  "深审完成，供人工判断": {
+    "zh-Hant": "深審完成，供人工判斷",
+    "en": "Deep review complete; proposals for your judgment"
+  },
+  "当时的批评与原文": {
+    "zh-Hant": "當時的批評與原文",
+    "en": "Original criticism and quotation"
+  },
+  "历史深审（已停止）": {
+    "zh-Hant": "歷史深審（已停止）",
+    "en": "Historical deep review (closed)"
+  },
+  "重新开始或更换模型": {
+    "zh-Hant": "重新開始或更換模型",
+    "en": "Restart or change the model"
+  },
+  "重新开始深审": {
+    "zh-Hant": "重新開始深審",
+    "en": "Restart deep review"
+  },
+  "重新开始会保留旧记录并停止其响应导入。请重新执行辩护和复核；人工决定保持不变。": {
+    "zh-Hant": "重新開始會保留舊記錄並停止其回應匯入。請重新執行辯護和複核；人工決定保持不變。",
+    "en": "Restarting preserves the previous record and closes it to response imports. Run defense and assessment again; human decisions are unchanged."
+  },
+  "建议保留批评": {
+    "zh-Hant": "建議保留批評",
+    "en": "Proposal: retain the criticism"
+  },
+  "建议缩小批评": {
+    "zh-Hant": "建議縮小批評",
+    "en": "Proposal: narrow the criticism"
+  },
+  "建议撤回批评": {
+    "zh-Hant": "建議撤回批評",
+    "en": "Proposal: withdraw the criticism"
+  },
+  "材料不足，暂不能判断": {
+    "zh-Hant": "材料不足，暫不能判斷",
+    "en": "Insufficient material to decide"
+  },
+  "此记录对应较早的稿件或审查状态，仅供查阅；请针对当前问题重新深审。": {
+    "zh-Hant": "此記錄對應較早的稿件或審查狀態，僅供查閱；請針對目前問題重新深審。",
+    "en": "This record belongs to an earlier manuscript or review state and is read-only. Start a new deep review for the current finding."
+  },
+  "辩护结果（模型提议）": {
+    "zh-Hant": "辯護結果（模型提議）",
+    "en": "Defense result (model proposal)"
+  },
+  "辩护的局限：": {
+    "zh-Hant": "辯護的局限：",
+    "en": "Limits of the defense: "
+  },
+  "下一步：独立复核双方证据": {
+    "zh-Hant": "下一步：獨立複核雙方證據",
+    "en": "Next: independently assess both sides' evidence"
+  },
+  "在新的模型会话中执行复核协议。模型来源由你声明，工作台无法证明服务商或模型彼此独立。": {
+    "zh-Hant": "在新的模型會話中執行複核協議。模型來源由你聲明，工作台無法證明服務商或模型彼此獨立。",
+    "en": "Run the assessment protocol in a new model conversation. You declare the model source; the studio cannot establish that providers or models are independent."
+  },
+  "生成证据复核任务": {
+    "zh-Hant": "生成證據複核任務",
+    "en": "Prepare evidence assessment task"
+  },
+  "模型提议": {
+    "zh-Hant": "模型提議",
+    "en": "Model proposal"
+  },
+  "复核理由：": {
+    "zh-Hant": "複核理由：",
+    "en": "Assessment reasons: "
+  },
+  "最小修改：": {
+    "zh-Hant": "最小修改：",
+    "en": "Minimal repair: "
+  },
+  "已回应的辩护证据：": {
+    "zh-Hant": "已回應的辯護證據：",
+    "en": "Defense evidence addressed: "
+  },
+  "请使用下方人工决定按钮处理原问题；深审建议不会自动接受、撤回或解决问题。": {
+    "zh-Hant": "請使用下方人工決定按鈕處理原問題；深審建議不會自動接受、撤回或解決問題。",
+    "en": "Use the human-decision buttons below to handle the original finding. Deep-review proposals do not automatically accept, withdraw or resolve findings."
+  },
+  "已核对引文与任务绑定；论证是否成立仍需人工判断。": {
+    "zh-Hant": "已核對引文與任務綁定；論證是否成立仍需人工判斷。",
+    "en": "Quotations and task bindings have been checked; the argument still requires human judgment."
+  },
+  "对抗深审（可选）": {
+    "zh-Hant": "對抗深審（可選）",
+    "en": "Adversarial deep review (optional)"
+  },
+  "针对这条批评，让独立辩护查找作者已有的回答，再由另一轮复核指出哪些问题仍成立。适用于学术论证和文书中的关键问题。": {
+    "zh-Hant": "針對這條批評，讓獨立辯護查找作者已有的回答，再由另一輪複核指出哪些問題仍成立。適用於學術論證和文書中的關鍵問題。",
+    "en": "For this criticism, ask an independent defense to find the author's existing answers, then assess which objections survive. Use it for consequential issues in academic arguments and documents."
+  },
+  "每一步都由你导出协议并导入模型响应，不会自动上传稿件。请在新的模型会话中执行，保留完整响应绑定字段。": {
+    "zh-Hant": "每一步都由你匯出協議並匯入模型回應，不會自動上傳稿件。請在新的模型會話中執行，保留完整回應綁定欄位。",
+    "en": "Export each protocol and import its model response yourself; the manuscript is not uploaded automatically. Use a new model conversation and preserve all response-binding fields."
+  },
+  "生成独立辩护任务": {
+    "zh-Hant": "生成獨立辯護任務",
+    "en": "Prepare independent defense task"
+  },
+  "请填写本轮模型来源和模型/版本，再生成任务。": {
+    "zh-Hant": "請填寫本輪模型來源和模型／版本，再生成任務。",
+    "en": "Enter the model source and model/version for this stage before preparing the task."
+  },
+  "深审响应不是有效的严格 JSON。": {
+    "zh-Hant": "深審回應不是有效的嚴格 JSON。",
+    "en": "The deep-review response is not valid strict JSON."
+  },
+  "技术详情：": {
+    "zh-Hant": "技術詳情：",
+    "en": "Technical details: "
+  },
+  "JSON 字段重复：": {
+    "zh-Hant": "JSON 欄位重複：",
+    "en": "Duplicate JSON field: "
+  },
+  "响应任务绑定不一致：": {
+    "zh-Hant": "回應任務綁定不一致：",
+    "en": "The response does not match this task: "
+  },
+  "。请使用这份任务的完整协议重新生成响应。": {
+    "zh-Hant": "。請使用這份任務的完整協議重新生成回應。",
+    "en": ". Generate the response again using this task’s complete protocol."
+  },
+  "响应字段必须是长度限制内的文本：": {
+    "zh-Hant": "回應欄位必須是長度限制內的文字：",
+    "en": "This response field must be text within its length limit: "
+  },
+  "响应字段必须是长度限制内的非空文本：": {
+    "zh-Hant": "回應欄位必須是長度限制內的非空文字：",
+    "en": "This response field must be nonempty text within its length limit: "
+  },
+  "响应字段包含无效字符：": {
+    "zh-Hant": "回應欄位包含無效字元：",
+    "en": "This response field contains invalid characters: "
+  },
+  "响应结构与协议不一致。": {
+    "zh-Hant": "回應結構與協議不一致。",
+    "en": "The response structure does not match the protocol."
+  },
+  "深审操作失败，原始诊断如下：": {
+    "zh-Hant": "深審操作失敗，原始診斷如下：",
+    "en": "The deep-review operation failed. Original diagnostic: "
+  },
+  "原响应和拒绝原因已保存，可修正后重试": {
+    "zh-Hant": "原回應和拒絕原因已保存，可修正後重試",
+    "en": "The original response and rejection reason were saved. Correct the response and try again."
+  },
+  "对抗深审记录完整性校验失败：": {
+    "zh-Hant": "對抗深審記錄完整性校驗失敗：",
+    "en": "Deep-review record integrity check failed: "
+  },
+  "对抗深审 session 记录无效": {
+    "zh-Hant": "對抗深審記錄無效",
+    "en": "The deep-review session record is invalid."
+  },
+  "对抗深审 session_id 无效": {
+    "zh-Hant": "對抗深審記錄編號無效",
+    "en": "The deep-review session identifier is invalid."
+  },
+  "找不到对应的对抗深审 session": {
+    "zh-Hant": "找不到對應的對抗深審記錄",
+    "en": "The requested deep-review session was not found."
+  },
+  "请选择当前审查中的 Finding": {
+    "zh-Hant": "請選擇目前審查中的問題",
+    "en": "Select a finding from the current review."
+  },
+  "对抗深审需要已导入的独立 AI Finding；请先完成独立 AI 审查": {
+    "zh-Hant": "對抗深審需要已匯入的獨立 AI 問題；請先完成獨立 AI 審查",
+    "en": "Deep review requires an imported independent AI finding. Complete an independent AI review first."
+  },
+  "对抗深审请求与协议快照不一致": {
+    "zh-Hant": "對抗深審任務與協議快照不一致",
+    "en": "The deep-review request does not match its saved protocol."
+  },
+  "对抗深审结果未绑定对应阶段": {
+    "zh-Hant": "對抗深審結果未綁定對應階段",
+    "en": "The deep-review result is not bound to the corresponding stage."
+  },
+  "对抗深审必须记录有效的 provider 和 model（最多 200 字符）": {
+    "zh-Hant": "請填寫有效的模型來源及模型名稱，每項最多 200 字元",
+    "en": "Enter a valid model provider and model name, at most 200 characters each."
+  },
+  "provider/model 含无效 Unicode": {
+    "zh-Hant": "模型來源或模型名稱包含無效字元",
+    "en": "The model provider or model name contains invalid Unicode."
+  },
+  "继承 Finding 的原始 critic 协议快照不一致": {
+    "zh-Hant": "繼承問題的原始審查協議快照不一致",
+    "en": "The original review protocol snapshot for this carried-forward finding does not match."
+  },
+  "restart 必须是布尔值": {
+    "zh-Hant": "重新開始選項必須是布林值",
+    "en": "The restart option must be a Boolean."
+  },
+  "该 Finding 已有未完成的对抗深审；请继续原请求或明确重新开始": {
+    "zh-Hant": "此問題已有未完成的對抗深審；請繼續原任務或選擇重新開始",
+    "en": "This finding already has an unfinished deep review. Continue its task or explicitly restart."
+  },
+  "该 Finding 证据未精确定位到当前原文；请先校正定位后再启动对抗深审": {
+    "zh-Hant": "此問題的證據未精確定位到目前原文；請先校正定位後再啟動對抗深審",
+    "en": "This finding’s evidence does not exactly match its current source location. Correct the location before starting deep review."
+  },
+  "对抗深审已过期：当前文档、IR、上下文、轮次或 Finding 已改变": {
+    "zh-Hant": "對抗深審已過期：目前稿件、論證結構、上下文、輪次或問題已改變",
+    "en": "This deep review is stale because the manuscript, argument structure, context, round or finding changed."
+  },
+  "请先导入独立辩护结果，再生成证据复核请求": {
+    "zh-Hant": "請先匯入獨立辯護結果，再生成證據複核任務",
+    "en": "Import the independent defense before preparing an evidence assessment."
+  },
+  "证据复核请求已生成，不能改写其 provider/model": {
+    "zh-Hant": "證據複核任務已生成，不能改寫模型來源及名稱；如需更換，請重新開始深審",
+    "en": "The assessment task already exists and its model declaration cannot be changed. Restart deep review to use another model."
+  },
+  "请求不属于当前对抗深审 session": {
+    "zh-Hant": "任務不屬於目前對抗深審記錄",
+    "en": "This request does not belong to the current deep-review session."
+  },
+  "对抗深审响应含无效 Unicode": {
+    "zh-Hant": "對抗深審回應包含無效字元",
+    "en": "The deep-review response contains invalid Unicode."
+  },
+  "对抗深审响应必须是文本且不超过 1 MiB": {
+    "zh-Hant": "對抗深審回應必須是文字且不超過 1 MiB",
+    "en": "The deep-review response must be text and at most 1 MiB."
+  },
+  "该阶段已接受响应，不能覆盖；需要再次深审时请创建新 session": {
+    "zh-Hant": "此階段已接受回應，不能覆寫；如需再次深審，請重新開始",
+    "en": "This stage already has an accepted response and cannot be overwritten. Restart deep review to try again."
+  },
+  "Unsupported adversarial response contract version": {
+    "zh-Hant": "無法讀取此版本的深審回應協議",
+    "en": "This deep-review response contract version is not supported."
+  },
+  "Unknown adversarial stage": {
+    "zh-Hant": "無法識別此深審階段",
+    "en": "This deep-review stage is not recognized."
+  },
+  "context_evidence requires 1 to 64 source excerpts": {
+    "zh-Hant": "請提供 1 至 64 段原文引文",
+    "en": "Provide between 1 and 64 source excerpts."
+  },
+  "context_evidence quote is not an exact excerpt of its current document block": {
+    "zh-Hant": "引文與目前稿件中對應段落的原文不一致，請核對段落編號及引文",
+    "en": "The quotation does not exactly match its current source block. Check the block identifier and quotation."
+  },
+  "context_evidence role is invalid": {
+    "zh-Hant": "引文的證據角色無效，請使用協議列出的值",
+    "en": "The evidence role is invalid. Use a value listed in the protocol."
+  },
+  "context_evidence repeats an excerpt": {
+    "zh-Hant": "證據清單包含重複引文，請移除重複項",
+    "en": "The evidence list repeats an excerpt. Remove the duplicate."
+  },
+  "Defense evidence_id must be unique D1, D2, ...": {
+    "zh-Hant": "辯護證據編號必須依 D1、D2 等格式填寫且不得重複",
+    "en": "Defense evidence identifiers must use D1, D2, and so on, without duplicates."
+  },
+  "Adversarial response must be nonempty and at most 1 MiB": {
+    "zh-Hant": "深審回應不能為空，且不得超過 1 MiB",
+    "en": "The deep-review response must not be empty or exceed 1 MiB."
+  },
+  "Numeric values are not part of the adversarial response contract": {
+    "zh-Hant": "深審回應協議不接受此數值格式",
+    "en": "This numeric format is not allowed by the deep-review response contract."
+  },
+  "Unknown adversarial assessment disposition": {
+    "zh-Hant": "複核建議類型無效，請使用協議列出的值",
+    "en": "The assessment disposition is invalid. Use a value listed in the protocol."
+  },
+  "A withdrawn objection must not prescribe a remaining defect or repair": {
+    "zh-Hant": "建議撤回批評時，剩餘問題及最小修改欄位必須留空",
+    "en": "When recommending withdrawal, leave the remaining issue and minimal repair fields empty."
+  },
+  "Assessment must reference unique actual defense_evidence_ids": {
+    "zh-Hant": "複核必須引用已存在且不重複的辯護證據編號",
+    "en": "The assessment must reference existing, unique defense evidence identifiers."
+  },
+  "过去问题的深审记录": {
+    "zh-Hant": "過去問題的深審記錄",
+    "en": "Deep-review history for previous findings"
+  },
+  "这些问题已不在当前裁决队列。旧批评、辩护及复核仍可查阅，不能导入新响应或跳转到当前稿件。": {
+    "zh-Hant": "這些問題已不在目前裁決佇列。舊批評、辯護及複核仍可查閱，不能匯入新回應或跳轉到目前稿件。",
+    "en": "These findings are no longer in the current decision queue. Their criticism, defense and assessment remain available to read; new responses and links into the current manuscript are disabled."
+  }
+}
