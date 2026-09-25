@@ -102,8 +102,9 @@ def serve_unified_app(*, data_dir=None, project_dir=None, host="127.0.0.1", port
     if candidate is not None:
         # Explicit CLI destinations have never required a suffix. Inspect the
         # existing manifest, then let the appropriate domain verify it fully.
-        manifest, _ = _read_json(candidate / "project.json")
-        legacy = manifest.get("artifact") == "argument-project"
+        if (candidate / "project.json").exists():
+            manifest, _ = _read_json(candidate / "project.json")
+            legacy = manifest.get("artifact") == "argument-project"
     storage = Path(data_dir or default_studio_data_dir()).resolve()
     research_storage = Path(data_dir or default_data_dir()).resolve()
     base = StudioApp.create(storage, None if legacy else candidate)
