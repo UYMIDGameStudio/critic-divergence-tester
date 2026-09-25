@@ -2,7 +2,10 @@
 
 [![Tests](https://github.com/UYMIDGameStudio/critic-divergence-tester/actions/workflows/tests.yml/badge.svg)](https://github.com/UYMIDGameStudio/critic-divergence-tester/actions/workflows/tests.yml)
 
-**0.2.5**：补齐 Windows 长短路径别名的目录重叠保护和旧安装记录兼容，
+**0.2.6**：减少对抗深审历史的重复文件读取，保留每次读取的完整性校验与实时状态。
+见 [0.2.6 优化记录](docs/release-engineering-0.2.6.md)。
+
+0.2.5 补齐 Windows 长短路径别名的目录重叠保护和旧安装记录兼容，
 详见 [0.2.5 修复记录](docs/release-engineering-0.2.5.md)。
 
 0.2.4 修复 Windows 不同系统编码下的 Unicode 路径安装和快捷方式卸载；

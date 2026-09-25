@@ -60,10 +60,13 @@ class AdversarialReviewStore(_ProjectComponent):
         value["status"] = "open"  # Human decisions are separate, not challenge identity.
         return parent_path, value
 
-    def _adversarial_current(self, session: dict) -> bool:
-        for candidate in (self.root / "adversarial-reviews").glob("*/session.json"):
-            if _read_json(candidate).get("supersedes_session_id") == session["session_id"]:
-                return False
+    def _adversarial_current(self, session: dict, *, superseded_ids: set[str] | None = None) -> bool:
+        if superseded_ids is None:
+            for candidate in (self.root / "adversarial-reviews").glob("*/session.json"):
+                if _read_json(candidate).get("supersedes_session_id") == session["session_id"]:
+                    return False
+        elif session["session_id"] in superseded_ids:
+            return False
         _, _, binding = self._current_review_binding()
         if not self._belongs_to_current_review(session, binding):
             return False
@@ -76,9 +79,9 @@ class AdversarialReviewStore(_ProjectComponent):
                 and _sha256(path.read_bytes()) == parent["sha256"]
                 and _sha256(canonical_json(challenge)) == session["challenge_sha256"])
 
-    def _adversarial_view(self, path: Path, session: dict) -> dict:
+    def _adversarial_view(self, path: Path, session: dict, *, superseded_ids: set[str] | None = None) -> dict:
         value = {**session, "relative_path": path.relative_to(self.root).as_posix(),
-                 "current": self._adversarial_current(session), "requests": [],
+                 "current": self._adversarial_current(session, superseded_ids=superseded_ids), "requests": [],
                  "defense": None, "assessment": None, "status": "awaiting_defense"}
         for stage in ("defense", "assessment"):
             request_path = path.parent / stage / "request.json"
@@ -110,7 +113,11 @@ class AdversarialReviewStore(_ProjectComponent):
         return value
 
     def adversarial_reviews(self) -> list[dict]:
-        return [self._adversarial_view(path, value) for path, value in self._adversarial_records()]
+        records = self._adversarial_records()
+        # This index exists only for the current verified read. Never cache it
+        # across requests: a restart or another review round can invalidate it.
+        superseded_ids = {value["supersedes_session_id"] for _, value in records if value.get("supersedes_session_id")}
+        return [self._adversarial_view(path, value, superseded_ids=superseded_ids) for path, value in records]
 
     def _adversarial_model_labels(self, provider: str, model: str) -> tuple[str, str]:
         for value in (provider, model):

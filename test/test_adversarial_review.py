@@ -75,6 +75,31 @@ class AdversarialReviewTests(unittest.TestCase):
         self.assertEqual(self.project.adversarial_reviews(), saved_sessions)
         self.assertEqual(self.project.integrity_errors(), [])
 
+    def test_history_reads_are_bounded_and_refresh_after_a_new_session(self):
+        sessions = [self.prepare()]
+        for _ in range(5):
+            sessions.append(self.project.prepare_adversarial_review(
+                self.finding_id, provider="defense-provider", model="defense-model", restart=True))
+        original_read = studio._read_json
+        reads = []
+
+        def record_read(path):
+            if path.name == "session.json" and path.parent.parent.name == "adversarial-reviews":
+                reads.append(path)
+            return original_read(path)
+
+        with patch("document_review_studio._read_json", side_effect=record_read):
+            history = self.project.adversarial_reviews()
+        self.assertEqual({item["session_id"] for item in history}, {item["session_id"] for item in sessions})
+        self.assertEqual([item["session_id"] for item in history if item["current"]], [sessions[-1]["session_id"]])
+        self.assertLessEqual(len(reads), 2 * len(sessions), "Viewing history must not rescan all sessions for every row")
+        replacement = self.project.prepare_adversarial_review(
+            self.finding_id, provider="replacement", model="replacement", restart=True)
+        refreshed = self.project.adversarial_reviews()
+        self.assertEqual(len(refreshed), len(sessions) + 1)
+        self.assertEqual([item["session_id"] for item in refreshed if item["current"]], [replacement["session_id"]])
+        self.assertEqual(self.project.integrity_errors(), [])
+
     def test_partial_restart_write_rolls_back_without_superseding_prior_session(self):
         original = self.prepare()
         restart = lambda: self.project.prepare_adversarial_review(
