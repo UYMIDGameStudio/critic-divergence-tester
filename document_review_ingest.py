@@ -139,12 +139,14 @@ def _text_blocks(text: str, source: RawFileBinding, *, parser: str, warnings: li
     mapping: list[dict[str, Any]] = []
     paragraph = 0
     offset = 0
-    lines = text.splitlines()
+    # Offsets count characters in the decoded original, including each actual
+    # line terminator. CRLF occupies two characters and must not be normalized.
+    lines = text.splitlines(keepends=True)
     i = 0
     while i < len(lines):
-        line = lines[i]
+        line = lines[i].rstrip("\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029")
         start = offset
-        offset += len(line) + 1
+        offset += len(lines[i])
         if not line.strip():
             i += 1
             continue
@@ -165,12 +167,14 @@ def _text_blocks(text: str, source: RawFileBinding, *, parser: str, warnings: li
             kind, value = "blockquote", line.lstrip()[1:].strip()
         if table:
             rows: list[list[str]] = []
+            row_source_lines: list[int] = []
             j = i
             while j < len(lines) and "|" in lines[j] and lines[j].strip():
                 cells = [cell.strip() for cell in lines[j].strip().strip("|").split("|")]
                 if not all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells):
                     rows.append(cells)
-                offset += len(lines[j]) + 1 if j != i else 0
+                    row_source_lines.append(j + 1)
+                offset += len(lines[j]) if j != i else 0
                 j += 1
             table_id = _block_id(source.sha256, "table", len(blocks), "|".join("|".join(row) for row in rows), i + 1)
             table_block = DocumentBlock(
@@ -189,11 +193,11 @@ def _text_blocks(text: str, source: RawFileBinding, *, parser: str, warnings: li
                         "table_cell",
                         text=cell_text,
                         location=DocumentLocation(cell_id, "table_cell", paragraph=paragraph, table_id=table_id, row=row_index, column=col_index, source_path=source.original_name),
-                        attrs={"table_id": table_id, "row": row_index, "column": col_index},
+                        attrs={"table_id": table_id, "row": row_index, "column": col_index, "source_line": row_source_lines[row_index]},
                     )
                     blocks.append(cell)
                     table_block.children.append(cell_id)
-                    mapping.append({"source_line": i + row_index + 1, "block_id": cell_id, "kind": "table_cell"})
+                    mapping.append({"source_line": row_source_lines[row_index], "block_id": cell_id, "kind": "table_cell"})
             mapping.append({"source_line": i + 1, "block_id": table_id, "kind": "table"})
             paragraph += 1
             i = j
@@ -222,7 +226,8 @@ def _text_blocks(text: str, source: RawFileBinding, *, parser: str, warnings: li
         warnings=warnings,
         quality=quality,
         source_to_block=mapping,
-        metadata={"line_count": len(lines), "encoding": "utf-8"},
+        metadata={"line_count": len(lines), "encoding": "utf-8", "source_location_version": 2,
+                  "character_offset_basis": "decoded-original-text", "character_offset_unit": "unicode-code-points"},
     )
 
 
