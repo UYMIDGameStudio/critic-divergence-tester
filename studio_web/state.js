@@ -25,3 +25,18 @@ const esc = (value) =>
         c
       ],
   );
+
+// Presentation only: evidence and editable manuscript text remain unchanged.
+function sourceBlockText(block) {
+  const text = String(block.text ?? ''), attrs = block.attrs || {};
+  const marker = typeof attrs.list_marker === 'string'
+    && (attrs.ordered ? /^(?:-?\p{Nd}+[.)]|[A-Za-z]{1,64}\.)$/u : /^[-*+]$/u).test(attrs.list_marker)
+    ? attrs.list_marker : '';
+  if (!marker) return text;
+  const start = block.kind === 'list_item' || attrs.list_item_start === true;
+  const continuation = attrs.list_continuation === true && !start;
+  if (!start && !continuation) return text;
+  const depth = Number.isInteger(attrs.list_depth) ? Math.max(0, Math.min(8, attrs.list_depth)) : 0;
+  const label = continuation ? `↳ ${marker} (${uiLocale === 'en' ? 'continued' : '續文'})` : marker;
+  return '  '.repeat(depth) + label + ' ' + text;
+}

@@ -362,14 +362,14 @@ function filterSourcePreview(event) {
     .filter(
       (b) =>
         !q ||
-        String(b.text).toLowerCase().includes(q) ||
+        sourceBlockText(b).toLowerCase().includes(q) ||
         String(b.location?.block_id || b.block_id)
           .toLowerCase()
           .includes(q),
     )
     .map(
       (b) =>
-        `[${b.location?.block_id || b.block_id} · page ${b.location?.page || '-'}] ${b.text}`,
+        `[${b.location?.block_id || b.block_id} · page ${b.location?.page || '-'}] ${sourceBlockText(b)}`,
     )
     .join('\n\n');
 }

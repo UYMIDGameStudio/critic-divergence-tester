@@ -403,6 +403,30 @@
     "zh-Hant": "檔案名稱含路徑、保留名稱或不支援的字元，請重新命名原檔案後再匯入。",
     "en": "The filename contains a path, reserved name or unsupported character. Rename the original file and import it again."
   },
+  "已提取静态 HTML 正文；脚本、样式、隐藏模板和外部资源不执行或加载，页面布局不作为审查依据。": {
+    "zh-Hant": "已提取靜態 HTML 正文；腳本、樣式、隱藏範本和外部資源不會執行或載入，頁面版面不作為審查依據。",
+    "en": "Extracted static HTML text. Scripts, styles, hidden templates and external resources are not executed or loaded. Page layout is not review evidence."
+  },
+  "表格内列表按单元格文本展开，列表编号与层级需对照原件核对。": {
+    "zh-Hant": "表格內列表按儲存格文字展開，列表編號與層級需對照原件核對。",
+    "en": "Lists inside tables are extracted as cell text. Check their numbering and nesting against the original."
+  },
+  "嵌套 HTML 表格已在外层单元格中按文本展开，内部表格定位未保留。": {
+    "zh-Hant": "巢狀 HTML 表格已在外層儲存格中按文字展開，內部表格定位未保留。",
+    "en": "Nested HTML tables are extracted as text inside the outer cell. Inner table coordinates are not retained."
+  },
+  "HTML 中的嵌入对象、画布或媒体内容未执行或解析；请另行提供需要审查的正文。": {
+    "zh-Hant": "HTML 中的嵌入物件、畫布或媒體內容未執行或解析；請另行提供需要審查的正文。",
+    "en": "Embedded HTML objects, canvases and media were not executed or parsed. Provide their reviewable content separately."
+  },
+  "HTML 图片未下载或识别，仅保留已有替代文字；图片正文需要另行提供。": {
+    "zh-Hant": "HTML 圖片未下載或辨識，僅保留既有替代文字；圖片正文需要另行提供。",
+    "en": "HTML images were not downloaded or recognized. Only existing alternative text is retained; provide image content separately."
+  },
+  "HTML 表格没有完整闭合，已按可识别的行和单元格提取，请核对。": {
+    "zh-Hant": "HTML 表格沒有完整閉合，已按可辨識的列和儲存格提取，請核對。",
+    "en": "The HTML table is not fully closed. Recognizable rows and cells were extracted; check them against the original."
+  },
   "条计数单位": {
     "zh-Hant": "條",
     "en": "issues"

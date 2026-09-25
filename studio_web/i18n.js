@@ -24,6 +24,12 @@ function tr(literal) {
   );
 }
 
+function extractionWarningMessage(warning) {
+  const message = String(warning.message ?? '');
+  // Exact known system messages only; keep unknown diagnostics intact.
+  return UI_MESSAGES[message]?.[uiLocale] ?? message;
+}
+
 function ui(parts, ...values) {
   return parts
     .map(

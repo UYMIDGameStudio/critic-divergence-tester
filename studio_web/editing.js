@@ -75,7 +75,7 @@ function bindDelivery() {
       )
       .map(
         (b) =>
-          `<option value="${esc(b.block_id)}">${esc(b.text.slice(0, 70))} · ${esc(b.block_id)}</option>`,
+          `<option value="${esc(b.block_id)}">${esc(sourceBlockText(b).slice(0, 70))} · ${esc(b.block_id)}</option>`,
       )
       .join(
         '',
@@ -106,7 +106,7 @@ function bindDelivery() {
       for (let i = from + 1; i < blocks.length; i++) {
         const b = blocks[i];
         if (!['paragraph', 'heading', 'list_item'].includes(b.kind)) break;
-        options += `<option value="${i}">${esc(b.text.slice(0, 70))}</option>`;
+        options += `<option value="${i}">${esc(sourceBlockText(b).slice(0, 70))}</option>`;
       }
       range.innerHTML =
         tr('<option value="">范围结束段落（范围替换时必选）</option>') +

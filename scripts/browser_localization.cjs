@@ -207,6 +207,65 @@ async function main() {
     }
     await language(page, 'en');
 
+    stage = 'HTML list labels in preview, search and review workspace';
+    const listSource = '<ol start="7"><li>原则上 Alpha<ol type="I" start="4"><li>Evidence '
+      + '&lt;img src=x onerror="window.__listInjected=true"&gt;</li></ol>Tail</li><li value="12">Conclusion</li></ol>';
+    await page.locator('#file').setInputFiles({name: 'list-review.html', mimeType: 'text/html', buffer: Buffer.from(listSource)});
+    const listUpload = page.waitForResponse(response => response.url().endsWith('/api/upload'));
+    await page.locator('#upload').click();
+    assert.equal((await listUpload).status(), 201);
+    await idle(page);
+    const listSnapshot = await sourceSnapshot(page);
+    for (const locale of ['zh-Hant', 'en']) {
+      await language(page, locale);
+      let preview = await page.locator('#source-preview').textContent();
+      assert.ok(preview.includes('7. 原则上 Alpha'));
+      assert.ok(preview.includes('  IV. Evidence <img'));
+      assert.ok(preview.includes(`↳ 7. (${locale === 'en' ? 'continued' : '續文'}) Tail`));
+      const warningText = await page.locator('.next .warning').allTextContents();
+      assert.ok(warningText.some(text => text.includes(locale === 'en' ? 'Extracted static HTML text.' : '已提取靜態 HTML 正文')));
+      check('html_extraction_warning_translated_' + locale, true);
+      await page.locator('#source-search').fill('12.');
+      preview = await page.locator('#source-preview').textContent();
+      assert.ok(preview.includes('12. Conclusion'));
+      assert.ok(!preview.includes('Alpha') && !preview.includes('Evidence'));
+      await page.locator('#source-search').fill('IV.');
+      assert.ok((await page.locator('#source-preview').textContent()).includes('IV. Evidence'));
+      await page.locator('#source-search').fill('');
+      assert.equal(await page.locator('#source-preview img').count(), 0);
+      assert.deepEqual(await sourceSnapshot(page), listSnapshot);
+      check('source_list_labels_search_and_original_preserved_' + locale, true);
+    }
+    await screenshot('list-preview-english');
+    await action(page, page.locator('[data-action="confirm-extraction"]'), 'confirm_extraction');
+    for (const [id, value] of Object.entries({document_type: 'Memo', jurisdiction: 'unknown',
+      effective_date: 'unknown', publisher_type: 'Author', audience: 'Reviewers'})) {
+      await page.locator('#' + id).fill(value);
+    }
+    await action(page, page.locator('#confirm-context'), 'confirm_context');
+    for (const checkbox of await page.locator('.critic').all()) {
+      await checkbox.setChecked(await checkbox.inputValue() === 'expression_ambiguity');
+    }
+    await action(page, page.locator('#run-precheck'), 'run_local_prechecks');
+    for (const locale of ['zh-Hant', 'en']) {
+      await language(page, locale);
+      const sourceText = await page.locator('.source-block').allTextContents();
+      assert.ok(sourceText.some(text => text.includes('7. 原则上 Alpha')));
+      assert.ok(sourceText.some(text => text.includes(`↳ 7. (${locale === 'en' ? 'continued' : '續文'}) Tail`)));
+      const locationOptions = await page.locator('select[id^="location-"] option').allTextContents();
+      assert.ok(locationOptions.some(text => text.includes('IV. Evidence')));
+      await page.locator('#workspace-search').fill('12.');
+      assert.equal(await page.locator('.source-block:visible').count(), 1);
+      assert.ok((await page.locator('.source-block:visible').innerText()).includes('12. Conclusion'));
+      await page.locator('#workspace-search').fill('');
+      assert.equal(await page.locator('.source-block img').count(), 0);
+      assert.equal(await page.evaluate(() => Boolean(window.__listInjected)), false);
+      assert.deepEqual(await sourceSnapshot(page), listSnapshot);
+      check('review_list_labels_search_location_and_original_preserved_' + locale, true);
+    }
+    await screenshot('list-workspace-english');
+    await action(page, page.locator('#back'), 'close_project');
+
     stage = 'selected file and title across language changes';
     const paragraphs = [
       'English: The garden is quiet. Export and Save draft are original words.',
@@ -219,7 +278,7 @@ async function main() {
       'Latīna: Cælum clārum est; œconomia et rēs pūblica.',
     ];
     const heading = 'Eight-language original · 原文';
-    const original = '# ' + heading + '\n\n' + paragraphs.join('\n\n') + '\n';
+    const original = '# ' + heading + '\n\n' + paragraphs.join('\n\n') + '\n\n１２. 日本語の番号付き前提\n';
     const buffer = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(original, 'utf16le')]);
     const filename = '确认识别 · 原文 Français 日本語 Русский.md';
     const title = '草稿未保存：Original · 繁體 Français Русский';
@@ -252,7 +311,7 @@ async function main() {
     assert.equal(imported.title, title);
     assert.equal(imported.source.name, filename);
     assert.equal(imported.source.sha256, crypto.createHash('sha256').update(buffer).digest('hex'));
-    assert.deepEqual(imported.blocks.map(block => block.text), [heading, ...paragraphs]);
+    assert.deepEqual(imported.blocks.map(block => block.text), [heading, ...paragraphs, '日本語の番号付き前提']);
     assert.equal(imported.encoding, 'utf-16-le');
     check('eight_language_utf16_bom_import', true, imported);
     for (const locale of ['zh-Hant', 'en']) {
@@ -260,6 +319,7 @@ async function main() {
       assert.deepEqual(await sourceSnapshot(page), imported);
       const preview = await page.locator('#source-preview').textContent();
       for (const paragraph of paragraphs) assert.ok(preview.includes(paragraph));
+      assert.ok(preview.includes('１２. 日本語の番号付き前提'));
       await screenshot(locale === 'en' ? '03-original-english' : '02-original-traditional');
     }
     check('language_switch_preserves_original_source_text_and_filename', true);
