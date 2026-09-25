@@ -294,6 +294,7 @@ def _text_blocks(text: str, source: RawFileBinding, *, parser: str, warnings: li
             kind = "list_item"
             value = list_item.group(2).strip()
             attrs["ordered"] = bool(list_item.group(1))
+            attrs["list_marker"] = line[:list_item.start(2)].strip()
         elif line.lstrip().startswith(">"):
             kind, value = "blockquote", line.lstrip()[1:].strip()
         if table:

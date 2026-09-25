@@ -21,7 +21,7 @@ from pathlib import Path, PurePosixPath
 from project_lock import project_mutation_lock
 from document_file_names import is_device_name
 
-APP_VERSION = "0.2.15"
+APP_VERSION = "0.2.16"
 PROJECT_SCHEMA = 1
 JOURNAL = ".recovery"
 MAX_BACKUP_BYTES = 1024 * 1024 * 1024

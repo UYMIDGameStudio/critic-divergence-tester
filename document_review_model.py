@@ -433,6 +433,15 @@ def make_location(block: DocumentBlock, **overrides: Any) -> DocumentLocation:
     )
 
 
+def list_marker(block: DocumentBlock) -> str:
+    """Retain textual source identifiers, with a safe fallback for older IR."""
+    ordered = bool(block.attrs.get("ordered"))
+    marker = block.attrs.get("list_marker")
+    if isinstance(marker, str) and re.fullmatch(r"\d+[.)]" if ordered else r"[-*+]", marker):
+        return marker
+    return "1." if ordered else "-"
+
+
 def model_to_markdown(document: StructuredDocument) -> str:
     """Render a conservative editable draft from the internal model."""
     def cell_text(value):
@@ -448,8 +457,7 @@ def model_to_markdown(document: StructuredDocument) -> str:
         if block.kind == "heading":
             lines.append("#" * max(1, min(block.level or 1, 6)) + " " + block.text)
         elif block.kind == "list_item":
-            marker = "1." if block.attrs.get("ordered") else "-"
-            lines.append(f"{marker} {block.text}")
+            lines.append(f"{list_marker(block)} {block.text}")
         elif block.kind == "blockquote":
             lines.append("> " + block.text)
         elif block.kind == "page_break":
@@ -475,5 +483,5 @@ __all__ = [
     "ExtractionWarning", "FINDING_DECISIONS", "Finding", "QualitySignals", "RawFileBinding",
     "ReviewContext", "SCHEMA_VERSION", "SEVERITIES", "StructuredDocument", "SUPPORTED_EXTENSIONS",
     "UNSUPPORTED_EXTENSIONS", "VERIFICATION_STATES", "canonical_json", "make_location",
-    "model_to_markdown", "stable_id", "validate_finding_dict",
+    "list_marker", "model_to_markdown", "stable_id", "validate_finding_dict",
 ]
