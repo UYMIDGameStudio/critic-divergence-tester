@@ -34,6 +34,22 @@ def quote(path) -> str:
     return "'" + str(path).replace("'", "''") + "'"
 
 
+def short_path(path: Path) -> Path:
+    """Exercise real DOS aliases; never fabricate a '~1' path."""
+    import ctypes
+    api = ctypes.WinDLL("kernel32", use_last_error=True).GetShortPathNameW
+    api.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint]
+    api.restype = ctypes.c_uint
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = api(str(path), buffer, len(buffer))
+    if not length or length >= len(buffer):
+        raise ctypes.WinError(ctypes.get_last_error())
+    result = Path(buffer.value)
+    if str(result).casefold() == str(path.resolve()).casefold():
+        raise unittest.SkipTest("Temporary filesystem does not provide DOS short aliases")
+    return result
+
+
 @unittest.skipUnless(POWERSHELL, "Windows PowerShell and native shortcuts required")
 class PortableInstallTests(unittest.TestCase):
     @classmethod
@@ -141,7 +157,7 @@ public static class StudioFixture {
         executions = self.log.read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(executions), 3)
         self.assertTrue(all(".staging-" in line.split("|")[0] for line in executions))
-        self.assertIn(str(project), executions[-1])
+        self.assertTrue(project.samefile(executions[-1].split("|")[3]))
         self.assertEqual(len(list((self.projects / "backups").glob("*.zip"))), 1)
         # Same-version retry repairs the shortcut without executing or backing up again.
         (self.shortcuts / "Document Review Studio.lnk").unlink()
@@ -171,6 +187,34 @@ public static class StudioFixture {
                 self.assert_no_partial_install()
         self.run_script()
 
+    def test_short_alias_cannot_hide_overlapping_new_directories(self):
+        alias = short_path(self.root)
+        install = self.root / "New program directory"
+        for keyword in ("projects", "shortcuts"):
+            with self.subTest(overlap=keyword):
+                options = {keyword: alias / install.name / "nested"}
+                output = self.run_script(install=install, success=False, **options)
+                self.assertIn("must not overlap", output)
+                self.assertFalse(install.exists())
+                self.assertFalse(self.log.exists())
+
+    def test_short_alias_install_and_legacy_receipt_accept_canonical_uninstall(self):
+        alias = short_path(self.root)
+        install_alias = alias / "Programs" / "DocumentReviewStudio"
+        shortcut_alias = alias / "Start menu"
+        self.run_script(install=install_alias, shortcuts=shortcut_alias)
+        receipt_path = self.install / ".installation.json"
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8-sig"))
+        self.assertTrue(Path(receipt["install_root"]).samefile(self.install))
+        # Older installers recorded the user's original alias spelling.
+        receipt["install_root"] = str(install_alias)
+        receipt["shortcut_root"] = str(shortcut_alias)
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        self.run_script()
+        self.run_script(uninstall=True, install=Path(str(self.install).upper()))
+        self.assertFalse((self.install / "0.2.1").exists())
+        self.assertFalse((self.shortcuts / "Document Review Studio.lnk").exists())
+
     def test_shortcut_launches_unicode_target_and_working_directory(self):
         # The supplementary character is outside every legacy ANSI code page,
         # reproducing English Windows + Chinese paths on other Windows locales.
@@ -184,8 +228,11 @@ public static class StudioFixture {
                                 capture_output=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
         installed = self.install / "0.2.1"
-        self.assertEqual(Path(cwd_log.read_text(encoding="utf-8-sig")), installed)
-        self.assertEqual(self.log.read_text(encoding="utf-8").splitlines()[-1], str(installed) + "\\|")
+        self.assertTrue(installed.samefile(cwd_log.read_text(encoding="utf-8-sig")))
+        launched = self.log.read_text(encoding="utf-8").splitlines()[-1].split("|")
+        self.assertEqual(len(launched), 2)
+        self.assertEqual(launched[1], "")
+        self.assertTrue(installed.samefile(launched[0]))
         self.run_script(uninstall=True)
         self.assertFalse(shortcut.exists())
         self.assertFalse(installed.exists())

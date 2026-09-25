@@ -7,7 +7,51 @@ function Resolve-PortablePath([string] $Path) {
     $full = [IO.Path]::GetFullPath($Path).TrimEnd([IO.Path]::DirectorySeparatorChar)
     if ($full.StartsWith('\\') -or $full.Length -le 3) { throw 'A local directory below the drive root is required.' }
     Assert-PortableUnlinked $full
-    return $full
+    # GetFullPath does not expand DOS 8.3 aliases. Normalize the existing
+    # ancestor before comparing roots, including directories not yet created.
+    if (-not ('StudioPortable.LongPath' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+namespace StudioPortable {
+    public static class LongPath {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern SafeFileHandle CreateFileW(string path, uint access, uint share,
+            IntPtr security, uint creation, uint flags, IntPtr template);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetFinalPathNameByHandleW(SafeFileHandle file, StringBuilder result, uint size, uint flags);
+        public static string Expand(string path) {
+            // Metadata-only access; no directory enumeration or writable handle.
+            using (var file = CreateFileW(path, 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
+                if (file.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+                var result = new StringBuilder(32768);
+                uint length = GetFinalPathNameByHandleW(file, result, (uint)result.Capacity, 0);
+                if (length == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+                if (length >= result.Capacity) throw new ArgumentException("Path is too long.");
+                string resolved = result.ToString();
+                if (resolved.StartsWith(@"\\?\") && resolved.Length > 6 && resolved[5] == ':')
+                    return resolved.Substring(4);
+                throw new ArgumentException("A local drive path is required.");
+            }
+        }
+    }
+}
+'@
+    }
+    $ancestor = $full
+    $suffix = New-Object 'Collections.Generic.Stack[string]'
+    while (-not (Test-Path -LiteralPath $ancestor)) {
+        $suffix.Push([IO.Path]::GetFileName($ancestor))
+        $ancestor = [IO.Path]::GetDirectoryName($ancestor)
+        if (-not $ancestor) { throw 'Cannot resolve the local path ancestor.' }
+    }
+    $canonical = [StudioPortable.LongPath]::Expand($ancestor)
+    while ($suffix.Count) { $canonical = Join-Path $canonical $suffix.Pop() }
+    Assert-PortableUnlinked $canonical
+    return $canonical.TrimEnd([IO.Path]::DirectorySeparatorChar)
 }
 
 function Assert-PortableUnlinked([string] $Path) {
@@ -189,7 +233,9 @@ function Read-PortableReceipt([string] $Root, [string] $ShortcutRoot) {
     if (-not (Test-Path -LiteralPath $path)) { return $null }
     $receipt = Read-PortableJson $path
     if ($receipt -isnot [pscustomobject] -or $receipt.product -cne 'DocumentReviewStudio' -or $receipt.format -ne 1 -or
-        $receipt.install_root -cne $Root -or $receipt.shortcut_root -cne $ShortcutRoot -or $receipt.versions -isnot [array]) { throw 'Invalid installation receipt.' }
+        $receipt.install_root -isnot [string] -or $receipt.shortcut_root -isnot [string] -or $receipt.versions -isnot [array]) { throw 'Invalid installation receipt.' }
+    if (-not (Resolve-PortablePath $receipt.install_root).Equals($Root, [StringComparison]::OrdinalIgnoreCase) -or
+        -not (Resolve-PortablePath $receipt.shortcut_root).Equals($ShortcutRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid installation receipt.' }
     foreach ($version in $receipt.versions) {
         if ($version -isnot [string] -or $version -cnotmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') { throw 'Invalid installed version.' }
     }

@@ -12,7 +12,9 @@ jobs:
   test:
     name: Core without optional PDF/OCR / ${{ matrix.os }} / Python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    # Full Windows regression is still advancing at 15 minutes on hosted runners.
+    # Keep all checks; allow the slower filesystem enough time to finish.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
