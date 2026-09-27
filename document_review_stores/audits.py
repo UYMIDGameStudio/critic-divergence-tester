@@ -131,7 +131,12 @@ class AuditRunStore(_ProjectComponent):
             records = [row for row in self._ordered_audit_runs(critic)
                        if self._belongs_to_current_review(row[1], binding)]
             if records:
-                active[critic] = records[-1]
+                # A local precheck is a separate diagnostic, not a replacement
+                # for an imported review. Keep the latest AI run in this review
+                # binding authoritative, including an explicit zero-result run.
+                imported = [row for row in records
+                            if row[1].get("model_label") != "deterministic-local-rules"]
+                active[critic] = (imported or records)[-1]
         return active
 
     def _critic_origin_binding(self, critic: str) -> dict[str, Any]:
@@ -309,7 +314,7 @@ class AuditRunStore(_ProjectComponent):
             _write_tracked(self.root, run_path, canonical_json({**run.to_dict(), **review_binding}), parents=run_parents, provenance="deterministic-local-precheck")
             self._append_event("local_precheck_created", {"run_id": run.run_id, "critic": critic, "finding_ids": [f.finding_id for f in run.findings]})
             runs.append(run)
-        self._update_state(review_state="local_precheck_completed", last_audit_at=_now())
+        self._update_state(last_audit_at=_now())
         return runs
 
     def run_audits(self, critics: Iterable[str] | None = None) -> list[AuditRun]:
@@ -676,7 +681,20 @@ class AuditRunStore(_ProjectComponent):
     def _deterministic_audit(self, critic: str, document: StructuredDocument, context: ReviewContext) -> AuditRun:
         text = document.plain_text
         lower = text.casefold()
-        first = document.blocks[0] if document.blocks else DocumentBlock("B-empty", "paragraph", "[空文档]", location=DocumentLocation("B-empty", "paragraph"))
+        text_blocks = [block for block in document.blocks
+                       if block.text.strip() and block.kind not in {"image_placeholder", "table"}]
+        first = text_blocks[0] if text_blocks else (document.blocks[0] if document.blocks else DocumentBlock("B-empty", "paragraph", "[空文档]", location=DocumentLocation("B-empty", "paragraph")))
+        kind = context.document_type.strip().casefold()
+        informational = kind.endswith(("主持稿", "致辞", "致辭", "演讲稿", "演講稿", "发言稿", "發言稿",
+                                       "推文", "宣传稿", "宣傳稿", "新闻稿", "新聞稿", "邀请函", "邀請函",
+                                       "参会指南", "參會指南", "speech", "press release", "social post", "invitation"))
+        # A Word title can be an ordinary paragraph (even two lines) without
+        # Heading style. Absence of style is not evidence of absence of title.
+        plain_title = bool(text_blocks and len(first.text.strip()) <= 200 and (
+            first.attrs.get("style_name", "").casefold() in {"title", "标题", "標題"}
+            or first.text.strip() == Path(document.source.original_name).stem
+            or kind and first.text.strip().casefold().endswith(kind)))
+        has_title = plain_title or any(block.kind == "heading" for block in document.blocks)
         findings: list[Finding] = []
         observations: list[str] = []
         zero_basis: list[str] = []
@@ -692,10 +710,13 @@ class AuditRunStore(_ProjectComponent):
                 block = next((item for item in document.blocks if ambiguous.group(0) in item.text), first)
                 term = ambiguous.group(0)
                 findings.append(self._finding(critic, document, context, block, check_id=f"expression.ambiguous_term:{term}", check_data={"term": term}, issue=f"表达“{term}”可能产生竞争读法", standard="执行者应能唯一确定主语、对象、范围、条件与时间", consequence="不同执行者可能分别采取宽读或窄读，导致通知对象、期限或责任不一致", suggested_action="补充术语定义、适用对象、触发条件和明确期限", competing=[f"读法一：仅适用于当前段落明示的对象/情形", "读法二：扩展适用于同类但未明示的对象/情形"], observation="需要观察到适用名单、授权口径或业务实例，才能排除其中一个读法"))
-            if len(document.blocks) > 1 and not any(block.kind == "heading" for block in document.blocks):
+            if len(document.blocks) > 1 and not has_title:
                 findings.append(self._finding(critic, document, context, first, check_id="expression.document_purpose", issue="文档缺少可定位的标题或目的表述", standard="收件人应能知道文件目的和需要采取的动作", consequence="接收者无法判断这是通知、征求意见还是执行指令", severity="low", suggested_action="增加标题、目的和对收件人的明确动作", competing=["读法一：信息告知，不要求采取行动", "读法二：形成需执行的工作要求"], observation="需要看到发布类型、收件人和截止日期"))
             if not findings:
                 zero_basis.extend(["逐块扫描了模糊限定词与行动主体", "未发现足以形成两个竞争读法的确定性证据；仍不替代人工语境确认"])
+        elif informational and critic in {"execution_feasibility", "reasonableness_governance"}:
+            observations.append("已确认用途为信息传播或现场表达；不因缺少预算、负责人、验收或治理词项就判定缺陷。具体承诺、执行条款和权利限制仍需结合全文独立审查。")
+            zero_basis.append("当前用途不适用通用缺词清单；零条目不代表执行可行性或治理合理性已获确认。")
         elif critic == "execution_feasibility":
             if not _contains_positive_term(text, ("负责人", "责任人", "牵头", "承办")):
                 findings.append(self._finding(critic, document, context, first, check_id="execution.owner", issue="执行模型缺少负责人", standard="目标必须映射到交付物和明确负责人", consequence="出现延期、质量问题或跨部门依赖时没有责任承接点，无法升级或纠偏", severity="high", suggested_action="为每项交付物指定一名负责人，并写明授权边界和替补人", owner="项目负责人", blocks=True, uncertainties=["尚未确认是否存在附件或口头任命"], observation="需要看到责任矩阵或正式任命"))
@@ -725,7 +746,7 @@ class AuditRunStore(_ProjectComponent):
                 zero_basis.append("已检查权力来源、边界、回避和申诉词项；仍需人工判断具体条款是否成比例")
         elif critic == "official_professional_format":
             checks = []
-            if not any(block.kind == "heading" for block in document.blocks):
+            if not has_title:
                 checks.append("标题")
             if not re.search(r"20\d{2}[年/-]\s*\d{1,2}[月/-]\s*\d{1,2}", text):
                 checks.append("日期")

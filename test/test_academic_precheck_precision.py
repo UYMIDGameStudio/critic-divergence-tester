@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 import unittest
 
 from academic_review import academic_precheck_capabilities, academic_prechecks
@@ -42,6 +43,41 @@ def _check(text, critic, kind="theoretical"):
 
 
 class AcademicPrecheckPrecisionTests(unittest.TestCase):
+    def test_pdf_visual_breaks_preserve_negation_questions_and_exact_evidence(self):
+        document = ingest_bytes("fixture.txt", b"placeholder")
+        document.source = replace(document.source, original_name="fixture.pdf", extension=".pdf")
+        for words in (
+            "We ask whether the intervention causes this outcome.",
+            "The intervention does not cause this outcome.",
+            "Does this intervention cause this outcome?",
+            'The archive states "the intervention causes this outcome." We study that statement.',
+            "cause", "causes.",
+        ):
+            with self.subTest(nonassertion=words):
+                document.blocks[0].text = "\n".join(words.split())
+                before = document.to_dict()
+                self.assertEqual(list(academic_prechecks("academic_argument", document, _context())), [])
+                self.assertEqual(document.to_dict(), before)
+        for words in ("The intervention causes this outcome.", "The intervention leads to this outcome."):
+            document.blocks[0].text = "\n".join(words.split())
+            before = document.to_dict()
+            findings = list(academic_prechecks("academic_argument", document, _context()))
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(findings[0][1]["evidence"], document.blocks[0].text)
+            self.assertEqual(findings[0][1]["verification_state"], "cannot-confirm")
+            self.assertEqual(document.to_dict(), before)
+
+    def test_pdf_paragraph_negation_does_not_suppress_following_causal_assertion(self):
+        document = ingest_bytes("fixture.txt", b"placeholder")
+        document.source = replace(document.source, original_name="fixture.pdf", extension=".pdf")
+        document.blocks[0].text = "No evidence of publication bias\n\nTutoring caused higher scores."
+        findings = list(academic_prechecks("academic_argument", document, _context()))
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0][1]["evidence"], "Tutoring caused higher scores.")
+        words = "These opening words introduce a limited question for the following discussion. We ask whether tutoring causes higher scores."
+        document.blocks[0].text = "\n \n".join(words.split())
+        self.assertEqual(list(academic_prechecks("academic_argument", document, _context())), [])
+
     def test_eight_languages_never_turn_unmatched_keywords_into_absence_verdicts(self):
         for language, (body, _) in LANGUAGE_CASES.items():
             for critic in ("academic_argument", "academic_methods", "academic_citations"):

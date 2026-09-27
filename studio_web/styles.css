@@ -178,6 +178,11 @@ h2 {
 .source-block:target {
   background: var(--amber2);
 }
+#app:not(.pdf-original-breaks) .pdf-fragmented-text {
+  white-space: normal;
+}
+.pdf-reader-control { margin-top: 10px; }
+.pdf-reader-control button { padding: 5px 9px; font-size: 13px; }
 label {
   display: block;
   font-weight: 650;

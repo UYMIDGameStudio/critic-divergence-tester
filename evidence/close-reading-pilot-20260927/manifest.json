@@ -1,0 +1,166 @@
+{
+  "schema_version": 1,
+  "artifact": "close-reading-pilot-evidence-manifest",
+  "created_utc": "2026-09-27T02:40:14.860794+00:00",
+  "source_commit": "59048329943880c724fe57792df6fd016b5e6c7f",
+  "scoring_base_commit": "59048329943880c724fe57792df6fd016b5e6c7f",
+  "scoring_source_status": [
+    "M scripts/evaluate_close_reading.py"
+  ],
+  "scorer_sha256": "50b587932f9a4b7fdd645b0c70de4ea369bdb1980fc03829dcf02f226e86caeb",
+  "validator_sha256": "840d75394065fed39869fc4b6b5b5da8e22e361eb6baf2e3260a3e7e28c15c22",
+  "benchmark_id": "close-reading-synthetic-v1",
+  "benchmark_sha256": "700c3e8bd9406e1fc8d14ff60a13a50e639e712430b6504357800aee74740979",
+  "protocol_sha256": "bc9c36e04fce40928b350ba5b1c50c47207d4632d22dc01dd3155b00db44646c",
+  "protocol_hash_format": "UTF-8 JSON, ensure_ascii=False, sort_keys=True, separators=(',', ':')",
+  "parts": {
+    "a": {
+      "case_ids": [
+        "CR05",
+        "CR11",
+        "CR04",
+        "CR09",
+        "CR03",
+        "CR01",
+        "CR10",
+        "CR14"
+      ],
+      "task_sha256": "ed051d7102a0240704b1d8c17a43018af4bfaa2cfd974af7b90bbcbf36fa6ab0",
+      "response_sha256": "3a2b534c2119e854690ec9ee564f8a018dcf548b6f504243d01a3b55965c6290",
+      "source": {
+        "kind": "externally_provided",
+        "producer": "Codex independent pilot reviewer A, single run, model settings inherited"
+      },
+      "findings": 3
+    },
+    "b": {
+      "case_ids": [
+        "CR07",
+        "CR15",
+        "CR12",
+        "CR13",
+        "CR02",
+        "CR06",
+        "CR16",
+        "CR08"
+      ],
+      "task_sha256": "c8c2be7e3d384a02fb97da8e54f35e98c434ba3f54ef8f28d8695b06a6910fa2",
+      "response_sha256": "b29f7c6ff98f42dd98d4eda4b8ed8bf13913d34816251e93b54d44c7328acac7",
+      "source": {
+        "kind": "externally_provided",
+        "producer": "Codex independent pilot reviewer B, single run, model settings inherited"
+      },
+      "findings": 4
+    }
+  },
+  "verification": {
+    "exact_assigned_ids_and_order": true,
+    "task_file_digests_match_assignment": true,
+    "task_payloads_match_benchmark_without_labels": true,
+    "no_missing_or_duplicate_cases": true,
+    "all_16_cases_supplied": true,
+    "combined_case_objects_equal_originals": true,
+    "original_task_response_and_benchmark_bytes_unchanged": true,
+    "scorer_and_validator_unchanged_during_run": true,
+    "preserved_scorer_replay_equals_result": true
+  },
+  "preserved_files": [
+    {
+      "path": "assignment-manifest.json",
+      "source_path": "dist/close-reading-pilot-20260927/manifest.json",
+      "sha256": "a2ccaaad40c77a415dd98db20ef3e8ae415152a06e410168826cb4274713d023",
+      "bytes": 1074
+    },
+    {
+      "path": "benchmark.json",
+      "source_path": "test/fixtures/close-reading-benchmark.json",
+      "sha256": "700c3e8bd9406e1fc8d14ff60a13a50e639e712430b6504357800aee74740979",
+      "bytes": 17336
+    },
+    {
+      "path": "tasks-a.json",
+      "source_path": "dist/close-reading-pilot-20260927/tasks-a.json",
+      "sha256": "ed051d7102a0240704b1d8c17a43018af4bfaa2cfd974af7b90bbcbf36fa6ab0",
+      "bytes": 11914
+    },
+    {
+      "path": "responses-a.json",
+      "source_path": "dist/close-reading-pilot-20260927/responses-a.json",
+      "sha256": "3a2b534c2119e854690ec9ee564f8a018dcf548b6f504243d01a3b55965c6290",
+      "bytes": 6858
+    },
+    {
+      "path": "tasks-b.json",
+      "source_path": "dist/close-reading-pilot-20260927/tasks-b.json",
+      "sha256": "c8c2be7e3d384a02fb97da8e54f35e98c434ba3f54ef8f28d8695b06a6910fa2",
+      "bytes": 11848
+    },
+    {
+      "path": "responses-b.json",
+      "source_path": "dist/close-reading-pilot-20260927/responses-b.json",
+      "sha256": "b29f7c6ff98f42dd98d4eda4b8ed8bf13913d34816251e93b54d44c7328acac7",
+      "bytes": 7760
+    },
+    {
+      "path": "scoring-source/scripts/evaluate_close_reading.py",
+      "source_path": "scripts/evaluate_close_reading.py",
+      "sha256": "50b587932f9a4b7fdd645b0c70de4ea369bdb1980fc03829dcf02f226e86caeb",
+      "bytes": 15108
+    },
+    {
+      "path": "scoring-source/document_review_quality.py",
+      "source_path": "document_review_quality.py",
+      "sha256": "840d75394065fed39869fc4b6b5b5da8e22e361eb6baf2e3260a3e7e28c15c22",
+      "bytes": 12540
+    }
+  ],
+  "generated_files": [
+    {
+      "path": "responses-combined.json",
+      "sha256": "8a7c42d8edb481735a96ae38edaa26dc5bf1865aea6ed11cd5fbfdc59c1733b6",
+      "bytes": 14722
+    },
+    {
+      "path": "result.json",
+      "sha256": "9d3c56830febe1b78ff1ba9acfaa690aedd31c975d41dc8f860950af136be08f",
+      "bytes": 6330
+    },
+    {
+      "path": "scoring-invocation.json",
+      "sha256": "6fe48375aa726678651c36a4fb262584fb22b2e4ef9fdffa719837c49cbe9f0b",
+      "bytes": 524
+    },
+    {
+      "path": "consolidate.py",
+      "sha256": "6de38da99d04680a63e9e73a81d37b42e48e18c8b5ac94ffc0b015c8ab10b356",
+      "bytes": 10178
+    }
+  ],
+  "structural_result": {
+    "evaluated_cases": 16,
+    "empty_finding_cases": 9,
+    "submitted_findings": 7,
+    "counts": {
+      "correctly_located": 7,
+      "missed": 0,
+      "false_positives": 0,
+      "duplicate_findings": 0
+    }
+  },
+  "semantic_review": {
+    "status": "AI_only_post_run_review",
+    "report": "../../docs/close-reading-pilot-20260927.md",
+    "human_validation": false,
+    "report_sha256": "94acf66d04643d2957b451170ea3e9f51a3094af269d562bfb1b65c03e089599",
+    "reviewer_a_limitation": "Report author also generated original reviewer A answers; post-run assessment is partly self-review.",
+    "additional_ai_review": "A further AI agent read tasks-b.json and responses-b.json only and returned a post-run qualitative assessment; no human validation."
+  },
+  "limits": [
+    "Source kind externally_provided means separately supplied to a local scorer; the responders were Codex AI agents, not external human participants.",
+    "Each partition has one original response. Original findings are unedited; combined serialization is a derivative with preserved case objects.",
+    "The scorer matches issue codes and exact quoted spans. It does not judge semantic reasoning, label validity, or general model accuracy.",
+    "The 16 short synthetic cases do not constitute the full academic-v2 framework, naturalistic academic review, a baseline comparison, or independent human validation.",
+    "The post-run report author produced reviewer A's response before viewing labels. Later consolidation and qualitative review are not independent of that prior authorship."
+  ],
+  "publication_note": "Invocation paths were normalized and report links made portable. No original task, model response, benchmark or scoring result was changed."
+}

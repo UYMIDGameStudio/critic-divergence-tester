@@ -1,0 +1,221 @@
+{
+  "schema_version": 1,
+  "artifact": "close-reading-benchmark-report",
+  "benchmark_id": "close-reading-synthetic-v1",
+  "benchmark_sha256": "700c3e8bd9406e1fc8d14ff60a13a50e639e712430b6504357800aee74740979",
+  "provenance": "Hand-specified synthetic examples prepared by the coding assistant, pending independent human review. These are not external participant observations, naturalistic validation, or evidence that any model has succeeded.",
+  "limits": "Labels cover only the supplied bounded defects. Scores on these small synthetic examples do not establish general review accuracy or exhaustive semantic correctness.",
+  "model_execution": "No model was invoked by this script; response provenance is supplied by the caller.",
+  "matching_rule": "Maximum one-to-one case + issue-code matching; exact cited spans must cover every labeled anchor in its original block. Overlapping candidates are reassigned so counts do not depend on response order. Duplicate findings are false positives and never increase recall. Offsets count Unicode code points, with an exclusive end.",
+  "semantic_validation": {
+    "status": "not_performed",
+    "scope": "Counts match issue codes and source spans only. They do not judge whether the explanation, defense, repair, or supplied label is correct; semantic review must be recorded separately."
+  },
+  "pending_case_ids": [],
+  "status": "supplied_responses_scored",
+  "response_source": {
+    "kind": "externally_provided",
+    "producer": "Unedited concatenation of Codex independent pilot reviewers A and B, one run per assigned partition, model settings inherited; original attribution and raw responses retained in manifest.json"
+  },
+  "evaluated_cases": 16,
+  "counts": {
+    "correctly_located": 7,
+    "missed": 0,
+    "false_positives": 0,
+    "duplicate_findings": 0
+  },
+  "cases": [
+    {
+      "case_id": "CR05",
+      "expected_clean": false,
+      "counts": {
+        "correctly_located": 1,
+        "missed": 0,
+        "false_positives": 0,
+        "duplicate_findings": 0
+      },
+      "missed_codes": [],
+      "rejected_findings": []
+    },
+    {
+      "case_id": "CR11",
+      "expected_clean": true,
+      "counts": {
+        "correctly_located": 0,
+        "missed": 0,
+        "false_positives": 0,
+        "duplicate_findings": 0
+      },
+      "missed_codes": [],
+      "rejected_findings": []
+    },
+    {
+      "case_id": "CR04",
+      "expected_clean": true,
+      "counts": {
+        "correctly_located": 0,
+        "missed": 0,
+        "false_positives": 0,
+        "duplicate_findings": 0
+      },
+      "missed_codes": [],
+      "rejected_findings": []
+    },
+    {
+      "case_id": "CR09",
+      "expected_clean": false,
+      "counts": {
+        "correctly_located": 1,
+        "missed": 0,
+        "false_positives": 0,
+        "duplicate_findings": 0
+      },
+      "missed_codes": [],
+      "rejected_findings": []
+    },
+    {
+      "case_id": "CR03",
+      "expected_clean": true,
+      "counts": {
+        "correctly_located": 0,
+        "missed": 0,
+        "false_positives": 0,
+        "duplicate_findings": 0
+      },
+      "missed_codes": [],
+      "rejected_findings": []
+    },
+    {
+      "case_id": "CR01",
+      "expected_clean": false,
+      "counts": {
+        "correctly_located": 1,
+        "missed": 0,
+        "false_positives": 0,
+        "duplicate_findings": 0
+      },
+      "missed_codes": [],
+      "rejected_findings": []
+    },
+    {
+      "case_id": "CR10",
+      "expected_clean": true,
+      "counts": {
+        "correctly_located": 0,
+        "missed": 0,
+        "false_positives": 0,
+        "duplicate_findings": 0
+      },
+      "missed_codes": [],
+      "rejected_findings": []
+    },
+    {
+      "case_id": "CR14",
+      "expected_clean": true,
+      "counts": {
+        "correctly_located": 0,
+        "missed": 0,
+        "false_positives": 0,
+        "duplicate_findings": 0
+      },
+      "missed_codes": [],
+      "rejected_findings": []
+    },
+    {
+      "case_id": "CR07",
+      "expected_clean": false,
+      "counts": {
+        "correctly_located": 1,
+        "missed": 0,
+        "false_positives": 0,
+        "duplicate_findings": 0
+      },
+      "missed_codes": [],
+      "rejected_findings": []
+    },
+    {
+      "case_id": "CR15",
+      "expected_clean": true,
+      "counts": {
+        "correctly_located": 0,
+        "missed": 0,
+        "false_positives": 0,
+        "duplicate_findings": 0
+      },
+      "missed_codes": [],
+      "rejected_findings": []
+    },
+    {
+      "case_id": "CR12",
+      "expected_clean": false,
+      "counts": {
+        "correctly_located": 1,
+        "missed": 0,
+        "false_positives": 0,
+        "duplicate_findings": 0
+      },
+      "missed_codes": [],
+      "rejected_findings": []
+    },
+    {
+      "case_id": "CR13",
+      "expected_clean": false,
+      "counts": {
+        "correctly_located": 1,
+        "missed": 0,
+        "false_positives": 0,
+        "duplicate_findings": 0
+      },
+      "missed_codes": [],
+      "rejected_findings": []
+    },
+    {
+      "case_id": "CR02",
+      "expected_clean": true,
+      "counts": {
+        "correctly_located": 0,
+        "missed": 0,
+        "false_positives": 0,
+        "duplicate_findings": 0
+      },
+      "missed_codes": [],
+      "rejected_findings": []
+    },
+    {
+      "case_id": "CR06",
+      "expected_clean": true,
+      "counts": {
+        "correctly_located": 0,
+        "missed": 0,
+        "false_positives": 0,
+        "duplicate_findings": 0
+      },
+      "missed_codes": [],
+      "rejected_findings": []
+    },
+    {
+      "case_id": "CR16",
+      "expected_clean": false,
+      "counts": {
+        "correctly_located": 1,
+        "missed": 0,
+        "false_positives": 0,
+        "duplicate_findings": 0
+      },
+      "missed_codes": [],
+      "rejected_findings": []
+    },
+    {
+      "case_id": "CR08",
+      "expected_clean": true,
+      "counts": {
+        "correctly_located": 0,
+        "missed": 0,
+        "false_positives": 0,
+        "duplicate_findings": 0
+      },
+      "missed_codes": [],
+      "rejected_findings": []
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "benchmark_id": "close-reading-synthetic-v1",
+  "benchmark_sha256": "700c3e8bd9406e1fc8d14ff60a13a50e639e712430b6504357800aee74740979",
+  "source_commit": "59048329943880c724fe57792df6fd016b5e6c7f",
+  "protocol_sha256": "bc9c36e04fce40928b350ba5b1c50c47207d4632d22dc01dd3155b00db44646c",
+  "scope": "One run of the existing close-reading protocol on synthetic bounded cases; no human or production-model accuracy claim",
+  "parts": {
+    "a": {
+      "task_file": "tasks-a.json",
+      "task_sha256": "ed051d7102a0240704b1d8c17a43018af4bfaa2cfd974af7b90bbcbf36fa6ab0",
+      "case_ids": [
+        "CR05",
+        "CR11",
+        "CR04",
+        "CR09",
+        "CR03",
+        "CR01",
+        "CR10",
+        "CR14"
+      ]
+    },
+    "b": {
+      "task_file": "tasks-b.json",
+      "task_sha256": "c8c2be7e3d384a02fb97da8e54f35e98c434ba3f54ef8f28d8695b06a6910fa2",
+      "case_ids": [
+        "CR07",
+        "CR15",
+        "CR12",
+        "CR13",
+        "CR02",
+        "CR06",
+        "CR16",
+        "CR08"
+      ]
+    }
+  }
+}

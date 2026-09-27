@@ -1,0 +1,178 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "close-reading-synthetic-v1",
+  "benchmark_sha256": "700c3e8bd9406e1fc8d14ff60a13a50e639e712430b6504357800aee74740979",
+  "source": {
+    "kind": "externally_provided",
+    "producer": "Codex independent pilot reviewer B, single run, model settings inherited"
+  },
+  "cases": [
+    {
+      "case_id": "CR07",
+      "findings": [
+        {
+          "code": "DENOMINATOR_MISMATCH",
+          "evidence": [
+            {
+              "block_id": "b2",
+              "quote": "Les deux groupes ont donc le même taux de réponses favorables : 10 %."
+            },
+            {
+              "block_id": "b1",
+              "quote": "Groupe A : 12 réponses favorables sur 60 personnes. Groupe B : 12 réponses favorables sur 120 personnes."
+            }
+          ],
+          "check_data": {
+            "close_reading": {
+              "author_position": "The descriptive comparison concludes that both groups have a favorable-response rate of 10%.",
+              "strongest_defense": "Both groups do have 12 favorable responses, and 10% is the correct rate for group B.",
+              "why_defense_fails": "Equal favorable counts do not establish equal rates when the group sizes differ: 12/60 is 20%, whereas 12/120 is 10%. The stated equality therefore defeats the intended rate comparison.",
+              "repair_test": "Calculate each favorable count divided by its own group size; replace the conclusion with A = 20% and B = 10%, while retaining equality only for favorable counts.",
+              "context_evidence": [
+                {
+                  "block_id": "b1",
+                  "quote": "Groupe A : 12 réponses favorables sur 60 personnes. Groupe B : 12 réponses favorables sur 120 personnes.",
+                  "role": "counterevidence"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "CR15",
+      "findings": []
+    },
+    {
+      "case_id": "CR12",
+      "findings": [
+        {
+          "code": "NUMERIC_DISCREPANCY",
+          "evidence": [
+            {
+              "block_id": "b2",
+              "quote": "Итоговая доля ответов составляет 25 %."
+            },
+            {
+              "block_id": "b1",
+              "quote": "Приглашены 200 сотрудников; ответили 80. Доля ответов определяется как число ответивших, делённое на число приглашённых."
+            }
+          ],
+          "check_data": {
+            "close_reading": {
+              "author_position": "The report defines the response share as respondents divided by invitees and reports a final value of 25%.",
+              "strongest_defense": "The supplied definition is clear and appropriate, and the final percentage could be a transcription error rather than a conceptual error.",
+              "why_defense_fails": "Under that explicit definition and the supplied counts, 80/200 = 0.40, or 40%; the reported 25% cannot be obtained from them. No alternative counts or population are supplied.",
+              "repair_test": "Recompute 80 divided by 200 and multiplied by 100; with the stated counts retained, the final percentage must read 40%.",
+              "context_evidence": [
+                {
+                  "block_id": "b1",
+                  "quote": "Приглашены 200 сотрудников; ответили 80.",
+                  "role": "counterevidence"
+                },
+                {
+                  "block_id": "b1",
+                  "quote": "Доля ответов определяется как число ответивших, делённое на число приглашённых.",
+                  "role": "context"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "CR13",
+      "findings": [
+        {
+          "code": "QUANTIFIER_EXPANSION",
+          "evidence": [
+            {
+              "block_id": "b2",
+              "quote": "Ergō omnēs cīvēs huic consilio favent."
+            },
+            {
+              "block_id": "b1",
+              "quote": "Nonnulli cīvēs huic consilio favent. De cēterīs nihil scīmus; æquitas consiliī hīc nōn probātur."
+            }
+          ],
+          "check_data": {
+            "close_reading": {
+              "author_position": "The logical argument infers that all citizens favor this plan from the premise that some favor it, while expressly stating that nothing is known about the others and that the plan's fairness is not established here.",
+              "strongest_defense": "The claim that some citizens favor the plan need not exclude the possibility that all do; the premises can be compatible with the conclusion.",
+              "why_defense_fails": "Compatibility is insufficient for the stated deduction. The premise also permits other citizens not to favor the plan, and the explicit ignorance about the others supplies no universal bridge. The defect concerns support for unanimity, not the plan's fairness.",
+              "repair_test": "Narrow the conclusion to some citizens, or supply evidence covering every citizen. Check the inference against a case with one supporter and one non-supporter: the present premise can hold there while the universal conclusion is false.",
+              "context_evidence": [
+                {
+                  "block_id": "b1",
+                  "quote": "Nonnulli cīvēs huic consilio favent.",
+                  "role": "support"
+                },
+                {
+                  "block_id": "b1",
+                  "quote": "De cēterīs nihil scīmus; æquitas consiliī hīc nōn probātur.",
+                  "role": "qualification"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "CR02",
+      "findings": []
+    },
+    {
+      "case_id": "CR06",
+      "findings": []
+    },
+    {
+      "case_id": "CR16",
+      "findings": [
+        {
+          "code": "DENOMINATOR_MISMATCH",
+          "evidence": [
+            {
+              "block_id": "b3",
+              "quote": "Both groups have the same response rate of 20%."
+            },
+            {
+              "block_id": "b2",
+              "quote": "甲组：100人中有20人回复。"
+            },
+            {
+              "block_id": "b4",
+              "quote": "乙組：200人中有20人回覆。"
+            }
+          ],
+          "check_data": {
+            "close_reading": {
+              "author_position": "The descriptive conclusion claims equal response rates of 20% for the two groups.",
+              "strongest_defense": "Both groups contain 20 respondents, and 20% is the correct response rate for group 甲.",
+              "why_defense_fails": "Group 乙 has 200 people, so its 20 respondents represent 10%. Equality of respondent counts does not justify equality of rates across the stated group sizes.",
+              "repair_test": "Calculate 20/100 and 20/200 separately; revise the comparison to 20% for 甲 and 10% for 乙, retaining equal counts only if explicitly distinguished from rates.",
+              "context_evidence": [
+                {
+                  "block_id": "b2",
+                  "quote": "甲组：100人中有20人回复。",
+                  "role": "support"
+                },
+                {
+                  "block_id": "b4",
+                  "quote": "乙組：200人中有20人回覆。",
+                  "role": "counterevidence"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "CR08",
+      "findings": []
+    }
+  ]
+}

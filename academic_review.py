@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from document_review_model import DocumentBlock, ReviewContext, StructuredDocument
+from document_review_ingest import _fragmented_pdf_lines
 
 
 _REFERENCE_HEADINGS = {
@@ -24,10 +25,10 @@ _TYPE_METHOD_HEADINGS = {
     "engineering": {"evaluation", "system design", "评测", "評測", "系统设计", "系統設計"},
 }
 _PLACEHOLDER = re.compile(r"(?:\[(?:TODO|TBD)(?:[:：][^\]\n]{1,120})?\]|TODO|TBD|待补充|待補充)[。.]?", re.I)
-_CAUSAL = re.compile(r"导致|導致|决定了|決定了|\bcauses?\b|\bcaused\b|\bleads? to\b|\bresults? in\b", re.I)
+_CAUSAL = re.compile(r"导致|導致|决定了|決定了|\bcauses?\b|\bcaused\b|\bleads?\s+to\b|\bresults?\s+in\b", re.I)
 _CAUSAL_NONASSERTION = re.compile(
     r"不能|无法|無法|未证明|未證明|没有证据|沒有證據|并不|並不|不导致|不導致|未必|是否|能否|"
-    r"\b(?:does? not|did not|cannot|can not|no evidence|not establish|not imply|reject|rejected|whether)\b", re.I,
+    r"\b(?:does?\s+not|did\s+not|cannot|can\s+not|no\s+evidence|not\s+establish|not\s+imply|reject|rejected|whether)\b", re.I,
 )
 _QUOTED = re.compile(r'"[^"\n]*"|“[^”\n]*”|「[^」\n]*」|『[^』\n]*』|`[^`\n]*`')
 
@@ -35,7 +36,7 @@ _QUOTED = re.compile(r'"[^"\n]*"|“[^”\n]*”|「[^」\n]*」|『[^』\n]*』
 def academic_precheck_capabilities(context: ReviewContext) -> dict:
     """Disclose rule coverage, without pretending keyword sets detect language."""
     return {
-        "rule_version": "academic-local-v2",
+        "rule_version": "academic-local-v3",
         "research_type": context.research_type,
         "literal_cue_languages": ["zh-Hans", "zh-Hant", "en"],
         "semantic_language_detection": False,
@@ -105,7 +106,7 @@ def academic_prechecks(critic: str, document: StructuredDocument, context: Revie
 
     def issue(block: DocumentBlock, check: str, message: str, action: str, *, data=None, evidence=None):
         return block, {
-            "check_id": "academic." + check, "check_data": {"rule_version": "academic-local-v2", **(data or {})},
+            "check_id": "academic." + check, "check_data": {"rule_version": "academic-local-v3", **(data or {})},
             "issue": message, "standard": "本地预检只报告文本线索；学术结论需独立证据与人工核验",
             "consequence": "此线索可能影响读者追踪结论，是否构成缺陷仍需按文章实际任务核对",
             "suggested_action": action, "verification_state": "cannot-confirm",
@@ -121,16 +122,32 @@ def academic_prechecks(critic: str, document: StructuredDocument, context: Revie
                 continue
             # Quotation spans must be found before sentence splitting: in normal
             # typography the closing quote follows the sentence's full stop.
-            quoted = list(_QUOTED.finditer(block.text))
-            for sentence in re.finditer(r"[^。！？.!?\n]+[。！？.!?]?", block.text):
+            # PDF line breaks encode text placement, not sentence boundaries.
+            # Replace one character with one space solely for analysis so all
+            # offsets still slice the EXACT stored source for evidence.
+            analysis_text = block.text
+            if document.source.extension == ".pdf":
+                analysis_text = re.sub(r"[\r\n\t]", " ", block.text)
+                if not _fragmented_pdf_lines(block.text):
+                    # Blank-line paragraphs are real scope boundaries on a
+                    # normally extracted page. A negation in one paragraph
+                    # must not suppress an assertion in the following one.
+                    characters = list(analysis_text)
+                    for gap in re.finditer(r"\r?\n[ \t]*\r?\n", block.text):
+                        characters[gap.start()] = "\n"
+                    analysis_text = "".join(characters)
+            quoted = list(_QUOTED.finditer(analysis_text))
+            for sentence in re.finditer(r"[^。！？.!?\n]+[。！？.!?]?", analysis_text):
                 text = sentence.group()
                 if _CAUSAL_NONASSERTION.search(text) or text.rstrip().endswith(("?", "？")):
                     continue
+                if _CAUSAL.fullmatch(text.strip().rstrip("。.!！?？")):
+                    continue  # An isolated cue is not an attributable assertion.
                 match = next((m for m in _CAUSAL.finditer(text) if not any(q.start() <= sentence.start() + m.start() < q.end() for q in quoted)), None)
                 if match:
                     yield issue(block, "argument.causal_bridge", "发现因果措辞，请核对其限定、支持依据与竞争解释",
                                 "定位此句实际声称的因果关系及其支持材料；按研究任务检查推理或识别依据，不能仅因出现因果词就判错",
-                                evidence=text.strip(), data={"matched_cue": match.group(), "scope": "literal causal wording; not a missing-evidence verdict"})
+                                evidence=block.text[sentence.start():sentence.end()].strip(), data={"matched_cue": match.group(), "scope": "literal causal wording; not a missing-evidence verdict"})
                     break
 
     elif critic == "academic_methods":

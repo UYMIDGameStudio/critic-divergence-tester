@@ -12,8 +12,8 @@ import tempfile
 import threading
 
 
-def _pdf_fixture() -> bytes:
-    stream = b"BT /F1 12 Tf 30 60 Td (Portable PDF test.) Tj ET"
+def _pdf_fixture(stream: bytes | None = None) -> bytes:
+    stream = stream if stream is not None else b"BT /F1 12 Tf 30 60 Td (Portable PDF test.) Tj ET"
     objects = [b"<< /Type /Catalog /Pages 2 0 R >>",
                b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 100] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
@@ -27,6 +27,18 @@ def _pdf_fixture() -> bytes:
     data += b"xref\n0 6\n0000000000 65535 f \n"
     data += b"".join(f"{offset:010d} 00000 n \n".encode() for offset in offsets[1:])
     return data + f"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{start}\n%%EOF\n".encode()
+
+
+def _fragmented_pdf_fixture() -> bytes:
+    """Synthetic inverted text matrices: separate objects share each baseline."""
+    lines = ("These are some short words drawn on the", "same line but stored in separate text objects.")
+    ops = ["1 0 0 -1 0 100 cm", ".75 0 0 .75 0 0 cm"]
+    for line_number, line in enumerate(lines):
+        x, y = 10, 25 + line_number * 32
+        for word in line.split():
+            ops.append(f"BT /F1 9 Tf 1 0 0 -1 0 -1.45 Tm {x} {-y} Td ({word}) Tj ET")
+            x += len(word) * 5 + 5
+    return _pdf_fixture("\n".join(ops).encode("ascii"))
 
 
 def run_self_test() -> dict:
@@ -66,6 +78,12 @@ def run_self_test() -> dict:
             if not pdf.document() or "Portable PDF test." not in pdf.document().plain_text:
                 raise RuntimeError("Self-test could not extract text from the bundled PDF adapter")
             checked.append("pdf-text")
+            from document_review_ingest import ingest_bytes
+            repaired = ingest_bytes("fragmented.pdf", _fragmented_pdf_fixture())
+            expected = "These are some short words drawn on the same line but stored in separate text objects."
+            if " ".join(repaired.plain_text.split()) != expected or len(repaired.plain_text.splitlines()) > 5:
+                raise RuntimeError("Self-test PDF word-per-line recovery failed")
+            checked.append("pdf-line-recovery")
         elif getattr(sys, "frozen", False):
             raise RuntimeError("Portable bundle is missing the PDF text adapter")
         if importlib.util.find_spec("pypdfium2"):

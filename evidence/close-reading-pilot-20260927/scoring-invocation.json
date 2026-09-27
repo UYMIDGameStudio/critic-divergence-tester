@@ -1,0 +1,18 @@
+{
+  "argv": [
+    "python",
+    "scripts/evaluate_close_reading.py",
+    "--benchmark",
+    "evidence/close-reading-pilot-20260927/benchmark.json",
+    "score",
+    "--responses",
+    "evidence/close-reading-pilot-20260927/responses-combined.json",
+    "--output",
+    "evidence/close-reading-pilot-20260927/result.json"
+  ],
+  "cwd": ".",
+  "exit_code": 0,
+  "stdout": "",
+  "stderr": "",
+  "path_representation": "Interpreter and repository paths normalized for publication; original task and response bytes unchanged."
+}

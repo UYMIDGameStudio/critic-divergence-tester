@@ -503,6 +503,22 @@
     "zh-Hant": "無法匯出細讀協議：目前程式不支援這份細讀協議的版本。",
     "en": "Cannot export the close-reading contract: This application does not support the saved close-reading contract version."
   },
+  "已按 PDF 页面位置修复逐词换行，并核对文字顺序；请确认段落和阅读顺序。": {
+    "zh-Hant": "已依 PDF 頁面位置修復逐詞換行，並核對文字順序；請確認段落與閱讀順序。",
+    "en": "Word-by-word line breaks were repaired using PDF page positions, and text order was checked. Please confirm the paragraphs and reading order."
+  },
+  "部分 PDF 页面逐词换行，无法安全自动修复；请对照原文件确认或修正提取文字。": {
+    "zh-Hant": "部分 PDF 頁面逐詞換行，無法安全自動修復；請對照原始檔案確認或修正擷取文字。",
+    "en": "Some PDF pages have word-by-word line breaks that could not be safely repaired. Please compare with the original file and confirm or correct the extracted text."
+  },
+  "已确认用途为信息传播或现场表达；不因缺少预算、负责人、验收或治理词项就判定缺陷。具体承诺、执行条款和权利限制仍需结合全文独立审查。": {
+    "zh-Hant": "已確認用途為資訊傳播或現場表達；不因缺少預算、負責人、驗收或治理詞項就判定缺陷。具體承諾、執行條款與權利限制仍需結合全文獨立審查。",
+    "en": "The confirmed purpose is to convey information or deliver remarks in person. Missing terms about budgets, responsible parties, acceptance criteria or governance alone do not establish a defect. Specific commitments, implementation provisions and restrictions on rights still require independent review in the context of the full document."
+  },
+  "当前用途不适用通用缺词清单；零条目不代表执行可行性或治理合理性已获确认。": {
+    "zh-Hant": "目前用途不適用通用缺詞清單；零條目不代表執行可行性或治理合理性已獲確認。",
+    "en": "The generic checklist of missing terms does not apply to this purpose. Zero items do not establish implementation feasibility or sound governance."
+  },
   "细读协议不可导出：Close-reading version 1 fields do not match its published response contract": {
     "zh-Hant": "無法匯出細讀協議：細讀協議第 1 版的欄位與已發布規格不一致。",
     "en": "Cannot export the close-reading contract: The version 1 close-reading fields do not match the published response contract."

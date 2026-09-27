@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import itertools
 import json
 import subprocess
 import sys
@@ -36,6 +37,18 @@ def synthetic_responses(value: dict, digest: str) -> dict:
 
 
 class CloseReadingBenchmarkTests(unittest.TestCase):
+    def test_matching_cardinality_agrees_with_exhaustive_small_graph_oracle(self):
+        for mask in range(1 << 9):
+            candidates = [[j for j in range(3) if mask & (1 << (3 * i + j))] for i in range(3)]
+            possible = [assignment for assignment in itertools.product(range(-1, 3), repeat=3)
+                        if len([j for j in assignment if j >= 0]) == len({j for j in assignment if j >= 0})
+                        and all(j == -1 or j in candidates[i] for i, j in enumerate(assignment))]
+            optimum = max(sum(j >= 0 for j in assignment) for assignment in possible)
+            self.assertEqual(len(benchmark._maximum_label_matching(candidates)), optimum)
+        # A long relocation chain must not consume Python's recursion stack.
+        chain = [[i, i + 1] for i in range(1100)] + [[0]]
+        self.assertEqual(len(benchmark._maximum_label_matching(chain)), 1101)
+
     def setUp(self) -> None:
         self.benchmark, self.digest = benchmark.load_benchmark()
         self.responses = synthetic_responses(self.benchmark, self.digest)
@@ -84,6 +97,33 @@ class CloseReadingBenchmarkTests(unittest.TestCase):
         self.responses["cases"][0]["findings"].extend([duplicate, copy.deepcopy(duplicate)])
         report = benchmark.score_responses(self.benchmark, self.digest, self.responses)
         self.assertEqual(report["counts"], {"correctly_located": 7, "missed": 0, "false_positives": 2, "duplicate_findings": 2})
+
+    def test_overlapping_labels_do_not_make_counts_depend_on_response_order(self) -> None:
+        case = self.benchmark["cases"][0]
+        case["blocks"] = [{"block_id": "b1", "text": "Twelve observations are reported as thirteen."},
+                          {"block_id": "b2", "text": "Eight observations are reported as nine."}]
+        labels = [{"code": "NUMERIC_DISCREPANCY", "anchors": [{"block_id": row["block_id"], "quote": row["text"]}],
+                   "rationale": "A synthetic scoring label; not an observed model result."} for row in case["blocks"]]
+        broad = synthetic_finding({**labels[0], "anchors": [*labels[0]["anchors"], *labels[1]["anchors"]]})
+        narrow = synthetic_finding(labels[0])
+        for expected in (labels, list(reversed(labels))):
+            case["expected_findings"] = expected
+            for findings in ([broad, narrow], [narrow, broad]):
+                with self.subTest(expected_first=expected[0]["anchors"], broad_first=findings[0] is broad):
+                    self.responses["cases"] = [{"case_id": case["case_id"], "findings": findings}]
+                    result = benchmark.score_responses(self.benchmark, self.digest, self.responses)
+                    self.assertEqual(result["counts"], dict(correctly_located=2, missed=0, false_positives=0, duplicate_findings=0))
+            self.responses["cases"] = [{"case_id": case["case_id"], "findings": [broad]}]
+            result = benchmark.score_responses(self.benchmark, self.digest, self.responses)
+            self.assertEqual(result["counts"], dict(correctly_located=1, missed=1, false_positives=0, duplicate_findings=0))
+
+    def test_matching_quotes_do_not_claim_semantic_validation(self) -> None:
+        finding = self.responses["cases"][0]["findings"][0]
+        finding["check_data"]["close_reading"]["why_defense_fails"] = "No defect exists; this objection should be withdrawn."
+        result = benchmark.score_responses(self.benchmark, self.digest, self.responses)
+        self.assertEqual(result["counts"]["correctly_located"], 7)
+        self.assertEqual(result["semantic_validation"]["status"], "not_performed")
+        self.assertNotIn("accuracy", result)
 
     def test_cross_passage_defect_requires_both_sides(self) -> None:
         finding = self.responses["cases"][4]["findings"][0]

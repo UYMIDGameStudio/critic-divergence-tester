@@ -1,4 +1,5 @@
 function bind() {
+  bindPdfReader();
   document.querySelectorAll('.open-research').forEach(
     (b) =>
       (b.onclick = async () => {
@@ -359,18 +360,15 @@ function filterFindings() {
 function filterSourcePreview(event) {
   const q = event.target.value.toLowerCase(),
     blocks = state.selected.extraction.blocks || [];
-  document.getElementById('source-preview').textContent = blocks
+  document.getElementById('source-preview').innerHTML = blocks
     .filter(
       (b) =>
-        !q ||
-        sourceBlockText(b).toLowerCase().includes(q) ||
-        String(b.location?.block_id || b.block_id)
-          .toLowerCase()
-          .includes(q),
+        sourceMatchesQuery(sourceBlockText(b), q) ||
+        sourceMatchesQuery(b.location?.block_id || b.block_id, q),
     )
     .map(
       (b) =>
-        `[${b.location?.block_id || b.block_id} · page ${b.location?.page || '-'}] ${sourceBlockText(b)}`,
+        `[${esc(b.location?.block_id || b.block_id)} · page ${esc(b.location?.page || '-')}] ${pdfDisplayText(sourceBlockText(b))}`,
     )
     .join('\n\n');
 }
@@ -403,9 +401,7 @@ function filterWorkspace(event) {
     .querySelectorAll('.source-block:not(.revised-source-block)')
     .forEach(
       (block) =>
-        (block.hidden = Boolean(
-          q && !block.textContent.toLowerCase().includes(q),
-        )),
+        (block.hidden = !sourceMatchesQuery(block.textContent, q)),
     );
 }
 function selectedRequest() {

@@ -1,0 +1,145 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "close-reading-synthetic-v1",
+  "benchmark_sha256": "700c3e8bd9406e1fc8d14ff60a13a50e639e712430b6504357800aee74740979",
+  "source": {
+    "kind": "externally_provided",
+    "producer": "Codex independent pilot reviewer A, single run, model settings inherited"
+  },
+  "cases": [
+    {
+      "case_id": "CR05",
+      "findings": [
+        {
+          "code": "CROSS_PASSAGE_CONTRADICTION",
+          "evidence": [
+            {
+              "block_id": "b1",
+              "quote": "In die Auswertung wurden ausschließlich Erwachsene ab 18 Jahren aufgenommen."
+            },
+            {
+              "block_id": "b2",
+              "quote": "Die endgültige Auswertung umfasst dieselben 80 Personen, darunter 12 Jugendliche im Alter von 16 bis 17 Jahren."
+            }
+          ],
+          "check_data": {
+            "close_reading": {
+              "author_position": "The report describes the completed survey analysis as including only adults aged at least 18, while also describing its final 80-person sample as including 12 people aged 16–17.",
+              "strongest_defense": "An adult-only eligibility rule could coexist with accidental inclusion of younger respondents, or different samples could have different age limits. However, b1 describes actual inclusion, and b2 explicitly calls these the same people in the final analysis.",
+              "why_defense_fails": "The supplied wording asserts incompatible age compositions for the same analysis. It does not label one passage as an intended rule or a different sample, leaving the population actually analyzed unresolved.",
+              "repair_test": "Check the age records and final analysis membership, then correct the inaccurate inclusion statement or explicitly distinguish intended eligibility from actual inclusion. Both passages should yield the same final sample size and age composition without assuming which account is correct.",
+              "context_evidence": [
+                {
+                  "block_id": "b1",
+                  "quote": "ausschließlich Erwachsene ab 18 Jahren",
+                  "role": "context"
+                },
+                {
+                  "block_id": "b2",
+                  "quote": "dieselben 80 Personen, darunter 12 Jugendliche im Alter von 16 bis 17 Jahren",
+                  "role": "counterevidence"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "CR11",
+      "findings": []
+    },
+    {
+      "case_id": "CR04",
+      "findings": []
+    },
+    {
+      "case_id": "CR09",
+      "findings": [
+        {
+          "code": "UNIT_MISMATCH",
+          "evidence": [
+            {
+              "block_id": "b2",
+              "quote": "したがって、測定値は比較基準の10分の1である。"
+            },
+            {
+              "block_id": "b1",
+              "quote": "測定値は2 mg/Lであり、比較基準は20 μg/Lである。換算では1 mg = 1000 μgを用いる。"
+            }
+          ],
+          "check_data": {
+            "close_reading": {
+              "author_position": "The report compares a measured concentration of 2 mg/L with a reference of 20 μg/L and concludes that the measurement is one tenth of the reference.",
+              "strongest_defense": "The numerals 2 and 20 have a ratio of one tenth, and the report supplies a conversion rule that would permit a valid comparison.",
+              "why_defense_fails": "The two concentrations use different mass units. Applying the stated conversion gives 2000 μg/L divided by 20 μg/L, or 100. The reported ratio reverses which value is larger and is inconsistent with the supplied quantities.",
+              "repair_test": "Replace the one-tenth conclusion with an explicit common-unit calculation: 2 mg/L = 2000 μg/L and 2000/20 = 100. Recomputing the ratio in either mg/L or μg/L should give the same factor of 100.",
+              "context_evidence": [
+                {
+                  "block_id": "b1",
+                  "quote": "換算では1 mg = 1000 μgを用いる。",
+                  "role": "counterevidence"
+                },
+                {
+                  "block_id": "b2",
+                  "quote": "測定値は比較基準の10分の1である。",
+                  "role": "context"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "CR03",
+      "findings": []
+    },
+    {
+      "case_id": "CR01",
+      "findings": [
+        {
+          "code": "CAUSAL_OVERREACH",
+          "evidence": [
+            {
+              "block_id": "b2",
+              "quote": "The tutoring group scored 12 points higher; therefore tutoring caused a 12-point improvement."
+            },
+            {
+              "block_id": "b1",
+              "quote": "Participants chose whether to join the tutoring program. Prior achievement was not measured."
+            }
+          ],
+          "check_data": {
+            "close_reading": {
+              "author_position": "The report takes an observed 12-point score difference between the tutoring group and its comparison group to establish a 12-point causal improvement from tutoring.",
+              "strongest_defense": "The reported score difference supports an association and is compatible with tutoring having helped. The document openly identifies self-selection and the absence of prior achievement measurements.",
+              "why_defense_fails": "Compatibility with a tutoring effect does not identify that effect. Self-selection permits preexisting differences between groups, and the supplied design neither measures prior achievement nor otherwise establishes comparable counterfactual outcomes. The observed between-group gap therefore cannot establish a 12-point causal improvement.",
+              "repair_test": "Retain the observed 12-point difference but replace the causal conclusion with an association statement and acknowledge unresolved baseline differences. The repaired conclusion should describe the measured group gap without asserting that tutoring produced it or that participants improved by that amount.",
+              "context_evidence": [
+                {
+                  "block_id": "b1",
+                  "quote": "Participants chose whether to join the tutoring program. Prior achievement was not measured.",
+                  "role": "qualification"
+                },
+                {
+                  "block_id": "b2",
+                  "quote": "The tutoring group scored 12 points higher",
+                  "role": "support"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "CR10",
+      "findings": []
+    },
+    {
+      "case_id": "CR14",
+      "findings": []
+    }
+  ]
+}

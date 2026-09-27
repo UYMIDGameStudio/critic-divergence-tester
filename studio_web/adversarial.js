@@ -35,7 +35,7 @@ function adversarialEvidence(evidence, current) {
     const label = `${anchor.evidence_id ? anchor.evidence_id + ' · ' : ''}${anchor.block_id} · ${roles[anchor.role] || anchor.role}`;
     return `<div class="quote">${current
       ? `<a href="#source-${esc(anchor.block_id)}">${esc(label)}</a>`
-      : `<span>${esc(label)}</span>`}<p>${esc(anchor.quote)}</p></div>`;
+      : `<span>${esc(label)}</span>`}<p>${pdfDisplayText(anchor.quote)}</p></div>`;
   }).join('');
 }
 

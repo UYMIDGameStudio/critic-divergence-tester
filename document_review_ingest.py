@@ -673,6 +673,48 @@ def _fallback_pdf_text(data: bytes, source: RawFileBinding, limits: IngestionLim
     return StructuredDocument(stable_id("DOC", source.sha256), Path(source.original_name).stem, source, "builtin-pdf-text", PARSER_VERSION, blocks, warnings, quality, mapping, {"pdf_kind": "scanned" if not blocks else "text", "coordinates_available": False})
 
 
+def _fragmented_pdf_lines(text: str) -> bool:
+    """Detect word-per-line candidates, not a license to flatten line breaks."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    # CJK prose normally has no word spaces. Its physical lines are not
+    # evidence of this Latin/Cyrillic word-object defect.
+    words = [line for line in lines if len(line.split()) == 1
+             and re.search(r"[A-Za-z\u00c0-\u02af\u0370-\u052f]", line)]
+    return len(lines) >= 12 and len(words) >= len(lines) * .75
+
+
+def _pdf_layout_tokens(text: str) -> list[str]:
+    # Standalone trailing punctuation is another PDF text-object artifact.
+    # Preserve lexical boundaries: stripping ALL whitespace could accept
+    # 'the rapist' -> 'therapist', '1 000' -> '1000', or '1 . 5' -> '1.5'.
+    return re.sub(r"(?<=\S)\s+([.,;:!?…。，；：！？])(?=\s|$)", r"\1", text).split()
+
+
+def _recover_pdf_layout(page: Any, plain: str) -> tuple[str, dict[str, Any]]:
+    """Retry fragmented pypdf output using geometry, with a text-fidelity gate.
+
+    Leave normal pages and genuine vertical lines alone. Layout may omit rotated
+    text or interleave columns, so it is only accepted when the token sequence is
+    unchanged and the number of nonempty lines falls by at least half.
+    """
+    if not _fragmented_pdf_lines(plain):
+        return plain, {"mode": "plain"}
+    receipt = {"mode": "plain", "layout_recovery": "unresolved",
+               "plain_text_sha256": _sha256(plain.encode("utf-8"))}
+    try:
+        candidate = (page.extract_text(extraction_mode="layout") or "").strip()
+    except Exception:
+        return plain, {**receipt, "reason": "layout-unavailable"}
+    if _pdf_layout_tokens(plain) != _pdf_layout_tokens(candidate):
+        return plain, {**receipt, "reason": "text-sequence-changed"}
+    before = sum(bool(line.strip()) for line in plain.splitlines())
+    after = sum(bool(line.strip()) for line in candidate.splitlines())
+    if not after or after > before / 2 or _fragmented_pdf_lines(candidate):
+        return plain, {**receipt, "layout_recovery": "not-needed", "reason": "line-layout-not-improved"}
+    # Retain physical line/paragraph gaps, indentation and columns from layout.
+    return candidate, {**receipt, "mode": "layout", "layout_recovery": "recovered"}
+
+
 def _pdf_text(data: bytes, source: RawFileBinding, limits: IngestionLimits) -> StructuredDocument:
     backend = _pdf_backend()
     if backend is None:
@@ -684,6 +726,8 @@ def _pdf_text(data: bytes, source: RawFileBinding, limits: IngestionLimits) -> S
     page_texts: list[str] = []
     blank_pages: list[int] = []
     suspected_order = False
+    recovered_pages: list[int] = []
+    fragmented_pages: list[int] = []
     if name == "pymupdf":
         pdf = None
         try:
@@ -729,12 +773,17 @@ def _pdf_text(data: bytes, source: RawFileBinding, limits: IngestionLimits) -> S
                 raise IngestionError("PDF 页数超过安全限制")
             for page_number, page in enumerate(reader.pages, start=1):
                 text = (page.extract_text() or "").strip()
+                text, extraction = _recover_pdf_layout(page, text)
+                if extraction.get("layout_recovery") == "recovered":
+                    recovered_pages.append(page_number)
+                elif extraction.get("layout_recovery") == "unresolved":
+                    fragmented_pages.append(page_number)
                 page_texts.append(text)
                 if not text:
                     blank_pages.append(page_number)
                 if text:
                     block_id = _block_id(source.sha256, "pdf_text_block", len(blocks), text, page_number)
-                    blocks.append(DocumentBlock(block_id, "paragraph", text=text, location=DocumentLocation(block_id, "pdf_text_block", page=page_number, paragraph=len(blocks), source_path=source.original_name), attrs={"page": page_number, "reading_order": 0, "coordinates_available": False}))
+                    blocks.append(DocumentBlock(block_id, "paragraph", text=text, location=DocumentLocation(block_id, "pdf_text_block", page=page_number, paragraph=len(blocks), source_path=source.original_name), attrs={"page": page_number, "reading_order": 0, "coordinates_available": False, "text_extraction": extraction}))
                     mapping.append({"page": page_number, "block_id": block_id, "reading_order": 0})
         except IngestionError:
             raise
@@ -753,10 +802,15 @@ def _pdf_text(data: bytes, source: RawFileBinding, limits: IngestionLimits) -> S
         warnings.append(ExtractionWarning("short-text-pages", "low", "部分页面文本较短；这不是扫描件判据，请在内容预览中确认", details={"pages": low_text_pages}))
     if name == "pypdf":
         warnings.append(ExtractionWarning("pdf-coordinates-unavailable", "medium", "当前使用 pypdf；已保存页码但没有可靠字符坐标"))
+    if recovered_pages:
+        warnings.append(ExtractionWarning("pdf-line-breaks-recovered", "low", "已按 PDF 页面位置修复逐词换行，并核对文字顺序；请确认段落和阅读顺序。", details={"pages": recovered_pages}))
+    if fragmented_pages:
+        suspected_order = True
+        warnings.append(ExtractionWarning("pdf-fragmented-lines", "medium", "部分 PDF 页面逐词换行，无法安全自动修复；请对照原文件确认或修正提取文字。", details={"pages": fragmented_pages}))
     quality = QualitySignals(page_count=page_count, blank_pages=blank_pages, text_coverage=min(1.0, text_chars / max(1, page_count * 1200)), suspected_reading_order=suspected_order, parser_available=True, ocr_available=None, requires_confirmation=True)
     if page_count and scanned_pages == page_count:
         quality.text_coverage = 0.0
-    return StructuredDocument(stable_id("DOC", source.sha256), Path(source.original_name).stem, source, name, PARSER_VERSION, blocks, warnings, quality, mapping, {"pdf_kind": "scanned" if scanned_pages == page_count else ("mixed" if scanned_pages else "text"), "page_text_lengths": [len(value) for value in page_texts], "coordinates_available": name == "pymupdf"})
+    return StructuredDocument(stable_id("DOC", source.sha256), Path(source.original_name).stem, source, name, "document-review-pdf-v2" if name == "pypdf" else PARSER_VERSION, blocks, warnings, quality, mapping, {"pdf_kind": "scanned" if scanned_pages == page_count else ("mixed" if scanned_pages else "text"), "page_text_lengths": [len(value) for value in page_texts], "coordinates_available": name == "pymupdf", "layout_recovered_pages": recovered_pages, "fragmented_pages": fragmented_pages})
 
 
 def _tesseract_executable() -> str | None:

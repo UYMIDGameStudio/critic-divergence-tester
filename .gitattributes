@@ -6,3 +6,4 @@
 .gitignore text eol=lf
 ir/*.json text eol=lf
 test/fixtures/workbench-demo/* text eol=lf
+evidence/close-reading-pilot-20260927/** -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol

@@ -180,6 +180,7 @@ jobs:
           python -m unittest -v
           test.test_document_review_studio.DocumentReviewStudioTests.test_real_pdf_backend_parses_valid_text_pdf_when_installed
           test.test_document_review_studio.DocumentReviewStudioTests.test_short_text_pdf_is_not_routed_to_ocr
+          test.test_pdf_line_recovery
 
       - name: Verify installed rendering adapter
         run: python -c "from studio_selftest import run_self_test; result=run_self_test(); assert 'pdf-page-render' in result['checked']; print(result)"
