@@ -417,9 +417,37 @@ class AdversarialReviewTests(unittest.TestCase):
         for provider, model in (("", "m"), ("p", []), ("x" * 201, "m"), ("p\n", "m")):
             with self.subTest(provider=provider), self.assertRaises(studio.ReviewStudioError):
                 self.project.prepare_adversarial_review(self.finding_id, provider=provider, model=model)
-        local = self.project.run_local_prechecks([CRITIC])[0].findings[0]
-        with self.assertRaisesRegex(studio.ReviewStudioError, "独立 AI"):
-            self.project.prepare_adversarial_review(local.finding_id, provider="p", model="m")
+        local_helper = test_review_round_protocols.ReviewRoundProtocolTests()
+        local_helper.setUp()
+        self.addCleanup(local_helper.doCleanups)
+        local_project = local_helper.project
+        local_run = local_project.run_local_prechecks([CRITIC])[0]
+        self.assertTrue(local_run.findings)
+        self.assertEqual({item.finding_id for item in local_project.findings()},
+                         {item.finding_id for item in local_run.findings})
+        for local in local_run.findings:
+            with self.subTest(finding=local.finding_id), self.assertRaisesRegex(studio.ReviewStudioError, "独立 AI"):
+                local_project.prepare_adversarial_review(local.finding_id, provider="p", model="m")
+        self.assertEqual(local_project.adversarial_reviews(), [])
+        self.assertEqual(local_project.integrity_errors(), [])
+
+    def test_later_local_precheck_preserves_ai_challenge_and_rejects_inactive_local_ids(self):
+        session = self.prepare()
+        local_run = self.project.run_local_prechecks([CRITIC])[0]
+        self.assertTrue(local_run.findings)
+        self.assertEqual([item.finding_id for item in self.project.findings()], [self.finding_id])
+        self.assertTrue(self.project.adversarial_reviews()[0]["current"])
+        for local in local_run.findings:
+            with self.subTest(finding=local.finding_id), self.assertRaisesRegex(studio.ReviewStudioError, "请选择当前审查中的 Finding"):
+                self.project.prepare_adversarial_review(local.finding_id, provider="p", model="m")
+        self.assertEqual([item["session_id"] for item in self.project.adversarial_reviews()],
+                         [session["session_id"]])
+        completed = self.collect(self.assess(self.collect(session)), stage="assessment")
+        self.assertEqual(completed["session_id"], session["session_id"])
+        self.assertEqual(completed["status"], "completed")
+        self.assertTrue(completed["current"])
+        self.assertEqual(self.project.findings()[0].status, "open")
+        self.assertEqual(self.project.integrity_errors(), [])
 
 
 if __name__ == "__main__":

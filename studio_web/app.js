@@ -133,6 +133,7 @@ async function uploadFile() {
   const title = document.getElementById('title').value;
   const encoding = document.getElementById('import-encoding').value;
   const ocr_language = document.getElementById('import-ocr-language').value;
+  const new_project = document.getElementById('import-new-project').checked;
   return runMutation(tr('导入文档'), async () => {
     if (file.size > 30 * 1024 * 1024)
       throw Error(tr('浏览器导入支持 30 MiB 以内文件'));
@@ -145,6 +146,7 @@ async function uploadFile() {
       content_base64: btoa(binary),
       encoding,
       ocr_language,
+      new_project,
     });
   });
 }

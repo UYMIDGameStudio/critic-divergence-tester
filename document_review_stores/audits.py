@@ -59,6 +59,15 @@ class AuditRunStore(_ProjectComponent):
             if critic.startswith("academic_") else CRITIC_PROTOCOLS[critic],
             "close_reading_protocol": CLOSE_READING_PROTOCOL,
             "document_location_contract": document_location_contract(document),
+            "source_visibility": {
+                "scope": "extracted-document-blocks",
+                "parser_name": document.parser_name,
+                "parser_version": document.parser_version,
+                "extraction_warnings": [warning.to_dict() for warning in document.warnings],
+                "quality_signals": document.quality.to_dict(),
+                "image_placeholder_count": sum(block.kind == "image_placeholder" for block in document.blocks),
+                "rule": "Review only the supplied blocks. Extraction confirmation is not proof that all original content was captured. If warnings indicate omitted notes, comments, images, tables or uncertain reading order, absence from these blocks is not evidence of absence from the original. State the visibility limitation, identify what needs inspection, and make dependent criticisms conditional; do not invent missing content. Criticisms fully supported by visible passages remain eligible.",
+            },
             **review_binding,
             "document_type": context.document_type,
             "required_finding_fields": ["finding_id", "critic", "document_type", "location", "evidence", "issue", "standard", "consequence", "severity", "verification_state", "external_basis", "uncertainties", "suggested_action", "suggested_owner", "blocks_release_or_execution"],
@@ -676,7 +685,7 @@ class AuditRunStore(_ProjectComponent):
 
     def _finding(self, critic: str, document: StructuredDocument, context: ReviewContext, block: DocumentBlock, *, check_id: str, check_data: Mapping[str, Any] | None = None, issue: str, standard: str, consequence: str, severity: str = "medium", verification_state: str = "needs-human-verification", suggested_action: str, owner: str = "文档负责人", blocks: bool = False, uncertainties: list[str] | None = None, basis: ExternalBasis | None = None, evidence: str | None = None, competing: list[str] | None = None, observation: str = "") -> Finding:
         finding_id = stable_id("F", document.source.sha256, critic, block.block_id, issue)[:22]
-        return Finding(finding_id, critic, context.document_type, make_location(block), evidence or block.text, issue, standard, consequence, severity, verification_state, basis or ExternalBasis(jurisdiction=context.jurisdiction, unresolved_facts=list(uncertainties or [])), list(uncertainties or []), suggested_action, owner, blocks, competing_readings=list(competing or []), required_observation=observation, check_id=check_id, check_data=dict(check_data or {}))
+        return Finding(finding_id, critic, context.document_type, make_location(block), evidence or block.text, issue, standard, consequence, severity, verification_state, basis or ExternalBasis(jurisdiction=context.jurisdiction, unresolved_facts=list(uncertainties or [])), list(uncertainties or []), suggested_action, owner, blocks, origin="rule-derived", competing_readings=list(competing or []), required_observation=observation, check_id=check_id, check_data=dict(check_data or {}))
 
     def _deterministic_audit(self, critic: str, document: StructuredDocument, context: ReviewContext) -> AuditRun:
         text = document.plain_text

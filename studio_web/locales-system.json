@@ -1,4 +1,8 @@
 {
+  "重新解析为新项目（保留旧项目与审查记录）": {"zh-Hant": "重新解析為新專案（保留舊專案與審查記錄）", "en": "Reparse as a new project (keep the existing project and review history)"},
+  "模型声明已核实（应用未独立核验）": {"zh-Hant": "模型聲明已核實（應用未獨立核驗）", "en": "Model-declared verified (not independently checked by this application)"},
+  "本地规则已检查（非外部事实核验）": {"zh-Hant": "本地規則已檢查（非外部事實核驗）", "en": "Checked by a local rule (not external fact verification)"},
+  "已声明核实（核验来源未确认）": {"zh-Hant": "已聲明核實（核驗來源未確認）", "en": "Declared verified (verification provenance not established)"},
   "修改与复审流程已完成": {"zh-Hant": "修改與複審流程已完成", "en": "Revision and recheck complete"},
   "修改稿已生成，复审待完成": {"zh-Hant": "修改稿已生成，複審待完成", "en": "Revision created; recheck pending"},
   "已解决": {"zh-Hant": "已解決", "en": "Resolved"},

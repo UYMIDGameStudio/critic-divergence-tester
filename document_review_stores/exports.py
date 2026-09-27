@@ -153,6 +153,7 @@ class ExportCenter(_ProjectComponent):
             "source": document.source.to_dict(),
             "runs": [run for _, run, _ in export_runs],
             "findings": findings,
+            "verification_context": review_verification_context([run for _, run, _ in export_runs]),
             "adversarial_reviews": adversarial_reviews,
             "raw_responses": raw_exports,
             "finding_count": len(findings),
@@ -261,6 +262,7 @@ class ExportCenter(_ProjectComponent):
         if current_round:
             chain_parents.append(_parent_ref(self.root, current_round[0], role="current-review-round"))
         audit = {"artifact_type": "document-review-export", "schema_version": 2, "product_status": "experimental-preview", "export_id": export_id, "source": document.source.to_dict(), "parser": {"name": document.parser_name, "version": document.parser_version}, "quality": document.quality.to_dict(), "warnings": [warning.to_dict() for warning in document.warnings], "audit_runs": runs, "findings": [finding.to_dict() for finding in findings], "decisions": list(decisions.values()), "review_round": current_round[1] if current_round else None, "revision": trusted_revision[1] if trusted_revision else None, "external_recheck": external_recheck, "review_context": self.context().to_dict(), "independent_critics": list(self.review_critics()), "scores": None, "legal_boundary": "合规筛查不是律师意见；无来源材料时只能输出待核实问题", "created_at": _now()}
+        audit["verification_context"] = self._finding_verification_context()
         audit_path = output / "audit.json"
         adversarial_reviews, adversarial_parents = self._export_adversarial_reviews(output)
         audit["adversarial_reviews"] = adversarial_reviews

@@ -38,6 +38,48 @@ SEVERITIES = {"info", "low", "medium", "high", "critical"}
 FINDING_DECISIONS = {"accept", "reject", "defer", "correct"}
 
 
+def finding_verification_context(finding: Mapping[str, Any], *, source_kind: str = "unknown") -> dict[str, Any]:
+    """Presentation only: an imported status is not an application attestation."""
+    state = str(finding.get("verification_state", "cannot-confirm"))
+    label = label_en = state
+    if state == "verified":
+        if source_kind == "model":
+            label = "模型声明已核实（应用未独立核验）"
+            label_en = "Model-declared verified (not independently checked by this application)"
+        elif source_kind == "local":
+            label = "本地规则已检查（非外部事实核验）"
+            label_en = "Checked by a local rule (not external fact verification)"
+        else:
+            label = "已声明核实（核验来源未确认）"
+            label_en = "Declared verified (verification provenance not established)"
+    return {
+        "source_kind": source_kind,
+        "declared_state": state,
+        "display_label": label,
+        "display_label_en": label_en,
+        "application_external_verification": "not-established",
+        "close_reading_provided": isinstance(finding.get("check_data", {}).get("close_reading"), Mapping),
+    }
+
+
+def review_verification_context(runs: Iterable[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Use the parent run; historical local findings also used model-derived origin."""
+    result: dict[str, dict[str, Any]] = {}
+    for run in runs:
+        label = str(run.get("model_label", ""))
+        if label == "deterministic-local-rules":
+            source_kind = "local"
+        elif (label.startswith("manual-import:")
+              or isinstance(run.get("declared_model_metadata"), Mapping)
+              or run.get("origin") == "external-recheck-followup"):
+            source_kind = "model"
+        else:
+            source_kind = "unknown"
+        for finding in run.get("findings", []):
+            result[finding["finding_id"]] = finding_verification_context(finding, source_kind=source_kind)
+    return result
+
+
 def _clean(value: Any) -> Any:
     if hasattr(value, "to_dict"):
         return value.to_dict()
@@ -498,5 +540,6 @@ __all__ = [
     "ExtractionWarning", "FINDING_DECISIONS", "Finding", "QualitySignals", "RawFileBinding",
     "ReviewContext", "SCHEMA_VERSION", "SEVERITIES", "StructuredDocument", "SUPPORTED_EXTENSIONS",
     "UNSUPPORTED_EXTENSIONS", "VERIFICATION_STATES", "canonical_json", "make_location",
-    "document_location_contract", "list_marker", "model_to_markdown", "stable_id", "validate_finding_dict",
+    "document_location_contract", "finding_verification_context", "review_verification_context",
+    "list_marker", "model_to_markdown", "stable_id", "validate_finding_dict",
 ]

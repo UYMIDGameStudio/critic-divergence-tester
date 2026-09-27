@@ -67,6 +67,14 @@ def run_self_test() -> dict:
         checked.append("adversarial-review")
         _check_resolution_pipeline(project, reviewed_finding_id)
         checked.append("revision-evidence")
+        original_record = project.document_path.read_bytes()
+        fresh = DocumentReviewProject.create(root / "library", filename="draft.md",
+            content=b"# Draft\n\nExample document.", new_project=True)
+        if (fresh.root == project.root or fresh.manifest()["project_id"] == project.manifest()["project_id"]
+                or fresh.state()["extraction_state"] != "unconfirmed" or fresh.context() is not None
+                or project.document_path.read_bytes() != original_record):
+            raise RuntimeError("Fresh import reused or modified the reviewed project")
+        checked.append("fresh-import")
         research_project = _check_research_pipeline(root / "library")
         checked.extend(["big5-research-import", "research-ir", "research-product-view", "research-workbench"])
         backup = create_backup(project.root, root / "backup.zip")
@@ -150,6 +158,8 @@ def _check_academic_protocols(library: Path) -> None:
     if {row["critic"] for row in requests} != set(required):
         raise RuntimeError("Packaged academic critic routing is incomplete")
     for row in requests:
+        if '"source_visibility"' not in row["prompt"] or '"extraction_warnings"' not in row["prompt"]:
+            raise RuntimeError("Packaged review omits extraction visibility limits")
         protocol = row["critic_protocol"]
         quality = protocol.get("scholarly_quality", {})
         criteria = quality.get("criteria", [])

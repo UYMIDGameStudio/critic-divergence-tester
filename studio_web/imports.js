@@ -1,3 +1,6 @@
+function freshImportControl() {
+  return ui`<label><input type="checkbox" id="import-new-project">重新解析为新项目（保留旧项目与审查记录）</label>`;
+}
 function encodingSelector(id) {
   const options = {
     auto: tr('自动识别（推荐）'),

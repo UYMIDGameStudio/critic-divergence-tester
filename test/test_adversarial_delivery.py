@@ -176,9 +176,32 @@ class AdversarialDeliveryTests(unittest.TestCase):
         self.assertEqual(self.project.integrity_errors(), [])
 
     def test_local_findings_are_not_offered_as_independent_model_challenges(self):
-        self.project.run_local_prechecks([self.finding.critic])
-        view = self.project.view()
+        local_fixture = fixtures.ReviewRoundProtocolTests()
+        local_fixture.setUp()
+        self.addCleanup(local_fixture.doCleanups)
+        project = local_fixture.project
+        run = project.run_local_prechecks([self.finding.critic])[0]
+        self.assertTrue(run.findings)
+        view = project.view()
+        self.assertEqual({item["finding_id"] for item in view["findings"]},
+                         {item.finding_id for item in run.findings})
         self.assertEqual(view["adversarial_eligible_finding_ids"], [])
+        self.assertEqual(project.adversarial_reviews(), [])
+
+    def test_later_local_precheck_keeps_ai_finding_available_for_ui_challenge(self):
+        run = self.project.run_local_prechecks([self.finding.critic])[0]
+        self.assertTrue(run.findings)
+        local_ids = {item.finding_id for item in run.findings}
+        view = self.project.view()
+        self.assertEqual([item["finding_id"] for item in view["findings"]],
+                         [self.finding.finding_id])
+        self.assertEqual(view["adversarial_eligible_finding_ids"], [self.finding.finding_id])
+        self.assertTrue(local_ids.isdisjoint(view["adversarial_eligible_finding_ids"]))
+        session = self.start()
+        self.assertEqual(session["finding_id"], self.finding.finding_id)
+        self.assertTrue(session["current"])
+        self.assertEqual(session["status"], "awaiting_defense")
+        self.assertEqual(self.project.integrity_errors(), [])
 
     def test_restart_export_preserves_superseded_exchange_as_history(self):
         previous = self.start()

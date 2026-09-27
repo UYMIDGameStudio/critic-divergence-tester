@@ -200,7 +200,8 @@ class StudioApp:
         if title is not None and not isinstance(title, str):
             raise ReviewStudioError("标题必须是文本")
         project = DocumentReviewProject.create(self.data_dir, filename=filename, content=content, title=title or None,
-            encoding=payload.get("encoding"), ocr_language=payload.get("ocr_language", "chi_sim+chi_tra+eng"))
+            encoding=payload.get("encoding"), ocr_language=payload.get("ocr_language", "chi_sim+chi_tra+eng"),
+            new_project=payload.get("new_project", False))
         return replace(self, project=project, notice="文档已导入，请确认识别结果。")
 
     def act(self, payload: dict[str, Any]) -> "StudioApp":

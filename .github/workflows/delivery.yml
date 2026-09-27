@@ -28,6 +28,7 @@ jobs:
             dist/browser-verification/
             dist/browser-state-verification/
             dist/browser-localization/
+            dist/browser-fresh-import-verification/
             dist/browser-research-localization/
             dist/browser-close-reading-0.2.2/
             dist/browser-resolution-evidence/

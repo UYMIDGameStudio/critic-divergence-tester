@@ -42,9 +42,11 @@ from document_review_model import (
     StructuredDocument,
     VERIFICATION_STATES,
     canonical_json,
+    finding_verification_context,
     list_marker,
     make_location,
     model_to_markdown,
+    review_verification_context,
     stable_id,
     validate_finding_dict,
 )
@@ -413,7 +415,10 @@ class DocumentReviewProject:
         ocr: Any | None = None,
         encoding: str | None = None,
         ocr_language: str = "chi_sim+chi_tra+eng",
+        new_project: bool = False,
     ) -> "DocumentReviewProject":
+        if not isinstance(new_project, bool):
+            raise ReviewStudioError("new_project must be a boolean")
         safe_name = safe_upload_name(filename)
         if not isinstance(content, bytes) or not content:
             raise ReviewStudioError("上传文件必须是非空原始字节")
@@ -434,6 +439,12 @@ class DocumentReviewProject:
         with _project_mutation_lock(storage):
             if target.is_symlink():
                 raise ReviewStudioError("项目路径不得是符号链接")
+            copy_number = 1
+            if new_project:
+                base_target = target
+                while target.exists() or target.is_symlink():
+                    copy_number += 1
+                    target = base_target.with_name(base_target.stem + f"-copy-{copy_number}" + STORE_SUFFIX)
             if target.exists():
                 project = cls(target)
                 manifest = project.manifest()
@@ -451,12 +462,13 @@ class DocumentReviewProject:
                 _write_tracked(staging, source_path, content, provenance="user-uploaded")
                 manifest = {
                     "schema_version": STUDIO_SCHEMA_VERSION,
-                    "project_id": stable_id("PRJ", _sha256(content), safe_name),
-                    "title": title or Path(safe_name).stem,
+                    "project_id": stable_id("PRJ", _sha256(content), safe_name, target.name) if new_project else stable_id("PRJ", _sha256(content), safe_name),
+                    "title": title or (Path(safe_name).stem + (f" ({copy_number})" if copy_number > 1 else "")),
                     "source": {"name": safe_name, "sha256": _sha256(content), "bytes": len(content), "relative_path": f"source/{safe_name}"},
                     "created_at": _now(),
                     "original_never_overwritten": True,
                     "ingestion_options": {"encoding": encoding, "ocr_language": ocr_language},
+                    "creation_mode": "fresh-import" if new_project else "import",
                 }
                 _write_tracked(staging, staging / "project.json", canonical_json(manifest), parents=[_parent_ref(staging, source_path, role="original-source")])
                 state = {"extraction_state": "unconfirmed", "context_state": "missing", "review_state": "not_started", "read_only": False, "diagnostics": []}
@@ -640,6 +652,13 @@ class DocumentReviewProject:
             raise ReviewStudioError("项目或导出文件完整性校验失败，拒绝按可信文件下载：" + "; ".join(errors))
         return candidate
 
+    def _finding_verification_context(self) -> dict[str, dict[str, Any]]:
+        runs = [run for _, run, _ in self._active_audit_run_records().values()]
+        current_round = self.current_review_round()
+        if current_round:
+            runs.append({"origin": "external-recheck-followup", "findings": current_round[1].get("findings", [])})
+        return review_verification_context(runs)
+
     @_serialized_mutation
     def view(self) -> dict[str, Any]:
         self._enforce_integrity()
@@ -653,9 +672,11 @@ class DocumentReviewProject:
         try:
             finding_objects = self.findings()
             finding_rows = [finding.to_dict() for finding in finding_objects]
+            verification_context = self._finding_verification_context()
             attention_queue = self.finding_work_groups(finding_objects)
         except (OSError, KeyError, TypeError, ValueError, ReviewStudioError):
             finding_rows = []
+            verification_context = {}
             attention_queue = {"default_limit": 30, "total_groups": 0, "hidden_groups": 0, "groups": []}
         ai_requests = self.ai_requests()
         # A damaged exchange must not hide the read-only recovery interface.
@@ -701,7 +722,7 @@ class DocumentReviewProject:
             {"key": "bridge", "label": "受约束修改", "status": "completed" if revision_complete else "in_progress" if bridge_complete else "not_started", "detail": "修改与复审流程已完成" if revision_complete else "修改稿已生成，复审待完成" if revision_generated else "逐段修改中" if bridge_complete else "未开始"},
             {"key": "export", "label": "导出结果", "status": "completed" if export_complete else "not_started", "detail": "已有导出文件" if export_complete else "未导出"},
         ]
-        return {"review_critics": {key: CRITIC_LABELS[key] for key in self.review_critics()}, "project": manifest, "product_status": "experimental-preview", "state": state, "extraction": {"available": document is not None, "metadata": document.metadata if document else {}, "quality": document.quality.to_dict() if document else {}, "warnings": [warning.to_dict() for warning in document.warnings] if document else [], "blocks": [block.to_dict() for block in document.blocks] if document else [], "total_blocks": len(document.blocks) if document else 0}, "context": self.context().to_dict() if self.context() else {"model_suggestion": self.suggested_document_type()}, "can_review": can_review, "review_blockers": reasons, "ai_requests": ai_requests, "adversarial_reviews": adversarial_reviews, "adversarial_eligible_finding_ids": sorted(adversarial_eligible_ids), "findings": finding_rows, "finding_summary": finding_summary, "attention_queue": attention_queue, "revision_workspace": revision_workspace, "workflow": workflow, "exports": exports}
+        return {"review_critics": {key: CRITIC_LABELS[key] for key in self.review_critics()}, "project": manifest, "product_status": "experimental-preview", "state": state, "extraction": {"available": document is not None, "metadata": document.metadata if document else {}, "quality": document.quality.to_dict() if document else {}, "warnings": [warning.to_dict() for warning in document.warnings] if document else [], "blocks": [block.to_dict() for block in document.blocks] if document else [], "total_blocks": len(document.blocks) if document else 0}, "context": self.context().to_dict() if self.context() else {"model_suggestion": self.suggested_document_type()}, "can_review": can_review, "review_blockers": reasons, "ai_requests": ai_requests, "adversarial_reviews": adversarial_reviews, "adversarial_eligible_finding_ids": sorted(adversarial_eligible_ids), "findings": finding_rows, "verification_context": verification_context, "finding_summary": finding_summary, "attention_queue": attention_queue, "revision_workspace": revision_workspace, "workflow": workflow, "exports": exports}
 
 
 def _document_from_dict(value: Mapping[str, Any]) -> StructuredDocument:
@@ -757,13 +778,21 @@ def _adversarial_review_markdown(sessions: Iterable[Mapping[str, Any]]) -> list[
     return lines
 
 
+def _verification_close_reading_markdown(finding: Mapping[str, Any], context: Mapping[str, Any]) -> list[str]:
+    if context.get("source_kind") == "model" and not isinstance(finding.get("check_data", {}).get("close_reading"), Mapping):
+        return ["Close-reading context checks were not supplied for this model finding; review the surrounding document before relying on it.", ""]
+    return close_reading_markdown(finding)
+
+
 def _audit_markdown(audit: Mapping[str, Any]) -> str:
+    verification_context = audit.get("verification_context") or review_verification_context(audit.get("audit_runs", []))
     lines = ["# Document Review Studio audit report", "", f"Source: `{audit['source']['original_name']}`", f"SHA-256: `{audit['source']['sha256']}`", "", "## Recognition quality", "", f"- Text coverage: {audit['quality'].get('text_coverage', 0):.2f}", f"- Blank pages: {audit['quality'].get('blank_pages', [])}", f"- OCR low-confidence blocks: {audit['quality'].get('ocr_low_confidence_blocks', 0)}", f"- Reading order suspected: {audit['quality'].get('suspected_reading_order', False)}", "", "## Independent findings", ""]
     if not audit["findings"]:
         lines.append("No Finding was produced. This is supported only by the recorded recognition scope and deterministic checks; it is not a guarantee of quality or legality.")
     for finding in audit["findings"]:
-        lines.extend([f"### {finding['finding_id']} · {finding['critic']}", "", f"- Location: `{finding['location']['block_id']}` page {finding['location'].get('page') or '-'}", f"- Evidence: {finding['evidence']}", f"- Issue: {finding['issue']}", f"- Standard: {finding['standard']}", f"- Consequence: {finding['consequence']}", f"- Severity: {finding['severity']}; verification: {finding['verification_state']}", f"- Action: {finding['suggested_action']}", ""])
-        lines.extend(close_reading_markdown(finding))
+        verification = verification_context.get(finding["finding_id"]) or finding_verification_context(finding)
+        lines.extend([f"### {finding['finding_id']} · {finding['critic']}", "", f"- Location: `{finding['location']['block_id']}` page {finding['location'].get('page') or '-'}", f"- Evidence: {finding['evidence']}", f"- Issue: {finding['issue']}", f"- Standard: {finding['standard']}", f"- Consequence: {finding['consequence']}", f"- Severity: {finding['severity']}; verification: {verification['display_label_en']}", f"- Action: {finding['suggested_action']}", ""])
+        lines.extend(_verification_close_reading_markdown(finding, verification))
         if finding.get("external_basis", {}).get("unresolved_facts"):
             lines.append("- Unresolved facts: " + "；".join(finding["external_basis"]["unresolved_facts"]))
     lines.extend(_adversarial_review_markdown(audit.get("adversarial_reviews", [])))
@@ -773,6 +802,7 @@ def _audit_markdown(audit: Mapping[str, Any]) -> str:
 
 def _ai_review_markdown(snapshot: Mapping[str, Any]) -> str:
     source = snapshot["source"]
+    verification_context = snapshot.get("verification_context") or review_verification_context(snapshot["runs"])
     lines = [
         "# 独立 AI 审查报告",
         "",
@@ -797,8 +827,9 @@ def _ai_review_markdown(snapshot: Mapping[str, Any]) -> str:
             lines.extend(["本 critic 未返回 Finding。", "", f"检查依据：{basis}", ""])
             continue
         for finding in findings:
-            lines.extend([f"### {finding['finding_id']}", "", f"- 位置：`{finding['location']['block_id']}`，page {finding['location'].get('page') or '-'}", f"- 证据：{finding['evidence']}", f"- 问题：{finding['issue']}", f"- 判断标准：{finding['standard']}", f"- 后果：{finding['consequence']}", f"- 严重度：{finding['severity']}", f"- 核实状态：{finding['verification_state']}", f"- 建议动作：{finding['suggested_action']}", ""])
-            lines.extend(close_reading_markdown(finding))
+            verification = verification_context.get(finding["finding_id"]) or finding_verification_context(finding, source_kind="model")
+            lines.extend([f"### {finding['finding_id']}", "", f"- 位置：`{finding['location']['block_id']}`，page {finding['location'].get('page') or '-'}", f"- 证据：{finding['evidence']}", f"- 问题：{finding['issue']}", f"- 判断标准：{finding['standard']}", f"- 后果：{finding['consequence']}", f"- 严重度：{finding['severity']}", f"- 核实状态：{verification['display_label']}", f"- 建议动作：{finding['suggested_action']}", ""])
+            lines.extend(_verification_close_reading_markdown(finding, verification))
     lines.extend(_adversarial_review_markdown(snapshot.get("adversarial_reviews", [])))
     lines.extend(["## 后续", "", "请回到 Document Review Studio 对每条 Finding 分别接受、修正、拒绝或暂缓；不要把本快照当作已经批准的修改意见。", ""])
     return "\n".join(lines)
