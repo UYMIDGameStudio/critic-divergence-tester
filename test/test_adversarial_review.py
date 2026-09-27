@@ -363,10 +363,12 @@ class AdversarialReviewTests(unittest.TestCase):
         revision = json.loads((revision_dir / "revision.json").read_text(encoding="utf-8"))
         self.assertEqual(revision["revised_sha256"], old_binding["source_sha256"])
         external = self.project.external_recheck_status(revision["revision_id"])["requests"][0]
+        revised_block = json.loads((revision_dir / "document.json").read_text(encoding="utf-8"))["blocks"][0]
         payload = {**{key: external[key] for key in ("request_id", "prompt_sha256", "critic")},
                    "revision_id": revision["revision_id"], "revised_sha256": revision["revised_sha256"],
                    "resolutions": [{"finding_id": self.finding_id, "state": "still-present",
-                                    "reason": "实质问题尚未修改", "evidence": LANGUAGES}], "new_findings": []}
+                                    "reason": "实质问题尚未修改", "evidence": LANGUAGES,
+                                    "source_evidence": [{"block_id": revised_block["block_id"], "quote": revised_block["text"]}]}], "new_findings": []}
         result = self.project.collect_external_recheck(revision["revision_id"], CRITIC, json.dumps(payload, ensure_ascii=False), provider="p", model="m")
         self.project.decide_external_resolution(revision["revision_id"], result["result_id"], self.finding_id, "unresolved", reason="下一轮继续")
         followup = self.project.start_followup_round(revision["revision_id"])

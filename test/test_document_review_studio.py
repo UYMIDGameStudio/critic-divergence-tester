@@ -1003,13 +1003,14 @@ class DocumentReviewStudioTests(unittest.TestCase):
             self.assertIn("Bound critic definition", external_request["prompt"])
             request_receipt = json.loads((revision_dir / "external-recheck-requests" / critic / ".integrity" / "request.json.json").read_text(encoding="utf-8"))
             self.assertTrue({"original-critic-prompt", "original-ai-request", "original-audit-run"}.issubset({item["role"] for item in request_receipt["parents"]}))
+            revised_block = json.loads((revision_dir / "document.json").read_text(encoding="utf-8"))["blocks"][0]
             recheck_response = {
                 "request_id": external_request["request_id"],
                 "prompt_sha256": external_request["prompt_sha256"],
                 "revision_id": revision["revision_id"],
                 "revised_sha256": revision["revised_sha256"],
                 "critic": critic,
-                "resolutions": [{"finding_id": finding.finding_id, "state": "resolved", "reason": "负责人已经明确", "evidence": "负责人：项目经理。"}],
+                "resolutions": [{"finding_id": finding.finding_id, "state": "resolved", "reason": "负责人已经明确", "evidence": "负责人：项目经理。", "source_evidence": [{"block_id": revised_block["block_id"], "quote": revised_block["text"]}]}],
                 "new_findings": [],
             }
             result = project.collect_external_recheck(revision["revision_id"], critic, json.dumps(recheck_response, ensure_ascii=False), provider="example-provider", model="example-model-v2")
@@ -1075,7 +1076,7 @@ class DocumentReviewStudioTests(unittest.TestCase):
             revised_block = json.loads((revision_one_dir / "document.json").read_text(encoding="utf-8"))["blocks"][0]
             new_finding["location"] = revised_block["location"]
             new_finding["evidence"] = revised_block["text"]
-            recheck_response = {"request_id": external_request["request_id"], "prompt_sha256": external_request["prompt_sha256"], "revision_id": revision_one["revision_id"], "revised_sha256": revision_one["revised_sha256"], "critic": critic, "resolutions": [{"finding_id": original.finding_id, "state": "still-present", "reason": "责任边界仍不完整", "evidence": "负责人：项目经理。"}], "new_findings": [new_finding]}
+            recheck_response = {"request_id": external_request["request_id"], "prompt_sha256": external_request["prompt_sha256"], "revision_id": revision_one["revision_id"], "revised_sha256": revision_one["revised_sha256"], "critic": critic, "resolutions": [{"finding_id": original.finding_id, "state": "still-present", "reason": "责任边界仍不完整", "evidence": "负责人：项目经理。", "source_evidence": [{"block_id": revised_block["block_id"], "quote": revised_block["text"]}]}], "new_findings": [new_finding]}
             result = project.collect_external_recheck(revision_one["revision_id"], critic, json.dumps(recheck_response, ensure_ascii=False), provider="provider", model="model-v2")
             with self.assertRaisesRegex(ReviewStudioError, "新 Finding 必须进入下一轮"):
                 project.decide_external_resolution(revision_one["revision_id"], result["result_id"], "NEW-1", "resolved", reason="不应允许")

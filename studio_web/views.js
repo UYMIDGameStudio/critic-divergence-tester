@@ -110,6 +110,46 @@ function closeReadingDetail(f) {
 function findingCard(f) {
   return ui`<article class="card finding finding-card" data-critic="${esc(f.critic)}" data-severity="${esc(f.severity)}" data-status="${esc(f.status)}"><div class="row"><a href="#source-${esc(f.location.block_id)}" class="pill">${esc(f.location.block_id)} · page ${esc(f.location.page || '-')}</a><span class="pill">${esc(tr(critics[f.critic] || f.critic))}</span><span class="pill">${esc(f.severity)}</span><span class="pill">${esc(f.verification_state)}</span></div><div class="quote">${esc(f.evidence)}</div><p><b>问题：</b>${esc(f.issue)}</p><p><b>后果：</b>${esc(f.consequence)}</p><p><b>建议动作：</b>${esc(f.suggested_action)}</p>${closeReadingDetail(f)}${adversarialFindingDetail(f)}<details><summary>完整专业字段</summary><p><b>判断标准：</b>${esc(f.standard)}</p><p><b>外部依据：</b>${esc(f.external_basis?.source_name || tr('未提供'))} ${esc(f.external_basis?.locator || '')}</p><p><b>尚待确认：</b>${esc((f.uncertainties || []).join('；') || tr('无'))}</p><p><b>建议责任人：</b>${esc(f.suggested_owner || tr('未指定'))}</p><p><b>阻断发布/执行：</b>${f.blocks_release_or_execution ? tr('是') : tr('否')}</p><p><b>需要观察：</b>${esc(f.required_observation || tr('无'))}</p><p><b>竞争读法：</b>${esc((f.competing_readings || []).join('；') || tr('无'))}</p></details><label>人工决定理由</label><input id="reason-${esc(f.finding_id)}"><label>人工修正动作</label><textarea id="action-${esc(f.finding_id)}" placeholder="${esc(f.suggested_action)}"></textarea><div class="row"><button class="decision" data-id="${esc(f.finding_id)}" data-value="accept">接受</button><button class="decision secondary" data-id="${esc(f.finding_id)}" data-value="correct">修正后接受</button><button class="decision danger" data-id="${esc(f.finding_id)}" data-value="reject">拒绝</button><button class="decision secondary" data-id="${esc(f.finding_id)}" data-value="defer">暂缓</button><span>当前：${esc(f.status)}</span></div></article>`;
 }
+function externalResolutionLabel(value) {
+  const labels = {
+    resolved: '已解决', 'partially-resolved': '部分解决',
+    'still-present': '仍然存在', unresolved: '未解决',
+    'unable-to-assess': '无法评估',
+  };
+  return labels[value] ? tr(labels[value]) : value;
+}
+function revisedSourceId(status, blockId) {
+  return `revised-source-${status.revision_id}-${blockId}`;
+}
+function externalRecheckImport(status, request) {
+  const controls = ui`<label>本次复审 provider</label><input id="external-provider-${esc(request.critic)}"><label>本次复审 model/版本</label><input id="external-model-${esc(request.critic)}"><label>响应绑定方式</label><select id="external-binding-${esc(request.critic)}"><option value="strict">严格绑定（推荐）</option><option value="manual_association">人工关联（较弱审计）</option></select><label>外部复审原始 JSON 响应</label><textarea id="external-response-${esc(request.critic)}"></textarea><button class="import-external-recheck" data-revision-id="${esc(status.revision_id)}" data-critic="${esc(request.critic)}">导入复审结果</button>`;
+  return request.result
+    ? ui`<details class="external-recheck-reimport"><summary>导入另一份复审结果</summary><p class="muted">旧结果和人工决定会保留。导入新结果后，请重新逐项确认人工结论。</p>${controls}</details>`
+    : controls;
+}
+function externalResolutionEvidence(item, status) {
+  const explanation = ui`<p class="muted">模型证据说明（非核验引文）</p><div class="quote external-evidence-explanation">${esc(item.evidence)}</div>`;
+  if (item.kind === 'new') return explanation;
+  const checked = item.evidence_validation === 'checked-revised-excerpts';
+  const legacy = item.evidence_validation === 'legacy-unchecked' || !item.evidence_validation;
+  const excerpts = checked ? (item.source_evidence || []).map(anchor => {
+    const available = (status.revised_blocks || []).some(block => block.block_id === anchor.block_id);
+    return `<div class="quote external-source-evidence">${available
+      ? `<a href="#${esc(revisedSourceId(status, anchor.block_id))}">${esc(anchor.block_id)} · ${tr('查看修订稿原文')}</a>`
+      : `<span>${esc(anchor.block_id)}</span>`}<p>${esc(anchor.quote)}</p></div>`;
+  }).join('') : '';
+  return `${explanation}${item.state === 'unable-to-assess'
+    ? ui`<p class="warning external-unable-limit">模型无法评估本项；这不会自动解决问题或替你作出人工结论。</p>` : ''}${checked
+    ? ui`<p class="muted">已核对的修订稿引文</p>${excerpts}<p class="muted external-evidence-limit">仅核对引文是否来自这份修订稿；问题是否解决仍需人工判断。</p>`
+    : legacy
+      ? ui`<p class="warning external-evidence-limit">旧版结果：修订稿引文未核验。请查看原始说明，必要时重新导入含原文依据的复审结果。</p>`
+      : ui`<p class="warning external-evidence-limit">未提供可核对的修订稿引文；模型说明未作引文核验。请补充依据后重新复审。</p>`}`;
+}
+function externalResolutionItem(item, request, status) {
+  return ui`<article class="finding external-resolution-item" data-finding-id="${esc(item.finding_id)}"><p><b>${esc(item.finding_id)}</b> · ${item.kind === 'new' ? tr('新 Finding') : tr('模型状态 ') + esc(externalResolutionLabel(item.state))}</p><p>${esc(item.reason)}</p>${externalResolutionEvidence(item, status)}${item.kind === 'new'
+    ? tr('<p class="warning">新 Finding 不能直接标记为已解决；它将进入下一轮 accept/correct/reject/defer 裁决。</p>')
+    : ui`${item.human_decision ? ui`<p class="external-human-decision">人工 Resolution：${esc(externalResolutionLabel(item.human_decision.state))} · ${esc(item.human_decision.reason)}</p>` : ''}<label>人工 Resolution 理由</label><input id="external-reason-${esc(request.critic)}-${esc(item.finding_id)}"><div class="row"><button class="external-resolution" data-critic="${esc(request.critic)}" data-revision-id="${esc(status.revision_id)}" data-result-id="${esc(request.result.result_id)}" data-finding-id="${esc(item.finding_id)}" data-state="resolved">确认已解决</button><button class="external-resolution secondary" data-critic="${esc(request.critic)}" data-revision-id="${esc(status.revision_id)}" data-result-id="${esc(request.result.result_id)}" data-finding-id="${esc(item.finding_id)}" data-state="partially-resolved">确认部分解决</button><button class="external-resolution danger" data-critic="${esc(request.critic)}" data-revision-id="${esc(status.revision_id)}" data-result-id="${esc(request.result.result_id)}" data-finding-id="${esc(item.finding_id)}" data-state="unresolved">确认未解决</button></div>`}</article>`;
+}
 function externalRecheckWorkspace(ws) {
   const status = ws.external_recheck;
   if (!status || !status.requests?.length)
@@ -117,15 +157,19 @@ function externalRecheckWorkspace(ws) {
   const requests = status.requests
     .map(
       (request) =>
-        ui`<details open><summary>${request.complete ? '✓' : '○'} ${esc(tr(critics[request.critic] || request.critic))}</summary><div class="row"><button class="secondary copy-external-recheck" data-critic="${esc(request.critic)}">复制复审协议</button><button class="secondary download" data-path="${esc(request.relative_path)}">下载协议</button></div><p class="muted">原请求 ${esc(request.original_request_id)} · 原模型 ${esc(request.original_provider)}/${esc(request.original_model)} · 原 AuditRun ${esc(request.original_audit_run_id)}</p><div class="block">${esc(request.prompt)}</div>${request.result ? ui`<p class="muted">本次复审声明：${esc(request.result.declared_model_metadata?.provider)}/${esc(request.result.declared_model_metadata?.model)}。模型提议不会自动成为最终决定。</p>${request.items.map((item) => `<article class="finding"><p><b>${esc(item.finding_id)}</b> · ${item.kind === 'new' ? tr('新 Finding') : tr('模型状态 ') + esc(item.state)}</p><p>${esc(item.reason)}</p><div class="quote">${esc(item.evidence)}</div>${item.kind === 'new' ? tr('<p class="warning">新 Finding 不能直接标记为已解决；它将进入下一轮 accept/correct/reject/defer 裁决。</p>') : ui`${item.human_decision ? ui`<p class="ok">人工 Resolution：${esc(item.human_decision.state)} · ${esc(item.human_decision.reason)}</p>` : ''}<label>人工 Resolution 理由</label><input id="external-reason-${esc(request.critic)}-${esc(item.finding_id)}"><div class="row"><button class="external-resolution" data-revision-id="${esc(status.revision_id)}" data-result-id="${esc(request.result.result_id)}" data-finding-id="${esc(item.finding_id)}" data-state="resolved">确认已解决</button><button class="external-resolution secondary" data-revision-id="${esc(status.revision_id)}" data-result-id="${esc(request.result.result_id)}" data-finding-id="${esc(item.finding_id)}" data-state="partially-resolved">确认部分解决</button><button class="external-resolution danger" data-revision-id="${esc(status.revision_id)}" data-result-id="${esc(request.result.result_id)}" data-finding-id="${esc(item.finding_id)}" data-state="unresolved">确认未解决</button></div>`}</article>`).join('')}` : ui`<label>本次复审 provider</label><input id="external-provider-${esc(request.critic)}"><label>本次复审 model/版本</label><input id="external-model-${esc(request.critic)}"><label>响应绑定方式</label><select id="external-binding-${esc(request.critic)}"><option value="strict">严格绑定（推荐）</option><option value="manual_association">人工关联（较弱审计）</option></select><label>外部复审原始 JSON 响应</label><textarea id="external-response-${esc(request.critic)}"></textarea><button class="import-external-recheck" data-revision-id="${esc(status.revision_id)}" data-critic="${esc(request.critic)}">导入复审结果</button>`}</details>`,
+        ui`<details class="external-recheck-request" open><summary>${request.complete ? '✓' : '○'} ${esc(tr(critics[request.critic] || request.critic))}</summary><div class="row"><button class="secondary copy-external-recheck" data-critic="${esc(request.critic)}">复制复审协议</button><button class="secondary download" data-path="${esc(request.relative_path)}">下载协议</button></div><p class="muted">原请求 ${esc(request.original_request_id)} · 原模型 ${esc(request.original_provider)}/${esc(request.original_model)} · 原 AuditRun ${esc(request.original_audit_run_id)}</p><details class="external-recheck-protocol"><summary>查看复审协议</summary><div class="block">${esc(request.prompt)}</div></details>${request.result ? ui`<p class="muted">本次复审声明：${esc(request.result.declared_model_metadata?.provider)}/${esc(request.result.declared_model_metadata?.model)}。模型提议不会自动成为最终决定。</p>${request.items.map(item => externalResolutionItem(item, request, status)).join('')}` : ''}${externalRecheckImport(status, request)}</details>`,
     )
     .join('');
-  const followup = status.can_start_followup
+  const sources = (status.revised_blocks || []).length ? ui`<details class="external-revised-sources"><summary>修订稿原文与定位</summary><p class="muted">这里显示本次复审所依据的修订稿段落。</p><div class="pane">${status.revised_blocks.map(block => `<div class="source-block revised-source-block" id="${esc(revisedSourceId(status, block.block_id))}"><small>${esc(block.block_id)} · page ${esc(block.location?.page || '-')}</small><br>${esc(block.text)}</div>`).join('')}</div></details>` : '';
+  const blockers = status.followup_blockers || [];
+  const followup = blockers.length
+    ? ui`<div class="card warning external-followup-blocked"><h3>下一轮需要可靠的原文定位</h3><p>以下问题缺少可用的修订稿定位。请导入含正确原文依据的复审结果，再确认人工结论。</p><p>${blockers.map(esc).join(' · ')}</p></div>`
+    : status.can_start_followup
     ? ui`<div class="card next"><h3>开始下一轮</h3><p>新 Finding 和人工确认仍未解决的旧 Finding 将成为修订稿版本上的 open Finding，重新进入裁决和修改。</p><button id="start-followup-round" data-revision-id="${esc(status.revision_id)}">进入下一轮 Finding 裁决</button></div>`
     : status.followup_started
       ? tr('<p class="ok">需继续处理的 Finding 已进入下一轮。</p>')
       : '';
-  return ui`<div class="card ${status.complete ? 'ok' : 'next'}"><h2>外部 critic 复审与人工 Resolution</h2><p>${status.complete ? tr('外部 Resolution 已确认，需继续处理的问题已进入下一轮或本轮没有遗留项。') : tr('协议绑定原 critic 的完整 prompt、request、AuditRun 和 provider/model；请导入复审响应并逐项确认原 Finding。')}</p>${requests}${followup}</div>`;
+  return ui`<div class="card external-recheck-workspace ${status.complete ? 'ok' : 'next'}"><h2>外部 critic 复审与人工 Resolution</h2><p>${status.complete ? tr('外部 Resolution 已确认，需继续处理的问题已进入下一轮或本轮没有遗留项。') : tr('协议绑定原 critic 的完整 prompt、request、AuditRun 和 provider/model；请导入复审响应并逐项确认原 Finding。')}</p>${requests}${sources}${followup}</div>`;
 }
 function revisionWorkspace(view) {
   const ws = view.revision_workspace || {},

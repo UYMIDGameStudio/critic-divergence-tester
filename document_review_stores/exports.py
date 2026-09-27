@@ -105,6 +105,11 @@ class ExportCenter(_ProjectComponent):
             lines.append("当前本地与外部复审决定中没有未解决项；这不等于自动确认文档正确、合规或完整。")
         for row in rows:
             lines.extend([f"## {row['finding_id']} · {row['critic']}", "", f"- check_id：{row.get('check_id') or '未提供'}", f"- 状态：{row['state']}", f"- 依据：{row.get('basis', '')}", ""])
+        if external.get("followup_blockers"):
+            lines.extend(["## 下一轮定位待补充", "",
+                          "以下未解决项没有可核对的修订稿定位，不能自动挂到其他段落：",
+                          ", ".join(external["followup_blockers"]), "",
+                          "请补充带修订稿原文引句的复审结果，再开始下一轮。", ""])
         return "\n".join(lines)
 
     @_serialized_mutation

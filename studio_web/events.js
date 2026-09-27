@@ -169,7 +169,7 @@ function bind() {
   document
     .getElementById('workspace-search')
     ?.addEventListener('input', filterWorkspace);
-  root.querySelectorAll('a[href^="#source-"]').forEach((link) =>
+  root.querySelectorAll('a[href^="#source-"], a[href^="#revised-source-"]').forEach((link) =>
     link.addEventListener('click', revealSource),
   );
 }
@@ -262,9 +262,7 @@ function bindRevision() {
   document.querySelectorAll('.external-resolution').forEach(
     (button) =>
       (button.onclick = () => {
-        const critic = button
-          .closest('details')
-          .querySelector('.copy-external-recheck').dataset.critic;
+        const critic = button.dataset.critic;
         act('decide_external_resolution', {
           revision_id: button.dataset.revisionId,
           result_id: button.dataset.resultId,
@@ -380,7 +378,8 @@ function revealSource(event) {
   if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
   const target = document.getElementById(event.currentTarget.getAttribute('href').slice(1));
   if (!target?.classList.contains('source-block') || !root.contains(target)) return;
-  const search = document.getElementById('workspace-search');
+  const search = target.classList.contains('revised-source-block')
+    ? null : document.getElementById('workspace-search');
   if (target.hidden && search) {
     search.value = '';
     search.dispatchEvent(new Event('input', {bubbles: true}));
@@ -401,7 +400,7 @@ function revealSource(event) {
 function filterWorkspace(event) {
   const q = event.target.value.toLowerCase();
   document
-    .querySelectorAll('.source-block')
+    .querySelectorAll('.source-block:not(.revised-source-block)')
     .forEach(
       (block) =>
         (block.hidden = Boolean(

@@ -689,7 +689,8 @@ class DocumentReviewProject:
         except (OSError, KeyError, TypeError, ValueError, ReviewStudioError):
             revision_workspace = {"plan": None, "actions": [], "ready_to_finalize": False, "revision": None}
         bridge_complete = revision_workspace.get("plan") is not None
-        revision_complete = revision_workspace.get("revision") is not None
+        revision_generated = revision_workspace.get("revision") is not None
+        revision_complete = revision_generated and bool((revision_workspace.get("external_recheck") or {}).get("complete"))
         export_complete = any(item.get("kind") == "export" for item in exports)
         workflow = [
             {"key": "extraction", "label": "文档识别", "status": "completed" if extraction_confirmed else "not_started", "detail": "已确认" if extraction_confirmed else "待确认"},
@@ -697,7 +698,7 @@ class DocumentReviewProject:
             {"key": "local", "label": "本地预检", "status": "completed" if local_complete else "not_started", "detail": "已运行" if local_complete else "未运行"},
             {"key": "ai", "label": "AI 专项审查", "status": "completed" if ai_requests and ai_done == len(ai_requests) else "in_progress" if ai_done else "not_started", "detail": f"{ai_done}/{len(ai_requests) or len(self.review_critics())} 已导入"},
             {"key": "adjudication", "label": "人工裁决", "status": "completed" if findings_total and finding_summary["open"] == 0 else "in_progress" if findings_total else "not_started", "detail": f"{findings_total - finding_summary['open']}/{findings_total} 已处理" if findings_total else "暂无 Finding"},
-            {"key": "bridge", "label": "受约束修改", "status": "completed" if revision_complete else "in_progress" if bridge_complete else "not_started", "detail": "修改稿已生成并复审" if revision_complete else "逐段修改中" if bridge_complete else "未开始"},
+            {"key": "bridge", "label": "受约束修改", "status": "completed" if revision_complete else "in_progress" if bridge_complete else "not_started", "detail": "修改与复审流程已完成" if revision_complete else "修改稿已生成，复审待完成" if revision_generated else "逐段修改中" if bridge_complete else "未开始"},
             {"key": "export", "label": "导出结果", "status": "completed" if export_complete else "not_started", "detail": "已有导出文件" if export_complete else "未导出"},
         ]
         return {"review_critics": {key: CRITIC_LABELS[key] for key in self.review_critics()}, "project": manifest, "product_status": "experimental-preview", "state": state, "extraction": {"available": document is not None, "metadata": document.metadata if document else {}, "quality": document.quality.to_dict() if document else {}, "warnings": [warning.to_dict() for warning in document.warnings] if document else [], "blocks": [block.to_dict() for block in document.blocks] if document else [], "total_blocks": len(document.blocks) if document else 0}, "context": self.context().to_dict() if self.context() else {"model_suggestion": self.suggested_document_type()}, "can_review": can_review, "review_blockers": reasons, "ai_requests": ai_requests, "adversarial_reviews": adversarial_reviews, "adversarial_eligible_finding_ids": sorted(adversarial_eligible_ids), "findings": finding_rows, "finding_summary": finding_summary, "attention_queue": attention_queue, "revision_workspace": revision_workspace, "workflow": workflow, "exports": exports}

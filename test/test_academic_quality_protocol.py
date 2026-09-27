@@ -206,12 +206,15 @@ class AcademicQualitySnapshotTests(unittest.TestCase):
             self.assertEqual(external["critic_protocol"], original)
             self.assertEqual(external["critic_protocol_sha256"], request["critic_protocol_sha256"])
             self.assertNotIn("FUTURE STANDARD", external["prompt"])
+            revised_blocks = json.loads((revision_dir / "document.json").read_text(encoding="utf-8"))["blocks"]
+            revised_block = next(block for block in revised_blocks if block["text"] == "The interpretation explains the analyzed passage.")
             recheck_response = {
                 **{key: external[key] for key in ("request_id", "prompt_sha256", "critic")},
                 "revision_id": revision["revision_id"], "revised_sha256": revision["revised_sha256"],
                 "resolutions": [{"finding_id": finding.finding_id, "state": "resolved",
                                  "reason": "The revised conclusion names its bounded material.",
-                                 "evidence": "The interpretation explains the analyzed passage."}],
+                                 "evidence": "The interpretation explains the analyzed passage.",
+                                 "source_evidence": [{"block_id": revised_block["block_id"], "quote": revised_block["text"]}]}],
                 "new_findings": [],
             }
             self.project.collect_external_recheck(

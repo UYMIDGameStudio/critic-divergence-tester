@@ -104,7 +104,8 @@ class ModelResponseJSONTests(unittest.TestCase):
             revision = json.loads((directory / "revision.json").read_bytes())
             external = project.external_recheck_status(revision["revision_id"])["requests"][0]
             response = {key: external[key] for key in ("request_id", "prompt_sha256", "critic", "revision_id", "revised_sha256")}
-            response.update(resolutions=[{"finding_id": accepted.finding_id, "state": "resolved", "reason": "Responsibility specified", "evidence": "项目经理负责执行。"}], new_findings=[])
+            revised_block = json.loads((directory / "document.json").read_text(encoding="utf-8"))["blocks"][0]
+            response.update(resolutions=[{"finding_id": accepted.finding_id, "state": "resolved", "reason": "Responsibility specified", "evidence": "项目经理负责执行。", "source_evidence": [{"block_id": revised_block["block_id"], "quote": revised_block["text"]}]}], new_findings=[])
             for token in ("NaN", "Infinity", "-Infinity", "1e999", "-1e999"):
                 with self.subTest(token=token):
                     raw = json.dumps(response)[:-1] + ', "extra": {"measurement": ' + token + '}}'

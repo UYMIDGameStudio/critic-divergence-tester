@@ -51,8 +51,10 @@ def run_self_test() -> dict:
         project.confirm_context(ReviewContext(document_type="document", jurisdiction="unknown",
             effective_date="unknown", publisher_type="author", audience="editors").to_dict())
         project.run_local_prechecks(["expression_ambiguity"])
-        _check_adversarial_pipeline(project)
+        reviewed_finding_id = _check_adversarial_pipeline(project)
         checked.append("adversarial-review")
+        _check_resolution_pipeline(project, reviewed_finding_id)
+        checked.append("revision-evidence")
         research_project = _check_research_pipeline(root / "library")
         checked.extend(["big5-research-import", "research-ir", "research-product-view", "research-workbench"])
         backup = create_backup(project.root, root / "backup.zip")
@@ -145,7 +147,7 @@ def _check_academic_protocols(library: Path) -> None:
         raise RuntimeError("Packaged academic protocol provenance failed verification")
 
 
-def _check_adversarial_pipeline(project) -> None:
+def _check_adversarial_pipeline(project) -> str:
     """Prove packaged modules can persist all stages; no model quality claim."""
     from document_review_adversarial import ENVELOPE_FIELDS, response_example
     document = project._review_document_record()[1]
@@ -174,6 +176,45 @@ def _check_adversarial_pipeline(project) -> None:
         session = project.collect_adversarial_response(session["session_id"], json.dumps(payload), request_id=request["request_id"])
     if session["status"] != "completed" or project.findings()[0].status != "open" or project.integrity_errors():
         raise RuntimeError("Packaged adversarial workflow failed or changed human decision authority")
+    return run.findings[0].finding_id
+
+
+def _check_resolution_pipeline(project, finding_id: str) -> None:
+    """Persist a source-grounded recheck and carry it to the right revised block."""
+    from document_review_studio import ReviewStudioError
+    project.decide_finding(finding_id, "accept", reason="Synthetic self-test decision")
+    action = project.prepare_revision_plan()["actions"][0]
+    project.set_revision_action_operation(action["action_id"], "replace_block", reason="Synthetic replacement")
+    hunk = project.propose_revision_hunk(action["action_id"], "The editor checks the revised passage.", rationale="Synthetic repair")
+    project.decide_revision_hunk(hunk["hunk_id"], "approve", reason="Synthetic approval")
+    revision_dir = project.finalize_revision()
+    revision = json.loads((revision_dir / "revision.json").read_text(encoding="utf-8"))
+    request = project.external_recheck_requests(revision["revision_id"])[0]
+    block = next(item for item in json.loads((revision_dir / "document.json").read_text(encoding="utf-8"))["blocks"]
+                 if item["text"] == "The editor checks the revised passage.")
+    payload = {key: request[key] for key in ("request_id", "prompt_sha256", "revision_id", "revised_sha256", "critic")}
+    resolution = {"finding_id": finding_id, "state": "still-present", "reason": "Synthetic pending issue",
+                  "evidence": "Synthetic explanation, not a quotation",
+                  "source_evidence": [{"block_id": block["block_id"], "quote": "A fabricated excerpt"}]}
+    payload.update(resolutions=[resolution], new_findings=[])
+    try:
+        project.collect_external_recheck(revision["revision_id"], request["critic"], json.dumps(payload), provider="self-test", model="fixture")
+    except ReviewStudioError:
+        pass
+    else:
+        raise RuntimeError("Packaged recheck accepted fabricated evidence")
+    if project._external_recheck_results(revision["revision_id"]):
+        raise RuntimeError("Rejected recheck left a published result")
+    resolution["source_evidence"][0]["quote"] = block["text"]
+    result = project.collect_external_recheck(revision["revision_id"], request["critic"], json.dumps(payload), provider="self-test", model="fixture")
+    if result["resolution_evidence_receipt"]["protocol_version"] != 1 or project.external_recheck_status(revision["revision_id"])["complete"]:
+        raise RuntimeError("Packaged recheck did not preserve evidence binding or human authority")
+    project.decide_external_resolution(revision["revision_id"], result["result_id"], finding_id, "unresolved", reason="Synthetic followup decision")
+    followup = project.start_followup_round(revision["revision_id"])
+    carried = followup["findings"][0]
+    if (carried["location"]["block_id"] != block["block_id"] or carried["evidence"] != block["text"]
+            or project.integrity_errors()):
+        raise RuntimeError("Packaged followup lost its revised evidence anchor")
 
 
 def _check_language_imports(library: Path) -> None:

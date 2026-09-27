@@ -5,6 +5,8 @@ from __future__ import annotations
 from .base import *  # noqa: F401,F403
 from .json_numbers import finite_json_number
 from document_review_model import document_location_contract
+from document_review_quality import (RESOLUTION_EVIDENCE_PROTOCOL, resolution_contract_errors,
+                                     validate_resolution_evidence, quote_matches)
 
 class RevisionPlanBuilder(_ProjectComponent):
     def _decision_records(self) -> dict[str, list[tuple[Path, dict[str, Any], str]]]:
@@ -800,6 +802,8 @@ class RevisionPlanBuilder(_ProjectComponent):
         resolution_rows.extend(new_rows)
         external_critics = sorted({row["critic"] for row in resolution_rows if row["state"] == "requires-external-recheck"})
         external_request_payloads: list[tuple[str, str, dict[str, Any], list[dict[str, Any]]]] = []
+        if external_critics and resolution_contract_errors(RESOLUTION_EVIDENCE_PROTOCOL):
+            raise ReviewStudioError("复审证据协议不可导出")
         for critic in external_critics:
             original_rows = [item.to_dict() for item in original_findings.values() if item.critic == critic and item.status in {"accept", "correct"}]
             origin = self._critic_origin_binding(critic)
@@ -814,7 +818,7 @@ class RevisionPlanBuilder(_ProjectComponent):
                 "Re-run exactly the critic defined by the bound original protocol below. Preserve its objective, checks, evidence standard, exclusions, and independence boundary.",
                 "Do not infer resolution from wording changes and do not add another critic, vote, or score.",
                 "Return JSON with request_id, prompt_sha256, revision_id, revised_sha256, critic, resolutions, and new_findings.",
-                "Each resolution must contain finding_id, state (resolved|partially-resolved|still-present), reason, and evidence.",
+                "Each resolution must follow the Resolution evidence contract below, including source_evidence and the unable-to-assess option.",
                 "Every newly detected issue must be a full Finding in new_findings; use source_finding_id only when it truly descends from an original Finding.",
                 "A new Finding must quote a contiguous excerpt from its referenced revised block and use the confirmed document_type. Copy its location or provide only block_id; never invent offsets or a human decision status.",
                 "The Revised document blocks below are the current source for IDs, text and locations. The original prompt snapshot is historical evidence, not the current manuscript.",
@@ -822,6 +826,10 @@ class RevisionPlanBuilder(_ProjectComponent):
                 f"request_id: {request_id}",
                 f"revision_id: {revision_id}",
                 f"revised_sha256: {revised_sha}",
+                "",
+                "## Resolution evidence contract\n```json",
+                json.dumps(RESOLUTION_EVIDENCE_PROTOCOL, ensure_ascii=False, indent=2),
+                "```",
                 "",
                 "## Bound critic definition",
                 json.dumps(origin["critic_protocol"], ensure_ascii=False, indent=2),
@@ -845,7 +853,9 @@ class RevisionPlanBuilder(_ProjectComponent):
             prompt_sha256 = _sha256(base_prompt.encode("utf-8"))
             envelope = {"request_id": request_id, "prompt_sha256": prompt_sha256, "revision_id": revision_id, "revised_sha256": revised_sha, "critic": critic}
             prompt = base_prompt + "\n\n## Required response envelope\nReturn these fields exactly:\n```json\n" + json.dumps(envelope, ensure_ascii=False, indent=2) + "\n```\n"
-            request = {"artifact_type": "external-critic-recheck-request", "schema_version": 2, "request_id": request_id, "revision_id": revision_id, "revised_sha256": revised_sha, "critic": critic, "critic_protocol": CRITIC_PROTOCOLS[critic], **origin, "prompt_sha256": prompt_sha256, "prompt_file_sha256": _sha256(prompt.encode("utf-8")), "original_finding_ids": [item["finding_id"] for item in original_rows], "created_at": _now(), "lifecycle": "immutable"}
+            request = {"artifact_type": "external-critic-recheck-request", "schema_version": 3, "request_id": request_id, "revision_id": revision_id, "revised_sha256": revised_sha, "critic": critic, "critic_protocol": CRITIC_PROTOCOLS[critic], **origin, "prompt_sha256": prompt_sha256, "prompt_file_sha256": _sha256(prompt.encode("utf-8")), "original_finding_ids": [item["finding_id"] for item in original_rows], "created_at": _now(), "lifecycle": "immutable"}
+            request.update(resolution_evidence_protocol=json.loads(canonical_json(RESOLUTION_EVIDENCE_PROTOCOL)),
+                           resolution_evidence_protocol_sha256=_sha256(canonical_json(RESOLUTION_EVIDENCE_PROTOCOL)))
             origin_parents = [_parent_ref(self.root, original_prompt_path, role="original-critic-prompt"), _parent_ref(self.root, original_request_path, role="original-ai-request"), _parent_ref(self.root, original_run_path, role="original-audit-run")]
             external_request_payloads.append((critic, prompt, request, origin_parents))
         recheck = {"artifact_type": "document-revision-recheck", "schema_version": 2, "revision_id": revision_id, "revised_sha256": revised_sha, "local_critic_runs": recheck_runs, "recheck_findings": [item.to_dict() for item in recheck_findings], "finding_resolutions": resolution_rows, "external_recheck_required": external_critics, "external_recheck_requests": [request for _, _, request, _ in external_request_payloads], "created_at": _now()}
@@ -927,6 +937,13 @@ class RevisionPlanBuilder(_ProjectComponent):
                 # restored index cannot legitimately reference it.
                 shutil.rmtree(output)
             raise
+        if external_request_payloads:
+            # Old writers already reject index versions other than 1. Upgrade
+            # this mutable register in the same transaction as the new contract,
+            # preserving all existing entries, receipts and hash-chain links.
+            index = _read_json(index_path)
+            index["schema_version"] = 2
+            _write_integrity_index(self.root, index, new=False)
         self._append_event("revision_finalized", {"revision_id": revision_id, "approved_hunks": len(approved), "rejected_actions": len(rejected)})
         return output
 
@@ -953,6 +970,7 @@ class RevisionPlanBuilder(_ProjectComponent):
             prompt_bytes = prompt_path.read_bytes()
             if _sha256(prompt_bytes) != value.get("prompt_file_sha256"):
                 raise ReviewStudioError("外部复审协议与 request 绑定不一致")
+            self._resolution_evidence_contract(value, prompt_bytes)
             for path_field, hash_field in (
                 ("original_prompt_relative_path", "original_prompt_file_sha256"),
                 ("original_request_relative_path", "original_request_sha256"),
@@ -965,6 +983,25 @@ class RevisionPlanBuilder(_ProjectComponent):
             value["relative_path"] = str(prompt_path.relative_to(self.root)).replace("\\", "/")
             rows.append(value)
         return rows
+
+    def _resolution_evidence_contract(self, request: Mapping[str, Any], prompt_bytes: bytes) -> dict[str, Any] | None:
+        marker = "## Resolution evidence contract\n```json\n"
+        version = request.get("schema_version")
+        if type(version) is not int or version not in {1, 2, 3}:
+            raise ReviewStudioError("不支持此复审证据协议版本")
+        text = prompt_bytes.decode("utf-8")
+        fields = {"resolution_evidence_protocol", "resolution_evidence_protocol_sha256"}
+        if version < 3 and not fields.intersection(request) and marker not in text:
+            return None
+        try:
+            protocol, _ = json.JSONDecoder().raw_decode(text.split(marker, 1)[1])
+            if (resolution_contract_errors(protocol)
+                    or canonical_json(request.get("resolution_evidence_protocol")) != canonical_json(protocol)
+                    or request.get("resolution_evidence_protocol_sha256") != _sha256(canonical_json(protocol))):
+                raise ValueError("resolution evidence contract mismatch")
+        except (ValueError, TypeError, IndexError) as exc:
+            raise ReviewStudioError("复审证据协议快照缺失、不支持或不一致") from exc
+        return protocol
 
     def _external_recheck_results(self, revision_id: str, critic: str | None = None) -> list[tuple[Path, dict[str, Any], str]]:
         revision_dir = self._revision_directory(revision_id)
@@ -988,6 +1025,7 @@ class RevisionPlanBuilder(_ProjectComponent):
             raise ReviewStudioError("该 Revision 没有此 critic 的外部复审请求")
         close_reading_protocol = self._close_reading_for_recheck(request)
         close_reading_version = close_reading_protocol["version"] if close_reading_protocol is not None else 1
+        resolution_protocol = self._resolution_evidence_contract(request, request["prompt"].encode("utf-8"))
         if not isinstance(binding_mode, str) or binding_mode not in {"strict", "manual_association"}:
             raise ReviewStudioError("外部复审绑定方式无效")
         if not isinstance(provider, str) or not provider.strip() or not isinstance(model, str) or not model.strip():
@@ -1028,24 +1066,39 @@ class RevisionPlanBuilder(_ProjectComponent):
         expected_ids = set(request.get("original_finding_ids", []))
         parsed_ids: set[str] = set()
         clean_resolutions: list[dict[str, Any]] = []
+        revised_document = _document_from_dict(_read_json(revision_dir / "document.json"))
+        blocks_by_id = {block.block_id: block for block in revised_document.blocks}
         for item in resolutions:
             if not isinstance(item, dict):
                 raise ReviewStudioError("外部 Resolution 必须是对象")
-            finding_id = str(item.get("finding_id", ""))
+            finding_id = item.get("finding_id", "")
             state = item.get("state")
             reason, evidence = item.get("reason"), item.get("evidence")
-            if finding_id not in expected_ids or finding_id in parsed_ids:
+            if not isinstance(finding_id, str) or finding_id not in expected_ids or finding_id in parsed_ids:
                 raise ReviewStudioError(f"外部 Resolution Finding ID 无效或重复：{finding_id}")
-            if not isinstance(state, str) or state not in {"resolved", "partially-resolved", "still-present"}:
+            allowed_states = {"resolved", "partially-resolved", "still-present"}
+            if resolution_protocol is not None:
+                allowed_states.add("unable-to-assess")
+                if set(item) != set(resolution_protocol["response_fields"]):
+                    raise ReviewStudioError("复审结论必须包含协议规定的字段和修订稿引句")
+            if not isinstance(state, str) or state not in allowed_states:
                 raise ReviewStudioError(f"外部 Resolution 状态无效：{finding_id}")
             if not isinstance(reason, str) or not reason.strip() or not isinstance(evidence, str) or not evidence.strip():
                 raise ReviewStudioError(f"外部 Resolution 必须提供理由和修订稿证据：{finding_id}")
+            if resolution_protocol is not None and (len(reason) > 20_000 or len(evidence) > 20_000):
+                raise ReviewStudioError("复审理由或证据说明超过长度限制")
+            anchors = item.get("source_evidence")
+            if resolution_protocol is not None or "source_evidence" in item:
+                if validate_resolution_evidence(anchors, blocks_by_id, state=state):
+                    raise ReviewStudioError("复审引句或定位无效，请核对修订稿中的段落与原文")
             parsed_ids.add(finding_id)
-            clean_resolutions.append({"finding_id": finding_id, "state": state, "reason": reason.strip(), "evidence": evidence.strip()})
+            clean = {"finding_id": finding_id, "state": state, "reason": reason.strip(), "evidence": evidence.strip(),
+                     "evidence_validation": "checked-revised-excerpts" if anchors else "no-revised-excerpts" if resolution_protocol else "legacy-unchecked"}
+            if anchors is not None:
+                clean["source_evidence"] = anchors
+            clean_resolutions.append(clean)
         if parsed_ids != expected_ids:
             raise ReviewStudioError("外部复审必须逐项覆盖请求中的全部原 Finding")
-        revised_document = _document_from_dict(_read_json(revision_dir / "document.json"))
-        blocks_by_id = {block.block_id: block for block in revised_document.blocks}
         context = self.context()
         clean_new_findings: list[dict[str, Any]] = []
         known_ids = set(expected_ids)
@@ -1072,14 +1125,35 @@ class RevisionPlanBuilder(_ProjectComponent):
         result_id = stable_id("RR", request["request_id"], _sha256(raw), _now(), secrets.token_hex(4))
         result = {"artifact_type": "external-critic-recheck-result", "schema_version": 2, "result_id": result_id, "request_id": request["request_id"], "revision_id": revision_id, "revised_sha256": request["revised_sha256"], "critic": critic, "resolutions": clean_resolutions, "new_findings": clean_new_findings, "declared_model_metadata": {"provider": provider.strip(), "model": model.strip(), "import_mode": "manual", "response_binding": response_binding}, "response_binding": response_binding, "raw_response_sha256": _sha256(raw), "created_at": _now(), "lifecycle": "immutable"}
         result["close_reading_receipt"] = self._close_reading_receipt(close_reading_protocol, clean_new_findings)
+        result["resolution_evidence_receipt"] = {
+            "protocol_version": resolution_protocol["version"] if resolution_protocol else None,
+            "protocol_binding": "recheck-request" if resolution_protocol else "legacy-no-evidence-contract",
+            "protocol_sha256": _sha256(canonical_json(resolution_protocol)) if resolution_protocol else None,
+            "checked_findings": [item["finding_id"] for item in clean_resolutions if item["evidence_validation"] == "checked-revised-excerpts"],
+            "findings_without_checked_excerpts": [item["finding_id"] for item in clean_resolutions if item["evidence_validation"] != "checked-revised-excerpts"],
+            "semantic_accuracy": "not-established-by-structural-validation",
+        }
+        previous_rows = self._external_recheck_results(revision_id, critic)
+        previous = max(previous_rows, key=self._external_recheck_order) if previous_rows else None
+        result["schema_version"] = 3 if resolution_protocol else 2
+        result["result_sequence"] = int(previous[1].get("result_sequence", 0)) + 1 if previous else 1
+        result["previous_result_sha256"] = previous[2] if previous else None
         result_dir = revision_dir / "external-rechecks" / critic
         raw_path = result_dir / f"{result_id}.raw-response.json"
         result_path = result_dir / f"{result_id}.json"
         request_path = revision_dir / "external-recheck-requests" / critic / "request.json"
         _write_tracked(self.root, raw_path, raw, parents=[_parent_ref(self.root, request_path, role="external-recheck-request")], provenance="model-raw-external-recheck")
-        _write_tracked(self.root, result_path, canonical_json(result), parents=[_parent_ref(self.root, request_path, role="external-recheck-request"), _parent_ref(self.root, raw_path, role="raw-model-response")], provenance="model-parsed-external-recheck")
+        result_parents = [_parent_ref(self.root, request_path, role="external-recheck-request"), _parent_ref(self.root, raw_path, role="raw-model-response")]
+        if previous:
+            result_parents.append(_parent_ref(self.root, previous[0], role="previous-external-recheck-result"))
+        _write_tracked(self.root, result_path, canonical_json(result), parents=result_parents, provenance="model-parsed-external-recheck")
         self._append_event("external_recheck_imported", {"revision_id": revision_id, "critic": critic, "result_id": result_id})
         return result
+
+    @staticmethod
+    def _external_recheck_order(row: tuple[Path, dict[str, Any], str]) -> tuple[int, str, str]:
+        value = row[1]
+        return (int(value.get("result_sequence", 0)), str(value.get("created_at", "")), str(value.get("result_id", "")))
 
     def _external_resolution_records(self, revision_id: str) -> list[tuple[Path, dict[str, Any], str]]:
         revision_dir = self._revision_directory(revision_id)
@@ -1120,11 +1194,16 @@ class RevisionPlanBuilder(_ProjectComponent):
 
     def external_recheck_status(self, revision_id: str) -> dict[str, Any]:
         requests = self.external_recheck_requests(revision_id)
+        revision_dir = self._revision_directory(revision_id)
+        revised_document = _document_from_dict(_read_json(revision_dir / "document.json"))
+        blocks_by_id = {block.block_id: block for block in revised_document.blocks}
+        cited_blocks: set[str] = set()
+        followup_blockers: list[str] = []
         all_decisions = self._external_resolution_records(revision_id)
         rows: list[dict[str, Any]] = []
         for request in requests:
             candidates = [row for row in self._external_recheck_results(revision_id, str(request["critic"]))]
-            latest = max(candidates, key=lambda row: str(row[1].get("created_at", ""))) if candidates else None
+            latest = max(candidates, key=self._external_recheck_order) if candidates else None
             decisions: dict[str, dict[str, Any]] = {}
             if latest:
                 for _, value, _ in all_decisions:
@@ -1139,13 +1218,36 @@ class RevisionPlanBuilder(_ProjectComponent):
             original_items = [item for item in items if item["kind"] == "original"]
             resolution_complete = bool(latest) and bool(original_items) and all(item.get("human_decision") for item in original_items)
             followup_items = [item for item in items if item["kind"] == "new" or (item.get("human_decision") and item["human_decision"].get("state") != "resolved")]
+            for item in items:
+                if item["kind"] != "original":
+                    continue
+                item.setdefault("evidence_validation", "legacy-unchecked")
+                for anchor in item.get("source_evidence", []):
+                    if anchor.get("block_id") in blocks_by_id:
+                        cited_blocks.add(anchor["block_id"])
+                if item in followup_items and self._resolution_followup_anchor(item, blocks_by_id) is None:
+                    followup_blockers.append(item["finding_id"])
             rows.append({**request, "result": latest[1] if latest else None, "items": items, "resolution_complete": resolution_complete, "followup_required": bool(followup_items)})
         followup_started = (self._revision_directory(revision_id) / "followup-round.json").is_file()
         resolutions_complete = all(row["resolution_complete"] for row in rows) if rows else True
         followup_required = any(row["followup_required"] for row in rows)
         for row in rows:
             row["complete"] = row["resolution_complete"] and (not row["followup_required"] or followup_started)
-        return {"revision_id": revision_id, "requests": rows, "resolutions_complete": resolutions_complete, "followup_required": followup_required, "followup_started": followup_started, "can_start_followup": resolutions_complete and followup_required and not followup_started, "complete": resolutions_complete and (not followup_required or followup_started)}
+        return {"revision_id": revision_id, "requests": rows, "resolutions_complete": resolutions_complete, "followup_required": followup_required, "followup_started": followup_started, "can_start_followup": resolutions_complete and followup_required and not followup_started and not followup_blockers, "followup_blockers": followup_blockers, "revised_blocks": [block.to_dict() for block in revised_document.blocks if block.block_id in cited_blocks], "complete": resolutions_complete and (not followup_required or followup_started)}
+
+    def _resolution_followup_anchor(self, resolution: Mapping[str, Any], blocks_by_id: Mapping[str, DocumentBlock]) -> dict[str, str] | None:
+        anchors = resolution.get("source_evidence")
+        if anchors is not None:
+            if anchors and not validate_resolution_evidence(anchors, blocks_by_id, state=str(resolution.get("state", ""))):
+                return dict(anchors[0])
+            return None
+        # A historical free-text excerpt can be anchored now only if its source
+        # is unambiguous. Never attach an unsupported explanation to block zero.
+        quote = resolution.get("evidence")
+        if not isinstance(quote, str) or not quote.strip():
+            return None
+        matches = [block.block_id for block in blocks_by_id.values() if quote_matches(quote, block.text)]
+        return {"block_id": matches[0], "quote": quote} if len(matches) == 1 else None
 
     @_serialized_mutation
     def start_followup_round(self, revision_id: str) -> dict[str, Any]:
@@ -1160,9 +1262,10 @@ class RevisionPlanBuilder(_ProjectComponent):
             raise ReviewStudioError("必须先逐项确认所有原 Finding 的外部 Resolution")
         if not status["followup_required"]:
             raise ReviewStudioError("本次外部复审没有需要进入下一轮的 Finding")
+        if status["followup_blockers"]:
+            raise ReviewStudioError("未解决问题缺少修订稿定位，请补充带原文引句的复审结果后开始下一轮")
         revised_document = _document_from_dict(_read_json(revision_dir / "document.json"))
-        revised_block_ids = {block.block_id for block in revised_document.blocks}
-        fallback_block = revised_document.blocks[0] if revised_document.blocks else None
+        revised_blocks_by_id = {block.block_id: block for block in revised_document.blocks}
         prior_findings = {item.finding_id: item for item in self.findings()}
         promoted: list[Finding] = []
         source_rows: list[dict[str, Any]] = []
@@ -1199,14 +1302,20 @@ class RevisionPlanBuilder(_ProjectComponent):
                 original = prior_findings.get(resolution["finding_id"])
                 if not original:
                     raise ReviewStudioError("无法把未解决的原 Finding 继承到下一轮")
-                location = original.location
-                if location.block_id not in revised_block_ids:
-                    if fallback_block is None:
-                        raise ReviewStudioError("修订稿没有可用于继承 Finding 的定位")
-                    location = make_location(fallback_block)
+                anchor = self._resolution_followup_anchor(resolution, revised_blocks_by_id)
+                if anchor is None:
+                    raise ReviewStudioError("未解决问题缺少修订稿定位，请补充带原文引句的复审结果后开始下一轮")
+                location = make_location(revised_blocks_by_id[anchor["block_id"]])
+                check_data = dict(original.check_data)
+                if "close_reading" in check_data:
+                    check_data["historical_close_reading"] = {"source_finding_id": original.finding_id,
+                                                             "detail": check_data.pop("close_reading")}
+                check_data["inherited_resolution"] = {"source_result_id": result["result_id"],
+                                                       "reason": resolution["reason"], "evidence_explanation": resolution["evidence"],
+                                                       "source_evidence": [anchor], "semantic_accuracy": "human-decision-required"}
                 promoted_id = stable_id("F", revision_id, result["result_id"], original.finding_id, "carry")[:30]
-                promoted.append(replace(original, finding_id=promoted_id, location=location, evidence=resolution["evidence"], status="open", source_finding_id=original.finding_id, origin="external-recheck-carried-forward"))
-                source_rows.append({"finding_id": promoted_id, "source_finding_id": original.finding_id, "source_result_id": result["result_id"], "reason": "human-resolution-" + str(decision["state"])})
+                promoted.append(replace(original, finding_id=promoted_id, location=location, evidence=anchor["quote"], check_data=check_data, status="open", source_finding_id=original.finding_id, origin="external-recheck-carried-forward"))
+                source_rows.append({"finding_id": promoted_id, "source_finding_id": original.finding_id, "source_result_id": result["result_id"], "reason": "human-resolution-" + str(decision["state"]), "source_evidence": [anchor], "evidence_validation": "checked-current-excerpt-on-promotion"})
             for new_value in result.get("new_findings", []):
                 original_new = _finding_from_dict(new_value)
                 promoted_id = stable_id("F", revision_id, result["result_id"], original_new.finding_id, "new")[:30]

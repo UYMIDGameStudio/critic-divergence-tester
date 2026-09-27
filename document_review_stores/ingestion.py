@@ -95,6 +95,13 @@ class IngestionState(_ProjectComponent):
         if errors:
             state["read_only"] = True
             state["integrity_errors"] = errors
+        elif (state.get("integrity_errors") == ["integrity-index.json: invalid index fields"]
+              and _read_json(_integrity_index_path(self.root)).get("schema_version") == 2):
+            # Old applications cache this exact unsupported-index diagnostic.
+            # Clear only that compatibility cache after a full successful check;
+            # other read-only reasons and real integrity failures remain intact.
+            state["read_only"] = False
+            state["integrity_errors"] = []
         if cached != state or not self.state_path.is_file():
             _atomic_write(self.state_path, canonical_json(state))
         return state
@@ -239,8 +246,15 @@ class IngestionState(_ProjectComponent):
             latest_index_entries: dict[str, dict[str, Any]] = {}
             if integrity_index is not None:
                 expected_index_fields = {"artifact_type", "schema_version", "index_id", "entries", "head_sha256", "next_sequence", "lifecycle"}
-                if set(integrity_index) != expected_index_fields or integrity_index.get("artifact_type") != "document-review-integrity-index" or integrity_index.get("schema_version") != 1 or integrity_index.get("lifecycle") != "append-only" or not isinstance(integrity_index.get("index_id"), str):
+                index_version = integrity_index.get("schema_version")
+                if set(integrity_index) != expected_index_fields or integrity_index.get("artifact_type") != "document-review-integrity-index" or type(index_version) is not int or index_version not in {1, 2} or integrity_index.get("lifecycle") != "append-only" or not isinstance(integrity_index.get("index_id"), str):
                     errors.append("integrity-index.json: invalid index fields")
+                if index_version == 1:
+                    for artifact in protected:
+                        if (artifact.name == "request.json" and artifact.parent.parent.name == "external-recheck-requests"
+                                and _read_json(artifact).get("schema_version") == 3):
+                            errors.append("integrity-index.json: revised evidence requests require index version 2")
+                            break
                 entries = integrity_index.get("entries")
                 if not isinstance(entries, list):
                     errors.append("integrity-index.json: entries must be an array")

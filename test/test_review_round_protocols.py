@@ -72,11 +72,13 @@ class ReviewRoundProtocolTests(unittest.TestCase):
         revision_dir = self.project.finalize_revision()
         revision = json.loads((revision_dir / "revision.json").read_text(encoding="utf-8"))
         external = self.project.external_recheck_status(revision["revision_id"])["requests"][0]
+        revised_block = json.loads((revision_dir / "document.json").read_text(encoding="utf-8"))["blocks"][0]
         payload = {
             **{key: external[key] for key in ("request_id", "prompt_sha256", "critic")},
             "revision_id": revision["revision_id"], "revised_sha256": revision["revised_sha256"],
             "resolutions": [{"finding_id": original.finding_id, "state": "still-present",
-                             "reason": "尚无验收人", "evidence": "负责人：项目经理"}],
+                             "reason": "尚无验收人", "evidence": "负责人：项目经理",
+                             "source_evidence": [{"block_id": revised_block["block_id"], "quote": revised_block["text"]}]}],
             "new_findings": [],
         }
         if not start:

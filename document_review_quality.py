@@ -35,6 +35,59 @@ _CLOSE_READING_FIELDS_V1 = frozenset({
 })
 
 
+_RESOLUTION_STATES_V1 = ["resolved", "partially-resolved", "still-present", "unable-to-assess"]
+_RESOLUTION_FIELDS_V1 = ["finding_id", "state", "reason", "evidence", "source_evidence"]
+RESOLUTION_EVIDENCE_PROTOCOL = {
+    "version": 1,
+    "response_fields": list(_RESOLUTION_FIELDS_V1),
+    "states": list(_RESOLUTION_STATES_V1),
+    "source_evidence_fields": ["block_id", "quote"],
+    "rules": [
+        "For every original Finding, assess whether its specific failure and consequence remain under the bound original criterion. A wording change alone does not establish repair.",
+        "reason explains the assessment; evidence briefly connects the revised material to it. Each must be nonempty text of at most 20000 characters. These explanations are model proposals, not verified facts.",
+        "source_evidence contains 1 to 64 objects with exactly block_id and quote. Copy IDs from Revised document blocks and contiguous original-language excerpts of at most 100000 characters. The first excerpt identifies the primary location of the remaining issue; cite both sides for a cross-passage claim. Do not quote the historical prompt as the revised manuscript.",
+        "When deletion repairs a problem, cite relevant remaining scope and explain the change; do not invent a quotation of missing text. Quotations alone do not prove an omission or resolution.",
+        "Use unable-to-assess when the supplied material cannot support an assessment, explain the missing information, and include available relevant excerpts. Only this state permits an empty source_evidence array. Do not force a resolved or still-present verdict.",
+        "The application checks excerpt locations and text, not whether the explanation is correct or complete. A human must decide each resolution. Without a current source anchor an unresolved issue cannot be promoted into another revision round.",
+    ],
+}
+
+
+def resolution_contract_errors(protocol) -> list[str]:
+    if (not isinstance(protocol, dict) or type(protocol.get("version")) is not int
+            or protocol["version"] != 1):
+        return ["Unsupported resolution evidence protocol version"]
+    if (protocol.get("response_fields") != _RESOLUTION_FIELDS_V1
+            or protocol.get("states") != _RESOLUTION_STATES_V1
+            or protocol.get("source_evidence_fields") != ["block_id", "quote"]):
+        return ["Resolution evidence fields do not match the published contract"]
+    return []
+
+
+def validate_resolution_evidence(value, blocks_by_id: Mapping, *, state: str) -> list[str]:
+    minimum = 0 if state == "unable-to-assess" else 1
+    if not isinstance(value, list) or not minimum <= len(value) <= 64:
+        return ["source_evidence requires revised excerpts; only unable-to-assess permits an empty array"]
+    errors, seen = [], set()
+    for anchor in value:
+        if not isinstance(anchor, dict) or set(anchor) != {"block_id", "quote"}:
+            errors.append("Each source_evidence entry must contain exactly block_id and quote")
+            continue
+        block_id, quote = anchor["block_id"], anchor["quote"]
+        if not isinstance(block_id, str) or block_id not in blocks_by_id:
+            errors.append("source_evidence block_id must belong to the revised document")
+            continue
+        if not isinstance(quote, str) or not quote.strip() or len(quote) > 100_000:
+            errors.append("source_evidence quote must be nonempty text of at most 100000 characters")
+            continue
+        if not quote_matches(quote, blocks_by_id[block_id].text):
+            errors.append("source_evidence quote is not an excerpt of its revised block")
+        if (block_id, quote) in seen:
+            errors.append("source_evidence contains a duplicate excerpt")
+        seen.add((block_id, quote))
+    return errors
+
+
 def close_reading_contract_errors(protocol) -> list[str]:
     if not isinstance(protocol, dict):
         return ["close_reading_protocol must be an object"]

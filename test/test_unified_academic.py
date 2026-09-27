@@ -126,9 +126,11 @@ class AcademicReviewTests(unittest.TestCase):
             external = status["requests"][0]
             self.assertEqual(external["original_request_id"], request["request_id"])
             self.assertIn("学术论证与反例", external["prompt"])
+            revised_blocks = json.loads((revision_dir / "document.json").read_text(encoding="utf-8"))["blocks"]
+            revised_block = next(block for block in revised_blocks if "现有材料不足以作出因果判断" in block["text"])
             response = {key: external[key] for key in ("request_id", "prompt_sha256")}
             response.update(revision_id=revision["revision_id"], revised_sha256=revision["revised_sha256"], critic=critic,
-                            resolutions=[{"finding_id": finding.finding_id, "state": "resolved", "reason": "已收窄结论", "evidence": "现有材料不足以作出因果判断"}], new_findings=[])
+                            resolutions=[{"finding_id": finding.finding_id, "state": "resolved", "reason": "已收窄结论", "evidence": "现有材料不足以作出因果判断", "source_evidence": [{"block_id": revised_block["block_id"], "quote": revised_block["text"]}]}], new_findings=[])
             result = project.collect_external_recheck(revision["revision_id"], critic, json.dumps(response), provider="manual", model="reviewer")
             self.assertFalse(project.external_recheck_status(revision["revision_id"])["complete"])
             project.decide_external_resolution(revision["revision_id"], result["result_id"], finding.finding_id, "resolved", reason="人工核对证据与结论")
