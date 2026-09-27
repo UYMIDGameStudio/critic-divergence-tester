@@ -44,6 +44,8 @@ def run_self_test() -> dict:
         root = Path(temp)
         _check_language_imports(root / "languages")
         checked.append("eight-language-import")
+        _check_academic_protocols(root / "academic")
+        checked.append("academic-quality-protocols")
         project = DocumentReviewProject.create(root / "library", filename="draft.md", content=b"# Draft\n\nExample document.")
         project.confirm_extraction("confirm")
         project.confirm_context(ReviewContext(document_type="document", jurisdiction="unknown",
@@ -110,6 +112,37 @@ def run_self_test() -> dict:
             server.server_close()
         checked.append("research-http")
     return {"passed": True, "checked": checked}
+
+
+def _check_academic_protocols(library: Path) -> None:
+    """Verify packaged, persisted academic standards without invoking a model."""
+    from document_review_studio import DocumentReviewProject
+    from document_review_model import ReviewContext
+    project = DocumentReviewProject.create(library, filename="paper.md",
+        content=b"# Interpretation\n\nThis argument concerns the supplied passage only.")
+    project.confirm_extraction("confirm")
+    project.confirm_context(ReviewContext(document_type="paper", jurisdiction="unknown",
+        effective_date="unknown", publisher_type="author", audience="researchers",
+        review_profile="academic", discipline="humanities", research_type="theoretical").to_dict())
+    requests = project.prepare_ai_audits(provider="self-test", model="not-invoked")
+    required = {"academic_argument": "question-contribution",
+                "academic_methods": "interpretive-warrant", "academic_citations": "source-entailment"}
+    if {row["critic"] for row in requests} != set(required):
+        raise RuntimeError("Packaged academic critic routing is incomplete")
+    for row in requests:
+        protocol = row["critic_protocol"]
+        quality = protocol.get("scholarly_quality", {})
+        criteria = quality.get("criteria", [])
+        if (protocol.get("version") != 2 or quality.get("version") != 2
+                or required[row["critic"]] not in {item.get("id") for item in criteria}
+                or not quality.get("sources")
+                or any(not item.get("when") or not item.get("guard") for item in criteria)):
+            raise RuntimeError("Packaged academic quality standards are missing or stale")
+        restored = project._snapshotted_critic_protocol(row, row["prompt"].encode("utf-8"))
+        if restored != protocol:
+            raise RuntimeError("Packaged academic prompt differs from its saved protocol")
+    if project.integrity_errors():
+        raise RuntimeError("Packaged academic protocol provenance failed verification")
 
 
 def _check_adversarial_pipeline(project) -> None:

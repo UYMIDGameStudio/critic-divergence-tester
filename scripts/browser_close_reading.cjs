@@ -44,9 +44,35 @@ async function main() {
     await page.locator('[data-stage="adjudication"]').first().click();
     const card = page.locator('.close-reading');
     await card.waitFor({ state: 'visible' });
+    async function checkFilteredSourceNavigation(locale) {
+      const sourceText = await page.locator('.source-block').allTextContents();
+      const anchor = card.locator('a').first();
+      const fragment = await anchor.getAttribute('href');
+      const target = page.locator(fragment);
+      const search = page.locator('#workspace-search');
+      await search.fill('no-source-matches-this-evidence-navigation-check');
+      assert.equal(await target.isVisible(), false);
+      await anchor.focus();
+      await anchor.press('Enter');
+      assert.equal(new URL(page.url()).hash, fragment);
+      assert.equal(await search.inputValue(), '');
+      assert.equal(await target.isVisible(), true);
+      assert.equal(await target.evaluate(element => document.activeElement === element), true);
+      const visibleInPane = await target.evaluate(element => {
+        const block = element.getBoundingClientRect();
+        const pane = element.closest('.pane').getBoundingClientRect();
+        return block.width > 0 && block.height > 0
+          && block.top >= Math.max(0, pane.top)
+          && block.bottom <= Math.min(window.innerHeight, pane.bottom);
+      });
+      assert.equal(visibleInPane, true);
+      assert.deepEqual(await page.locator('.source-block').allTextContents(), sourceText);
+      report.checks.push(`${locale}: keyboard evidence link clears the filter, reveals and focuses its source without changing text`);
+    }
     assert.match(await card.textContent(), /細讀依據（模型判斷）/);
     assert.match(await card.textContent(), /最強辯護/);
     report.checks.push('Traditional Chinese diagnosis');
+    await checkFilteredSourceNavigation('Traditional Chinese');
     await page.screenshot({ path: path.join(output, 'zh-Hant.png'), fullPage: true });
     await page.locator('#ui-language').selectOption('en');
     await page.waitForFunction(() => document.documentElement.lang === 'en');
@@ -58,12 +84,7 @@ async function main() {
     assert.equal(await card.locator('img').count(), 0);
     assert.equal(await page.evaluate(() => Boolean(window.__injected)), false);
     report.checks.push('English diagnosis with original multilingual text', 'Model HTML remains inert');
-    const anchor = card.locator('a').first();
-    const target = await anchor.getAttribute('href');
-    await anchor.click();
-    assert.equal(new URL(page.url()).hash, target);
-    assert.equal(await page.locator(target).count(), 1);
-    report.checks.push('Context quote links to its actual source block');
+    await checkFilteredSourceNavigation('English');
     await page.screenshot({ path: path.join(output, 'en.png'), fullPage: true });
     assert.deepEqual(report.errors, []);
     assert.deepEqual(report.externalRequests, []);

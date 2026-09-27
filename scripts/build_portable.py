@@ -2,7 +2,8 @@
 import argparse
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import re
 import shutil
 import subprocess
 import sys
@@ -11,8 +12,44 @@ import importlib.metadata
 import os
 import platform
 import zipfile
+from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _rebase_guide_links(guide: str, bundled_docs: Path) -> str:
+    """Move the guide up one directory, rebasing simple inline Markdown links.
+
+    Only local Markdown documents actually present in the copied docs tree are
+    eligible. Keep destinations verbatim after adding the prefix so fragments,
+    query strings, and URL escapes are preserved.
+    """
+    docs = bundled_docs.resolve()
+    inline_link = re.compile(
+        r"(?<![!\\])(\[[^\]\r\n]+\]\()([^\s<>()]+)"
+        r"((?:[ \t]+(?:\"[^\"\r\n]*\"|'[^'\r\n]*'))?[ \t]*\))"
+    )
+
+    def rebase(match: re.Match) -> str:
+        destination = match.group(2)
+        url = urlsplit(destination)
+        if url.scheme or url.netloc or not url.path:
+            return match.group(0)
+        path = unquote(url.path)
+        if PurePosixPath(path).suffix.lower() != ".md":
+            return match.group(0)
+        relative = PurePosixPath(path)
+        if (relative.is_absolute() or ".." in relative.parts
+                or any(char in path for char in ("\\", ":", "\x00"))):
+            raise ValueError(f"Unsafe portable guide document path: {destination}")
+        document = docs.joinpath(*relative.parts).resolve()
+        if not document.is_relative_to(docs):
+            raise ValueError(f"Portable guide document escapes bundled docs: {destination}")
+        if not document.is_file():
+            raise ValueError(f"Portable guide references missing bundled document: {destination}")
+        return match.group(1) + "docs/" + destination + match.group(3)
+
+    return inline_link.sub(rebase, guide)
 
 
 def main():
@@ -54,8 +91,7 @@ def main():
         shutil.copy2(ROOT / "LICENSE", bundle / "LICENSE")
         shutil.copytree(ROOT / "docs", bundle / "docs")
         guide = (ROOT / "docs" / "portable-guide.md").read_text(encoding="utf-8")
-        for name in ("document-review-studio.md", "release-engineering-0.2.1.md", "release-engineering-0.2.2.md", "release-engineering-0.2.3.md", "release-engineering-0.2.4.md", "release-engineering-0.2.5.md", "release-engineering-0.2.6.md", "release-engineering-0.2.7.md", "release-engineering-0.2.8.md", "release-engineering-0.2.9.md", "release-engineering-0.2.10.md", "release-engineering-0.2.11.md", "release-engineering-0.2.12.md", "release-engineering-0.2.13.md", "release-engineering-0.2.14.md", "release-engineering-0.2.15.md", "release-engineering-0.2.16.md", "release-engineering-0.2.17.md", "release-engineering-0.2.18.md", "release-engineering-0.2.19.md", "release-engineering-0.2.20.md"):
-            guide = guide.replace("(" + name, "(docs/" + name)
+        guide = _rebase_guide_links(guide, bundle / "docs")
         (bundle / "使用说明.md").write_text(guide, encoding="utf-8")
         if sys.platform == "win32":
             shutil.copy2(ROOT / "scripts" / "install-portable.ps1", bundle / "安装或升级.ps1")
