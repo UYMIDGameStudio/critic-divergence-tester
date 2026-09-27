@@ -430,5 +430,53 @@
   "条计数单位": {
     "zh-Hant": "條",
     "en": "issues"
+  },
+  "细读协议快照缺失，不能套用当前标准": {
+    "zh-Hant": "細讀協議快照缺失，不能套用目前標準。",
+    "en": "The saved close-reading contract is missing; current rules cannot replace it."
+  },
+  "细读协议与原请求快照不一致": {
+    "zh-Hant": "細讀協議與原請求快照不一致。",
+    "en": "The close-reading contract does not match the original request snapshot."
+  },
+  "外部复审的原细读协议文件缺失": {
+    "zh-Hant": "外部複審的原細讀協議檔案缺失。",
+    "en": "The original close-reading contract files for this recheck are missing."
+  },
+  "外部复审的原细读协议摘要不一致": {
+    "zh-Hant": "外部複審的原細讀協議校驗不一致。",
+    "en": "The original close-reading contract checksums do not match this recheck."
+  },
+  "外部复审的原细读请求绑定不一致": {
+    "zh-Hant": "外部複審與原細讀請求的關聯不一致。",
+    "en": "This recheck does not match its original close-reading request."
+  },
+  "原审查协议快照缺失或不一致，不能套用当前版本的标准复审": {
+    "zh-Hant": "原審查協議快照缺失或不一致，不能套用目前版本的標準複審。",
+    "en": "The original review contract is missing or inconsistent; current rules cannot be substituted for rechecking."
+  },
+  "原细读协议无法验证：close_reading_protocol must be an object": {
+    "zh-Hant": "無法驗證原細讀協議：細讀協議格式無效。",
+    "en": "Cannot validate the original close-reading contract: The close-reading contract has an invalid format."
+  },
+  "原细读协议无法验证：Unsupported close-reading protocol version": {
+    "zh-Hant": "無法驗證原細讀協議：目前程式不支援這份細讀協議的版本。",
+    "en": "Cannot validate the original close-reading contract: This application does not support the saved close-reading contract version."
+  },
+  "原细读协议无法验证：Close-reading version 1 fields do not match its published response contract": {
+    "zh-Hant": "無法驗證原細讀協議：細讀協議第 1 版的欄位與已發布規格不一致。",
+    "en": "Cannot validate the original close-reading contract: The version 1 close-reading fields do not match the published response contract."
+  },
+  "细读协议不可导出：close_reading_protocol must be an object": {
+    "zh-Hant": "無法匯出細讀協議：細讀協議格式無效。",
+    "en": "Cannot export the close-reading contract: The close-reading contract has an invalid format."
+  },
+  "细读协议不可导出：Unsupported close-reading protocol version": {
+    "zh-Hant": "無法匯出細讀協議：目前程式不支援這份細讀協議的版本。",
+    "en": "Cannot export the close-reading contract: This application does not support the saved close-reading contract version."
+  },
+  "细读协议不可导出：Close-reading version 1 fields do not match its published response contract": {
+    "zh-Hant": "無法匯出細讀協議：細讀協議第 1 版的欄位與已發布規格不一致。",
+    "en": "Cannot export the close-reading contract: The version 1 close-reading fields do not match the published response contract."
   }
 }

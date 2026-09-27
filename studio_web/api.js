@@ -38,7 +38,7 @@ async function api(path, body) {
       'import_adversarial_response'].includes(body?.action)
       ? adversarialErrorMessage(errorText)
       : ['create_backup', 'restore_backup', 'delete_project'].includes(body?.action)
-        ? maintenanceErrorMessage(errorText, body.action) : errorText);
+        ? maintenanceErrorMessage(errorText, body.action) : (UI_MESSAGES[errorText]?.[uiLocale] ?? errorText));
     error.uncertainMutation = Boolean(body) && response.status >= 500;
     throw error;
   }

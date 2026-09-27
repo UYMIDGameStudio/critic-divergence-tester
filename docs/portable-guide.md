@@ -1,4 +1,4 @@
-# 本地便携版 · 0.2.21
+# 本地便携版 · 0.2.22
 
 解压完整发行 ZIP，在包含 `DocumentReviewStudio.exe` 的目录中双击程序。
 程序会打开本机浏览器页面；请保留同目录的 `_internal`、安装脚本与发行清单。
@@ -11,9 +11,12 @@
 Office/WPS 文件需要本机 LibreOffice。选择一个语言或文件扩展名不代表所需组件
 已经安装，也不代表该语言的模型审查质量已经验证。
 
-0.2.21 包含[学术审查协议 v2 与来源说明](academic-quality-framework.md)：新建审查
+0.2.22 包含[学术审查协议 v2 与来源说明](academic-quality-framework.md)：新建审查
 按文章任务选择标准，历史复审继续使用原协议。旧便携版需安装此版本后才能取得
 新协议；升级不重新评判旧记录，也不代表模型审查准确率已经得到验证。
+
+细读意见也按原任务中的协议检查，历史记录不会被标成当前协议版本。遇到不支持
+或不一致的协议，程序会说明原因；这类错误不能通过人工关联导入绕过。
 
 ## 安装、升级与回退
 
@@ -119,4 +122,5 @@ Word 净稿优先保留原文档包，支持普通段落、连续段落和简单
 [0.2.18 审查界面编号显示](release-engineering-0.2.18.md)及
 [0.2.19 修订后条目归属](release-engineering-0.2.19.md)及
 [0.2.20 修订来源映射与复审定位](release-engineering-0.2.20.md)及
-[0.2.21 学术协议交付与审查改进](release-engineering-0.2.21.md)。当前保留 experimental preview 标识。
+[0.2.21 学术协议交付与审查改进](release-engineering-0.2.21.md)及
+[0.2.22 细读协议与历史回传](release-engineering-0.2.22.md)。当前保留 experimental preview 标识。

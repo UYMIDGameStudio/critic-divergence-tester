@@ -44,6 +44,26 @@ async function main() {
     await page.locator('[data-stage="adjudication"]').first().click();
     const card = page.locator('.close-reading');
     await card.waitFor({ state: 'visible' });
+    async function checkProtocolErrorTranslation(locale, expected) {
+      const result = await page.evaluate(async () => {
+        const known = '原细读协议无法验证：Unsupported close-reading protocol version';
+        const unknown = 'Original diagnostic: ' + known + ' Straße 日本語';
+        const originalFetch = window.fetch;
+        const messages = [];
+        try {
+          for (const diagnostic of [known, unknown]) {
+            window.fetch = async () => ({ok: false, status: 400,
+              json: async () => ({error: diagnostic})});
+            try { await api('/api/action', {action: 'import_model_audit'}); }
+            catch (error) { messages.push(error.message); }
+          }
+        } finally { window.fetch = originalFetch; }
+        return {messages, unknown};
+      });
+      assert.equal(result.messages[0], expected);
+      assert.equal(result.messages[1], result.unknown);
+      report.checks.push(`${locale}: saved-contract errors are localized; unknown diagnostics remain intact`);
+    }
     async function checkFilteredSourceNavigation(locale) {
       const sourceText = await page.locator('.source-block').allTextContents();
       const anchor = card.locator('a').first();
@@ -72,6 +92,7 @@ async function main() {
     assert.match(await card.textContent(), /細讀依據（模型判斷）/);
     assert.match(await card.textContent(), /最強辯護/);
     report.checks.push('Traditional Chinese diagnosis');
+    await checkProtocolErrorTranslation('Traditional Chinese', '無法驗證原細讀協議：目前程式不支援這份細讀協議的版本。');
     await checkFilteredSourceNavigation('Traditional Chinese');
     await page.screenshot({ path: path.join(output, 'zh-Hant.png'), fullPage: true });
     await page.locator('#ui-language').selectOption('en');
@@ -84,6 +105,7 @@ async function main() {
     assert.equal(await card.locator('img').count(), 0);
     assert.equal(await page.evaluate(() => Boolean(window.__injected)), false);
     report.checks.push('English diagnosis with original multilingual text', 'Model HTML remains inert');
+    await checkProtocolErrorTranslation('English', 'Cannot validate the original close-reading contract: This application does not support the saved close-reading contract version.');
     await checkFilteredSourceNavigation('English');
     await page.screenshot({ path: path.join(output, 'en.png'), fullPage: true });
     assert.deepEqual(report.errors, []);

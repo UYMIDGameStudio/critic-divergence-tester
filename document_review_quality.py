@@ -29,7 +29,27 @@ CLOSE_READING_PROTOCOL = {
 }
 
 
-def close_reading_example() -> dict:
+# A published response version must not inherit later prompt-template edits.
+_CLOSE_READING_FIELDS_V1 = frozenset({
+    "author_position", "strongest_defense", "why_defense_fails", "repair_test", "context_evidence",
+})
+
+
+def close_reading_contract_errors(protocol) -> list[str]:
+    if not isinstance(protocol, dict):
+        return ["close_reading_protocol must be an object"]
+    if type(protocol.get("version")) is not int or protocol["version"] != 1:
+        return ["Unsupported close-reading protocol version"]
+    fields = protocol.get("fields")
+    if (not isinstance(fields, dict) or set(fields) != _CLOSE_READING_FIELDS_V1
+            or any(not isinstance(text, str) or not text.strip() for text in fields.values())):
+        return ["Close-reading version 1 fields do not match its published response contract"]
+    return []
+
+
+def close_reading_example(*, version: int = 1) -> dict:
+    if type(version) is not int or version != 1:
+        raise ValueError("Unsupported close-reading protocol version")
     return {
         "author_position": "the author's actual claim with its scope and qualifications",
         "strongest_defense": "the strongest defense supported by the surrounding text",
@@ -52,11 +72,13 @@ def quote_matches(quote: str, text: str) -> bool:
     return False
 
 
-def validate_close_reading(value, blocks_by_id: Mapping) -> list[str]:
+def validate_close_reading(value, blocks_by_id: Mapping, *, version: int = 1) -> list[str]:
     """Validate a supplied dossier; a missing legacy dossier is not a pass."""
+    if type(version) is not int or version != 1:
+        return ["Unsupported close-reading protocol version"]
     if not isinstance(value, dict):
         return ["check_data.close_reading must be an object"]
-    required = set(CLOSE_READING_PROTOCOL["fields"])
+    required = _CLOSE_READING_FIELDS_V1
     errors = []
     if set(value) != required:
         errors.append("close_reading must contain exactly the documented justification and context_evidence fields")

@@ -986,6 +986,8 @@ class RevisionPlanBuilder(_ProjectComponent):
         request = next((item for item in self.external_recheck_requests(revision_id) if item.get("critic") == critic), None)
         if request is None:
             raise ReviewStudioError("该 Revision 没有此 critic 的外部复审请求")
+        close_reading_protocol = self._close_reading_for_recheck(request)
+        close_reading_version = close_reading_protocol["version"] if close_reading_protocol is not None else 1
         if not isinstance(binding_mode, str) or binding_mode not in {"strict", "manual_association"}:
             raise ReviewStudioError("外部复审绑定方式无效")
         if not isinstance(provider, str) or not provider.strip() or not isinstance(model, str) or not model.strip():
@@ -1060,7 +1062,8 @@ class RevisionPlanBuilder(_ProjectComponent):
                 raise ReviewStudioError("外部复审新 Finding 的 document_type 与已确认文档类型不一致")
             if item["location"]["block_id"] not in blocks_by_id:
                 raise ReviewStudioError("外部复审新 Finding 的定位不在当前修订稿中")
-            self._bind_finding_content(item, blocks_by_id[item["location"]["block_id"]], len(clean_new_findings) + 1, blocks_by_id=blocks_by_id)
+            self._bind_finding_content(item, blocks_by_id[item["location"]["block_id"]], len(clean_new_findings) + 1,
+                                       blocks_by_id=blocks_by_id, close_reading_version=close_reading_version)
             finding = _finding_from_dict(item)
             if finding.critic != critic or finding.finding_id in known_ids:
                 raise ReviewStudioError("外部复审新 Finding 的 critic、锚点或 ID 无效")
@@ -1068,6 +1071,7 @@ class RevisionPlanBuilder(_ProjectComponent):
             clean_new_findings.append(finding.to_dict())
         result_id = stable_id("RR", request["request_id"], _sha256(raw), _now(), secrets.token_hex(4))
         result = {"artifact_type": "external-critic-recheck-result", "schema_version": 2, "result_id": result_id, "request_id": request["request_id"], "revision_id": revision_id, "revised_sha256": request["revised_sha256"], "critic": critic, "resolutions": clean_resolutions, "new_findings": clean_new_findings, "declared_model_metadata": {"provider": provider.strip(), "model": model.strip(), "import_mode": "manual", "response_binding": response_binding}, "response_binding": response_binding, "raw_response_sha256": _sha256(raw), "created_at": _now(), "lifecycle": "immutable"}
+        result["close_reading_receipt"] = self._close_reading_receipt(close_reading_protocol, clean_new_findings)
         result_dir = revision_dir / "external-rechecks" / critic
         raw_path = result_dir / f"{result_id}.raw-response.json"
         result_path = result_dir / f"{result_id}.json"

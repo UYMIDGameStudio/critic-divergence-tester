@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from .base import *  # noqa: F401,F403
 from .json_numbers import finite_json_number
-from document_review_quality import CLOSE_READING_PROTOCOL, close_reading_example, quote_matches, validate_close_reading
+from document_review_quality import CLOSE_READING_PROTOCOL, close_reading_contract_errors, close_reading_example, quote_matches, validate_close_reading
 from review_profiles import academic_protocol
 from academic_review import academic_precheck_capabilities
 from document_review_model import document_location_contract
@@ -46,6 +46,9 @@ class AuditRunStore(_ProjectComponent):
     def prompt(self, critic: str) -> str:
         if critic not in CRITIC_DIMENSIONS:
             raise ReviewStudioError("未知审查维度")
+        contract_errors = close_reading_contract_errors(CLOSE_READING_PROTOCOL)
+        if contract_errors:
+            raise ReviewStudioError("细读协议不可导出：" + "; ".join(contract_errors))
         context = self.context()
         if not self.document_path.is_file() or not context:
             raise ReviewStudioError("需要先完成识别和上下文确认")
@@ -177,13 +180,22 @@ class AuditRunStore(_ProjectComponent):
             "original_response_binding": run.get("response_binding"),
         }
 
-    def _snapshotted_critic_protocol(self, request: Mapping[str, Any], prompt_bytes: bytes) -> dict[str, Any]:
-        """Retests apply the original critic, including after a software upgrade."""
+    def _snapshotted_review_contract(self, request: Mapping[str, Any], prompt_bytes: bytes) -> dict[str, Any]:
         marker = "## Contract and critic-specific protocol\n```json\n"
         try:
             text = prompt_bytes.decode("utf-8")
             start = text.index(marker) + len(marker)
             contract, _ = json.JSONDecoder().raw_decode(text[start:])
+            if not isinstance(contract, dict) or contract.get("critic") != request.get("critic"):
+                raise ValueError("critic/contract mismatch")
+            return contract
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ReviewStudioError("原审查协议快照缺失或不一致，不能套用当前版本的标准复审") from exc
+
+    def _snapshotted_critic_protocol(self, request: Mapping[str, Any], prompt_bytes: bytes) -> dict[str, Any]:
+        """Retests apply the original critic, including after a software upgrade."""
+        try:
+            contract = self._snapshotted_review_contract(request, prompt_bytes)
             protocol = contract["protocol"]
             if not isinstance(protocol, dict) or contract.get("critic") != request.get("critic"):
                 raise ValueError("critic/protocol mismatch")
@@ -194,6 +206,57 @@ class AuditRunStore(_ProjectComponent):
             return protocol
         except (ValueError, KeyError, TypeError) as exc:
             raise ReviewStudioError("原审查协议快照缺失或不一致，不能套用当前版本的标准复审") from exc
+
+    def _snapshotted_close_reading_protocol(self, request: Mapping[str, Any], prompt_bytes: bytes) -> dict[str, Any] | None:
+        contract = self._snapshotted_review_contract(request, prompt_bytes)
+        recorded = {"close_reading_protocol", "close_reading_protocol_sha256", "close_reading_protocol_version"}
+        if "close_reading_protocol" not in contract:
+            if recorded.intersection(request):
+                raise ReviewStudioError("细读协议快照缺失，不能套用当前标准")
+            return None
+        protocol = contract["close_reading_protocol"]
+        errors = close_reading_contract_errors(protocol)
+        if errors:
+            raise ReviewStudioError("原细读协议无法验证：" + "; ".join(errors))
+        # JSON distinguishes true, 1 and 1.0; Python mapping equality does not.
+        if ("close_reading_protocol" in request
+                and canonical_json(request["close_reading_protocol"]) != canonical_json(protocol)
+                or "close_reading_protocol_sha256" in request
+                and request["close_reading_protocol_sha256"] != _sha256(canonical_json(protocol))
+                or "close_reading_protocol_version" in request
+                and (type(request["close_reading_protocol_version"]) is not int
+                     or request["close_reading_protocol_version"] != protocol["version"])):
+            raise ReviewStudioError("细读协议与原请求快照不一致")
+        return protocol
+
+    def _close_reading_for_recheck(self, request: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Use the original independent request, including for legacy rechecks."""
+        request_path = _safe_child(self.root, str(request.get("original_request_relative_path", "")))
+        prompt_path = _safe_child(self.root, str(request.get("original_prompt_relative_path", "")))
+        if (not request_path.is_file() or request_path.is_symlink()
+                or not prompt_path.is_file() or prompt_path.is_symlink()):
+            raise ReviewStudioError("外部复审的原细读协议文件缺失")
+        prompt_bytes = prompt_path.read_bytes()
+        if (_sha256(request_path.read_bytes()) != request.get("original_request_sha256")
+                or _sha256(prompt_bytes) != request.get("original_prompt_file_sha256")):
+            raise ReviewStudioError("外部复审的原细读协议摘要不一致")
+        original = _read_json(request_path)
+        if (original.get("critic") != request.get("critic")
+                or original.get("request_id") != request.get("original_request_id")
+                or original.get("prompt_file_sha256") != _sha256(prompt_bytes)):
+            raise ReviewStudioError("外部复审的原细读请求绑定不一致")
+        return self._snapshotted_close_reading_protocol(original, prompt_bytes)
+
+    def _close_reading_receipt(self, protocol: Mapping[str, Any] | None, findings: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "protocol_version": protocol["version"] if protocol is not None else None,
+            "validation_version": protocol["version"] if protocol is not None else 1,
+            "protocol_binding": "original-prompt" if protocol is not None else "legacy-no-close-reading-contract",
+            "protocol_sha256": _sha256(canonical_json(protocol)) if protocol is not None else None,
+            "findings_with_checked_context_quotes": [f["finding_id"] for f in findings if "close_reading" in f.get("check_data", {})],
+            "findings_without_close_reading": [f["finding_id"] for f in findings if "close_reading" not in f.get("check_data", {})],
+            "semantic_accuracy": "not-established-by-structural-validation",
+        }
 
     def _audit_run_chain_errors(self) -> list[str]:
         errors: list[str] = []
@@ -361,9 +424,12 @@ class AuditRunStore(_ProjectComponent):
             _write_tracked(self.root, prompt_path, prompt, parents=parents, provenance="deterministic-ai-protocol")
             request = {"artifact_type": "independent-ai-review-request", "schema_version": 3, "request_id": request_id, "critic": critic, "provider": normalized_provider, "model": normalized_model, "prompt_sha256": prompt_sha256, "prompt_file_sha256": _sha256(prompt), **review_binding, "request_sequence": request_sequence, "previous_request_sha256": previous[2] if previous else None, "created_at": _now(), "lifecycle": "immutable"}
             protocol_snapshot = self._snapshotted_critic_protocol(request, prompt)
+            close_reading_snapshot = self._snapshotted_close_reading_protocol(request, prompt)
             request.update({"critic_protocol": protocol_snapshot,
                             "critic_protocol_sha256": _sha256(canonical_json(protocol_snapshot)),
-                            "close_reading_protocol_version": CLOSE_READING_PROTOCOL["version"]})
+                            "close_reading_protocol": close_reading_snapshot,
+                            "close_reading_protocol_sha256": _sha256(canonical_json(close_reading_snapshot)),
+                            "close_reading_protocol_version": close_reading_snapshot["version"]})
             request_path = directory / "request.json"
             request_parents = [*parents, _parent_ref(self.root, prompt_path, role="critic-prompt")]
             if previous:
@@ -417,8 +483,11 @@ class AuditRunStore(_ProjectComponent):
         if request.get("provider") != provider or request.get("model") != model:
             raise ReviewStudioError("导入结果的 provider/model 与已导出协议不一致")
         prompt_path = request_path.parent / "prompt.md"
-        if _sha256(prompt_path.read_bytes()) != request.get("prompt_file_sha256"):
+        prompt_bytes = prompt_path.read_bytes()
+        if _sha256(prompt_bytes) != request.get("prompt_file_sha256"):
             raise ReviewStudioError("AI 审查 prompt hash 不匹配")
+        close_reading_protocol = self._snapshotted_close_reading_protocol(request, prompt_bytes)
+        close_reading_version = close_reading_protocol["version"] if close_reading_protocol is not None else 1
         raw = response.encode("utf-8") if isinstance(response, str) else response
         if not isinstance(raw, bytes) or not raw:
             raise ReviewStudioError("模型审查返回不能为空")
@@ -529,7 +598,8 @@ class AuditRunStore(_ProjectComponent):
                 raise ReviewStudioError(f"第 {index + 1} 条 Finding 的 document_type 与已确认文档类型不一致")
             if item["location"].get("block_id") not in blocks_by_id:
                 raise ReviewStudioError(f"第 {index + 1} 条 Finding 定位不到内部 block")
-            self._bind_finding_content(item, blocks_by_id[item["location"]["block_id"]], index + 1, blocks_by_id=blocks_by_id)
+            self._bind_finding_content(item, blocks_by_id[item["location"]["block_id"]], index + 1,
+                                       blocks_by_id=blocks_by_id, close_reading_version=close_reading_version)
             finding = _finding_from_dict(item)
             if finding.finding_id in seen_source_ids:
                 raise ReviewStudioError(f"第 {index + 1} 条 Finding ID 在同一响应中重复")
@@ -554,12 +624,7 @@ class AuditRunStore(_ProjectComponent):
             association_note = "用户把原始响应导入当前所选请求；请求与原件 SHA 由应用关联，不声称模型曾回显"
         run_value["response_binding"] = {"mode": response_binding, "request_echo_verified": response_binding == "strict-response-envelope", "source_echo_verified": source_echo_verified, "source_associated_by_application": not source_echo_verified, "association_note": association_note}
         run_value["response_normalizations"] = response_normalizations
-        run_value["close_reading_receipt"] = {
-            "protocol_version": CLOSE_READING_PROTOCOL["version"],
-            "findings_with_checked_context_quotes": [f.finding_id for f in findings if "close_reading" in f.check_data],
-            "findings_without_close_reading": [f.finding_id for f in findings if "close_reading" not in f.check_data],
-            "semantic_accuracy": "not-established-by-structural-validation",
-        }
+        run_value["close_reading_receipt"] = self._close_reading_receipt(close_reading_protocol, [f.to_dict() for f in findings])
         run_path = directory / f"{run.run_id}.json"
         run_parents = [*response_parents, _parent_ref(self.root, raw_path, role="raw-model-response")]
         previous_runs = self._ordered_audit_runs(critic)
@@ -578,7 +643,7 @@ class AuditRunStore(_ProjectComponent):
             raise ReviewStudioError(f"模型返回的 {field} 必须是非空说明文字组成的数组")
         return list(values)
 
-    def _bind_finding_content(self, finding: dict[str, Any], block: DocumentBlock, number: int, *, blocks_by_id: Mapping[str, DocumentBlock]) -> None:
+    def _bind_finding_content(self, finding: dict[str, Any], block: DocumentBlock, number: int, *, blocks_by_id: Mapping[str, DocumentBlock], close_reading_version: int = 1) -> None:
         """Resolve a minimal block reference without trusting extra coordinates.
 
         Character offsets in the IR refer to the original source, not to an
@@ -600,7 +665,7 @@ class AuditRunStore(_ProjectComponent):
         if not quote_matches(finding["evidence"], block.text):
             raise ReviewStudioError(f"第 {number} 条 Finding 的 evidence 不是所选 block 的可核对引文；请修正引文或定位")
         if "close_reading" in finding.get("check_data", {}):
-            errors = validate_close_reading(finding["check_data"]["close_reading"], blocks_by_id)
+            errors = validate_close_reading(finding["check_data"]["close_reading"], blocks_by_id, version=close_reading_version)
             if errors:
                 raise ReviewStudioError(f"第 {number} 条 Finding 细读证据无效：" + "; ".join(errors))
 
