@@ -1,13 +1,30 @@
 function researchLibrary() {
   if (!state.unified) return '';
-  return ui`<div class="card"><h2>专业论证图谱与历史项目</h2><p class="muted">新稿审查支持文书和学术稿件。专业项目保留主张、审查标准、引用核验和版本关系；建立论证图谱需先完成主张提取与确认。</p>${(state.research_projects || []).map((p) => ui`<div class="project-row"><span>${esc(p.title)}</span><button class="secondary open-research" data-dir="${esc(p.directory)}" ${p.invalid ? 'disabled' : ''}>打开专业研究项目</button></div>`).join('')}<p><a href="/research/">打开专业研究与历史项目</a></p></div>`;
+  return ui`<div class="card research-library"><h2>专业论证图谱与历史项目</h2><p class="muted">新稿审查支持文书和学术稿件。专业项目保留主张、审查标准、引用核验和版本关系；建立论证图谱需先完成主张提取与确认。</p>${(state.research_projects || []).map((p) => ui`<div class="project-row"><span>${esc(p.title)}</span><button class="secondary open-research" data-dir="${esc(p.directory)}" ${p.invalid ? 'disabled' : ''}>打开专业研究项目</button></div>`).join('')}<p><a href="/research/">打开专业研究与历史项目</a></p></div>`;
 }
 function dependencyCard() {
   const missing = (state.dependencies || []).filter((item) => !item.available);
-  return ui`<div class="card"><h2>环境自检</h2><p class="muted">Python 适配器可一键安装并重新自检；如果当前项目因缺少组件而识别失败，修复后会自动重新识别。系统级 OCR 组件会给出人工安装说明。</p>${missing.length ? ui`<p><button id="repair-all">一键修复可自动修复项</button> <span id="repair-progress" class="muted"></span></p>` : tr('<p class="ok">可选环境组件均已就绪。</p>')}${(state.dependencies || []).map((item) => `<div class="dependency"><span class="${item.available ? 'ok' : 'warning'}"><b>${esc(item.name)}</b>：${item.available ? tr('可用') : tr('缺失')} · ${esc(tr(item.purpose))}${item.repair_hint ? `<small><br>${esc(tr(item.repair_hint))}</small>` : ''}</span>${!item.available && item.repairable ? ui`<button class="secondary repair-one" data-name="${esc(item.repair_key)}">修复</button>` : ''}</div>`).join('')}</div>`;
+  return ui`<div class="card dependency-card"><h2>环境自检</h2><p class="muted">Python 适配器可一键安装并重新自检；如果当前项目因缺少组件而识别失败，修复后会自动重新识别。系统级 OCR 组件会给出人工安装说明。</p>${missing.length ? ui`<p><button id="repair-all">一键修复可自动修复项</button> <span id="repair-progress" class="muted"></span></p>` : tr('<p class="ok">可选环境组件均已就绪。</p>')}${(state.dependencies || []).map((item) => `<div class="dependency"><span class="${item.available ? 'ok' : 'warning'}"><b>${esc(item.name)}</b>：${item.available ? tr('可用') : tr('缺失')} · ${esc(tr(item.purpose))}${item.repair_hint ? `<small><br>${esc(tr(item.repair_hint))}</small>` : ''}</span>${!item.available && item.repairable ? ui`<button class="secondary repair-one" data-name="${esc(item.repair_key)}">修复</button>` : ''}</div>`).join('')}</div>`;
 }
 function home() {
-  root.innerHTML = ui`${serviceDetails(state.notice)}${state.unified ? ui`<div class="card"><h2>选择这次的任务</h2><div class="row"><a id="start-new-review" href="#new-review">新稿审查</a><a id="start-report-revision" href="/research/">已有审查报告，直接修稿</a></div><p class="muted">已有报告修稿支持 Markdown/TXT 原稿；模型提出修改，你逐项批准并复查。</p></div>` : ''}<div class="card next" id="new-review"><h2>新稿审查</h2><p>支持 Word、PDF、Markdown/TXT、RTF、HTML、CSV/TSV、ODT、Excel 和 PowerPoint。旧版 Office/WPS 需要本机 LibreOffice，扫描 PDF 需要 OCR 组件。原文件会完整保留。</p><label>项目标题（可选）</label><input id="title" type="text"><label>文件</label><input id="file" type="file" accept="${esc(reviewConfig.extensions.join(','))}">${encodingSelector('import-encoding')}${freshImportControl()}<details><summary>扫描文件识别选项</summary>${ocrLanguageSelector('import-ocr-language')}</details><p class="muted">支持英文、简体中文、繁体中文、德语、法语、日语、俄语和拉丁语。编码选项适用于文本类文件。</p><p><button id="upload">开始识别</button></p><div id="err" class="error"></div></div>${state.projects.length ? ui`<div class="card"><h2>本地项目</h2>${state.projects.map((project) => ui`<div class="project-row"><span><b>${esc(project.title)}</b><br><small>${esc(project.source_name || project.directory)}</small></span><span><button class="secondary open-project" data-dir="${esc(project.directory)}">打开</button> <button class="danger delete-project" data-dir="${esc(project.directory)}">删除</button></span></div>`).join('')}</div>` : ''}${researchLibrary()}${dependencyCard()}`;
+  const projects = state.projects || [];
+  root.innerHTML = ui`${serviceDetails(state.notice)}${state.unified ? ui`
+    <section class="task-choice"><div><h2>选择这次的任务</h2><p class="muted">已有报告修稿支持 Markdown/TXT 原稿；模型提出修改，你逐项批准并复查。</p></div><div class="row"><a class="button-link secondary" id="start-new-review" href="#new-review">新稿审查</a><a class="button-link secondary" id="start-report-revision" href="/research/">已有审查报告，直接修稿</a></div></section>` : ''}
+    <div class="home-grid">
+      <section class="card import-panel" id="new-review" aria-labelledby="import-title">
+        <div class="section-heading"><span class="section-number" aria-hidden="true">01</span><div><h2 id="import-title">新稿审查</h2><p class="muted">先导入，再确认原文</p></div></div>
+        <label for="title">项目标题（可选）</label><input id="title" type="text">
+        <label for="file">文件</label><input id="file" type="file" accept="${esc(reviewConfig.extensions.join(','))}">
+        <details class="import-support"><summary>支持的格式与语言</summary><p>支持 Word、PDF、Markdown/TXT、RTF、HTML、CSV/TSV、ODT、Excel 和 PowerPoint。旧版 Office/WPS 需要本机 LibreOffice，扫描 PDF 需要 OCR 组件。原文件会完整保留。</p><p>支持英文、简体中文、繁体中文、德语、法语、日语、俄语和拉丁语。编码选项适用于文本类文件。</p></details>
+        ${encodingSelector('import-encoding')}${freshImportControl()}
+        <details><summary>扫描文件识别选项</summary>${ocrLanguageSelector('import-ocr-language')}</details>
+        <p><button id="upload">开始识别</button></p><div id="err" class="error"></div>
+      </section>
+      <section class="card project-library" aria-labelledby="library-title"><h2 id="library-title">本地项目 <span class="pill">${projects.length}</span></h2><p class="muted">继续上次的审查</p>
+        ${projects.length ? `<div class="project-list">${projects.map(project => ui`<div class="project-row"><span><b>${esc(project.title)}</b><br><small>${esc(project.source_name || project.directory)}</small></span><span class="project-actions"><button class="secondary open-project" data-dir="${esc(project.directory)}">打开</button><button class="danger delete-project" data-dir="${esc(project.directory)}">删除</button></span></div>`).join('')}</div>` : ui`<div class="empty-library"><svg aria-hidden="true" viewBox="0 0 48 48" fill="none"><path d="M10 7h19l9 9v25H10V7Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M29 7v10h9M17 25h14M17 31h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><b>还没有本地项目</b><p>导入第一份文件后，即可在这里继续审查。</p></div>`}
+      </section>
+    </div>
+    <div class="home-maintenance">${researchLibrary()}${dependencyCard()}</div>`;
 }
 function workflow(view) {
   const localDone = view.workflow.some(step => step.key === 'local' && step.status === 'completed');
@@ -16,8 +33,8 @@ function workflow(view) {
     optional: step.key === 'ai' && !view.ai_requests.some(request => request.completed)
       || noIssues && ['adjudication', 'bridge'].includes(step.key)}));
   const next = steps.find(step => step.status !== 'completed' && !step.optional);
-  return `<div class="card workflow-card"><nav class="workflow" aria-label="Review steps">${steps.map(step =>
-    `<button class="step ${esc(step.status)} ${next?.key === step.key ? 'current' : ''}" data-stage="${step.key}">${esc(tr(step.label))}<b>${step.optional ? tr('可选') : esc(tr(step.detail))}</b></button>`).join('')}</nav>
+  return `<div class="card workflow-card"><nav class="workflow" aria-label="Review steps">${steps.map((step, index) =>
+    `<button class="step ${esc(step.status)} ${next?.key === step.key ? 'current' : ''}" data-stage="${step.key}" ${next?.key === step.key ? 'aria-current="step"' : ''}><span class="step-number" aria-hidden="true">${step.status === 'completed' ? '✓' : index + 1}</span>${esc(tr(step.label))}<b>${step.optional ? tr('可选') : esc(tr(step.detail))}</b></button>`).join('')}</nav>
     <div class="row workflow-next"><b>${next ? esc(tr(next.label)) : tr('本轮流程已完成')}</b>${next ?
     `<button id="continue-workflow" data-stage="${next.key}">${uiLocale === 'en' ? 'Continue' : '繼續'}</button>` : ''}</div></div>`;
 }
@@ -257,5 +274,5 @@ function project() {
   const v = state.selected,
     st = v.state;
   const readonly = st.read_only || st.integrity_errors?.length;
-  root.innerHTML = ui`${serviceDetails(state.notice)}${readonly ? ui`<div class="card readonly"><h2>项目已切换为只读</h2><p>${esc((st.integrity_errors || []).join('；') || tr('完整性链异常'))}</p><p>请恢复可信项目副本后再继续，下载也会被阻止。</p></div>` : ''}<div class="card"><div class="row"><button class="secondary" id="back">← 返回项目列表</button><button class="danger" id="delete-selected" data-dir="${esc(v.directory)}">删除本地项目</button></div><h2>${esc(v.project.title)}</h2><p class="muted">原件：${esc(v.project.source.name)} · SHA-256 ${esc(v.project.source.sha256)}</p></div>${pdfReaderControl(v)}${workflow(v)}${extractionCard(v)}${contextCard(v)}${reviewCards(v)}${findingWorkspace(v)}${adversarialHistory(v)}${exportCenter(v)}`;
+  root.innerHTML = ui`${serviceDetails(state.notice)}${readonly ? ui`<div class="card readonly"><h2>项目已切换为只读</h2><p>${esc((st.integrity_errors || []).join('；') || tr('完整性链异常'))}</p><p>请恢复可信项目副本后再继续，下载也会被阻止。</p></div>` : ''}<div class="card project-heading"><div class="row"><button class="secondary" id="back">← 返回项目列表</button><button class="danger" id="delete-selected" data-dir="${esc(v.directory)}">删除本地项目</button></div><h2>${esc(v.project.title)}</h2><p class="muted">原件：${esc(v.project.source.name)} · SHA-256 ${esc(v.project.source.sha256)}</p></div>${pdfReaderControl(v)}${workflow(v)}${extractionCard(v)}${contextCard(v)}${reviewCards(v)}${findingWorkspace(v)}${adversarialHistory(v)}${exportCenter(v)}`;
 }

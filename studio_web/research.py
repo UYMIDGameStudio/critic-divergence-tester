@@ -9,7 +9,8 @@ def research_shell(kind: str) -> str:
     resources = files("studio_web")
     prefix = "research_" + kind
     template = resources.joinpath(prefix + ".html").read_text(encoding="utf-8")
-    styles = resources.joinpath(prefix + ".css").read_text(encoding="utf-8")
+    styles = resources.joinpath("theme.css").read_text(encoding="utf-8")
+    styles += "\n" + resources.joinpath(prefix + ".css").read_text(encoding="utf-8")
     messages = resources.joinpath("locales-research.json").read_text(encoding="utf-8")
     messages = json.dumps(json.loads(messages), ensure_ascii=False).replace("<", "\\u003c")
     scripts = resources.joinpath("research_i18n.js").read_text(encoding="utf-8")

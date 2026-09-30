@@ -34,6 +34,7 @@ jobs:
             dist/browser-resolution-evidence/
             dist/browser-adversarial/
             dist/http-protocol-security/browser/
+            dist/ui-style-0.2.26/
           if-no-files-found: warn
           retention-days: 14
       - run: python scripts/benchmark_delivery.py

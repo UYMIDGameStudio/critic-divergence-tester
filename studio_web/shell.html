@@ -9,18 +9,26 @@
     </style>
   </head>
   <body>
+    <a class="skip-link" id="skip-to-content" href="#app">跳至工作區</a>
     <main>
-      <div class="brand">Local-first · model-neutral · human-confirmed</div>
-      <div class="row"><h1 id="studio-title">文書與論證審查工作台</h1><span class="pill">experimental preview</span>
-      <label for="ui-language" class="language-label">語言 / Language</label><select id="ui-language" aria-label="Interface language"><option value="zh-Hant">繁體中文</option><option value="en">English</option></select></div>
-      <p class="muted" id="studio-description">匯入並確認內容，完成審查後逐項批准修改。原始檔案完整保留在本機。</p>
+      <header class="studio-header">
+        <div class="studio-identity">
+          <svg class="studio-mark" aria-hidden="true" viewBox="0 0 40 40" fill="none"><rect width="40" height="40" rx="11" fill="currentColor"/><path d="M12 10h11l6 6v14H12V10Z" stroke="white" stroke-width="1.7" stroke-linejoin="round"/><path d="M23 10v7h6M16 22h9M16 26h6" stroke="white" stroke-width="1.7" stroke-linecap="round"/></svg>
+          <div><div class="brand">REVIEW STUDIO <span class="preview-badge">Preview</span></div><h1 id="studio-title">文書與論證審查工作台</h1></div>
+        </div>
+        <div class="header-controls">
+          <label for="ui-language" class="language-label">語言 / Language</label><select id="ui-language" aria-label="Interface language"><option value="zh-Hant">繁體中文</option><option value="en">English</option></select>
+          <div id="session-actions"></div>
+        </div>
+        <p class="muted" id="studio-description">匯入並確認內容，完成審查後逐項批准修改。原始檔案完整保留在本機。</p>
+      </header>
       <div
         id="operation-status"
         class="operation-status hidden"
         role="status"
         aria-live="polite"
       ></div>
-      <div id="app"></div>
+      <div id="app" tabindex="-1"></div>
     </main>
     <script>
       __SCRIPTS__;

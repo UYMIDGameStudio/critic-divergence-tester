@@ -14,7 +14,8 @@ function bindWorkflowNavigation() {
         if (parent.tagName === 'DETAILS') parent.open = true;
         parent = parent.parentElement;
       }
-      target.scrollIntoView({behavior: 'smooth', block: 'center'});
+      target.scrollIntoView({behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'center'});
+      if (target.tabIndex < 0) target.tabIndex = -1;
       target.focus({preventScroll: true});
     };
   });

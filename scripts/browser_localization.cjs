@@ -405,7 +405,7 @@ async function main() {
     });
     await page.locator('#ai-response').fill(quitDraft);
     const selectedDirectory = await page.evaluate(() => state.selected.directory);
-    const quit = page.locator('#app > button').filter({ hasText: await page.evaluate(() => tr('退出工作台')) });
+    const quit = page.getByRole('button', { name: await page.evaluate(() => tr('退出工作台')), exact: true });
     await quit.click();
     await within(held.promise, 'Delayed draft request');
     await page.waitForFunction(() => mutationPending && root.inert && root.getAttribute('aria-busy') === 'true');

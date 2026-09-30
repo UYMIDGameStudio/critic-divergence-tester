@@ -57,6 +57,8 @@ async function runMutation(label, operation) {
   mutationPending = true;
   root.classList.add('busy');
   root.inert = true;
+  const sessionActions = document.getElementById('session-actions');
+  if (sessionActions) sessionActions.inert = true;
   root.setAttribute('aria-busy', 'true');
   const started = Date.now();
   const progress = setInterval(
@@ -73,6 +75,7 @@ async function runMutation(label, operation) {
     state = await operation();
     if (state.closed) {
       draftContext = null;
+      sessionActions?.replaceChildren();
       root.innerHTML = tr(
         '<div class="card"><h2>工作台已关闭</h2><p>项目和草稿已保存在本机，可以关闭此页面。</p></div>',
       );
@@ -89,6 +92,7 @@ async function runMutation(label, operation) {
     clearInterval(progress);
     mutationPending = false;
     root.inert = false;
+    if (sessionActions) sessionActions.inert = false;
     root.setAttribute('aria-busy', 'false');
     root.classList.remove('busy');
   }

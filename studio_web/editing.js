@@ -1,16 +1,18 @@
 function bindDelivery() {
   const quit = document.createElement('button');
-  quit.className = 'secondary';
+  quit.className = 'secondary quit-button';
   quit.textContent = tr('退出工作台');
   quit.onclick = quitStudio;
-  root.prepend(quit);
+  const sessionActions = document.getElementById('session-actions');
+  if (sessionActions) sessionActions.replaceChildren(quit);
+  else root.prepend(quit);
   if (!state.selected) {
     const card = document.createElement('div');
-    card.className = 'card';
+    card.className = 'card backup-card';
     card.innerHTML = tr(
       '<h2>恢复项目备份</h2><p>验证完整备份并恢复为独立项目。已有项目不会被覆盖。较大备份可使用维护工具。</p><input id="backup-file" type="file" accept=".zip"><button id="restore-backup">校验并恢复</button>',
     );
-    root.appendChild(card);
+    (root.querySelector('.home-maintenance') || root).appendChild(card);
     document.getElementById('restore-backup').onclick = async () => {
       try {
         const file = document.getElementById('backup-file').files[0];
@@ -30,7 +32,7 @@ function bindDelivery() {
     return;
   }
   const toolbar = document.createElement('div');
-  toolbar.className = 'card row';
+  toolbar.className = 'card row session-toolbar';
   toolbar.innerHTML = ui`<button class="secondary" id="create-backup">备份当前项目</button><button class="secondary" id="download-draft">下载当前草稿</button><button class="secondary" id="retry-draft">保存草稿</button>${draftContext?.legacy ? tr('<button class="secondary" id="legacy-draft">找回旧版草稿</button>') : ''}<span id="draft-status" role="status">表单草稿保存在本机</span><small>版本 ${esc(state.app_version)}</small>`;
   root.prepend(toolbar);
   document.getElementById('create-backup').onclick = () => act('create_backup');

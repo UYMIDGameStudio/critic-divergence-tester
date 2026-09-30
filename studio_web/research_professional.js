@@ -144,7 +144,7 @@ function selectClaim(id) {
   renderClaims();
   renderReview();
   document.querySelector(ui`.line[data-claims*="${CSS.escape(id)}"]`)?.scrollIntoView({
-    behavior: 'smooth',
+    behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
     block: 'center'
   });
 }

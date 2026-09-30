@@ -50,6 +50,8 @@ function renderLanguageHeader() {
       ? 'Import, inspect, review and approve each change. Your original files stay on this computer.'
       : '匯入並確認內容，完成審查後逐項批准修改。原始檔案完整保留在本機。';
   document.getElementById('ui-language').value = uiLocale;
+  const skip = document.getElementById('skip-to-content');
+  if (skip) skip.textContent = uiLocale === 'en' ? 'Skip to workspace' : '跳至工作區';
 }
 
 function changeLanguage(event) {

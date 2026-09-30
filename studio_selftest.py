@@ -302,7 +302,7 @@ def _check_shell_assets() -> None:
 
     # Resolve from the installed package, not from cwd or a source-tree path.
     resources = files("studio_web")
-    required = ["shell.html", "styles.css", *SCRIPTS,
+    required = ["shell.html", "theme.css", "styles.css", *SCRIPTS,
                 "locales-part-a.json", "locales-part-b.json", "locales-system.json",
                 "research_i18n.js", "locales-research.json"]
     required.extend("research_" + kind + suffix for kind in ("product", "professional")

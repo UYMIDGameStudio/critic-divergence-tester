@@ -72,7 +72,11 @@ class UnifiedRequestHandler(StudioRequestHandler, ProductRequestHandler):
             for quote in ("'", '"', "`"):
                 shell = shell.replace(quote + "/api/", quote + "/research/api/")
                 shell = shell.replace(quote + "/professional", quote + "/research/professional")
-            shell = shell.replace("<body>", '<body><p style="padding:12px"><a href="/">← 返回统一文书与学术工作台</a></p>', 1)
+            navigation = '<p class="unified-back"><a href="/">← 返回统一文书与学术工作台</a></p>'
+            if "<!-- unified-navigation -->" in shell:
+                shell = shell.replace("<!-- unified-navigation -->", navigation, 1)
+            else:
+                shell = shell.replace("<body>", "<body>" + navigation, 1)
             data = shell.encode("utf-8")
         return StudioRequestHandler._send(self, status, data, content_type, filename=filename)
 

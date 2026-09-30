@@ -526,5 +526,10 @@
   "细读协议不可导出：Close-reading version 1 fields do not match its published response contract": {
     "zh-Hant": "無法匯出細讀協議：細讀協議第 1 版的欄位與已發布規格不一致。",
     "en": "Cannot export the close-reading contract: The version 1 close-reading fields do not match the published response contract."
-  }
+  },
+  "先导入，再确认原文": {"zh-Hant": "先匯入，再確認原文", "en": "Import your file, then check the original text"},
+  "支持的格式与语言": {"zh-Hant": "支援的格式與語言", "en": "Supported formats and languages"},
+  "继续上次的审查": {"zh-Hant": "繼續上次的審查", "en": "Pick up where you left off"},
+  "还没有本地项目": {"zh-Hant": "還沒有本機專案", "en": "No projects yet"},
+  "导入第一份文件后，即可在这里继续审查。": {"zh-Hant": "匯入第一份檔案後，即可在這裡繼續審查。", "en": "Import your first document to start a review here."}
 }

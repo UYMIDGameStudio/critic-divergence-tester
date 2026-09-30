@@ -9,7 +9,8 @@ SCRIPTS = ("i18n.js", "state.js", "api.js", "drafts.js", "imports.js", "adversar
 def shell_template() -> str:
     resources = files(__package__)
     template = resources.joinpath("shell.html").read_text(encoding="utf-8")
-    styles = resources.joinpath("styles.css").read_text(encoding="utf-8")
+    styles = "\n\n".join(resources.joinpath(name).read_text(encoding="utf-8")
+                         for name in ("theme.css", "styles.css"))
     scripts = "\n\n".join(resources.joinpath(name).read_text(encoding="utf-8") for name in SCRIPTS)
     messages = {}
     for name in ("locales-part-a.json", "locales-part-b.json", "locales-system.json", "locales-adversarial.json"):
