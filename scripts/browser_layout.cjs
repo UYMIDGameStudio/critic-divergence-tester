@@ -9,7 +9,7 @@ const assert = require('node:assert/strict');
 
 async function main() {
   const root = path.resolve(__dirname, '..');
-  const output = path.join(root, 'dist', 'ui-style-0.2.26');
+  const output = path.join(root, 'dist', 'ui-style-0.2.27');
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'studio-layout-'));
   await fs.mkdir(output, {recursive: true});
   const report = {passed: false, fixture: 'Synthetic close-reading and research projects',
@@ -126,7 +126,7 @@ async function main() {
         check(name + ': skip link moves keyboard focus to content', '#' + target.active === focus.href, target);
       }
     };
-    const contrast = async (name, selectors) => {
+    const contrast = async (name, selectors, requireHover = false) => {
       const results = await page.evaluate(selectors => {
         const rgba = value => (value.match(/[\d.]+/g) || []).map(Number);
         const over = (fg, bg) => {const a = fg[3] ?? 1; return fg.slice(0, 3).map((v, i) => a * v + (1 - a) * bg[i]);};
@@ -142,11 +142,12 @@ async function main() {
           const color = over(rgba(css.color), bg), a = lum(color), b = lum(bg);
           const minimum = parseFloat(css.fontSize) >= 24 ||
             (parseFloat(css.fontSize) >= 18.66 && parseInt(css.fontWeight, 10) >= 700) ? 3 : 4.5;
-          return {selector, foreground: css.color, background: bg, ratio: +(Math.max(a, b) + .05).toFixed(8) /
-            (Math.min(a, b) + .05), minimum};
+          return {selector, foreground: css.color, background: bg, ratio: (Math.max(a, b) + .05) /
+            (Math.min(a, b) + .05), minimum, hovered: node.matches(':hover')};
         });
       }, selectors);
-      check(name + ': sampled text/action contrast', results.every(item => !item.missing && item.ratio >= item.minimum), results);
+      check(name + ': sampled text/action contrast', results.every(item => !item.missing &&
+        item.ratio >= item.minimum && (!requireHover || item.hovered)), results);
     };
     const fontResize = async name => {
       // Text-only 200% resize, including px-based text. Snapshot first so inherited
@@ -167,6 +168,12 @@ async function main() {
       await page.locator(ready).first().waitFor();
       for (const locale of ['zh-Hant', 'en']) {
         await language(locale, localeControl);
+        if (name === 'studio-home') {
+          const label = page.locator('#studio-preview'), preview = await label.innerText();
+          const expected = locale === 'zh-Hant' ? '實驗預覽' : 'experimental preview';
+          check(`${name}-${locale}: complete experimental preview label`,
+            await label.isVisible() && preview.toLowerCase().includes(expected), {preview, expected});
+        }
         for (const width of [1440, 390, 320]) {
           await page.setViewportSize({width, height: width === 1440 ? 1000 : 844});
           await layout(`${name}-${locale}-${width}`);
@@ -177,6 +184,10 @@ async function main() {
       }
       await page.setViewportSize({width: 1440, height: 1000});
       await contrast(name, [bodyText, action]);
+      if (name === 'studio-home') {
+        await page.locator(action).hover();
+        await contrast(name + '-hover', [action], true);
+      }
       await fontResize(name);
       await page.locator(ready).first().waitFor();
     };

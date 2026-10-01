@@ -50,6 +50,10 @@ function renderLanguageHeader() {
       ? 'Import, inspect, review and approve each change. Your original files stay on this computer.'
       : '匯入並確認內容，完成審查後逐項批准修改。原始檔案完整保留在本機。';
   document.getElementById('ui-language').value = uiLocale;
+  const motto = document.getElementById('studio-motto');
+  if (motto) motto.textContent = uiLocale === 'en' ? 'MANUSCRIPT · EVIDENCE · REVISION' : '文稿 · 證據 · 修訂';
+  const preview = document.getElementById('studio-preview');
+  if (preview) preview.textContent = uiLocale === 'en' ? 'experimental preview' : '實驗預覽';
   const skip = document.getElementById('skip-to-content');
   if (skip) skip.textContent = uiLocale === 'en' ? 'Skip to workspace' : '跳至工作區';
 }

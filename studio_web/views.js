@@ -12,7 +12,7 @@ function home() {
     <section class="task-choice"><div><h2>选择这次的任务</h2><p class="muted">已有报告修稿支持 Markdown/TXT 原稿；模型提出修改，你逐项批准并复查。</p></div><div class="row"><a class="button-link secondary" id="start-new-review" href="#new-review">新稿审查</a><a class="button-link secondary" id="start-report-revision" href="/research/">已有审查报告，直接修稿</a></div></section>` : ''}
     <div class="home-grid">
       <section class="card import-panel" id="new-review" aria-labelledby="import-title">
-        <div class="section-heading"><span class="section-number" aria-hidden="true">01</span><div><h2 id="import-title">新稿审查</h2><p class="muted">先导入，再确认原文</p></div></div>
+        <div class="section-heading"><span class="section-number" aria-hidden="true">§</span><div><h2 id="import-title">新稿审查</h2><p class="muted">先导入，再确认原文</p></div></div>
         <label for="title">项目标题（可选）</label><input id="title" type="text">
         <label for="file">文件</label><input id="file" type="file" accept="${esc(reviewConfig.extensions.join(','))}">
         <details class="import-support"><summary>支持的格式与语言</summary><p>支持 Word、PDF、Markdown/TXT、RTF、HTML、CSV/TSV、ODT、Excel 和 PowerPoint。旧版 Office/WPS 需要本机 LibreOffice，扫描 PDF 需要 OCR 组件。原文件会完整保留。</p><p>支持英文、简体中文、繁体中文、德语、法语、日语、俄语和拉丁语。编码选项适用于文本类文件。</p></details>
@@ -96,7 +96,7 @@ function reviewCards(view) {
       (x) => x.key === 'local' && x.status === 'completed',
     ),
     findingCount = view.finding_summary?.total || 0;
-  return ui`<div class="grid"><div class="card"><h2>本地确定性预检</h2><p>词项覆盖和结构提示，不冒充 AI 专业判断。首次运行后会为同一批 critic 自动生成待执行的独立 AI 任务。</p>${localDone ? ui`<p class="ok">✓ 已完成本地预检，当前有 ${findingCount} 条 Finding。再次运行会追加一轮可审计记录。</p>` : ''}${Object.entries(
+  return ui`<div class="grid review-tools"><div class="card local-check-panel"><h2>本地确定性预检</h2><p>词项覆盖和结构提示，不冒充 AI 专业判断。首次运行后会为同一批 critic 自动生成待执行的独立 AI 任务。</p>${localDone ? ui`<p class="ok">✓ 已完成本地预检，当前有 ${findingCount} 条 Finding。再次运行会追加一轮可审计记录。</p>` : ''}${Object.entries(
     critics,
   )
     .map(
@@ -105,7 +105,7 @@ function reviewCards(view) {
     )
     .join(
       '',
-    )}<p><button id="run-precheck">${localDone ? tr('重新运行选中的本地预检') : tr('运行预检并生成 AI 审查任务')}</button></p></div><div class="card"><h2>导出 / 导入独立 AI 审查 <span class="pill">${done}/${requests.length || Object.keys(critics).length} 已导入</span></h2><p>预检会自动生成缺失任务，但不会调用模型。默认由你把响应关联到当前选中的任务，应用负责绑定原件 SHA；严格模式只用于能够准确回显全部机器字段的模型。</p><div class="summary">${Object.entries(
+    )}<p><button id="run-precheck">${localDone ? tr('重新运行选中的本地预检') : tr('运行预检并生成 AI 审查任务')}</button></p></div><div class="card ai-review-panel"><h2>导出 / 导入独立 AI 审查 <span class="pill">${done}/${requests.length || Object.keys(critics).length} 已导入</span></h2><p>预检会自动生成缺失任务，但不会调用模型。默认由你把响应关联到当前选中的任务，应用负责绑定原件 SHA；严格模式只用于能够准确回显全部机器字段的模型。</p><div class="summary">${Object.entries(
     critics,
   )
     .map(([key, label]) => {
@@ -257,18 +257,18 @@ function findingWorkspace(view) {
   const blocks = view.extraction.blocks || [],
     limit = queue.default_limit || 30;
   const groups = queue.groups || [];
-  return ui`<div class="card"><h2>人工裁决队列</h2><div class="summary"><span class="pill">${queue.total_groups || 0} 个工作组</span><span class="pill">${summary.total || 0} 条原子 Finding</span><span class="pill">待处理 ${summary.open || 0} ${tr('条计数单位')}</span><span class="pill">高/严重 ${(summary.by_severity?.high || 0) + (summary.by_severity?.critical || 0)} ${tr('条计数单位')}</span></div><p class="muted">默认只展示前 ${limit} 个承重工作组；归组仅管理注意力，不合并 critic 的理由、证据或决定。</p>${queue.hidden_groups ? ui`<button class="secondary" id="show-all-groups">展开其余 ${queue.hidden_groups} 个工作组</button>` : ''}<div class="toolbar"><label>维度<select id="filter-critic"><option value="">全部</option>${Object.entries(
+  return ui`<div class="card queue-overview"><h2>人工裁决队列</h2><div class="summary"><span class="pill">${queue.total_groups || 0} 个工作组</span><span class="pill">${summary.total || 0} 条原子 Finding</span><span class="pill">待处理 ${summary.open || 0} ${tr('条计数单位')}</span><span class="pill">高/严重 ${(summary.by_severity?.high || 0) + (summary.by_severity?.critical || 0)} ${tr('条计数单位')}</span></div><p class="muted">默认只展示前 ${limit} 个承重工作组；归组仅管理注意力，不合并 critic 的理由、证据或决定。</p>${queue.hidden_groups ? ui`<button class="secondary" id="show-all-groups">展开其余 ${queue.hidden_groups} 个工作组</button>` : ''}<div class="toolbar"><label>维度<select id="filter-critic"><option value="">全部</option>${Object.entries(
     critics,
   )
     .map(([k, v]) => `<option value="${k}">${esc(tr(v))}</option>`)
     .join(
       '',
-    )}</select></label><label>严重度<select id="filter-severity"><option value="">全部</option>${['critical', 'high', 'medium', 'low', 'info'].map((x) => `<option>${x}</option>`).join('')}</select></label><label>状态<select id="filter-status"><option value="">全部</option>${['open', 'accept', 'correct', 'reject', 'defer'].map((x) => `<option>${x}</option>`).join('')}</select></label></div></div><div class="workspace"><section class="card pane"><h3>原文与定位</h3><input id="workspace-search" type="text" placeholder="搜索原文">${blocks.map((b) => `<div class="source-block" id="source-${esc(b.location?.block_id || b.block_id)}"><small>${esc(b.location?.block_id || b.block_id)} · page ${esc(b.location?.page || '-')}</small><br>${pdfDisplayText(sourceBlockText(b))}</div>`).join('')}</section><section>${groups.map((g, index) => ui`<section class="finding-group ${index >= limit ? 'hidden extra-finding-group' : ''}"><div class="card"><div class="row"><b>工作组 ${esc(g.block_id)}</b><span class="pill">${g.finding_count} ${tr('条计数单位')}</span><span class="pill">${g.critic_count} 个 critic</span></div><p><b>排序依据：</b>${esc(g.priority_reasons.map(tr).join(uiLocale === 'en' ? '; ' : '；'))}</p><p><b>共同修改动作：</b>${esc(g.suggested_action)}</p></div>${g.findings.map(findingCard).join('')}</section>`).join('')}</section><aside class="card sticky"><h3>完成门</h3><p>所有原子 Finding 裁决完成后，才可生成 Action 和 Hunk。</p><p><b>待处理：</b>${summary.open || 0}</p><button id="prepare-bridge" ${summary.open ? 'disabled' : ''}>生成逐段修改计划</button><p><button id="export-results" ${summary.open ? 'disabled' : ''}>仅导出审查结果</button></p></aside></div><div id="err" class="error"></div>${revisionWorkspace(view)}`;
+    )}</select></label><label>严重度<select id="filter-severity"><option value="">全部</option>${['critical', 'high', 'medium', 'low', 'info'].map((x) => `<option>${x}</option>`).join('')}</select></label><label>状态<select id="filter-status"><option value="">全部</option>${['open', 'accept', 'correct', 'reject', 'defer'].map((x) => `<option>${x}</option>`).join('')}</select></label></div></div><div class="workspace"><section class="card pane manuscript-pane"><h3>原文与定位</h3><input id="workspace-search" type="text" placeholder="搜索原文">${blocks.map((b) => `<div class="source-block" id="source-${esc(b.location?.block_id || b.block_id)}"><small>${esc(b.location?.block_id || b.block_id)} · page ${esc(b.location?.page || '-')}</small><br>${pdfDisplayText(sourceBlockText(b))}</div>`).join('')}</section><section>${groups.map((g, index) => ui`<section class="finding-group ${index >= limit ? 'hidden extra-finding-group' : ''}"><div class="card group-heading"><div class="row"><b>工作组 ${esc(g.block_id)}</b><span class="pill">${g.finding_count} ${tr('条计数单位')}</span><span class="pill">${g.critic_count} 个 critic</span></div><p><b>排序依据：</b>${esc(g.priority_reasons.map(tr).join(uiLocale === 'en' ? '; ' : '；'))}</p><p><b>共同修改动作：</b>${esc(g.suggested_action)}</p></div>${g.findings.map(findingCard).join('')}</section>`).join('')}</section><aside class="card sticky completion-panel"><h3>完成门</h3><p>所有原子 Finding 裁决完成后，才可生成 Action 和 Hunk。</p><p><b>待处理：</b>${summary.open || 0}</p><button id="prepare-bridge" ${summary.open ? 'disabled' : ''}>生成逐段修改计划</button><p><button id="export-results" ${summary.open ? 'disabled' : ''}>仅导出审查结果</button></p></aside></div><div id="err" class="error"></div>${revisionWorkspace(view)}`;
 }
 function exportCenter(view) {
   const rows = view.exports || [];
   if (!rows.length) return '';
-  return ui`<div class="card"><h2>导出中心</h2><p class="ok">导出完成。文件可直接下载，也可打开所在文件夹。</p>${rows.map((row) => ui`<details open><summary>${row.kind === 'revision-bridge' ? tr('修改任务') : row.kind === 'ai-review' ? tr('AI 审查快照') : tr('正式审查导出')} · ${esc(row.export_id)}${row.finding_count ? ui` · ${row.finding_count} 条 Finding` : ''}</summary>${row.files.map((file) => ui`<div class="export-file"><span>${esc(tr(file.label))} <small>${esc(file.name)}</small></span><button class="secondary download" data-path="${esc(file.relative_path)}">下载</button></div>`).join('')}<p><button class="secondary open-folder" data-path="${esc(row.files[0]?.relative_path || '')}">打开所在文件夹</button></p></details>`).join('')}</div>`;
+  return ui`<div class="card export-center"><h2>导出中心</h2><p class="ok">导出完成。文件可直接下载，也可打开所在文件夹。</p>${rows.map((row) => ui`<details open><summary>${row.kind === 'revision-bridge' ? tr('修改任务') : row.kind === 'ai-review' ? tr('AI 审查快照') : tr('正式审查导出')} · ${esc(row.export_id)}${row.finding_count ? ui` · ${row.finding_count} 条 Finding` : ''}</summary>${row.files.map((file) => ui`<div class="export-file"><span>${esc(tr(file.label))} <small>${esc(file.name)}</small></span><button class="secondary download" data-path="${esc(file.relative_path)}">下载</button></div>`).join('')}<p><button class="secondary open-folder" data-path="${esc(row.files[0]?.relative_path || '')}">打开所在文件夹</button></p></details>`).join('')}</div>`;
 }
 function project() {
   const v = state.selected,

@@ -1,29 +1,34 @@
-/* Shared, offline design foundations. Page-specific layouts live alongside it. */
+/* Editorial identity: manuscript paper, ink, and marginal annotations.
+   Common controls share behavior; content surfaces are chosen by each page. */
 :root {
   color-scheme: light;
-  --ink: #182230;
-  --muted: #526174;
-  --line: #dce2ea;
-  --control-line: #7c899c;
-  --paper: #ffffff;
-  --surface: #f8fafc;
-  --bg: #f4f6fa;
-  --action: #1d4ed8;
-  --action-hover: #1e40af;
-  --action-soft: #eef3ff;
+  --ink: #272b27;
+  --muted: #60645c;
+  --line: #d3d4c9;
+  --control-line: #85897d;
+  --paper: #fffef9;
+  --surface: #eae8df;
+  --bg: #f1efe8;
+  --action: #24483f;
+  --action-hover: #17372f;
+  --action-soft: #e9efe9;
+  --annotation: #9c4934;
   --green: #166534;
   --green2: #edf7f0;
   --amber: #8a570a;
   --amber2: #fff7e8;
   --red: #b42318;
   --red2: #fff2f0;
-  --radius: 14px;
+  --radius: 3px;
+  --font-reading: 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua',
+    'Noto Serif TC', 'PMingLiU', serif;
   --font-sans: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI',
     'PingFang TC', 'Microsoft JhengHei', 'Noto Sans CJK TC', sans-serif;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.7 var(--font-sans); }
 h1, h2, h3, h4 { font-family: inherit; font-weight: 600; line-height: 1.4; letter-spacing: 0; text-wrap: balance; }
+h1, h2 { font-family: var(--font-reading); }
 h1 { font-size: 1.875rem; margin: 0; }
 h2 { font-size: 1.3125rem; margin: 0 0 12px; }
 h3 { font-size: 1.0625rem; margin: 0 0 12px; }
@@ -35,18 +40,18 @@ button, input, select, textarea { font: inherit; }
 button, .button-link {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   max-width: 100%; min-height: 44px; padding: 10px 16px;
-  border: 1px solid transparent; border-radius: 8px;
+  border: 1px solid transparent; border-radius: 4px;
   background: var(--action); color: #fff; font-weight: 600;
   line-height: 1.4; text-align: center; text-decoration: none;
   white-space: normal; overflow-wrap: anywhere; cursor: pointer;
 }
-button.secondary, .button-link.secondary { background: var(--paper); border-color: var(--control-line); color: var(--ink); }
+button.secondary, .button-link.secondary { background: transparent; border-color: var(--control-line); color: var(--ink); }
 button.danger { background: var(--red2); border-color: #c9473b; color: var(--red); }
-button:disabled { background: #e9edf3; color: #596579; border-color: var(--line); cursor: not-allowed; }
+button:disabled { background: #e5e5dc; color: #62665c; border-color: var(--line); cursor: not-allowed; }
 input:not([type]), input[type='text'], input[type='date'], input[type='search'], input[type='number'],
 input[type='email'], input[type='password'], input[type='url'], select, textarea {
   display: block; width: 100%; min-width: 0; min-height: 44px;
-  padding: 10px 12px; border: 1px solid var(--control-line); border-radius: 8px;
+  padding: 10px 12px; border: 1px solid var(--control-line); border-radius: 4px;
   background: var(--paper); color: var(--ink); line-height: 1.5;
 }
 input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
@@ -54,7 +59,7 @@ textarea { min-height: 120px; resize: vertical; }
 input[type='file'] { display: block; width: 100%; min-width: 0; max-width: 100%; color: var(--muted); }
 input[type='file']::file-selector-button {
   min-height: 44px; padding: 10px 14px; margin: 4px 12px 4px 0;
-  border: 1px solid var(--control-line); border-radius: 8px;
+  border: 1px solid var(--control-line); border-radius: 4px;
   background: var(--paper); color: var(--ink); font: inherit; cursor: pointer;
 }
 input[type='checkbox'], input[type='radio'] { width: 18px; height: 18px; accent-color: var(--action); vertical-align: middle; }
@@ -63,7 +68,7 @@ label:has(input[type='checkbox']), label:has(input[type='radio']) { font-weight:
 :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
   outline: 3px solid var(--action); outline-offset: 3px; box-shadow: 0 0 0 3px var(--paper);
 }
-.card { min-width: 0; padding: 24px; margin: 16px 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--paper); }
+.card { min-width: 0; padding: 24px 0; margin: 24px 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent; }
 .card > :first-child { margin-top: 0; }
 .card > :last-child { margin-bottom: 0; }
 .row, .summary { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
@@ -73,11 +78,11 @@ label:has(input[type='checkbox']), label:has(input[type='radio']) { font-weight:
 .ok { color: var(--green); }
 .warning { color: var(--amber); }
 .error { color: var(--red); }
-.pill { display: inline-block; padding: 3px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--muted); font-size: .75rem; line-height: 1.6; overflow-wrap: anywhere; }
+.pill { display: inline-block; padding: 3px 7px; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: var(--muted); font-size: .75rem; line-height: 1.6; overflow-wrap: anywhere; }
 .pill.warning { color: var(--amber); background: var(--amber2); }
 .pill.error { color: var(--red); background: var(--red2); }
 .pill.ok { color: var(--green); background: var(--green2); }
-.quote, .block { padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); white-space: pre-wrap; overflow-wrap: anywhere; }
+.quote, .block { padding: 16px; border: 0; border-left: 2px solid var(--line); border-radius: 0; background: var(--paper); white-space: pre-wrap; overflow-wrap: anywhere; }
 .block { font: .8125rem/1.8 ui-monospace, Consolas, monospace; }
 details { margin: 12px 0; }
 summary { min-height: 44px; padding: 8px 0; cursor: pointer; overflow-wrap: anywhere; }
@@ -96,7 +101,7 @@ details[open] > summary { margin-bottom: 8px; }
 }
 @media (max-width: 720px) {
   h1 { font-size: 1.5rem; }
-  .card { padding: 18px; }
+  .card { padding: 20px 0; }
   .grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
 }
 @media (forced-colors: active) {

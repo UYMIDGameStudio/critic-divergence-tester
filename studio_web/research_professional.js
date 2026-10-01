@@ -67,7 +67,7 @@ function render() {
   renderReview();
 }
 function renderManuscript() {
-  $('manuscript').innerHTML = state.manuscript.map(l => ui`<div class="line ${l.claim_ids.includes(selectedClaim) ? 'active' : ''}" data-claims="${l.claim_ids.join(',')}"><span class="ln">${l.number}</span><span>${esc(l.text)}${l.claim_ids.map(id => ui`<button class="claim-chip" data-claim="${id}">${id}</button>`).join('')}</span></div>`).join('');
+  $('manuscript').innerHTML = state.manuscript.map(l => ui`<div class="line ${l.claim_ids.includes(selectedClaim) ? 'active' : ''}" data-claims="${l.claim_ids.join(',')}"><span class="ln">${l.number}</span><span class="manuscript-text">${esc(l.text)}${l.claim_ids.map(id => ui`<button class="claim-chip" data-claim="${id}">${id}</button>`).join('')}</span></div>`).join('');
   document.querySelectorAll('[data-claim]').forEach(b => b.onclick = () => selectClaim(b.dataset.claim));
 }
 function nodeLink(id) {
@@ -84,7 +84,7 @@ function renderClaims() {
   }
   const incoming = c.incoming.map(r => nodeLink(r.from) + ui`<div class="relation">${esc(r.id)} · ${esc(systemLabel(r.type))} → ${esc(r.to)}</div>`).join('');
   const outgoing = c.outgoing.map(r => nodeLink(r.to) + ui`<div class="relation">${esc(r.id)} · ${esc(r.from)} → ${esc(systemLabel(r.type))}</div>`).join('');
-  $('claimDetail').innerHTML = ui`<div class="section"><h3>当前主张</h3><div class="card"><b>${esc(c.source_quote)}</b><p>${esc(c.text)}</p><span class="badge">${esc(c.types.map(systemLabel).join(' / '))}</span><span class="badge">${esc(c.methods.map(systemLabel).join(' / '))}</span><p class="muted">${esc(c.position)} · 位置为 deterministic；语义为 model-derived / human-corrected</p></div></div><div class="section"><h3>上游 · Supported by / Assumptions / Citations</h3>${incoming || tr('<div class="empty">没有上游关系</div>')}</div><div class="section"><h3>下游 · Supports / Qualifies / Contradicts</h3>${outgoing || tr('<div class="empty">没有下游关系</div>')}</div>`;
+  $('claimDetail').innerHTML = ui`<div class="section"><h3>当前主张</h3><div class="card current-claim"><b class="source-quote">${esc(c.source_quote)}</b><p>${esc(c.text)}</p><span class="badge">${esc(c.types.map(systemLabel).join(' / '))}</span><span class="badge">${esc(c.methods.map(systemLabel).join(' / '))}</span><p class="muted">${esc(c.position)} · 位置为 deterministic；语义为 model-derived / human-corrected</p></div></div><div class="section"><h3>上游 · Supported by / Assumptions / Citations</h3>${incoming || tr('<div class="empty">没有上游关系</div>')}</div><div class="section"><h3>下游 · Supports / Qualifies / Contradicts</h3>${outgoing || tr('<div class="empty">没有下游关系</div>')}</div>`;
 }
 function provenanceTrace(f) {
   const p = f.provenance_trace;
@@ -126,7 +126,7 @@ function renderReview() {
       decision = f?.decision || null;
     const buttons = f && state.permissions.can_adjudicate ? ui`<div class="decision"><button data-decide="${esc(f.finding_id)}">${decision ? tr('复议') : tr('人工裁决')}</button></div>` : '';
     const actions = f?.actions?.map(a => ui`<li>${esc(systemLabel(a.action_type))} · ${esc(a.text)}</li>`).join('') || '';
-    return ui`<div class="card verdict-${esc(o.verdict)}"><div><span class="status">${esc(systemLabel(o.verdict))}</span> · <b>${esc(systemLabel(o.lens.id))}</b> ${o.check_id ? '· ' + esc(o.check_id) : ''}</div><p>${esc(o.reason)}</p>${o.basis_refs ? ui`<p class="muted">依据：${esc(o.basis_refs.join(', '))}</p>` : ''}${o.consequence ? ui`<p class="muted">影响：${esc(o.consequence)}</p>` : ''}${lensBasis(o)}${f ? ui`<div class="human">人工决定：${decision ? esc(systemLabel(decision)) + ' · ' + esc(f.human_reason) : tr('尚未裁决')}</div>${actions ? '<ul>' + actions + '</ul>' : ''}${provenanceTrace(f)}` : ''}${buttons}</div>`;
+    return ui`<div class="card review-entry verdict-${esc(o.verdict)}"><div><span class="status">${esc(systemLabel(o.verdict))}</span> · <b>${esc(systemLabel(o.lens.id))}</b> ${o.check_id ? '· ' + esc(o.check_id) : ''}</div><p>${esc(o.reason)}</p>${o.basis_refs ? ui`<p class="muted">依据：${esc(o.basis_refs.join(', '))}</p>` : ''}${o.consequence ? ui`<p class="muted">影响：${esc(o.consequence)}</p>` : ''}${lensBasis(o)}${f ? ui`<div class="human">人工决定：${decision ? esc(systemLabel(decision)) + ' · ' + esc(f.human_reason) : tr('尚未裁决')}</div>${actions ? '<ul>' + actions + '</ul>' : ''}${provenanceTrace(f)}` : ''}${buttons}</div>`;
   }).join('');
   const cite = state.citations.filter(c => (c.dependent_claims || []).includes(selectedClaim) || state.relations.some(r => r.from === c.id && r.to === selectedClaim)).map(c => ui`<div class="card"><b>${esc(c.id)} · ${esc(c.text)}</b><div class="${c.verification_state === 'verified' ? 'deterministic' : 'model'}">${esc(systemLabel(c.verification_state))}</div></div>`).join('');
   const history = state.lineage.filter(x => x.pair.includes(state.project.version_id)).flatMap(x => x.proposals.filter(p => (p.from_claims || []).includes(target) || (p.to_claims || []).includes(target))).map(p => ui`<div class="card"><b>${esc(systemLabel(p.relation))}</b> · ${esc((p.from_claims || []).join(', ') || systemLabel('new'))} → ${esc((p.to_claims || []).join(', ') || systemLabel('removed'))}<div class="human">${p.human_decision ? tr('人工：') + esc(systemLabel(p.human_decision.decision)) + ' · ' + esc(p.human_decision.human_note) : tr('等待人工确认')}</div></div>`).join('');
