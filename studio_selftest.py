@@ -163,7 +163,10 @@ def _check_academic_protocols(library: Path) -> None:
         protocol = row["critic_protocol"]
         quality = protocol.get("scholarly_quality", {})
         criteria = quality.get("criteria", [])
-        if (protocol.get("version") != 2 or quality.get("version") != 2
+        structure = protocol.get("argument_structure", {})
+        if (protocol.get("version") != 3 or quality.get("version") != 3
+                or structure.get("version") != 1 or not structure.get("checks")
+                or structure.get("reference", {}).get("snapshot_sha256") != "cffe1595dfb116f4d02a1476e4aece76169eeadbadb1bb8a708376b9a7efab28"
                 or required[row["critic"]] not in {item.get("id") for item in criteria}
                 or not quality.get("sources")
                 or any(not item.get("when") or not item.get("guard") for item in criteria)):
@@ -347,6 +350,8 @@ def _check_research_pipeline(library: Path) -> Path:
     if project is None:
         raise RuntimeError("Self-test research project was not created")
     paths = workspace_paths(project)
+    if "Protocol: argument-ir-extraction-v3" not in paths.prompt.read_text(encoding="utf-8"):
+        raise RuntimeError("Packaged IR extraction protocol is stale")
     archived_source = paths.version_dir / "source" / "research-big5.md"
     if archived_source.read_bytes() != source:
         raise RuntimeError("Self-test research import did not preserve original bytes")

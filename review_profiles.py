@@ -76,7 +76,7 @@ METHOD_CHECKS_BY_TYPE = {
 
 # These are a curated synthesis, not a universal ranking of papers. Source URLs
 # document the review method; they never verify a manuscript's factual claims.
-ACADEMIC_QUALITY_VERSION = 2
+ACADEMIC_QUALITY_VERSION = 3
 ACADEMIC_QUALITY_SOURCES = {
     "plos": {"title": "PLOS ONE — Criteria for Publication", "url": "https://journals.plos.org/plosone/s/criteria-for-publication"},
     "harvard-question": {"title": "Harvard College Writing Center — Asking Analytical Questions", "url": "https://writingcenter.fas.harvard.edu/asking-analytical-questions"},
@@ -235,6 +235,83 @@ def _academic_quality(critic: str, research_type: str) -> dict:
     }
 
 
+ARGUMENT_STRUCTURE_REFERENCE = {
+    "title": "经典著作的论证结构与特征 · 用户提供的细读汇编",
+    "section": "close-reading.html#argument-structures / argument-source-data",
+    "snapshot_sha256": "cffe1595dfb116f4d02a1476e4aece76169eeadbadb1bb8a708376b9a7efab28",
+    "scope": "5部著作、88条论证、38项特征；汇编层独立审计待完成。",
+    "limits": "以下是本项目从编者重构中提取的审查方法，不是作者原话、普遍真理或对待审稿件的事实核验；不得以经典地位要求作者接受其学说。",
+}
+
+ARGUMENT_STRUCTURE_CHECKS = {
+    "academic_argument": [
+        {"id": "inferential-task", "when": "由定义、前提、例证或解释推进到结论时。",
+         "test": "确定被审步骤在澄清概念、证明存在、解释原因还是论证应当；核对必要/充分条件、双向等价及事实到价值的桥梁。相容、可想象或概念清楚不自动证明真实、必然或正当。回溯可能条件时交代起点的接受依据；仅在声称条件必要或解释唯一时检查竞争解释的排除。",
+         "guard": "合理可恢复的省略不是缺陷；只批评实际跨越的步骤，不要求概念说明完成它未承诺的存在证明。声称矛盾时须核对同一对象、范围和关系，分清逻辑矛盾、实践自我破坏、目的冲突与不利后果；不方便本身不是逻辑矛盾。",
+         "reference_items": ["kant-groundwork:A08", "kant-groundwork:A11", "kant-groundwork:A13", "kant-prolegomena:P01", "kant-prolegomena:P13", "kant-prolegomena:P18"]},
+        {"id": "refutation-reach", "when": "作者或审查者由反例、反驳或排除竞争者推出更广结论时。",
+         "test": "指出异议击中哪条前提、哪一步及哪个量词；单个反例可推翻全称或等同关系，却不自动证实替代理论、反向命题或唯一方案。说明局部失效后核心结论是失效、收窄还是仍存。",
+         "guard": "不要因一处漏洞否定全文，也不要悄悄把作者的强断言改弱来替其辩护；概率性主张允许例外，须看反例是否改变它的实际承诺。",
+         "reference_items": ["marx-engels-manifesto:M06", "marx-engels-manifesto:M09", "kant-groundwork:A12", "durkheim:D05"]},
+        {"id": "shared-premise", "when": "论证采用穷尽分类、二选一或声称排除全部可能性时。",
+         "test": "核对对立双方共有的对象、尺度和关系预设，寻找相关遗漏项、交叉项；区分工作分类与穷尽性证明，说明遗漏如何改变结论。",
+         "guard": "不因双方有共同假设就判双方皆错；未声称穷尽的分类不承担穷尽证明，整齐表格与编号也不是完整性证据。",
+         "reference_items": ["kant-prolegomena:P06", "kant-prolegomena:P12"]},
+        {"id": "analogy-transfer", "when": "依赖类比、跨时期/场景迁移或一般原则的具体应用时。",
+         "test": "对照原场景与目标场景的关系、相同条件、缺失条件和不迁移属性；逐步核对机制或规范理由。原则可成立不等于任一具体措施、执行权或比例已获证明。",
+         "guard": "仅有年代或对象差异不能否定迁移；研究假设或启发性比喻按其自称地位评估，不把所有类比当作演绎证明。",
+         "reference_items": ["marx-gotha:G2", "marx-engels-manifesto:M01", "marx-engels-manifesto:M15", "kant-prolegomena:P16"]},
+    ],
+    "academic_methods": [
+        {"id": "explanation-roles", "when": "实际解释制度、行为或系统的产生、效果或持续存在时。",
+         "test": "分别检查生成原因、当前功能及维持/反馈的证据；当前有用或仍然存在不证明起源意图、必要性或人人受益。共同变化需区分直接因果、共因与中介；有反馈或选择机制支持的功能解释应按其实际主张检验。",
+         "guard": "只问文章实际承担的解释任务；不强迫纯规范或概念稿提供因果设计，不忽略作者已经处理的共因和限定。",
+         "reference_items": ["durkheim:D13", "durkheim:D17", "durkheim:D20"]},
+        {"id": "object-proxy-comparison", "when": "用定义、指标、分类或比较单位支撑判断时。",
+         "test": "区分对象的识别标志、测量代理与生成解释；核对代理失真、纳入规则、时期和可比条件。相同尺度不保证结果相同或比较关系适当，分类说明不自动证明形成原因。",
+         "guard": "指标存在不证明代表对象，类别相同不证明机制相同；质性材料可提供复核路径，不能将所有概念强行数值化。",
+         "reference_items": ["marx-gotha:G3", "durkheim:D03", "durkheim:D07", "durkheim:D08", "durkheim:D21"]},
+        {"id": "mechanism-conditions", "when": "由结构、处境、政策或干预推断行动及结果时。",
+         "test": "核对中介环节、相关行动者、资源/制度条件和反向作用；说明哪条联系有材料、哪条只是候选机制，以及失败可能是否改变结论强度。",
+         "guard": "条件清单不证明条件实际具备；不预设只能采用个体或结构解释，也不把任何一种解释自动扩成不可避免的结果。",
+         "reference_items": ["marx-gotha:G8", "marx-gotha:G10", "marx-engels-manifesto:M05", "marx-engels-manifesto:M06"]},
+    ],
+    "academic_citations": [
+        {"id": "voice-and-version", "when": "解释、转述或引用具有多重声音及版本层次的材料时。",
+         "test": "区分作者明说、被引述/反对的声音、译者或编者增释、审查者重构；核对版本、原注与后序修订的归属。精确引文保留所引版本的原句语言，译述和分析另行标明。",
+         "guard": "引文真实不等于被作者赞同；编者的方法标签或论证重构不能冒充作者自称，也不以编者指出的缺口声称作者已承认错误。",
+         "reference_items": ["marx-gotha:G7", "marx-engels-manifesto:M01", "marx-engels-manifesto:M09", "kant-prolegomena:P17"]},
+        {"id": "qualification-integrity", "when": "主张依赖跨段引文、脚注限定、修订说明或来源中的证明地位时。",
+         "test": "同看强断言、相关例外和修订，不只摘口号，也不拿温和脚注消除仍在正文的张力；区分提出、猜测、举例、证明与独立核验。只证明来源说过，不等于证明其内容正确。",
+         "guard": "未提供的附录、脚注或版本只能标明无法核验；不得编造原文，也不得由局部查阅声称已读全文或完成版本校勘。",
+         "reference_items": ["marx-engels-manifesto:M06", "kant-prolegomena:P17", "durkheim:D03", "durkheim:D20"]},
+    ],
+}
+
+
+def argument_structure_protocol(critic: str) -> dict:
+    """Concise, role-routed guidance; response fields and evidence checks stay stable."""
+    if critic not in ARGUMENT_STRUCTURE_CHECKS:
+        raise ValueError("未知论证结构审查维度")
+    return {
+        "version": 1,
+        "reference": deepcopy(ARGUMENT_STRUCTURE_REFERENCE),
+        "workflow": [
+            "先定位文章问题、核心结论和章节任务，再还原与本项判断有关的前提—推理桥梁—结论及限定。章节顺序、修辞力度和同题引用不是支持关系。只交付简短、可核对的论证摘要，不输出私有思维过程。",
+            "严格区分作者明说、可恢复的隐含前提与审查者补入的假设；后两者标明重构及不确定性，不替作者补造证明。先查可见全文的反例、脚注与回应，再确定仍存在的缺口。",
+            "仅执行当前维度且符合 when 的检查；核心步骤优先，已有回应充分则撤回批评。无法取得关键上下文时将相关判断保留为无法核验，不把未提供材料当作作者缺失。",
+        ],
+        "checks": deepcopy(ARGUMENT_STRUCTURE_CHECKS[critic]),
+        "finding_mapping": {
+            "standard": "写出本节 check id 及其适用理由；参考条目仅说明方法来历，不充当稿件证据。",
+            "author_position": "保留作者真实的量词、模态、归属、范围及最强主张，不先替其修补。",
+            "why_defense_fails": "用现有细读字段指明被审前提、失效的连接及仍受影响的具体结论；区分已见错误、报告缺口与不可核验。",
+            "context_evidence": "在既有原文锚点字段给出支撑判断的相关两端；不得把本参考材料的示例当作待审稿件原文。",
+            "repair_test": "给出会撤回或收窄此项批评的最小修改及核验条件，不要求另写一种文章。",
+        },
+    }
+
+
 def academic_protocol(critic: str, *, discipline: str = "general", research_type: str = "unspecified") -> dict:
     """Select confirmed scope without mutating persisted protocol templates."""
     if critic not in ACADEMIC_PROTOCOLS or discipline not in DISCIPLINES or research_type not in RESEARCH_TYPES:
@@ -242,6 +319,7 @@ def academic_protocol(critic: str, *, discipline: str = "general", research_type
     protocol = deepcopy(ACADEMIC_PROTOCOLS[critic])
     protocol["version"] = ACADEMIC_QUALITY_VERSION
     protocol["scholarly_quality"] = _academic_quality(critic, research_type)
+    protocol["argument_structure"] = argument_structure_protocol(critic)
     protocol["confirmed_scope"] = {"discipline": discipline, "research_type": research_type}
     protocol["discipline_focus"] = DISCIPLINE_FOCUS[discipline]
     protocol["research_type_focus"] = RESEARCH_TYPE_FOCUS[research_type]

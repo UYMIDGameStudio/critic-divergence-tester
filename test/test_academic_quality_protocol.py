@@ -25,7 +25,7 @@ class AcademicQualityProtocolTests(unittest.TestCase):
                     with self.subTest(critic=critic, discipline=discipline, kind=kind):
                         protocol = profiles.academic_protocol(
                             critic, discipline=discipline, research_type=kind)
-                        self.assertEqual(protocol["version"], 2)
+                        self.assertEqual(protocol["version"], 3)
                         self.assertEqual(protocol["confirmed_scope"],
                                          {"discipline": discipline, "research_type": kind})
                         quality = protocol["scholarly_quality"]
@@ -122,6 +122,31 @@ class AcademicQualityProtocolTests(unittest.TestCase):
             "disposition", "reasons", "remaining_issue", "minimal_repair", "repair_test",
             "defense_evidence_ids", "context_evidence"})
 
+    def test_structure_rules_are_role_routed_bounded_and_detached(self):
+        expected = {
+            "academic_argument": {"inferential-task", "refutation-reach", "shared-premise", "analogy-transfer"},
+            "academic_methods": {"explanation-roles", "object-proxy-comparison", "mechanism-conditions"},
+            "academic_citations": {"voice-and-version", "qualification-integrity"},
+        }
+        for critic, ids in expected.items():
+            with self.subTest(critic=critic):
+                value = profiles.academic_protocol(critic)["argument_structure"]
+                original = copy.deepcopy(value)
+                self.assertEqual({c["id"] for c in value["checks"]}, ids)
+                self.assertLess(len(json.dumps(value, ensure_ascii=False)), 6500)
+                self.assertEqual(set(value["finding_mapping"]) - {"standard"},
+                                 set(close_reading_example()) - {"strongest_defense"})
+                for check in value["checks"]:
+                    self.assertEqual(set(check), {"id", "when", "test", "guard", "reference_items"})
+                    self.assertTrue(all(check.values()))
+                value["checks"][0]["test"] = "caller mutation"
+                value["checks"][0]["reference_items"].clear()
+                value["reference"]["snapshot_sha256"] = "caller mutation"
+                value["workflow"].clear()
+                self.assertEqual(profiles.academic_protocol(critic)["argument_structure"], original)
+        with self.assertRaises(ValueError):
+            profiles.argument_structure_protocol("expression_ambiguity")
+
 
 class AcademicQualitySnapshotTests(unittest.TestCase):
     def setUp(self):
@@ -162,15 +187,19 @@ class AcademicQualitySnapshotTests(unittest.TestCase):
     def test_academic_snapshot_survives_template_change_in_adversarial_and_recheck(self):
         request = self.request()
         original = copy.deepcopy(request["critic_protocol"])
-        self.assertEqual(original["scholarly_quality"]["version"], 2)
+        self.assertEqual(original["scholarly_quality"]["version"], 3)
         request_dir = self.project.root / "ai-requests" / request["request_id"]
         saved = {name: (request_dir / name).read_bytes() for name in ("request.json", "prompt.md")}
         finding = self.import_finding(request)
         future_criteria = copy.deepcopy(profiles.ACADEMIC_QUALITY_CRITERIA[self.critic])
         future_criteria[0]["quality"] = "FUTURE STANDARD MUST NOT APPLY RETROACTIVELY"
+        future_structure = copy.deepcopy(profiles.ARGUMENT_STRUCTURE_CHECKS[self.critic])
+        future_structure[0]["test"] = "FUTURE STRUCTURE MUST NOT APPLY RETROACTIVELY"
         with patch.object(profiles, "ACADEMIC_QUALITY_VERSION", 99), patch.dict(
-                profiles.ACADEMIC_QUALITY_CRITERIA, {self.critic: future_criteria}):
+                profiles.ACADEMIC_QUALITY_CRITERIA, {self.critic: future_criteria}), patch.dict(
+                profiles.ARGUMENT_STRUCTURE_CHECKS, {self.critic: future_structure}):
             self.assertIn("FUTURE STANDARD", self.project.prompt(self.critic))
+            self.assertIn("FUTURE STRUCTURE", self.project.prompt(self.critic))
             session = self.project.prepare_adversarial_review(finding.finding_id, provider="test", model="defender")
             self.assertEqual(session["critic_origin"]["critic_protocol"], original)
             self.assertNotIn("FUTURE STANDARD", session["requests"][0]["prompt"])
@@ -234,6 +263,7 @@ class AcademicQualitySnapshotTests(unittest.TestCase):
         legacy_protocol = contract["protocol"]
         legacy_protocol.pop("version")
         legacy_protocol.pop("scholarly_quality")
+        legacy_protocol.pop("argument_structure")
         legacy_prompt = (request["prompt"][:start] + json.dumps(contract) + request["prompt"][start + end:]).encode("utf-8")
         legacy_request = {"critic": self.critic}
         with patch.object(profiles, "ACADEMIC_QUALITY_VERSION", 99):
@@ -241,6 +271,28 @@ class AcademicQualitySnapshotTests(unittest.TestCase):
         self.assertEqual(recovered, legacy_protocol)
         self.assertNotIn("version", recovered)
         self.assertNotIn("scholarly_quality", recovered)
+        self.assertNotIn("argument_structure", recovered)
+
+    def test_v2_request_remains_valid_after_structure_upgrade(self):
+        legacy = profiles.academic_protocol(self.critic, discipline="humanities", research_type="theoretical")
+        legacy["version"] = legacy["scholarly_quality"]["version"] = 2
+        legacy.pop("argument_structure")
+        # Exercise a genuinely saved request, rather than just inspecting a dict.
+        with patch("document_review_stores.audits.academic_protocol", return_value=legacy):
+            request = self.request()
+        request_dir = self.project.root / "ai-requests" / request["request_id"]
+        original = {name: (request_dir / name).read_bytes() for name in ("request.json", "prompt.md")}
+        finding = self.import_finding(request)
+        session = self.project.prepare_adversarial_review(finding.finding_id, provider="test", model="defender")
+        self.assertEqual(session["critic_origin"]["critic_protocol"], legacy)
+        self.assertNotIn('"argument_structure"', session["requests"][0]["prompt"])
+        new_request = self.request()
+        self.assertEqual(new_request["critic_protocol"]["version"], 3)
+        self.assertIn('"argument_structure"', new_request["prompt"])
+        self.assertNotEqual(new_request["prompt_sha256"], request["prompt_sha256"])
+        for name, data in original.items():
+            self.assertEqual((request_dir / name).read_bytes(), data)
+        self.assertEqual(DocumentReviewProject(self.project.root).integrity_errors(), [])
 
 
 if __name__ == "__main__":

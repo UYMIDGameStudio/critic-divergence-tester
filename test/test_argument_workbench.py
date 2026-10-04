@@ -74,7 +74,7 @@ class ArgumentWorkbenchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             paths = self.make_project(Path(temporary))
             prompt = paths.prompt.read_text(encoding="utf-8")
-            self.assertIn("Protocol: argument-ir-extraction-v2", prompt)
+            self.assertIn("Protocol: argument-ir-extraction-v3", prompt)
             self.assertIn("types 和 methods 默认各选择一个最主要值", prompt)
             self.assertIn("methods 描述实际支撑该 Claim 的方法", prompt)
             self.assertIn("不要用 Claim 自身的重复表述冒充 Evidence", prompt)

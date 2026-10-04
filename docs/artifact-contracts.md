@@ -134,7 +134,7 @@ human judgment about the Claim.
 
 Raw fields begin as `model-derived`. Corrected or added fields cite the `ICnnnn` event that made them `human-confirmed`. Source name/hash, node positions, and compact display IDs are `deterministic`. Exact-quote validation proves only that a quote occurs at the stated source location; choosing that quote remains a model or human semantic act.
 
-`extraction-prompt.md` is deterministic source-bound protocol content rather than a semantic judgment artifact. New workspaces use `argument-ir-extraction-v2`; verification also reproduces the exact legacy v1 bytes so existing immutable workspaces remain valid. Every Raw attempt binds the prompt bytes it actually used through `prompt_sha256`. Once an attempt exists, replacing v1 with v2 (or making any other prompt edit) therefore breaks verification instead of silently changing model provenance.
+`extraction-prompt.md` is deterministic source-bound protocol content rather than a semantic judgment artifact. New workspaces use `argument-ir-extraction-v3`; verification also reproduces the exact legacy v1/v2 bytes so existing immutable workspaces remain valid. Every Raw attempt binds the prompt bytes it actually used through `prompt_sha256`. Once an attempt exists, replacing an old prompt with v3 (or making any other prompt edit) therefore breaks verification instead of silently changing model provenance. v3 strengthens source attribution, premise reconstruction and qualification handling without changing the Argument IR response schema.
 
 Deleting a node deterministically removes its incident relations from the reviewed projection. The removal itself remains traceable to its correction event. Undo appends `revert_correction`; it never deletes history.
 

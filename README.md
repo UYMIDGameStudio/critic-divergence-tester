@@ -6,9 +6,10 @@
 由你逐项批准，再生成独立新版本复查。核心文本流程不依赖第三方 Python 包；
 PDF、扫描件及旧 Office/WPS 格式按需使用额外组件。
 
-**0.2.27** 采用围绕文稿、证据与批注的编辑式界面：原文使用纸页阅读区，
-审查意见呈现为关联批注，项目、步骤与辅助工具分别安排层级。
-保留双语、窄屏及 PDF 连续阅读支持。见 [0.2.27 升级记录](docs/release-engineering-0.2.27.md)，
+**0.2.28** 根据用户提供的经典细读资料加强论证结构审查：区分前提与推理桥梁、
+相容与真实、反驳与证明、生成与功能，并保留作者、引述对象及编者的归属。
+学术协议 v3 与 IR 抽取 v3 用于新请求，历史协议保持可验证。
+见 [0.2.28 升级记录](docs/release-engineering-0.2.28.md)，
 安装与升级见 [便携版说明](docs/portable-guide.md)。
 
 [对抗深审](docs/adversarial-review.md)让已有批评经过独立辩护与证据复核；
@@ -16,7 +17,7 @@ PDF、扫描件及旧 Office/WPS 格式按需使用额外组件。
 文书使用同一流程和各自的标准。审查结合[按文章任务细读、反证核对与可验证修正](docs/review-quality-0.2.2.md)，
 并通过 IR／协议绑定原始字节、归档异常回传、隔离跨项目请求。
 
-[学术审查协议 v2](docs/academic-quality-framework.md)将代表性论文与权威指南提炼为
+[学术审查协议 v3](docs/academic-quality-framework.md)将代表性论文、指南与细读方法提炼为
 有适用条件、原文要求和防误判约束的质量标准，覆盖贡献、推理、方法、反例、
 引用与读者理解。新请求使用新标准，历史复审保留原协议；尚不宣称模型准确率提升。
 
@@ -418,7 +419,7 @@ py -3 critic_runner.py ir verify-project $project
 
 macOS / Linux 把 `py -3` 换成 `python3`。如果模型回答已经保存为文件，第二步改用 `--file path/to/returned.json`。文件模式保留精确字节；终端粘贴模式记录为 `terminal-paste`，并保存终端实际收到的 UTF-8 文本。
 
-新建工作区使用 `argument-ir-extraction-v2`：每条 Claim 的 `types` 与 `methods` 默认各选一个主要值，method 只描述实际支撑该 Claim 的方法，而不是罗列整篇文章出现过的所有方法；结论和中间 Claim 还会被要求连接可追踪的支持关系。这样可避免一次过度多重分类在下游确定性膨胀成大量无关 checks。旧工作区的 v1 prompt 仍按原始字节重建验证，Raw attempt 保存的 `prompt_sha256` 不会因为工具升级而失效或被静默换成 v2。
+新建工作区使用 `argument-ir-extraction-v3`：沿用每条 Claim 的 `types` 与 `methods` 默认各选一个主要值的约束，method 只描述实际支撑该 Claim 的方法。进一步区分章节顺序与逻辑支持、作者断言与引述声音、明说与推断；限定和缺失桥梁要保留，不能默默替作者修补论证。沿用现有节点和关系，不增加返回字段或下游任务种类。旧工作区的 v1/v2 prompt 仍按原始字节重建验证，Raw attempt 保存的 `prompt_sha256` 不会因为工具升级而失效或被静默换成 v3。
 
 每次模型返回都写入新的 `raw-ir/attempt-nnnn/`，包括无效返回；旧 attempt 永远不会被覆盖。在尚未产生人工 correction 时，最近一次 `valid` 或 `correctable` attempt 会成为当前 Raw IR；第一条 correction 写入后就把 V1 固定到该 attempt，后续返回只能归档，不会偷换已经人工审查的基础。可定位但存在类型、引文或 relation 问题的结果标记为 `correctable`，可以直接进入 Inspector。无法解析、source hash 不符或没有可用节点身份的返回标记为 `unusable`，仍会归档，但需要重新收集一次。
 

@@ -2,7 +2,7 @@
   "schema_version": 3,
   "artifact": "argument-check-results",
   "source": {
-    "plan_sha256": "37906f554304e32c7160c84a7304a9b2827b7e141ff4b3ba56d3af9036d29727"
+    "plan_sha256": "54c1b923c48a3a805011df5a7dc13d067380f063a53ded5597944b43d3c301e7"
   },
   "status": "complete",
   "unverified": [],
