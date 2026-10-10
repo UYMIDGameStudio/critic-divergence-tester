@@ -25,7 +25,7 @@ class AcademicQualityProtocolTests(unittest.TestCase):
                     with self.subTest(critic=critic, discipline=discipline, kind=kind):
                         protocol = profiles.academic_protocol(
                             critic, discipline=discipline, research_type=kind)
-                        self.assertEqual(protocol["version"], 3)
+                        self.assertEqual(protocol["version"], 4)
                         self.assertEqual(protocol["confirmed_scope"],
                                          {"discipline": discipline, "research_type": kind})
                         quality = protocol["scholarly_quality"]
@@ -180,6 +180,9 @@ class AcademicQualitySnapshotTests(unittest.TestCase):
         payload = {**{key: request[key] for key in
                       ("request_id", "prompt_sha256", "provider", "model", "critic", "source_sha256")},
                    "findings": [finding]}
+        if "argument_assessment_protocol" in request:
+            from test.test_argument_composition import synthetic_assessment
+            payload["argument_assessment"] = synthetic_assessment(self.project)
         return self.project.collect_model_audit(
             self.critic, json.dumps(payload), provider="test", model="reviewer",
             request_id=request["request_id"]).findings[0]
@@ -187,7 +190,7 @@ class AcademicQualitySnapshotTests(unittest.TestCase):
     def test_academic_snapshot_survives_template_change_in_adversarial_and_recheck(self):
         request = self.request()
         original = copy.deepcopy(request["critic_protocol"])
-        self.assertEqual(original["scholarly_quality"]["version"], 3)
+        self.assertEqual(original["scholarly_quality"]["version"], 4)
         request_dir = self.project.root / "ai-requests" / request["request_id"]
         saved = {name: (request_dir / name).read_bytes() for name in ("request.json", "prompt.md")}
         finding = self.import_finding(request)
@@ -287,7 +290,7 @@ class AcademicQualitySnapshotTests(unittest.TestCase):
         self.assertEqual(session["critic_origin"]["critic_protocol"], legacy)
         self.assertNotIn('"argument_structure"', session["requests"][0]["prompt"])
         new_request = self.request()
-        self.assertEqual(new_request["critic_protocol"]["version"], 3)
+        self.assertEqual(new_request["critic_protocol"]["version"], 4)
         self.assertIn('"argument_structure"', new_request["prompt"])
         self.assertNotEqual(new_request["prompt_sha256"], request["prompt_sha256"])
         for name, data in original.items():

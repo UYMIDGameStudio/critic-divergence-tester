@@ -113,6 +113,8 @@ class AcademicReviewTests(unittest.TestCase):
             request = project.prepare_ai_audits([critic], provider="manual", model="reviewer")[0]
             response = {key: request[key] for key in ("request_id", "prompt_sha256", "provider", "model")}
             response.update(critic=critic, source_sha256=project.document().source.sha256, findings=[proposal])
+            from test.test_argument_composition import synthetic_assessment
+            response["argument_assessment"] = synthetic_assessment(project)
             project.collect_model_audit(critic, json.dumps(response), provider="manual", model="reviewer")
             finding = project.findings()[0]
             project.decide_finding(finding.finding_id, "accept", reason="收窄因果主张")
@@ -125,7 +127,7 @@ class AcademicReviewTests(unittest.TestCase):
             status = project.external_recheck_status(revision["revision_id"])
             external = status["requests"][0]
             self.assertEqual(external["original_request_id"], request["request_id"])
-            self.assertIn("学术论证与反例", external["prompt"])
+            self.assertIn("学术论证设计与有效性", external["prompt"])
             revised_blocks = json.loads((revision_dir / "document.json").read_text(encoding="utf-8"))["blocks"]
             revised_block = next(block for block in revised_blocks if "现有材料不足以作出因果判断" in block["text"])
             response = {key: external[key] for key in ("request_id", "prompt_sha256")}

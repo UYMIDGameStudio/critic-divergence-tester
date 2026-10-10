@@ -244,6 +244,17 @@ function revisionWorkspace(view) {
     .join('');
   return ui`<div class="card next"><h2>逐项修改与批准</h2><p>Action 绑定工作组和明确 Finding 集。操作类型必须由人显式选择，系统的自然语言推断只显示为建议。</p></div>${cards}<div class="card"><button id="finalize-revision" ${ws.ready_to_finalize ? '' : 'disabled'}>生成修改稿并复审</button><p class="muted">所有 Action 都必须确认操作类型，并完成最新 Hunk 的批准或驳回。</p><div id="err" class="error"></div></div>`;
 }
+function argumentAssessment(view) {
+  const rows = view.argument_assessments || [];
+  if (!rows.length) return '';
+  const statuses = {effective: tr('有效的安排'), mixed: tr('有作用，也有取舍'),
+    weak: tr('需要改进'), 'unable-to-assess': tr('材料不足')};
+  const knownTitles = ['论证结构', '论证方向', '论证方法', '特征特点'];
+  return ui`<section class="card argument-assessment"><h2>论证与文章综合审查</h2><p class="muted">按文章的问题和贡献选择审查角度，记录有效之处、局限与建议。以下为模型意见，原文定位通过不等于人工认可。</p>${rows.map(row => {
+    const frame = row.assessment.review_frame;
+    return ui`<p class="muted">来源审查：${esc(row.request_id)} · ${esc(row.run_id)}</p><div class="assessment-frame"><p><b>实际问题：</b>${esc(frame.question)}</p><p><b>意图贡献：</b>${esc(frame.intended_contribution)}</p><p><b>整体路线：</b>${esc(frame.argument_route)}</p><p><b>审查重点：</b>${frame.priorities.map(esc).join(' · ')}</p>${frame.scope_limits.length ? ui`<p><b>范围限制：</b>${frame.scope_limits.map(esc).join(' · ')}</p>` : ''}${frame.evidence.length ? ui`<details><summary>审查方案依据</summary>${frame.evidence.map(anchor => `<div class="quote"><small>${esc(anchor.block_id)}</small><p>${esc(anchor.quote)}</p></div>`).join('')}</details>` : ''}</div><div class="assessment-axes">${row.assessment.dimensions.map(dimension => ui`<article class="assessment-axis" data-axis="${esc(dimension.id)}"><h3>${esc(knownTitles.includes(dimension.title) ? tr(dimension.title) : dimension.title)}</h3><span class="pill">${esc(statuses[dimension.status])}</span><p class="muted assessment-relevance">${esc(dimension.why_relevant)}</p><p class="assessment-description">${esc(dimension.description)}</p><p>${esc(dimension.assessment)}</p>${dimension.strengths.length ? ui`<p><b>有效之处</b></p><ul>${dimension.strengths.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}${dimension.limitations.length ? ui`<p><b>局限与取舍</b></p><ul>${dimension.limitations.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}<p><b>保留或调整建议：</b>${esc(dimension.recommendation)}</p>${dimension.evidence.length ? ui`<details><summary>原文依据</summary>${dimension.evidence.map(anchor => `<div class="quote"><small>${esc(anchor.block_id)}</small><p>${esc(anchor.quote)}</p></div>`).join('')}</details>` : ''}</article>`).join('')}</div>`;
+  }).join('')}</section>`;
+}
 function findingWorkspace(view) {
   const items = view.findings || [],
     summary = view.finding_summary || {},
@@ -274,5 +285,5 @@ function project() {
   const v = state.selected,
     st = v.state;
   const readonly = st.read_only || st.integrity_errors?.length;
-  root.innerHTML = ui`${serviceDetails(state.notice)}${readonly ? ui`<div class="card readonly"><h2>项目已切换为只读</h2><p>${esc((st.integrity_errors || []).join('；') || tr('完整性链异常'))}</p><p>请恢复可信项目副本后再继续，下载也会被阻止。</p></div>` : ''}<div class="card project-heading"><div class="row"><button class="secondary" id="back">← 返回项目列表</button><button class="danger" id="delete-selected" data-dir="${esc(v.directory)}">删除本地项目</button></div><h2>${esc(v.project.title)}</h2><p class="muted">原件：${esc(v.project.source.name)} · SHA-256 ${esc(v.project.source.sha256)}</p></div>${pdfReaderControl(v)}${workflow(v)}${extractionCard(v)}${contextCard(v)}${reviewCards(v)}${findingWorkspace(v)}${adversarialHistory(v)}${exportCenter(v)}`;
+  root.innerHTML = ui`${serviceDetails(state.notice)}${readonly ? ui`<div class="card readonly"><h2>项目已切换为只读</h2><p>${esc((st.integrity_errors || []).join('；') || tr('完整性链异常'))}</p><p>请恢复可信项目副本后再继续，下载也会被阻止。</p></div>` : ''}<div class="card project-heading"><div class="row"><button class="secondary" id="back">← 返回项目列表</button><button class="danger" id="delete-selected" data-dir="${esc(v.directory)}">删除本地项目</button></div><h2>${esc(v.project.title)}</h2><p class="muted">原件：${esc(v.project.source.name)} · SHA-256 ${esc(v.project.source.sha256)}</p></div>${pdfReaderControl(v)}${workflow(v)}${extractionCard(v)}${contextCard(v)}${reviewCards(v)}${argumentAssessment(v)}${findingWorkspace(v)}${adversarialHistory(v)}${exportCenter(v)}`;
 }

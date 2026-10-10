@@ -164,8 +164,8 @@ def _check_academic_protocols(library: Path) -> None:
         quality = protocol.get("scholarly_quality", {})
         criteria = quality.get("criteria", [])
         structure = protocol.get("argument_structure", {})
-        if (protocol.get("version") != 3 or quality.get("version") != 3
-                or structure.get("version") != 1 or not structure.get("checks")
+        if (protocol.get("version") != 4 or quality.get("version") != 4
+                or structure.get("version") != 2 or not structure.get("checks")
                 or structure.get("reference", {}).get("snapshot_sha256") != "cffe1595dfb116f4d02a1476e4aece76169eeadbadb1bb8a708376b9a7efab28"
                 or required[row["critic"]] not in {item.get("id") for item in criteria}
                 or not quality.get("sources")
@@ -174,6 +174,17 @@ def _check_academic_protocols(library: Path) -> None:
         restored = project._snapshotted_critic_protocol(row, row["prompt"].encode("utf-8"))
         if restored != protocol:
             raise RuntimeError("Packaged academic prompt differs from its saved protocol")
+        if row["critic"] == "academic_argument":
+            from document_review_composition import assessment_example, validate_argument_assessment
+            if row.get("argument_assessment_protocol", {}).get("response_fields") != ["version", "review_frame", "dimensions"]:
+                raise RuntimeError("Packaged academic argument design review is missing")
+            overview = assessment_example()
+            block = project.document().blocks[-1]
+            overview["review_frame"]["evidence"] = [{"block_id": block.block_id, "quote": block.text}]
+            for axis in overview["dimensions"]:
+                axis["evidence"] = [{"block_id": block.block_id, "quote": block.text}]
+            if validate_argument_assessment(overview, {block.block_id: block}):
+                raise RuntimeError("Packaged argument design review evidence cannot validate")
     if project.integrity_errors():
         raise RuntimeError("Packaged academic protocol provenance failed verification")
 

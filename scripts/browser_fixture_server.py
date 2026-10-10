@@ -6,6 +6,19 @@ from unified_app import serve_unified_app
 
 fixture = None
 project_dir = None
+if "--argument-composition" in sys.argv[2:]:
+    from test.test_argument_composition import ArgumentCompositionTests
+    fixture = ArgumentCompositionTests()
+    fixture.setUp()
+    request = fixture.request()
+    payload = fixture.payload(request)
+    payload["argument_assessment"]["dimensions"][3]["assessment"] = '<img src=x onerror="window.__compositionInjected=true"> Straße 日本語 Русский Latīna'
+    import copy
+    extra = copy.deepcopy(payload["argument_assessment"]["dimensions"][0])
+    extra.update(id="problem-framing", title="Problem framing", why_relevant="This synthetic article compares two interpretations.")
+    payload["argument_assessment"]["dimensions"].append(extra)
+    fixture.collect(request, payload)
+    project_dir = fixture.project.root
 if "--close-reading" in sys.argv[2:]:
     from test.test_close_reading_quality import CloseReadingQualityTests
     fixture = CloseReadingQualityTests()

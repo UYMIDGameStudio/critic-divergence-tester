@@ -11,22 +11,22 @@ ALL_CRITICS = DOCUMENT_CRITICS + ACADEMIC_CRITICS
 PROFILES = {"document": DOCUMENT_CRITICS, "academic": ACADEMIC_CRITICS, "mixed": ALL_CRITICS}
 CRITIC_LABELS = dict(zip(ALL_CRITICS, (
     "表达清晰度", "执行可行性", "合规风险筛查", "治理合理性", "正式规范性",
-    "学术论证与反例", "研究方法与可复现性", "引用与证据核验",
+    "论证设计与有效性", "论证方法与研究设计", "引用与证据核验",
 )))
 DISCIPLINES = {"general": "通用/跨学科", "social-science": "社会科学", "natural-science": "自然科学", "engineering": "工程研究", "humanities": "人文研究"}
 RESEARCH_TYPES = {"unspecified": "待确认", "empirical": "实证研究", "theoretical": "理论/解释研究", "review": "文献综述", "engineering": "工程/系统研究"}
 
 ACADEMIC_PROTOCOLS = {
     "academic_argument": {
-        "role": "学术论证与反例审查者",
-        "objective": "逐条追踪主张—支持材料或前提—推理桥梁—适用边界，不将重复主张当作支持。",
-        "checks": ["区分描述、解释、因果与规范主张，查找循环论证和层级跳跃", "检验核心主张的最强相关异议；经验争议比较可区分观察，概念、演绎或规范争议比较推导与理由", "结论是否超出材料、样本、时空与理论适用边界"],
+        "role": "学术论证设计与有效性审查者",
+        "objective": "先理解文章的问题、贡献与整体策略，再选择相关角度评价其论证与文章效果。结构、方向、方法和特点只是起点；问题设定、前提、证据组织、反驳策略、解释增量或读者效果等应按实际需要扩展。保留有效选择与取舍，同时检验关键支持链及边界。",
+        "checks": ["重构主次论证与章节任务，评价推进顺序、篇幅重心及结论收束", "辨认解释、批判、辩护、问题重设或方案建构的方向及其转向", "分析实际论证方法的选择、组合和适切性，以及可定位的特点及其作用与代价", "检验核心主张的支持与最强相关异议，核对结论边界"],
         "evidence": "定位主张、支持材料或前提的 block；解释其如何支持结论及对相关替代解释的影响。未交代推理桥梁先标待核实；明确逻辑冲突须指出步骤，不替作者补造论证。",
         "exclusions": "不以多数意见判真，不把文风差异写成逻辑错误，不输出总分。",
     },
     "academic_methods": {
         "role": "研究方法与可复现性审查者",
-        "objective": "按确认的学科和研究类型核对方法与结论是否匹配，不给理论文章强套实验指标。",
+        "objective": "评价论证方法为何适合本文问题、如何组合和转换，再按确认的研究类型核对设计、复核路径与结论；避免把方法审查缩成通用实验清单。",
         "checks": ["实证：样本与选择机制、测量操作化、识别假设、混杂、缺失数据、效应量与不确定性", "理论/人文：概念界定、材料选择理由、解释步骤、竞争读法与反例", "综述：检索范围、纳排标准、筛选流程、质量评估及综合边界", "工程：需求、基线、数据切分、消融、失败场景和运行环境", "材料/数据/代码的可获得性；隐私或伦理限制应明确说明，不要求公开受保护数据"],
         "evidence": "每个缺口注明适用研究类型、原文定位、对结论的影响和最小补充材料。无法判断研究类型时请求作者确认。",
         "exclusions": "不伪造实验、数据、统计结果或伦理审批，不把关键词命中当作方法有效。",
@@ -76,7 +76,7 @@ METHOD_CHECKS_BY_TYPE = {
 
 # These are a curated synthesis, not a universal ranking of papers. Source URLs
 # document the review method; they never verify a manuscript's factual claims.
-ACADEMIC_QUALITY_VERSION = 3
+ACADEMIC_QUALITY_VERSION = 4
 ACADEMIC_QUALITY_SOURCES = {
     "plos": {"title": "PLOS ONE — Criteria for Publication", "url": "https://journals.plos.org/plosone/s/criteria-for-publication"},
     "harvard-question": {"title": "Harvard College Writing Center — Asking Analytical Questions", "url": "https://writingcenter.fas.harvard.edu/asking-analytical-questions"},
@@ -294,10 +294,10 @@ def argument_structure_protocol(critic: str) -> dict:
     if critic not in ARGUMENT_STRUCTURE_CHECKS:
         raise ValueError("未知论证结构审查维度")
     return {
-        "version": 1,
+        "version": 2,
         "reference": deepcopy(ARGUMENT_STRUCTURE_REFERENCE),
         "workflow": [
-            "先定位文章问题、核心结论和章节任务，再还原与本项判断有关的前提—推理桥梁—结论及限定。章节顺序、修辞力度和同题引用不是支持关系。只交付简短、可核对的论证摘要，不输出私有思维过程。",
+            "先定位实际问题、意图贡献和全文路线，拟定审查重点，再选择并扩展相关角度，说明每个角度为何影响本文。结构、方向、方法与特点可作为起点；还应按需要审查问题设定、证据组织、前提、反驳策略及读者效果等。有效的安排和取舍也要说明，勿将综合审查缩成固定数量的漏洞检查。只交付可核对的简短判断，不输出私有思维过程。",
             "严格区分作者明说、可恢复的隐含前提与审查者补入的假设；后两者标明重构及不确定性，不替作者补造证明。先查可见全文的反例、脚注与回应，再确定仍存在的缺口。",
             "仅执行当前维度且符合 when 的检查；核心步骤优先，已有回应充分则撤回批评。无法取得关键上下文时将相关判断保留为无法核验，不把未提供材料当作作者缺失。",
         ],

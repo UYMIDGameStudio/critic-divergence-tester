@@ -159,3 +159,8 @@ main { max-width: 1480px; margin: auto; padding: 28px 32px 64px; }
   .workflow .step.current { outline: 2px solid Highlight; outline-offset: -3px; }
   .source-block:target { outline: 2px solid Highlight; }
 }
+.assessment-axes {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px 36px}
+.assessment-frame {border-left:2px solid var(--annotation);padding:8px 20px;margin-bottom:24px;overflow-wrap:anywhere}
+.assessment-axis {min-width:0;border-top:1px solid var(--line);padding-top:20px;overflow-wrap:anywhere}
+.assessment-axis .quote {white-space:pre-wrap}
+@media(max-width:860px){.assessment-axes {grid-template-columns:1fr}}

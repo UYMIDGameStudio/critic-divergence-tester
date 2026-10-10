@@ -31,505 +31,162 @@
   "复审理由或证据说明超过长度限制": {"zh-Hant": "複審理由或證據說明超過長度限制。", "en": "The recheck reason or evidence explanation exceeds the length limit."},
   "复审引句或定位无效，请核对修订稿中的段落与原文": {"zh-Hant": "複審引句或定位無效，請核對修訂稿中的段落與原文。", "en": "The recheck quotation or location is invalid. Check the passage and exact text in the revision."},
   "未解决问题缺少修订稿定位，请补充带原文引句的复审结果后开始下一轮": {"zh-Hant": "未解決問題缺少修訂稿定位，請補充帶原文引句的複審結果後開始下一輪。", "en": "Unresolved issues lack revised-document locations. Import a recheck with source quotations before starting the next round."},
-  "表达清晰度": {
-    "zh-Hant": "表達清晰度",
-    "en": "Clarity"
-  },
-  "执行可行性": {
-    "zh-Hant": "執行可行性",
-    "en": "Feasibility"
-  },
-  "合规风险筛查": {
-    "zh-Hant": "合規風險篩查",
-    "en": "Compliance risk screening"
-  },
-  "治理合理性": {
-    "zh-Hant": "治理合理性",
-    "en": "Governance"
-  },
-  "正式规范性": {
-    "zh-Hant": "正式文件規範",
-    "en": "Professional presentation"
-  },
-  "学术论证与反例": {
-    "zh-Hant": "學術論證與反例",
-    "en": "Arguments and counterexamples"
-  },
-  "研究方法与可复现性": {
-    "zh-Hant": "研究方法與可重現性",
-    "en": "Methods and reproducibility"
-  },
-  "引用与证据核验": {
-    "zh-Hant": "引用與證據查核",
-    "en": "Citations and evidence"
-  },
-  "通用/跨学科": {
-    "zh-Hant": "通用／跨學科",
-    "en": "General / interdisciplinary"
-  },
-  "社会科学": {
-    "zh-Hant": "社會科學",
-    "en": "Social sciences"
-  },
-  "自然科学": {
-    "zh-Hant": "自然科學",
-    "en": "Natural sciences"
-  },
-  "工程研究": {
-    "zh-Hant": "工程研究",
-    "en": "Engineering"
-  },
-  "人文研究": {
-    "zh-Hant": "人文研究",
-    "en": "Humanities"
-  },
-  "实证研究": {
-    "zh-Hant": "實證研究",
-    "en": "Empirical research"
-  },
-  "理论/解释研究": {
-    "zh-Hant": "理論／解釋研究",
-    "en": "Theoretical / interpretive research"
-  },
-  "文献综述": {
-    "zh-Hant": "文獻綜述",
-    "en": "Literature review"
-  },
-  "工程/系统研究": {
-    "zh-Hant": "工程／系統研究",
-    "en": "Engineering / systems research"
-  },
-  "文档识别": {
-    "zh-Hant": "文件辨識",
-    "en": "Document extraction"
-  },
-  "审查上下文": {
-    "zh-Hant": "審查背景",
-    "en": "Review context"
-  },
-  "本地预检": {
-    "zh-Hant": "本機預檢",
-    "en": "Local checks"
-  },
-  "AI 专项审查": {
-    "zh-Hant": "AI 專項審查",
-    "en": "Independent AI review"
-  },
-  "人工裁决": {
-    "zh-Hant": "人工裁決",
-    "en": "Your decisions"
-  },
-  "受约束修改": {
-    "zh-Hant": "逐項修改",
-    "en": "Approved changes"
-  },
-  "导出结果": {
-    "zh-Hant": "匯出結果",
-    "en": "Export"
-  },
-  "待确认": {
-    "zh-Hant": "待確認",
-    "en": "Awaiting confirmation"
-  },
-  "已确认": {
-    "zh-Hant": "已確認",
-    "en": "Confirmed"
-  },
-  "已运行": {
-    "zh-Hant": "已執行",
-    "en": "Completed"
-  },
-  "未运行": {
-    "zh-Hant": "尚未執行",
-    "en": "Not started"
-  },
-  "已导入": {
-    "zh-Hant": "已匯入",
-    "en": "imported"
-  },
-  "已处理": {
-    "zh-Hant": "已處理",
-    "en": "decided"
-  },
-  "暂无 Finding": {
-    "zh-Hant": "尚無審查問題",
-    "en": "No issues yet"
-  },
-  "修改稿已生成并复审": {
-    "zh-Hant": "修改稿已產生並複審",
-    "en": "Revised draft checked"
-  },
-  "逐段修改中": {
-    "zh-Hant": "逐段修改中",
-    "en": "Changes in progress"
-  },
-  "未开始": {
-    "zh-Hant": "尚未開始",
-    "en": "Not started"
-  },
-  "已有导出文件": {
-    "zh-Hant": "已有匯出檔案",
-    "en": "Files available"
-  },
-  "未导出": {
-    "zh-Hant": "尚未匯出",
-    "en": "Not exported"
-  },
-  "本地确定性预检": {
-    "zh-Hant": "本機預檢",
-    "en": "Local checks"
-  },
-  "AI 审查协议生成": {
-    "zh-Hant": "產生 AI 審查協議",
-    "en": "Preparing AI review"
-  },
-  "AI 审查导入": {
-    "zh-Hant": "匯入 AI 審查",
-    "en": "Importing AI review"
-  },
-  "识别确认": {
-    "zh-Hant": "確認辨識",
-    "en": "Confirming extraction"
-  },
-  "上下文确认": {
-    "zh-Hant": "確認背景",
-    "en": "Confirming context"
-  },
-  "修改计划生成": {
-    "zh-Hant": "產生修改計畫",
-    "en": "Preparing revision tasks"
-  },
-  "修改稿生成与复审": {
-    "zh-Hant": "產生修改稿並複審",
-    "en": "Revising and checking"
-  },
-  "可选": {
-    "zh-Hant": "選用",
-    "en": "Optional"
-  },
-  "PDF 文本页解析": {
-    "zh-Hant": "PDF 文字頁解析",
-    "en": "PDF text extraction"
-  },
-  "PDF 坐标、扫描页渲染": {
-    "zh-Hant": "PDF 座標與掃描頁轉換",
-    "en": "PDF coordinates and scanned-page rendering"
-  },
-  "便携版不支持运行时安装 Python 组件；请使用包含所需适配器的发行包或源码版": {
-    "zh-Hant": "可攜版無法在執行時安裝 Python 元件；請使用包含所需元件的發行包或原始碼版",
-    "en": "The portable app cannot install Python components while running. Use a release containing the required adapters, or the source version."
-  },
-  "扫描 PDF OCR（英文、简体、繁体、德语、法语、日语、俄语、拉丁语）": {
-    "zh-Hant": "掃描 PDF 文字辨識（英文、簡體、繁體、德語、法語、日語、俄語、拉丁語）",
-    "en": "Scanned PDF recognition (English, Simplified and Traditional Chinese, German, French, Japanese, Russian and Latin)"
-  },
-  "默认检查 chi_sim+chi_tra+eng；导入时可另选 eng/chi_sim/chi_tra/deu/fra/jpn/rus/lat 组合，只需安装所选语言包。请在操作系统中安装 Tesseract 及相应 traineddata；应用不会自动下载系统组件": {
-    "zh-Hant": "預設檢查 chi_sim+chi_tra+eng；匯入時可另選 eng/chi_sim/chi_tra/deu/fra/jpn/rus/lat 組合，只需安裝所選語言包。請在作業系統中安裝 Tesseract 與對應 traineddata；應用程式不會自動下載系統元件",
-    "en": "The default check uses chi_sim+chi_tra+eng. On import, select any supported eng/chi_sim/chi_tra/deu/fra/jpn/rus/lat combination; only the selected language packs are needed. Install Tesseract and the matching traineddata in your operating system. The app does not download system components automatically."
-  },
-  "旧版 DOC/WPS/XLS/ET/PPT/DPS 文件转换": {
-    "zh-Hant": "舊版 DOC/WPS/XLS/ET/PPT/DPS 檔案轉換",
-    "en": "Legacy DOC/WPS/XLS/ET/PPT/DPS conversion"
-  },
-  "安装本机 LibreOffice 后可重新识别旧格式；现代 Office 格式和文本格式不需要此组件": {
-    "zh-Hant": "在本機安裝 LibreOffice 後可重新辨識舊格式；新版 Office 格式與文字格式不需要此元件",
-    "en": "Install LibreOffice locally to retry legacy formats. Modern Office and text formats do not require it."
-  },
-  "专业论证图谱与历史项目": {
-    "zh-Hant": "專業論證圖譜與歷史專案",
-    "en": "Argument maps and existing research projects"
-  },
-  "新稿审查支持文书和学术稿件。专业项目保留主张、审查标准、引用核验和版本关系；建立论证图谱需先完成主张提取与确认。": {
-    "zh-Hant": "新稿審查支援文書與學術稿件。專業專案保留主張、審查標準、引用核驗與版本關係；建立論證圖譜需先完成主張提取與確認。",
-    "en": "New manuscript review supports professional and academic writing. Research projects preserve claims, review standards, citation checks and version relationships. Argument maps require claim extraction and confirmation first."
-  },
-  "打开专业研究与历史项目": {
-    "zh-Hant": "開啟專業研究與歷史專案",
-    "en": "Open research tools and existing projects"
-  },
-  "选择这次的任务": {
-    "zh-Hant": "選擇這次的任務",
-    "en": "Choose your task"
-  },
-  "新稿审查": {
-    "zh-Hant": "新稿審查",
-    "en": "Review a new manuscript"
-  },
-  "已有审查报告，直接修稿": {
-    "zh-Hant": "已有審查報告，直接修稿",
-    "en": "Revise from an existing review report"
-  },
-  "已有报告修稿支持 Markdown/TXT 原稿；模型提出修改，你逐项批准并复查。": {
-    "zh-Hant": "已有報告修稿支援 Markdown/TXT 原稿；模型提出修改，你逐項批准並複查。",
-    "en": "To revise from an existing report, use a Markdown or TXT manuscript. The model proposes changes; you approve each change and recheck the result."
-  },
-  "扫描 PDF 页面渲染": {
-    "zh-Hant": "掃描 PDF 頁面繪製",
-    "en": "Scanned PDF page rendering"
-  },
-  "PDF 坐标、扫描页渲染（可选兼容组件）": {
-    "zh-Hant": "PDF 座標、掃描頁繪製（選用相容元件）",
-    "en": "PDF coordinates and scanned-page rendering (optional compatibility component)"
-  },
-  "可选兼容组件，按需手动安装；默认页面渲染使用 pypdfium2": {
-    "zh-Hant": "選用相容元件，可按需手動安裝；預設頁面繪製使用 pypdfium2",
-    "en": "Optional compatibility component; install manually if needed. Page rendering uses pypdfium2 by default."
-  },
-  "扫描 PDF 完整识别能力（页面渲染及所选 OCR 语言包）": {
-    "zh-Hant": "掃描 PDF 完整辨識能力（頁面繪製與所選 OCR 語言包）",
-    "en": "Scanned PDF recognition (page rendering and selected OCR language packs)"
-  },
-  "需要页面渲染组件、Tesseract 引擎和所选语言包同时可用": {
-    "zh-Hant": "需要頁面繪製元件、Tesseract 引擎與所選語言包同時可用",
-    "en": "Requires a page renderer, the Tesseract engine and all selected language packs."
-  },
-  "未提供上下文反证核对；请先检查作者是否已在其他段落回答此问题。": {
-    "zh-Hant": "未提供上下文反證核對；請先檢查作者是否已在其他段落回答此問題。",
-    "en": "No contextual counterevidence check was supplied. Check whether another passage already answers this objection."
-  },
-  "细读依据（模型判断）": {
-    "zh-Hant": "細讀依據（模型判斷）",
-    "en": "Close-reading justification (model proposal)"
-  },
-  "作者的实际主张：": {
-    "zh-Hant": "作者的實際主張：",
-    "en": "Author’s actual position: "
-  },
-  "最强辩护：": {
-    "zh-Hant": "最強辯護：",
-    "en": "Strongest defense: "
-  },
-  "仍然存在的问题：": {
-    "zh-Hant": "仍然存在的問題：",
-    "en": "Remaining defect: "
-  },
-  "修正验收方法：": {
-    "zh-Hant": "修正驗收方法：",
-    "en": "Repair acceptance test: "
-  },
-  "引文已核对，判断是否成立仍需你确认。": {
-    "zh-Hant": "引文已核對，判斷是否成立仍需你確認。",
-    "en": "Quoted text was checked. You still need to assess whether the objection holds."
-  },
-  "上下文": {
-    "zh-Hant": "上下文",
-    "en": "Context"
-  },
-  "支持材料": {
-    "zh-Hant": "支持材料",
-    "en": "Support"
-  },
-  "反证材料": {
-    "zh-Hant": "反證材料",
-    "en": "Counterevidence"
-  },
-  "限定条件": {
-    "zh-Hant": "限定條件",
-    "en": "Qualification"
-  },
-  "项目或任务已变化，请刷新页面并核对内容后再提交": {
-    "zh-Hant": "專案或任務已變更，請重新整理頁面並核對內容後再提交",
-    "en": "The project or task has changed. Refresh the page and check its contents before submitting again."
-  },
-  "影响结论、结构或执行链": {
-    "zh-Hant": "影響結論、結構或執行鏈",
-    "en": "Affects the conclusion, structure or execution"
-  },
-  "阻断发布或执行": {
-    "zh-Hant": "阻斷發布或執行",
-    "en": "Blocks publication or execution"
-  },
-  "高严重度": {
-    "zh-Hant": "高嚴重度",
-    "en": "High severity"
-  },
-  " 个独立 critic 指向同一修改动作": {
-    "zh-Hant": " 個獨立 critic 指向同一修改動作",
-    "en": " independent critics point to the same change"
-  },
-  "一般审查项": {
-    "zh-Hant": "一般審查項",
-    "en": "General review issue"
-  },
-  "备份格式无效：请选择工作台生成的完整项目备份 ZIP，审查导出包不是恢复备份": {
-    "zh-Hant": "請選擇工作台產生的完整專案備份 ZIP。審查匯出包不能用來恢復專案。",
-    "en": "Choose a full project backup ZIP created by this app. A review export package cannot restore a project."
-  },
-  "不支持的备份格式": {
-    "zh-Hant": "不支援這份備份的格式。請選擇工作台產生的完整專案備份。",
-    "en": "This backup format is not supported. Choose a full project backup created by this app."
-  },
-  "项目超过备份容量限制": {
-    "zh-Hant": "專案超過備份容量限制。原專案仍保留，請先檢查專案大小。",
-    "en": "The project exceeds the backup size limit. The original project is kept; check its size before retrying."
-  },
-  "备份清单过大": {
-    "zh-Hant": "備份清單超過大小限制，無法恢復這份備份。",
-    "en": "The backup inventory exceeds the size limit. This backup cannot be restored."
-  },
-  "备份条目重复或数量超限": {
-    "zh-Hant": "備份包含重複項目或過多檔案。請改用另一份完整備份。",
-    "en": "The backup has duplicate entries or too many files. Use another complete backup."
-  },
-  "备份体积超限、包含链接或加密条目": {
-    "zh-Hant": "備份超過容量限制，或包含不支援的連結／加密項目。請使用工作台產生的完整備份。",
-    "en": "The backup is too large or contains unsupported links or encrypted entries. Use a complete backup created by this app."
-  },
-  "备份文件与清单不一致": {
-    "zh-Hant": "備份檔案與清單不一致。請使用完整且未被修改的備份。",
-    "en": "The backup files do not match its inventory. Use a complete, unmodified backup."
-  },
-  "备份文件清单字段无效": {
-    "zh-Hant": "備份清單資料無效。請使用另一份完整備份。",
-    "en": "The backup inventory is invalid. Use another complete backup."
-  },
-  "备份校验失败：文件长度与清单不符": {
-    "zh-Hant": "備份校驗失敗：檔案大小與清單不符。請使用未損壞的備份。",
-    "en": "Backup verification failed: a file size does not match the inventory. Use an intact backup."
-  },
-  "备份项目名称无效": {
-    "zh-Hant": "備份中的專案名稱無效。請使用工作台產生的完整備份。",
-    "en": "The backup contains an invalid project name. Use a complete backup created by this app."
-  },
-  "备份必须保存到项目外的新文件，不覆盖已有文件": {
-    "zh-Hant": "請將備份儲存為專案目錄外的新檔案；已有檔案不會被覆寫。",
-    "en": "Save the backup as a new file outside the project directory. Existing files are not overwritten."
-  },
-  "备份目标不能是链接": {
-    "zh-Hant": "備份位置不能是連結。請選擇一般本機檔案位置。",
-    "en": "The backup destination cannot be a link. Choose a regular local file location."
-  },
-  "项目删除标记必须为文件": {
-    "zh-Hant": "專案的刪除狀態異常，備份已停止。請保留原專案及現有備份供檢查。",
-    "en": "The project's deletion state is invalid, so the backup was stopped. Keep the original project and existing backups for inspection."
-  },
-  "备份包含无效删除标记路径": {
-    "zh-Hant": "備份包含無效的刪除狀態資料，恢復已停止。請使用另一份完整備份。",
-    "en": "The backup contains invalid deletion-state data, so restoration was stopped. Use another complete backup."
-  },
-  "恢复目标名称连续冲突，请稍后重试": {
-    "zh-Hant": "恢復時無法建立唯一的專案名稱。請稍後重試。",
-    "en": "A unique project name could not be created during restoration. Try again shortly."
-  },
-  "请在本次修改完成后创建备份，不能备份尚未提交的项目状态": {
-    "zh-Hant": "請等本次修改完成後再建立備份。未完成的專案狀態不能備份。",
-    "en": "Wait for the current change to finish before creating a backup. An unfinished project state cannot be backed up."
-  },
-  "备份未能完成。请保留原项目，检查保存位置和可用空间后重试。": {
-    "zh-Hant": "備份未能完成。請保留原專案，檢查儲存位置和可用空間後重試。",
-    "en": "The backup could not finish. Keep the original project, then check the destination and available space before retrying."
-  },
-  "恢复未能完成。请保留现有项目，并根据以下诊断检查备份文件后重试。": {
-    "zh-Hant": "恢復未能完成。請保留現有專案，並根據以下診斷檢查備份檔案後重試。",
-    "en": "Restoration could not finish. Keep existing projects and check the backup using the diagnostic below before retrying."
-  },
-  "删除未能完成。请保留项目库中的备份，刷新并确认项目状态后再操作。": {
-    "zh-Hant": "刪除未能完成。請保留專案庫中的備份，重新整理並確認專案狀態後再操作。",
-    "en": "Deletion could not finish. Keep the backups in the project library, then refresh and check the project state before continuing."
-  },
-  "原始诊断：": {
-    "zh-Hant": "原始診斷：",
-    "en": "Original diagnostic: "
-  },
-  "文件名含路径、保留名称或不支持的字符，请重命名原文件后重新导入": {
-    "zh-Hant": "檔案名稱含路徑、保留名稱或不支援的字元，請重新命名原檔案後再匯入。",
-    "en": "The filename contains a path, reserved name or unsupported character. Rename the original file and import it again."
-  },
-  "已提取静态 HTML 正文；脚本、样式、隐藏模板和外部资源不执行或加载，页面布局不作为审查依据。": {
-    "zh-Hant": "已提取靜態 HTML 正文；腳本、樣式、隱藏範本和外部資源不會執行或載入，頁面版面不作為審查依據。",
-    "en": "Extracted static HTML text. Scripts, styles, hidden templates and external resources are not executed or loaded. Page layout is not review evidence."
-  },
-  "表格内列表按单元格文本展开，列表编号与层级需对照原件核对。": {
-    "zh-Hant": "表格內列表按儲存格文字展開，列表編號與層級需對照原件核對。",
-    "en": "Lists inside tables are extracted as cell text. Check their numbering and nesting against the original."
-  },
-  "嵌套 HTML 表格已在外层单元格中按文本展开，内部表格定位未保留。": {
-    "zh-Hant": "巢狀 HTML 表格已在外層儲存格中按文字展開，內部表格定位未保留。",
-    "en": "Nested HTML tables are extracted as text inside the outer cell. Inner table coordinates are not retained."
-  },
-  "HTML 中的嵌入对象、画布或媒体内容未执行或解析；请另行提供需要审查的正文。": {
-    "zh-Hant": "HTML 中的嵌入物件、畫布或媒體內容未執行或解析；請另行提供需要審查的正文。",
-    "en": "Embedded HTML objects, canvases and media were not executed or parsed. Provide their reviewable content separately."
-  },
-  "HTML 图片未下载或识别，仅保留已有替代文字；图片正文需要另行提供。": {
-    "zh-Hant": "HTML 圖片未下載或辨識，僅保留既有替代文字；圖片正文需要另行提供。",
-    "en": "HTML images were not downloaded or recognized. Only existing alternative text is retained; provide image content separately."
-  },
-  "HTML 表格没有完整闭合，已按可识别的行和单元格提取，请核对。": {
-    "zh-Hant": "HTML 表格沒有完整閉合，已按可辨識的列和儲存格提取，請核對。",
-    "en": "The HTML table is not fully closed. Recognizable rows and cells were extracted; check them against the original."
-  },
-  "条计数单位": {
-    "zh-Hant": "條",
-    "en": "issues"
-  },
-  "细读协议快照缺失，不能套用当前标准": {
-    "zh-Hant": "細讀協議快照缺失，不能套用目前標準。",
-    "en": "The saved close-reading contract is missing; current rules cannot replace it."
-  },
-  "细读协议与原请求快照不一致": {
-    "zh-Hant": "細讀協議與原請求快照不一致。",
-    "en": "The close-reading contract does not match the original request snapshot."
-  },
-  "外部复审的原细读协议文件缺失": {
-    "zh-Hant": "外部複審的原細讀協議檔案缺失。",
-    "en": "The original close-reading contract files for this recheck are missing."
-  },
-  "外部复审的原细读协议摘要不一致": {
-    "zh-Hant": "外部複審的原細讀協議校驗不一致。",
-    "en": "The original close-reading contract checksums do not match this recheck."
-  },
-  "外部复审的原细读请求绑定不一致": {
-    "zh-Hant": "外部複審與原細讀請求的關聯不一致。",
-    "en": "This recheck does not match its original close-reading request."
-  },
-  "原审查协议快照缺失或不一致，不能套用当前版本的标准复审": {
-    "zh-Hant": "原審查協議快照缺失或不一致，不能套用目前版本的標準複審。",
-    "en": "The original review contract is missing or inconsistent; current rules cannot be substituted for rechecking."
-  },
-  "原细读协议无法验证：close_reading_protocol must be an object": {
-    "zh-Hant": "無法驗證原細讀協議：細讀協議格式無效。",
-    "en": "Cannot validate the original close-reading contract: The close-reading contract has an invalid format."
-  },
-  "原细读协议无法验证：Unsupported close-reading protocol version": {
-    "zh-Hant": "無法驗證原細讀協議：目前程式不支援這份細讀協議的版本。",
-    "en": "Cannot validate the original close-reading contract: This application does not support the saved close-reading contract version."
-  },
-  "原细读协议无法验证：Close-reading version 1 fields do not match its published response contract": {
-    "zh-Hant": "無法驗證原細讀協議：細讀協議第 1 版的欄位與已發布規格不一致。",
-    "en": "Cannot validate the original close-reading contract: The version 1 close-reading fields do not match the published response contract."
-  },
-  "细读协议不可导出：close_reading_protocol must be an object": {
-    "zh-Hant": "無法匯出細讀協議：細讀協議格式無效。",
-    "en": "Cannot export the close-reading contract: The close-reading contract has an invalid format."
-  },
-  "细读协议不可导出：Unsupported close-reading protocol version": {
-    "zh-Hant": "無法匯出細讀協議：目前程式不支援這份細讀協議的版本。",
-    "en": "Cannot export the close-reading contract: This application does not support the saved close-reading contract version."
-  },
-  "已按 PDF 页面位置修复逐词换行，并核对文字顺序；请确认段落和阅读顺序。": {
-    "zh-Hant": "已依 PDF 頁面位置修復逐詞換行，並核對文字順序；請確認段落與閱讀順序。",
-    "en": "Word-by-word line breaks were repaired using PDF page positions, and text order was checked. Please confirm the paragraphs and reading order."
-  },
-  "部分 PDF 页面逐词换行，无法安全自动修复；请对照原文件确认或修正提取文字。": {
-    "zh-Hant": "部分 PDF 頁面逐詞換行，無法安全自動修復；請對照原始檔案確認或修正擷取文字。",
-    "en": "Some PDF pages have word-by-word line breaks that could not be safely repaired. Please compare with the original file and confirm or correct the extracted text."
-  },
-  "已确认用途为信息传播或现场表达；不因缺少预算、负责人、验收或治理词项就判定缺陷。具体承诺、执行条款和权利限制仍需结合全文独立审查。": {
-    "zh-Hant": "已確認用途為資訊傳播或現場表達；不因缺少預算、負責人、驗收或治理詞項就判定缺陷。具體承諾、執行條款與權利限制仍需結合全文獨立審查。",
-    "en": "The confirmed purpose is to convey information or deliver remarks in person. Missing terms about budgets, responsible parties, acceptance criteria or governance alone do not establish a defect. Specific commitments, implementation provisions and restrictions on rights still require independent review in the context of the full document."
-  },
-  "当前用途不适用通用缺词清单；零条目不代表执行可行性或治理合理性已获确认。": {
-    "zh-Hant": "目前用途不適用通用缺詞清單；零條目不代表執行可行性或治理合理性已獲確認。",
-    "en": "The generic checklist of missing terms does not apply to this purpose. Zero items do not establish implementation feasibility or sound governance."
-  },
-  "细读协议不可导出：Close-reading version 1 fields do not match its published response contract": {
-    "zh-Hant": "無法匯出細讀協議：細讀協議第 1 版的欄位與已發布規格不一致。",
-    "en": "Cannot export the close-reading contract: The version 1 close-reading fields do not match the published response contract."
-  },
+  "表达清晰度": {"zh-Hant": "表達清晰度", "en": "Clarity"},
+  "执行可行性": {"zh-Hant": "執行可行性", "en": "Feasibility"},
+  "合规风险筛查": {"zh-Hant": "合規風險篩查", "en": "Compliance risk screening"},
+  "治理合理性": {"zh-Hant": "治理合理性", "en": "Governance"},
+  "正式规范性": {"zh-Hant": "正式文件規範", "en": "Professional presentation"},
+  "学术论证与反例": {"zh-Hant": "學術論證與反例", "en": "Arguments and counterexamples"},
+  "研究方法与可复现性": {"zh-Hant": "研究方法與可重現性", "en": "Methods and reproducibility"},
+  "引用与证据核验": {"zh-Hant": "引用與證據查核", "en": "Citations and evidence"},
+  "通用/跨学科": {"zh-Hant": "通用／跨學科", "en": "General / interdisciplinary"},
+  "社会科学": {"zh-Hant": "社會科學", "en": "Social sciences"},
+  "自然科学": {"zh-Hant": "自然科學", "en": "Natural sciences"},
+  "工程研究": {"zh-Hant": "工程研究", "en": "Engineering"},
+  "人文研究": {"zh-Hant": "人文研究", "en": "Humanities"},
+  "实证研究": {"zh-Hant": "實證研究", "en": "Empirical research"},
+  "理论/解释研究": {"zh-Hant": "理論／解釋研究", "en": "Theoretical / interpretive research"},
+  "文献综述": {"zh-Hant": "文獻綜述", "en": "Literature review"},
+  "工程/系统研究": {"zh-Hant": "工程／系統研究", "en": "Engineering / systems research"},
+  "文档识别": {"zh-Hant": "文件辨識", "en": "Document extraction"},
+  "审查上下文": {"zh-Hant": "審查背景", "en": "Review context"},
+  "本地预检": {"zh-Hant": "本機預檢", "en": "Local checks"},
+  "AI 专项审查": {"zh-Hant": "AI 專項審查", "en": "Independent AI review"},
+  "人工裁决": {"zh-Hant": "人工裁決", "en": "Your decisions"},
+  "受约束修改": {"zh-Hant": "逐項修改", "en": "Approved changes"},
+  "导出结果": {"zh-Hant": "匯出結果", "en": "Export"},
+  "待确认": {"zh-Hant": "待確認", "en": "Awaiting confirmation"},
+  "已确认": {"zh-Hant": "已確認", "en": "Confirmed"},
+  "已运行": {"zh-Hant": "已執行", "en": "Completed"},
+  "未运行": {"zh-Hant": "尚未執行", "en": "Not started"},
+  "已导入": {"zh-Hant": "已匯入", "en": "imported"},
+  "已处理": {"zh-Hant": "已處理", "en": "decided"},
+  "暂无 Finding": {"zh-Hant": "尚無審查問題", "en": "No issues yet"},
+  "修改稿已生成并复审": {"zh-Hant": "修改稿已產生並複審", "en": "Revised draft checked"},
+  "逐段修改中": {"zh-Hant": "逐段修改中", "en": "Changes in progress"},
+  "未开始": {"zh-Hant": "尚未開始", "en": "Not started"},
+  "已有导出文件": {"zh-Hant": "已有匯出檔案", "en": "Files available"},
+  "未导出": {"zh-Hant": "尚未匯出", "en": "Not exported"},
+  "本地确定性预检": {"zh-Hant": "本機預檢", "en": "Local checks"},
+  "AI 审查协议生成": {"zh-Hant": "產生 AI 審查協議", "en": "Preparing AI review"},
+  "AI 审查导入": {"zh-Hant": "匯入 AI 審查", "en": "Importing AI review"},
+  "识别确认": {"zh-Hant": "確認辨識", "en": "Confirming extraction"},
+  "上下文确认": {"zh-Hant": "確認背景", "en": "Confirming context"},
+  "修改计划生成": {"zh-Hant": "產生修改計畫", "en": "Preparing revision tasks"},
+  "修改稿生成与复审": {"zh-Hant": "產生修改稿並複審", "en": "Revising and checking"},
+  "可选": {"zh-Hant": "選用", "en": "Optional"},
+  "PDF 文本页解析": {"zh-Hant": "PDF 文字頁解析", "en": "PDF text extraction"},
+  "PDF 坐标、扫描页渲染": {"zh-Hant": "PDF 座標與掃描頁轉換", "en": "PDF coordinates and scanned-page rendering"},
+  "便携版不支持运行时安装 Python 组件；请使用包含所需适配器的发行包或源码版": {"zh-Hant": "可攜版無法在執行時安裝 Python 元件；請使用包含所需元件的發行包或原始碼版", "en": "The portable app cannot install Python components while running. Use a release containing the required adapters, or the source version."},
+  "扫描 PDF OCR（英文、简体、繁体、德语、法语、日语、俄语、拉丁语）": {"zh-Hant": "掃描 PDF 文字辨識（英文、簡體、繁體、德語、法語、日語、俄語、拉丁語）", "en": "Scanned PDF recognition (English, Simplified and Traditional Chinese, German, French, Japanese, Russian and Latin)"},
+  "默认检查 chi_sim+chi_tra+eng；导入时可另选 eng/chi_sim/chi_tra/deu/fra/jpn/rus/lat 组合，只需安装所选语言包。请在操作系统中安装 Tesseract 及相应 traineddata；应用不会自动下载系统组件": {"zh-Hant": "預設檢查 chi_sim+chi_tra+eng；匯入時可另選 eng/chi_sim/chi_tra/deu/fra/jpn/rus/lat 組合，只需安裝所選語言包。請在作業系統中安裝 Tesseract 與對應 traineddata；應用程式不會自動下載系統元件", "en": "The default check uses chi_sim+chi_tra+eng. On import, select any supported eng/chi_sim/chi_tra/deu/fra/jpn/rus/lat combination; only the selected language packs are needed. Install Tesseract and the matching traineddata in your operating system. The app does not download system components automatically."},
+  "旧版 DOC/WPS/XLS/ET/PPT/DPS 文件转换": {"zh-Hant": "舊版 DOC/WPS/XLS/ET/PPT/DPS 檔案轉換", "en": "Legacy DOC/WPS/XLS/ET/PPT/DPS conversion"},
+  "安装本机 LibreOffice 后可重新识别旧格式；现代 Office 格式和文本格式不需要此组件": {"zh-Hant": "在本機安裝 LibreOffice 後可重新辨識舊格式；新版 Office 格式與文字格式不需要此元件", "en": "Install LibreOffice locally to retry legacy formats. Modern Office and text formats do not require it."},
+  "专业论证图谱与历史项目": {"zh-Hant": "專業論證圖譜與歷史專案", "en": "Argument maps and existing research projects"},
+  "新稿审查支持文书和学术稿件。专业项目保留主张、审查标准、引用核验和版本关系；建立论证图谱需先完成主张提取与确认。": {"zh-Hant": "新稿審查支援文書與學術稿件。專業專案保留主張、審查標準、引用核驗與版本關係；建立論證圖譜需先完成主張提取與確認。", "en": "New manuscript review supports professional and academic writing. Research projects preserve claims, review standards, citation checks and version relationships. Argument maps require claim extraction and confirmation first."},
+  "打开专业研究与历史项目": {"zh-Hant": "開啟專業研究與歷史專案", "en": "Open research tools and existing projects"},
+  "选择这次的任务": {"zh-Hant": "選擇這次的任務", "en": "Choose your task"},
+  "新稿审查": {"zh-Hant": "新稿審查", "en": "Review a new manuscript"},
+  "已有审查报告，直接修稿": {"zh-Hant": "已有審查報告，直接修稿", "en": "Revise from an existing review report"},
+  "已有报告修稿支持 Markdown/TXT 原稿；模型提出修改，你逐项批准并复查。": {"zh-Hant": "已有報告修稿支援 Markdown/TXT 原稿；模型提出修改，你逐項批准並複查。", "en": "To revise from an existing report, use a Markdown or TXT manuscript. The model proposes changes; you approve each change and recheck the result."},
+  "扫描 PDF 页面渲染": {"zh-Hant": "掃描 PDF 頁面繪製", "en": "Scanned PDF page rendering"},
+  "PDF 坐标、扫描页渲染（可选兼容组件）": {"zh-Hant": "PDF 座標、掃描頁繪製（選用相容元件）", "en": "PDF coordinates and scanned-page rendering (optional compatibility component)"},
+  "可选兼容组件，按需手动安装；默认页面渲染使用 pypdfium2": {"zh-Hant": "選用相容元件，可按需手動安裝；預設頁面繪製使用 pypdfium2", "en": "Optional compatibility component; install manually if needed. Page rendering uses pypdfium2 by default."},
+  "扫描 PDF 完整识别能力（页面渲染及所选 OCR 语言包）": {"zh-Hant": "掃描 PDF 完整辨識能力（頁面繪製與所選 OCR 語言包）", "en": "Scanned PDF recognition (page rendering and selected OCR language packs)"},
+  "需要页面渲染组件、Tesseract 引擎和所选语言包同时可用": {"zh-Hant": "需要頁面繪製元件、Tesseract 引擎與所選語言包同時可用", "en": "Requires a page renderer, the Tesseract engine and all selected language packs."},
+  "未提供上下文反证核对；请先检查作者是否已在其他段落回答此问题。": {"zh-Hant": "未提供上下文反證核對；請先檢查作者是否已在其他段落回答此問題。", "en": "No contextual counterevidence check was supplied. Check whether another passage already answers this objection."},
+  "细读依据（模型判断）": {"zh-Hant": "細讀依據（模型判斷）", "en": "Close-reading justification (model proposal)"},
+  "作者的实际主张：": {"zh-Hant": "作者的實際主張：", "en": "Author’s actual position: "},
+  "最强辩护：": {"zh-Hant": "最強辯護：", "en": "Strongest defense: "},
+  "仍然存在的问题：": {"zh-Hant": "仍然存在的問題：", "en": "Remaining defect: "},
+  "修正验收方法：": {"zh-Hant": "修正驗收方法：", "en": "Repair acceptance test: "},
+  "引文已核对，判断是否成立仍需你确认。": {"zh-Hant": "引文已核對，判斷是否成立仍需你確認。", "en": "Quoted text was checked. You still need to assess whether the objection holds."},
+  "上下文": {"zh-Hant": "上下文", "en": "Context"},
+  "支持材料": {"zh-Hant": "支持材料", "en": "Support"},
+  "反证材料": {"zh-Hant": "反證材料", "en": "Counterevidence"},
+  "限定条件": {"zh-Hant": "限定條件", "en": "Qualification"},
+  "项目或任务已变化，请刷新页面并核对内容后再提交": {"zh-Hant": "專案或任務已變更，請重新整理頁面並核對內容後再提交", "en": "The project or task has changed. Refresh the page and check its contents before submitting again."},
+  "影响结论、结构或执行链": {"zh-Hant": "影響結論、結構或執行鏈", "en": "Affects the conclusion, structure or execution"},
+  "阻断发布或执行": {"zh-Hant": "阻斷發布或執行", "en": "Blocks publication or execution"},
+  "高严重度": {"zh-Hant": "高嚴重度", "en": "High severity"},
+  " 个独立 critic 指向同一修改动作": {"zh-Hant": " 個獨立 critic 指向同一修改動作", "en": " independent critics point to the same change"},
+  "一般审查项": {"zh-Hant": "一般審查項", "en": "General review issue"},
+  "备份格式无效：请选择工作台生成的完整项目备份 ZIP，审查导出包不是恢复备份": {"zh-Hant": "請選擇工作台產生的完整專案備份 ZIP。審查匯出包不能用來恢復專案。", "en": "Choose a full project backup ZIP created by this app. A review export package cannot restore a project."},
+  "不支持的备份格式": {"zh-Hant": "不支援這份備份的格式。請選擇工作台產生的完整專案備份。", "en": "This backup format is not supported. Choose a full project backup created by this app."},
+  "项目超过备份容量限制": {"zh-Hant": "專案超過備份容量限制。原專案仍保留，請先檢查專案大小。", "en": "The project exceeds the backup size limit. The original project is kept; check its size before retrying."},
+  "备份清单过大": {"zh-Hant": "備份清單超過大小限制，無法恢復這份備份。", "en": "The backup inventory exceeds the size limit. This backup cannot be restored."},
+  "备份条目重复或数量超限": {"zh-Hant": "備份包含重複項目或過多檔案。請改用另一份完整備份。", "en": "The backup has duplicate entries or too many files. Use another complete backup."},
+  "备份体积超限、包含链接或加密条目": {"zh-Hant": "備份超過容量限制，或包含不支援的連結／加密項目。請使用工作台產生的完整備份。", "en": "The backup is too large or contains unsupported links or encrypted entries. Use a complete backup created by this app."},
+  "备份文件与清单不一致": {"zh-Hant": "備份檔案與清單不一致。請使用完整且未被修改的備份。", "en": "The backup files do not match its inventory. Use a complete, unmodified backup."},
+  "备份文件清单字段无效": {"zh-Hant": "備份清單資料無效。請使用另一份完整備份。", "en": "The backup inventory is invalid. Use another complete backup."},
+  "备份校验失败：文件长度与清单不符": {"zh-Hant": "備份校驗失敗：檔案大小與清單不符。請使用未損壞的備份。", "en": "Backup verification failed: a file size does not match the inventory. Use an intact backup."},
+  "备份项目名称无效": {"zh-Hant": "備份中的專案名稱無效。請使用工作台產生的完整備份。", "en": "The backup contains an invalid project name. Use a complete backup created by this app."},
+  "备份必须保存到项目外的新文件，不覆盖已有文件": {"zh-Hant": "請將備份儲存為專案目錄外的新檔案；已有檔案不會被覆寫。", "en": "Save the backup as a new file outside the project directory. Existing files are not overwritten."},
+  "备份目标不能是链接": {"zh-Hant": "備份位置不能是連結。請選擇一般本機檔案位置。", "en": "The backup destination cannot be a link. Choose a regular local file location."},
+  "项目删除标记必须为文件": {"zh-Hant": "專案的刪除狀態異常，備份已停止。請保留原專案及現有備份供檢查。", "en": "The project's deletion state is invalid, so the backup was stopped. Keep the original project and existing backups for inspection."},
+  "备份包含无效删除标记路径": {"zh-Hant": "備份包含無效的刪除狀態資料，恢復已停止。請使用另一份完整備份。", "en": "The backup contains invalid deletion-state data, so restoration was stopped. Use another complete backup."},
+  "恢复目标名称连续冲突，请稍后重试": {"zh-Hant": "恢復時無法建立唯一的專案名稱。請稍後重試。", "en": "A unique project name could not be created during restoration. Try again shortly."},
+  "请在本次修改完成后创建备份，不能备份尚未提交的项目状态": {"zh-Hant": "請等本次修改完成後再建立備份。未完成的專案狀態不能備份。", "en": "Wait for the current change to finish before creating a backup. An unfinished project state cannot be backed up."},
+  "备份未能完成。请保留原项目，检查保存位置和可用空间后重试。": {"zh-Hant": "備份未能完成。請保留原專案，檢查儲存位置和可用空間後重試。", "en": "The backup could not finish. Keep the original project, then check the destination and available space before retrying."},
+  "恢复未能完成。请保留现有项目，并根据以下诊断检查备份文件后重试。": {"zh-Hant": "恢復未能完成。請保留現有專案，並根據以下診斷檢查備份檔案後重試。", "en": "Restoration could not finish. Keep existing projects and check the backup using the diagnostic below before retrying."},
+  "删除未能完成。请保留项目库中的备份，刷新并确认项目状态后再操作。": {"zh-Hant": "刪除未能完成。請保留專案庫中的備份，重新整理並確認專案狀態後再操作。", "en": "Deletion could not finish. Keep the backups in the project library, then refresh and check the project state before continuing."},
+  "原始诊断：": {"zh-Hant": "原始診斷：", "en": "Original diagnostic: "},
+  "文件名含路径、保留名称或不支持的字符，请重命名原文件后重新导入": {"zh-Hant": "檔案名稱含路徑、保留名稱或不支援的字元，請重新命名原檔案後再匯入。", "en": "The filename contains a path, reserved name or unsupported character. Rename the original file and import it again."},
+  "已提取静态 HTML 正文；脚本、样式、隐藏模板和外部资源不执行或加载，页面布局不作为审查依据。": {"zh-Hant": "已提取靜態 HTML 正文；腳本、樣式、隱藏範本和外部資源不會執行或載入，頁面版面不作為審查依據。", "en": "Extracted static HTML text. Scripts, styles, hidden templates and external resources are not executed or loaded. Page layout is not review evidence."},
+  "表格内列表按单元格文本展开，列表编号与层级需对照原件核对。": {"zh-Hant": "表格內列表按儲存格文字展開，列表編號與層級需對照原件核對。", "en": "Lists inside tables are extracted as cell text. Check their numbering and nesting against the original."},
+  "嵌套 HTML 表格已在外层单元格中按文本展开，内部表格定位未保留。": {"zh-Hant": "巢狀 HTML 表格已在外層儲存格中按文字展開，內部表格定位未保留。", "en": "Nested HTML tables are extracted as text inside the outer cell. Inner table coordinates are not retained."},
+  "HTML 中的嵌入对象、画布或媒体内容未执行或解析；请另行提供需要审查的正文。": {"zh-Hant": "HTML 中的嵌入物件、畫布或媒體內容未執行或解析；請另行提供需要審查的正文。", "en": "Embedded HTML objects, canvases and media were not executed or parsed. Provide their reviewable content separately."},
+  "HTML 图片未下载或识别，仅保留已有替代文字；图片正文需要另行提供。": {"zh-Hant": "HTML 圖片未下載或辨識，僅保留既有替代文字；圖片正文需要另行提供。", "en": "HTML images were not downloaded or recognized. Only existing alternative text is retained; provide image content separately."},
+  "HTML 表格没有完整闭合，已按可识别的行和单元格提取，请核对。": {"zh-Hant": "HTML 表格沒有完整閉合，已按可辨識的列和儲存格提取，請核對。", "en": "The HTML table is not fully closed. Recognizable rows and cells were extracted; check them against the original."},
+  "条计数单位": {"zh-Hant": "條", "en": "issues"},
+  "细读协议快照缺失，不能套用当前标准": {"zh-Hant": "細讀協議快照缺失，不能套用目前標準。", "en": "The saved close-reading contract is missing; current rules cannot replace it."},
+  "细读协议与原请求快照不一致": {"zh-Hant": "細讀協議與原請求快照不一致。", "en": "The close-reading contract does not match the original request snapshot."},
+  "外部复审的原细读协议文件缺失": {"zh-Hant": "外部複審的原細讀協議檔案缺失。", "en": "The original close-reading contract files for this recheck are missing."},
+  "外部复审的原细读协议摘要不一致": {"zh-Hant": "外部複審的原細讀協議校驗不一致。", "en": "The original close-reading contract checksums do not match this recheck."},
+  "外部复审的原细读请求绑定不一致": {"zh-Hant": "外部複審與原細讀請求的關聯不一致。", "en": "This recheck does not match its original close-reading request."},
+  "原审查协议快照缺失或不一致，不能套用当前版本的标准复审": {"zh-Hant": "原審查協議快照缺失或不一致，不能套用目前版本的標準複審。", "en": "The original review contract is missing or inconsistent; current rules cannot be substituted for rechecking."},
+  "原细读协议无法验证：close_reading_protocol must be an object": {"zh-Hant": "無法驗證原細讀協議：細讀協議格式無效。", "en": "Cannot validate the original close-reading contract: The close-reading contract has an invalid format."},
+  "原细读协议无法验证：Unsupported close-reading protocol version": {"zh-Hant": "無法驗證原細讀協議：目前程式不支援這份細讀協議的版本。", "en": "Cannot validate the original close-reading contract: This application does not support the saved close-reading contract version."},
+  "原细读协议无法验证：Close-reading version 1 fields do not match its published response contract": {"zh-Hant": "無法驗證原細讀協議：細讀協議第 1 版的欄位與已發布規格不一致。", "en": "Cannot validate the original close-reading contract: The version 1 close-reading fields do not match the published response contract."},
+  "细读协议不可导出：close_reading_protocol must be an object": {"zh-Hant": "無法匯出細讀協議：細讀協議格式無效。", "en": "Cannot export the close-reading contract: The close-reading contract has an invalid format."},
+  "细读协议不可导出：Unsupported close-reading protocol version": {"zh-Hant": "無法匯出細讀協議：目前程式不支援這份細讀協議的版本。", "en": "Cannot export the close-reading contract: This application does not support the saved close-reading contract version."},
+  "已按 PDF 页面位置修复逐词换行，并核对文字顺序；请确认段落和阅读顺序。": {"zh-Hant": "已依 PDF 頁面位置修復逐詞換行，並核對文字順序；請確認段落與閱讀順序。", "en": "Word-by-word line breaks were repaired using PDF page positions, and text order was checked. Please confirm the paragraphs and reading order."},
+  "部分 PDF 页面逐词换行，无法安全自动修复；请对照原文件确认或修正提取文字。": {"zh-Hant": "部分 PDF 頁面逐詞換行，無法安全自動修復；請對照原始檔案確認或修正擷取文字。", "en": "Some PDF pages have word-by-word line breaks that could not be safely repaired. Please compare with the original file and confirm or correct the extracted text."},
+  "已确认用途为信息传播或现场表达；不因缺少预算、负责人、验收或治理词项就判定缺陷。具体承诺、执行条款和权利限制仍需结合全文独立审查。": {"zh-Hant": "已確認用途為資訊傳播或現場表達；不因缺少預算、負責人、驗收或治理詞項就判定缺陷。具體承諾、執行條款與權利限制仍需結合全文獨立審查。", "en": "The confirmed purpose is to convey information or deliver remarks in person. Missing terms about budgets, responsible parties, acceptance criteria or governance alone do not establish a defect. Specific commitments, implementation provisions and restrictions on rights still require independent review in the context of the full document."},
+  "当前用途不适用通用缺词清单；零条目不代表执行可行性或治理合理性已获确认。": {"zh-Hant": "目前用途不適用通用缺詞清單；零條目不代表執行可行性或治理合理性已獲確認。", "en": "The generic checklist of missing terms does not apply to this purpose. Zero items do not establish implementation feasibility or sound governance."},
+  "细读协议不可导出：Close-reading version 1 fields do not match its published response contract": {"zh-Hant": "無法匯出細讀協議：細讀協議第 1 版的欄位與已發布規格不一致。", "en": "Cannot export the close-reading contract: The version 1 close-reading fields do not match the published response contract."},
   "先导入，再确认原文": {"zh-Hant": "先匯入，再確認原文", "en": "Import your file, then check the original text"},
   "支持的格式与语言": {"zh-Hant": "支援的格式與語言", "en": "Supported formats and languages"},
   "继续上次的审查": {"zh-Hant": "繼續上次的審查", "en": "Pick up where you left off"},
   "还没有本地项目": {"zh-Hant": "還沒有本機專案", "en": "No projects yet"},
-  "导入第一份文件后，即可在这里继续审查。": {"zh-Hant": "匯入第一份檔案後，即可在這裡繼續審查。", "en": "Import your first document to start a review here."}
+  "导入第一份文件后，即可在这里继续审查。": {"zh-Hant": "匯入第一份檔案後，即可在這裡繼續審查。", "en": "Import your first document to start a review here."},
+  "论证设计综评": {"zh-Hant": "論證設計綜評", "en": "Argument design review"},
+  "论证结构": {"zh-Hant": "論證結構", "en": "Argument structure"},
+  "论证方向": {"zh-Hant": "論證方向", "en": "Argument direction"},
+  "论证方法": {"zh-Hant": "論證方法", "en": "Argument methods"},
+  "特征特点": {"zh-Hant": "特徵特點", "en": "Distinctive features"},
+  "有效的安排": {"zh-Hant": "有效的安排", "en": "Effective choice"},
+  "有作用，也有取舍": {"zh-Hant": "有作用，也有取捨", "en": "Useful with trade-offs"},
+  "需要改进": {"zh-Hant": "需要改進", "en": "Needs improvement"},
+  "材料不足": {"zh-Hant": "材料不足", "en": "Insufficient material"},
+  "有效之处": {"zh-Hant": "有效之處", "en": "What works"},
+  "局限与取舍": {"zh-Hant": "局限與取捨", "en": "Limitations and trade-offs"},
+  "保留或调整建议：": {"zh-Hant": "保留或調整建議：", "en": "Keep or adjust: "},
+  "原文依据": {"zh-Hant": "原文依據", "en": "Source evidence"},
+  "来源审查：": {"zh-Hant": "來源審查：", "en": "Source review: "},
+  "结构、方向、方法和特点分别评价。以下为模型意见，原文定位通过不等于人工认可；有效的安排也会保留。": {"zh-Hant": "結構、方向、方法和特點分別評價。以下為模型意見，原文定位通過不等於人工認可；有效的安排也會保留。", "en": "Structure, direction, methods and features are assessed separately. These are model opinions; locating quotations does not establish human approval. Effective choices are also recorded."},
+  "论证设计综评无效：": {"zh-Hant": "論證設計綜評無效：", "en": "Invalid argument design review: "},
+  "论证设计协议无法验证：": {"zh-Hant": "論證設計協議無法驗證：", "en": "Cannot validate argument design protocol: "},
+  "论证设计协议与原请求快照不一致": {"zh-Hant": "論證設計協議與原請求快照不一致", "en": "Argument design protocol does not match the saved request"},
+  "当前请求未绑定论证设计综评协议，请生成新的学术论证请求": {"zh-Hant": "目前請求未綁定論證設計綜評協議，請產生新的學術論證請求", "en": "This request has no argument design protocol; prepare a new academic argument request"},
+  "论证设计与有效性": {"zh-Hant": "論證設計與有效性", "en": "Argument design and validity"},
+  "论证方法与研究设计": {"zh-Hant": "論證方法與研究設計", "en": "Argument methods and research design"},
+  "论证与文章综合审查": {"zh-Hant": "論證與文章綜合審查", "en": "Article and argument review"},
+  "按文章的问题和贡献选择审查角度，记录有效之处、局限与建议。以下为模型意见，原文定位通过不等于人工认可。": {"zh-Hant": "按文章的問題和貢獻選擇審查角度，記錄有效之處、局限與建議。以下為模型意見，原文定位通過不等於人工認可。", "en": "Review angles follow the article’s question and contribution, recording strengths, limitations and recommendations. These are model opinions; locating quotations does not establish human approval."},
+  "实际问题：": {"zh-Hant": "實際問題：", "en": "Question: "},
+  "意图贡献：": {"zh-Hant": "意圖貢獻：", "en": "Intended contribution: "},
+  "整体路线：": {"zh-Hant": "整體路線：", "en": "Overall strategy: "},
+  "审查重点：": {"zh-Hant": "審查重點：", "en": "Review priorities: "},
+  "范围限制：": {"zh-Hant": "範圍限制：", "en": "Scope limits: "},
+  "审查方案依据": {"zh-Hant": "審查方案依據", "en": "Evidence for the review plan"}
 }

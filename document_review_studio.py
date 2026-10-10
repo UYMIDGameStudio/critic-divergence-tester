@@ -30,6 +30,7 @@ from project_lifecycle import before_write, transaction, recover, compatibility,
 from document_review_ingest import IngestionError, IngestionLimits, ingest_bytes, safe_upload_name
 from academic_review import academic_prechecks
 from document_review_quality import close_reading_markdown
+from document_review_composition import assessment_markdown
 from document_review_model import (
     AuditRun,
     DocumentBlock,
@@ -683,8 +684,13 @@ class DocumentReviewProject:
         # Never project untrusted stage text after the integrity gate failed.
         adversarial_reviews = [] if state.get("read_only") else self.adversarial_reviews()
         adversarial_eligible_ids = set()
+        argument_assessments = []
         if not state.get("read_only"):
             for _, run, _ in self._active_audit_run_records().values():
+                if run.get("argument_assessment") is not None:
+                    argument_assessments.append({"run_id": run["run_id"], "source_sha256": run["source_sha256"],
+                        "request_id": run.get("declared_model_metadata", {}).get("request_id"),
+                        "assessment": run["argument_assessment"]})
                 if run.get("model_label") != "deterministic-local-rules" and isinstance(run.get("declared_model_metadata"), Mapping):
                     adversarial_eligible_ids.update(item["finding_id"] for item in run.get("findings", []))
             current_round = self.current_review_round()
@@ -722,7 +728,7 @@ class DocumentReviewProject:
             {"key": "bridge", "label": "受约束修改", "status": "completed" if revision_complete else "in_progress" if bridge_complete else "not_started", "detail": "修改与复审流程已完成" if revision_complete else "修改稿已生成，复审待完成" if revision_generated else "逐段修改中" if bridge_complete else "未开始"},
             {"key": "export", "label": "导出结果", "status": "completed" if export_complete else "not_started", "detail": "已有导出文件" if export_complete else "未导出"},
         ]
-        return {"review_critics": {key: CRITIC_LABELS[key] for key in self.review_critics()}, "project": manifest, "product_status": "experimental-preview", "state": state, "extraction": {"available": document is not None, "metadata": document.metadata if document else {}, "quality": document.quality.to_dict() if document else {}, "warnings": [warning.to_dict() for warning in document.warnings] if document else [], "blocks": [block.to_dict() for block in document.blocks] if document else [], "total_blocks": len(document.blocks) if document else 0}, "context": self.context().to_dict() if self.context() else {"model_suggestion": self.suggested_document_type()}, "can_review": can_review, "review_blockers": reasons, "ai_requests": ai_requests, "adversarial_reviews": adversarial_reviews, "adversarial_eligible_finding_ids": sorted(adversarial_eligible_ids), "findings": finding_rows, "verification_context": verification_context, "finding_summary": finding_summary, "attention_queue": attention_queue, "revision_workspace": revision_workspace, "workflow": workflow, "exports": exports}
+        return {"review_critics": {key: CRITIC_LABELS[key] for key in self.review_critics()}, "project": manifest, "product_status": "experimental-preview", "state": state, "extraction": {"available": document is not None, "metadata": document.metadata if document else {}, "quality": document.quality.to_dict() if document else {}, "warnings": [warning.to_dict() for warning in document.warnings] if document else [], "blocks": [block.to_dict() for block in document.blocks] if document else [], "total_blocks": len(document.blocks) if document else 0}, "context": self.context().to_dict() if self.context() else {"model_suggestion": self.suggested_document_type()}, "can_review": can_review, "review_blockers": reasons, "ai_requests": ai_requests, "argument_assessments": argument_assessments, "adversarial_reviews": adversarial_reviews, "adversarial_eligible_finding_ids": sorted(adversarial_eligible_ids), "findings": finding_rows, "verification_context": verification_context, "finding_summary": finding_summary, "attention_queue": attention_queue, "revision_workspace": revision_workspace, "workflow": workflow, "exports": exports}
 
 
 def _document_from_dict(value: Mapping[str, Any]) -> StructuredDocument:
@@ -786,9 +792,12 @@ def _verification_close_reading_markdown(finding: Mapping[str, Any], context: Ma
 
 def _audit_markdown(audit: Mapping[str, Any]) -> str:
     verification_context = audit.get("verification_context") or review_verification_context(audit.get("audit_runs", []))
-    lines = ["# Document Review Studio audit report", "", f"Source: `{audit['source']['original_name']}`", f"SHA-256: `{audit['source']['sha256']}`", "", "## Recognition quality", "", f"- Text coverage: {audit['quality'].get('text_coverage', 0):.2f}", f"- Blank pages: {audit['quality'].get('blank_pages', [])}", f"- OCR low-confidence blocks: {audit['quality'].get('ocr_low_confidence_blocks', 0)}", f"- Reading order suspected: {audit['quality'].get('suspected_reading_order', False)}", "", "## Independent findings", ""]
+    lines = ["# Document Review Studio audit report", "", f"Source: `{audit['source']['original_name']}`", f"SHA-256: `{audit['source']['sha256']}`", "", "## Recognition quality", "", f"- Text coverage: {audit['quality'].get('text_coverage', 0):.2f}", f"- Blank pages: {audit['quality'].get('blank_pages', [])}", f"- OCR low-confidence blocks: {audit['quality'].get('ocr_low_confidence_blocks', 0)}", f"- Reading order suspected: {audit['quality'].get('suspected_reading_order', False)}", ""]
+    for run in audit.get("audit_runs", []):
+        lines.extend(assessment_markdown(run.get("argument_assessment")))
+    lines.extend(["## Independent findings", ""])
     if not audit["findings"]:
-        lines.append("No Finding was produced. This is supported only by the recorded recognition scope and deterministic checks; it is not a guarantee of quality or legality.")
+        lines.append("No Finding was produced. This is supported only by the recorded recognition scope and recorded review; it is not a guarantee of quality or legality.")
     for finding in audit["findings"]:
         verification = verification_context.get(finding["finding_id"]) or finding_verification_context(finding)
         lines.extend([f"### {finding['finding_id']} · {finding['critic']}", "", f"- Location: `{finding['location']['block_id']}` page {finding['location'].get('page') or '-'}", f"- Evidence: {finding['evidence']}", f"- Issue: {finding['issue']}", f"- Standard: {finding['standard']}", f"- Consequence: {finding['consequence']}", f"- Severity: {finding['severity']}; verification: {verification['display_label_en']}", f"- Action: {finding['suggested_action']}", ""])
@@ -819,6 +828,7 @@ def _ai_review_markdown(snapshot: Mapping[str, Any]) -> str:
         binding = run.get("response_binding")
         binding_label = binding.get("mode", "未记录") if isinstance(binding, Mapping) else binding or "未记录"
         lines.extend([f"## {run['critic']}", "", f"- Provider / model：{metadata.get('provider', '未声明')} / {metadata.get('model', '未声明')}", f"- Run：`{run['run_id']}`", f"- Response binding：{binding_label}", ""])
+        lines.extend(assessment_markdown(run.get("argument_assessment")))
         if run.get("origin") == "external-recheck-followup":
             lines.extend(["本组问题继承自外部复审；本轮尚待逐项人工裁决。", ""])
         findings = run.get("findings", [])

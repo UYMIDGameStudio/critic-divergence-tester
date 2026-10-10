@@ -354,6 +354,7 @@ class AuditRun:
     created_at: str = ""
     run_sequence: int = 1
     previous_audit_run_sha256: str | None = None
+    argument_assessment: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -370,6 +371,7 @@ class AuditRun:
             "created_at": self.created_at,
             "run_sequence": self.run_sequence,
             "previous_audit_run_sha256": self.previous_audit_run_sha256,
+            **({"argument_assessment": self.argument_assessment} if self.argument_assessment is not None else {}),
         }
 
 

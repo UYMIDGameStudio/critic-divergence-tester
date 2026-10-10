@@ -7,6 +7,7 @@ from .json_numbers import finite_json_number
 from document_review_quality import CLOSE_READING_PROTOCOL, close_reading_contract_errors, close_reading_example, quote_matches, validate_close_reading
 from review_profiles import academic_protocol
 from academic_review import academic_precheck_capabilities
+from document_review_composition import assessment_protocol, assessment_contract_errors, assessment_example, validate_argument_assessment
 from document_review_model import document_location_contract
 
 class AuditRunStore(_ProjectComponent):
@@ -95,6 +96,8 @@ class AuditRunStore(_ProjectComponent):
                       "location": "Copy the block location or supply only block_id. Do not invent page, table coordinates or character offsets.",
                       "zero_finding_basis": "If findings is empty, supply a nonempty array of explanatory strings describing the actual inspected scope and checks. An empty result is not a verified pass."},
         }
+        if critic == "academic_argument" and contract["protocol"].get("version", 0) >= 4:
+            contract["argument_assessment_protocol"] = assessment_protocol()
         return "# Document Review Studio independent AI review\n\nYou are exactly one independent critic. Return strict JSON only. Do not run another critic, merge dimensions, vote, score, or infer external facts without a source.\n\n## Contract and critic-specific protocol\n```json\n" + json.dumps(contract, ensure_ascii=False, indent=2) + "\n```\n\n## Confirmed review context\n```json\n" + json.dumps(context.to_dict(), ensure_ascii=False, indent=2) + "\n```\n\n## Internal document blocks\n```json\n" + json.dumps([block.to_dict() for block in document.blocks], ensure_ascii=False, indent=2) + "\n```\n"
 
     def _audit_run_records(self, critic: str | None = None) -> list[tuple[Path, dict[str, Any], str]]:
@@ -241,6 +244,23 @@ class AuditRunStore(_ProjectComponent):
                 and (type(request["close_reading_protocol_version"]) is not int
                      or request["close_reading_protocol_version"] != protocol["version"])):
             raise ReviewStudioError("细读协议与原请求快照不一致")
+        return protocol
+
+    def _snapshotted_argument_assessment_protocol(self, request: Mapping[str, Any], prompt_bytes: bytes) -> dict | None:
+        contract = self._snapshotted_review_contract(request, prompt_bytes)
+        protocol = contract.get("argument_assessment_protocol")
+        if protocol is None:
+            if {"argument_assessment_protocol", "argument_assessment_protocol_sha256"}.intersection(request):
+                raise ReviewStudioError("论证设计协议与原请求快照不一致")
+            return None
+        errors = assessment_contract_errors(protocol)
+        if errors or request.get("critic") != "academic_argument":
+            raise ReviewStudioError("论证设计协议无法验证：" + "; ".join(errors or ["critic mismatch"]))
+        if ("argument_assessment_protocol" in request
+                and canonical_json(request["argument_assessment_protocol"]) != canonical_json(protocol)
+                or "argument_assessment_protocol_sha256" in request
+                and request["argument_assessment_protocol_sha256"] != _sha256(canonical_json(protocol))):
+            raise ReviewStudioError("论证设计协议与原请求快照不一致")
         return protocol
 
     def _close_reading_for_recheck(self, request: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -432,6 +452,9 @@ class AuditRunStore(_ProjectComponent):
                 "observations": [],
                 "zero_finding_basis": [],
             }
+            if "argument_assessment_protocol" in self._snapshotted_review_contract({"critic": critic}, base_prompt):
+                response_example["argument_assessment"] = assessment_example()
+                base_prompt += ("\n## Adaptive review scope\nThe dimension entries in the response example are illustrative seeds, not fixed tasks or a fixed count. Select, replace or extend them for this article under the saved argument assessment protocol. Choose meaningful IDs and titles and explain why each angle is relevant. Preserve only the request bookkeeping values exactly.\n").encode("utf-8")
             prompt = base_prompt + ("\n## Exact response shape\nReturn one JSON object only, without Markdown fences or commentary. Copy every bookkeeping value exactly. Use only the enum values and object shapes shown below. If there are no Findings, return an empty findings array and explain the inspected scope in zero_finding_basis.\n```json\n" + json.dumps(response_example, ensure_ascii=False, indent=2) + "\n```\n").encode("utf-8")
             directory = self.root / "ai-requests" / request_id
             prompt_path = directory / "prompt.md"
@@ -444,6 +467,10 @@ class AuditRunStore(_ProjectComponent):
                             "close_reading_protocol": close_reading_snapshot,
                             "close_reading_protocol_sha256": _sha256(canonical_json(close_reading_snapshot)),
                             "close_reading_protocol_version": close_reading_snapshot["version"]})
+            composition_snapshot = self._snapshotted_argument_assessment_protocol(request, prompt)
+            if composition_snapshot is not None:
+                request["argument_assessment_protocol"] = composition_snapshot
+                request["argument_assessment_protocol_sha256"] = _sha256(canonical_json(composition_snapshot))
             request_path = directory / "request.json"
             request_parents = [*parents, _parent_ref(self.root, prompt_path, role="critic-prompt")]
             if previous:
@@ -501,6 +528,7 @@ class AuditRunStore(_ProjectComponent):
         if _sha256(prompt_bytes) != request.get("prompt_file_sha256"):
             raise ReviewStudioError("AI 审查 prompt hash 不匹配")
         close_reading_protocol = self._snapshotted_close_reading_protocol(request, prompt_bytes)
+        composition_protocol = self._snapshotted_argument_assessment_protocol(request, prompt_bytes)
         close_reading_version = close_reading_protocol["version"] if close_reading_protocol is not None else 1
         raw = response.encode("utf-8") if isinstance(response, str) else response
         if not isinstance(raw, bytes) or not raw:
@@ -550,6 +578,13 @@ class AuditRunStore(_ProjectComponent):
         if not isinstance(raw_findings, list):
             raise ReviewStudioError("模型返回缺少 findings 数组")
         blocks_by_id = {block.block_id: block for block in document.blocks}
+        composition = parsed.get("argument_assessment")
+        if composition_protocol is not None:
+            errors = validate_argument_assessment(composition, blocks_by_id)
+            if errors:
+                raise ReviewStudioError("论证设计综评无效：" + "; ".join(errors))
+        elif "argument_assessment" in parsed:
+            raise ReviewStudioError("当前请求未绑定论证设计综评协议，请生成新的学术论证请求")
         # Observations historically permit structured measurements. Preserve
         # their finite JSON data; only the human-readable zero-result basis
         # needs a string-list contract for downstream report rendering.
@@ -624,6 +659,7 @@ class AuditRunStore(_ProjectComponent):
             findings.append(finding)
         run_sequence, previous_run_sha256 = self._next_audit_binding(critic)
         run = AuditRun(stable_id("RUN", document.source.sha256, critic, _now(), secrets.token_hex(4)), critic, document.document_id, document.source.sha256, context, findings, observations, zero_basis, f"manual-import:{provider}/{model}", _now(), run_sequence, previous_run_sha256)
+        run.argument_assessment = composition
         directory = self.root / "audits" / critic
         raw_path = directory / f"{run.run_id}.raw-response.json.txt"
         response_parents = [_parent_ref(self.root, prompt_path, role="critic-prompt"), _parent_ref(self.root, request_path, role="ai-review-request")]
