@@ -185,6 +185,11 @@ jobs:
       - name: Verify installed rendering adapter
         run: python -c "from studio_selftest import run_self_test; result=run_self_test(); assert 'pdf-page-render' in result['checked']; print(result)"
 
+      - name: Verify self-test with the optional PyMuPDF compatibility backend
+        run: |
+          python -m pip install "pymupdf>=1.24,<2.0"
+          python -m unittest -v test.test_runtime_delivery.InstalledRuntimeSelfTests.test_source_runtime_checks_research_ir_locales_and_http test.test_pdf_line_recovery
+
   ocr-fixture:
     name: Scanned PDF / fixed mock OCR adapter
     runs-on: ubuntu-latest
