@@ -143,6 +143,8 @@ class RevisionPlanBuilder(_ProjectComponent):
         """
         self._ensure_writable()
         document_path, document = self._review_document_record()
+        if not has_reviewable_text(document):
+            raise ReviewStudioError("当前没有可审查正文，请补充识别文本或更换文件")
         findings = self.findings()
         open_findings = [item.finding_id for item in findings if item.status == "open"]
         if open_findings:
@@ -242,6 +244,8 @@ class RevisionPlanBuilder(_ProjectComponent):
         """
         self._ensure_writable()
         document_path, document = self._review_document_record()
+        if not has_reviewable_text(document):
+            raise ReviewStudioError("当前没有可审查正文，请补充识别文本或更换文件")
         findings = self.findings()
         open_findings = [item.finding_id for item in findings if item.status == "open"]
         if open_findings:
@@ -689,6 +693,8 @@ class RevisionPlanBuilder(_ProjectComponent):
             rows[row][column] = str(hunk["after_text"])
             revised_blocks[table_index] = replace(table, attrs={**table.attrs, "rows": rows})
         provisional = replace(document, blocks=revised_blocks)
+        if not has_reviewable_text(provisional):
+            raise ReviewStudioError("修改后没有可审查正文，请编辑修改提案并重新批准后再生成修改稿")
         revised_markdown = model_to_markdown(provisional)
         revised_sha = _sha256(revised_markdown.encode("utf-8"))
         revised_source = replace(document.source, original_name="修改稿.md", extension=".md", media_type="text/markdown", byte_size=len(revised_markdown.encode("utf-8")), sha256=revised_sha, relative_path="generated")
@@ -1270,6 +1276,8 @@ class RevisionPlanBuilder(_ProjectComponent):
             raise ReviewStudioError("未解决问题缺少修订稿定位，请补充带原文引句的复审结果后开始下一轮")
         revised_document = _document_from_dict(_read_json(revision_dir / "document.json"))
         revised_blocks_by_id = {block.block_id: block for block in revised_document.blocks}
+        if not has_reviewable_text(revised_document):
+            raise ReviewStudioError("修改稿没有可审查正文，请重新解析为新项目后审查；旧记录会保留")
         prior_findings = {item.finding_id: item for item in self.findings()}
         promoted: list[Finding] = []
         source_rows: list[dict[str, Any]] = []

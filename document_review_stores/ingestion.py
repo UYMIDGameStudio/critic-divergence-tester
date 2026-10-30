@@ -608,6 +608,8 @@ class IngestionState(_ProjectComponent):
             if len(corrected_bytes) > MAX_TEXT_CORRECTION_BYTES:
                 raise ReviewStudioError("人工修正文本超过安全上限")
             corrected = ingest_bytes("human-correction.md", corrected_bytes)
+            if not has_reviewable_text(corrected):
+                raise ReviewStudioError("修正识别文本没有可审查正文，请补充实际文字")
             corrected.source = document.source
             corrected.document_id = document.document_id
             corrected.parser_name = "human-correction"
@@ -631,6 +633,8 @@ class IngestionState(_ProjectComponent):
             self._append_extraction_decision("correct", "confirmed_corrected", corrected_text_sha256=_sha256(corrected_bytes))
             self._append_event("extraction_corrected", {"corrected_sha256": _sha256(corrected_bytes), "source_sha256": document.source.sha256})
             return self._update_state(extraction_state="confirmed_corrected", read_only=False)
+        if not has_reviewable_text(document):
+            raise ReviewStudioError("当前没有可审查正文，请补充识别文本或更换文件")
         if choice == "confirm" and any(w.severity in {"critical", "high"} for w in document.warnings):
             raise ReviewStudioError("识别存在高风险警告；请选择带警告继续或先修正/更换文件")
         state_name = "confirmed" if choice == "confirm" else "confirmed_with_warning"
@@ -644,6 +648,8 @@ class IngestionState(_ProjectComponent):
         extraction_decision = self._authoritative_extraction_decision()
         if extraction_decision is None or extraction_decision.get("extraction_state") not in {"confirmed", "confirmed_corrected", "confirmed_with_warning"}:
             raise ReviewStudioError("必须先完成并保存可信的识别确认决定")
+        if not has_reviewable_text(self.document()):
+            raise ReviewStudioError("当前没有可审查正文，请补充识别文本或更换文件")
         required = {"document_type", "jurisdiction", "effective_date", "publisher_type", "audience", "involves_minors", "involves_fees", "involves_sponsorship", "involves_contract", "involves_personal_information", "involves_intellectual_property", "publication_status"}
         missing = sorted(required - set(payload))
         if missing:
@@ -720,6 +726,13 @@ class IngestionState(_ProjectComponent):
             reasons.append("没有结构化内部文档")
         elif not document.quality.human_corrected and any(warning.code in {"ocr-unavailable", "pdf-renderer-unavailable"} for warning in document.warnings):
             reasons.append("OCR 或 PDF 渲染能力缺失，识别结果不允许进入正式审查")
+        if document:
+            try:
+                current = self._review_document_record()[1] if self.current_review_round() else document
+                if not has_reviewable_text(current):
+                    reasons.append("当前没有可审查正文，请补充识别文本或更换文件")
+            except (OSError, KeyError, TypeError, ValueError, ReviewStudioError) as exc:
+                reasons.append(f"结构化文档无法读取：{exc}")
         return not reasons, reasons
 
 __all__ = [name for name in globals() if not name.startswith("__")]

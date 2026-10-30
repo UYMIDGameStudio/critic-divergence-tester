@@ -1,4 +1,13 @@
 {
+  "当前没有可审查正文，请补充识别文本或更换文件": {"zh-Hant": "目前沒有可審查正文，請補充辨識文字或更換檔案。", "en": "There is no body text to review. Correct the extracted text or replace the file."},
+  "修正识别文本没有可审查正文，请补充实际文字": {"zh-Hant": "修正後仍沒有可審查正文，請補充實際文字。", "en": "The correction contains no body text to review. Add actual text."},
+  "修改后没有可审查正文，请编辑修改提案并重新批准后再生成修改稿": {"zh-Hant": "修改後沒有可審查正文，請編輯修改提案並重新批准後再產生修改稿。", "en": "The approved changes leave no body text to review. Edit the proposal and approve it again before generating the revision."},
+  "修改稿没有可审查正文，请重新解析为新项目后审查；旧记录会保留": {"zh-Hant": "修改稿沒有可審查正文，請重新解析為新專案後審查；舊記錄會保留。", "en": "The revision has no body text to review. Reparse as a new project and review again; previous records will be kept."},
+  "当前没有可审查正文。请补充识别文本或更换文件；空表格、图片占位和页眉页脚不能代替正文。": {"zh-Hant": "目前沒有可審查正文。請補充辨識文字或更換檔案；空表格、圖片佔位和頁首頁尾不能代替正文。", "en": "There is no body text to review. Correct the extracted text or replace the file; empty tables, image placeholders, headers and footers do not count as body text."},
+  "已有上下文或审查记录，请重新导入原文件并选择「重新解析为新项目」，补充正文后重新确认。旧记录会保留。": {"zh-Hant": "已有上下文或審查記錄，請重新匯入原檔案並選擇「重新解析為新專案」，補充正文後重新確認。舊記錄會保留。", "en": "This project already has context or review history. Import the original again and select Reparse as a new project, then add body text and confirm it. Previous records will be kept."},
+  "调整修改操作": {"zh-Hant": "調整修改操作", "en": "Change the revision operation"},
+  "编辑并重新提交这一项": {"zh-Hant": "編輯並重新提交這一項", "en": "Edit and resubmit this proposal"},
+  "新提案需要重新批准；旧提案和人工决定会保留。": {"zh-Hant": "新提案需要重新批准；舊提案和人工決定會保留。", "en": "The new proposal needs a new approval. Previous proposals and human decisions will be kept."},
   "DOCX 含尚未完整识别的特殊内容；请对照原件核对，必要时在 Word 中另存为 DOCX 后重新导入，或修正识别结果。": {"zh-Hant": "DOCX 含尚未完整辨識的特殊內容；請對照原件核對，必要時在 Word 中另存為 DOCX 後重新匯入，或修正辨識結果。", "en": "Some special content in this DOCX has not been fully extracted. Check the original; if needed, open and resave it as DOCX in Word, or correct the extraction."},
   "表格正文与单元格定位不一致，拒绝生成错列修改稿": {"zh-Hant": "表格正文與儲存格定位不一致，無法安全產生修改稿。請核對原件並重新解析。", "en": "The table text and cell locations disagree. Check the original and reparse it before creating a revision."},
   "无法识别表格网格布局，拒绝生成错列修改稿": {"zh-Hant": "無法辨識表格的欄位配置，無法安全產生修改稿。請核對原件並重新解析。", "en": "The table's grid layout is not supported. Check the original and reparse it before creating a revision."},

@@ -227,6 +227,8 @@ class ExportCenter(_ProjectComponent):
             if _sha256(trusted_markdown.encode("utf-8")) != trusted_revision[1].get("revised_sha256"):
                 raise ReviewStudioError("已批准修改稿与 Revision 绑定不一致")
             revised_model = _document_from_dict(_read_json(trusted_revision[0] / "document.json"))
+            if not has_reviewable_text(revised_model):
+                raise ReviewStudioError("修改稿没有可审查正文，请重新解析为新项目后审查；旧记录会保留")
             try:
                 table_cell_positions(revised_model)
             except ValueError as exc:

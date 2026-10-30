@@ -63,6 +63,8 @@ class AuditRunStore(_ProjectComponent):
         if not self.document_path.is_file() or not context:
             raise ReviewStudioError("需要先完成识别和上下文确认")
         _, document, review_binding = self._current_review_binding()
+        if not has_reviewable_text(document):
+            raise ReviewStudioError("当前没有可审查正文，请补充识别文本或更换文件")
         contract = {
             "critic": critic,
             "protocol": academic_protocol(critic, discipline=context.discipline, research_type=context.research_type)

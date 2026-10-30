@@ -161,21 +161,5 @@ function bindDelivery() {
         });
       editor.after(panel);
     }
-    if (action.operation && !state.selected.revision_workspace.revision) {
-      const card = document.querySelector(
-        `.revision-action-card[data-action-id="${CSS.escape(action.action_id)}"]`,
-      );
-      if (card) {
-        const change = document.createElement('details');
-        change.innerHTML = ui`<summary>更改操作或重新起草</summary><p>更改操作会使旧修改批准失效。</p><select class="change-operation" id="change-operation-${esc(action.action_id)}">${(action.block_kind === 'table_cell' ? ['replace_table_cell'] : ['replace_block', 'insert_before', 'insert_after', 'delete_block', 'append_section']).map((value) => `<option value="${value}">${esc({ replace_block: tr('替换段落'), insert_before: tr('段前插入'), insert_after: tr('段后插入'), delete_block: tr('删除段落'), append_section: tr('追加章节'), replace_table_cell: tr('替换单元格') }[value])}</option>`).join('')}</select><input id="change-operation-reason-${esc(action.action_id)}" class="change-operation-reason" placeholder="说明更改理由"><button class="secondary">保存操作并重新起草</button>`;
-        change.querySelector('button').onclick = () =>
-          act('set_revision_action_operation', {
-            action_id: action.action_id,
-            operation: change.querySelector('select').value,
-            reason: change.querySelector('input').value,
-          });
-        card.appendChild(change);
-      }
-    }
   });
 }

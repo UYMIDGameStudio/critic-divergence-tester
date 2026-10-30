@@ -65,6 +65,8 @@ def run_self_test() -> dict:
         checked.append("table-grid")
         _check_docx_containers(root / "docx-containers")
         checked.append("docx-containers")
+        _check_reviewable_text(root / "reviewable-text")
+        checked.append("reviewable-text")
         _check_academic_protocols(root / "academic")
         checked.append("academic-quality-protocols")
         _check_readonly_recovery(root / "recovery")
@@ -214,6 +216,45 @@ def _table_grid_fixture() -> bytes:
         archive.writestr('_rels/.rels', f'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="document" Type="{relation}/officeDocument" Target="word/document.xml"/></Relationships>')
         archive.writestr('word/document.xml', f'<w:document xmlns:w="{namespace}"><w:body>{body}<w:sectPr/></w:body></w:document>')
     return output.getvalue()
+
+
+def _check_reviewable_text(library: Path) -> None:
+    from document_review_studio import DocumentReviewProject, ReviewStudioError
+    from document_review_model import ReviewContext
+    project = DocumentReviewProject.create(library, filename='blank.txt', content=b' \n\t')
+    for choice in ('confirm', 'continue_with_warning'):
+        try:
+            project.confirm_extraction(choice)
+        except ReviewStudioError:
+            pass
+        else:
+            raise RuntimeError('Packaged app confirms an extraction with no body text')
+    project.confirm_extraction('correct', corrected_text='相关人员及时完成报名。')
+    project.confirm_context(ReviewContext('document', 'unknown', 'unknown', 'author', 'readers').to_dict())
+    project.run_local_prechecks(['expression_ambiguity'])
+    selected = project.findings()[0].finding_id
+    for finding in project.findings():
+        project.decide_finding(finding.finding_id, 'accept' if finding.finding_id == selected else 'reject', reason='Synthetic scope')
+    action = project.prepare_revision_plan()['actions'][0]['action_id']
+    project.set_revision_action_operation(action, 'delete_block', reason='Synthetic destructive edit')
+    hunk = project.propose_revision_hunk(action, '', rationale='Synthetic deletion')
+    project.decide_revision_hunk(hunk['hunk_id'], 'approve', reason='Synthetic approval')
+    try:
+        project.finalize_revision()
+    except ReviewStudioError:
+        pass
+    else:
+        raise RuntimeError('Packaged app generates an empty reviewed revision')
+    project.set_revision_action_operation(action, 'replace_block', reason='Keep the body')
+    hunk = project.propose_revision_hunk(action, '负责人周五前完成报名。', rationale='Recover body text')
+    if project.revision_workspace()['ready_to_finalize']:
+        raise RuntimeError('Packaged app reuses the prior approval for a new proposal')
+    project.decide_revision_hunk(hunk['hunk_id'], 'approve', reason='Reapprove new text')
+    project.finalize_revision()
+    if '负责人周五前完成报名。' not in (project.export() / '修改稿.md').read_text(encoding='utf-8'):
+        raise RuntimeError('Packaged app cannot recover from an empty revision proposal')
+    if (project.root / 'source/blank.txt').read_bytes() != b' \n\t' or project.integrity_errors():
+        raise RuntimeError('Packaged empty-body recovery changed source bytes')
 
 
 def _docx_container_fixture(*, special: bool = False) -> bytes:

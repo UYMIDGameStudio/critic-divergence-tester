@@ -43,12 +43,18 @@ function extractionCard(view) {
     st = view.state,
     blocked =
       !e.available ||
+      e.reviewable === false ||
       ['blocked', 'unconfirmed', 'replacement_required'].includes(
         st.extraction_state,
       );
   if (!blocked) return '';
   const blocks = e.blocks || [];
-  return ui`<div class="card next"><h2>确认识别结果</h2><p>请先查看正文和定位；这是正式审查的质量门。</p>${(e.warnings || []).map((w) => `<p class="${['critical', 'high'].includes(w.severity) ? 'error' : 'warning'}">${esc(extractionWarningMessage(w))}</p>`).join('')}${(st.diagnostics || []).map((x) => `<p class="error">${esc(UI_MESSAGES[x]?.[uiLocale] ?? x)}</p>`).join('')}${extractionEncodingControl(view)}<h3>抽取内容与定位预览</h3><input id="source-search" type="text" placeholder="搜索正文或定位"><div id="source-preview" class="pane quote">${blocks.map((b) => `[${esc(b.location?.block_id || b.block_id)} · page ${esc(b.location?.page || '-')}] ${pdfDisplayText(sourceBlockText(b))}`).join('\n\n') || tr('暂时没有可预览正文')}</div><div class="row">${e.available ? tr('<button data-action="confirm-extraction">确认识别</button><button class="secondary" data-action="continue-extraction">带警告继续</button><button class="secondary" id="show-correction">修正识别文本</button>') : tr('<button id="retry-extraction">重新识别</button>')}<button class="danger" data-action="replace-file">更换文件</button></div><textarea id="correction" class="hidden" placeholder="提供修正后的完整审查文本"></textarea><div id="err" class="error"></div></div>`;
+  const emptyBody = e.available && e.reviewable === false;
+  const controls = !e.available ? tr('<button id="retry-extraction">重新识别</button>')
+    : emptyBody ? e.correction_available === false ? '' : tr('<button class="secondary" id="show-correction">修正识别文本</button>')
+    : tr('<button data-action="confirm-extraction">确认识别</button><button class="secondary" data-action="continue-extraction">带警告继续</button><button class="secondary" id="show-correction">修正识别文本</button>');
+  const emptyMessage = emptyBody ? ui`<p class="error empty-body-warning">当前没有可审查正文。请补充识别文本或更换文件；空表格、图片占位和页眉页脚不能代替正文。</p>${e.correction_available === false ? tr('<p>已有上下文或审查记录，请重新导入原文件并选择「重新解析为新项目」，补充正文后重新确认。旧记录会保留。</p>') : ''}` : '';
+  return ui`<div class="card next"><h2>确认识别结果</h2><p>请先查看正文和定位；这是正式审查的质量门。</p>${emptyMessage}${(e.warnings || []).map((w) => `<p class="${['critical', 'high'].includes(w.severity) ? 'error' : 'warning'}">${esc(extractionWarningMessage(w))}</p>`).join('')}${(st.diagnostics || []).map((x) => `<p class="error">${esc(UI_MESSAGES[x]?.[uiLocale] ?? x)}</p>`).join('')}${extractionEncodingControl(view)}<h3>抽取内容与定位预览</h3><input id="source-search" type="text" placeholder="搜索正文或定位"><div id="source-preview" class="pane quote">${blocks.map((b) => `[${esc(b.location?.block_id || b.block_id)} · page ${esc(b.location?.page || '-')}] ${pdfDisplayText(sourceBlockText(b))}`).join('\n\n') || tr('暂时没有可预览正文')}</div><div class="row">${controls}<button class="danger" data-action="replace-file">更换文件</button></div><textarea id="correction" class="hidden" placeholder="提供修正后的完整审查文本"></textarea><div id="err" class="error"></div></div>`;
 }
 function contextCard(view) {
   const st = view.state,
@@ -210,36 +216,29 @@ function revisionWorkspace(view) {
   if (!ws.plan) return '';
   if (ws.revision)
     return ui`<div class="card ok"><h2>修改稿已生成</h2><p>本地确定性 critic 已按稳定 check_id 复跑。外部模型 Finding 必须经过绑定原 critic 的复审、人工 Resolution，并把新问题送入下一轮。</p><button id="export-final">导出当前交付物</button></div>${externalRecheckWorkspace(ws)}`;
+  const operationFields = a => ui`<label>人工选择修改操作</label><select id="operation-${esc(a.action_id)}">${Object.entries(op)
+    .filter(([key]) => a.block_kind === 'table_cell' ? key === 'replace_table_cell' : key !== 'replace_table_cell')
+    .map(([key, label]) => `<option value="${key}" ${key === (a.operation || a.operation_suggestion) ? 'selected' : ''}>${label}</option>`).join('')}</select><label>选择理由</label><input id="operation-reason-${esc(a.action_id)}"><button class="confirm-operation" data-action-id="${esc(a.action_id)}">确认操作类型</button>`;
+  const provenanceFields = a => ui`<label>文本来源</label><select id="revision-provenance-${esc(a.action_id)}"><option value="human-authored" ${a.hunk?.provenance !== 'ai-assisted-manual-import' ? 'selected' : ''}>人工撰写</option><option value="ai-assisted-manual-import" ${a.hunk?.provenance === 'ai-assisted-manual-import' ? 'selected' : ''}>AI 辅助后人工提交</option></select>`;
   const cards = actions
     .map((a) => {
       const header = ui`<div class="row"><span class="pill">${esc(a.block_id)}</span><span class="pill">工作组 ${esc(a.work_group_id)}</span><span class="pill">${a.finding_ids.length} 条 Finding</span>${a.operation ? ui`<span class="pill">已确认：${esc(op[a.operation])}</span>` : ui`<span class="pill warning">建议：${esc(op[a.operation_suggestion])}</span>`}${a.supported ? '' : tr('<span class="pill error">不能安全自动修改</span>')}</div>`;
       const reasons = `<div class="quote">${pdfDisplayText(a.before_text)}</div>${a.critic_reasons.map((r) => ui`<p><b>${esc(tr(critics[r.critic] || r.critic))}：</b>${esc(r.issue)}<br><span class="muted">批准的动作：${esc(r.approved_instruction)}</span></p>`).join('')}`;
+      const operationSettings = a.operation ? ui`<details class="operation-settings"><summary>调整修改操作</summary>${operationFields(a)}</details>` : '';
       if (!a.supported)
         return `<article class="card revision-action-card" data-action-id="${esc(a.action_id)}">${header}${reasons}<p class="error">${esc(a.unsupported_reason)}</p></article>`;
       if (!a.operation)
-        return ui`<article class="card revision-action-card" data-action-id="${esc(a.action_id)}">${header}${reasons}<label>人工选择修改操作</label><select id="operation-${esc(a.action_id)}">${Object.entries(
-          op,
-        )
-          .filter(([key]) =>
-            a.block_kind === 'table_cell'
-              ? key === 'replace_table_cell'
-              : key !== 'replace_table_cell',
-          )
-          .map(
-            ([key, label]) =>
-              `<option value="${key}" ${key === a.operation_suggestion ? 'selected' : ''}>${label}</option>`,
-          )
-          .join(
-            '',
-          )}</select><label>选择理由</label><input id="operation-reason-${esc(a.action_id)}"><button class="confirm-operation" data-action-id="${esc(a.action_id)}">确认操作类型</button><p class="muted">关键词推断只作为建议；没有这一步人工确认，系统不会接受 Hunk。</p></article>`;
+        return ui`<article class="card revision-action-card" data-action-id="${esc(a.action_id)}">${header}${reasons}${operationFields(a)}<p class="muted">关键词推断只作为建议；没有这一步人工确认，系统不会接受 Hunk。</p></article>`;
       if (!a.hunk)
-        return ui`<article class="card revision-action-card" data-action-id="${esc(a.action_id)}">${header}${reasons}<label>${a.operation === 'delete_block' ? tr('删除操作（文本留空）') : tr('本 Action 的具体文本')}</label><textarea id="revision-${esc(a.action_id)}"></textarea><label>Hunk 理由</label><input id="revision-reason-${esc(a.action_id)}"><label>文本来源</label><select id="revision-provenance-${esc(a.action_id)}"><option value="human-authored">人工撰写</option><option value="ai-assisted-manual-import">AI 辅助后人工提交</option></select><button class="propose-hunk" data-action-id="${esc(a.action_id)}">提交独立 Hunk</button></article>`;
+        return ui`<article class="card revision-action-card" data-action-id="${esc(a.action_id)}">${header}${reasons}<label>${a.operation === 'delete_block' ? tr('删除操作（文本留空）') : tr('本 Action 的具体文本')}</label><textarea id="revision-${esc(a.action_id)}"></textarea><label>Hunk 理由</label><input id="revision-reason-${esc(a.action_id)}">${provenanceFields(a)}<button class="propose-hunk" data-action-id="${esc(a.action_id)}">提交独立 Hunk</button>${operationSettings}</article>`;
       if (a.hunk_stale)
-        return ui`<article class="card revision-action-card" data-action-id="${esc(a.action_id)}">${header}${reasons}<p class="error">操作类型决定已变化，旧 Hunk 失效。请按当前操作提交新的 Hunk。</p><label>新的具体文本</label><textarea id="revision-${esc(a.action_id)}"></textarea><label>新 Hunk 理由</label><input id="revision-reason-${esc(a.action_id)}"><button class="propose-hunk" data-action-id="${esc(a.action_id)}">提交新 Hunk</button></article>`;
+        return ui`<article class="card revision-action-card" data-action-id="${esc(a.action_id)}">${header}${reasons}<p class="error">操作类型决定已变化，旧 Hunk 失效。请按当前操作提交新的 Hunk。</p><label>新的具体文本</label><textarea id="revision-${esc(a.action_id)}">${esc(a.operation === 'delete_block' ? '' : a.hunk.after_text)}</textarea><label>新 Hunk 理由</label><input id="revision-reason-${esc(a.action_id)}">${provenanceFields(a)}<button class="propose-hunk" data-action-id="${esc(a.action_id)}">提交新 Hunk</button>${operationSettings}</article>`;
       const decision = a.hunk_decision
-        ? ui`<p class="${a.hunk_decision.decision === 'approve' ? 'ok' : 'error'}">人工决定：${esc(a.hunk_decision.decision)} · ${esc(a.hunk_decision.reason)}</p>${a.hunk_decision.decision === 'reject' ? ui`<label>提交新的修改文本</label><textarea id="revision-${esc(a.action_id)}"></textarea><label>新 Hunk 理由</label><input id="revision-reason-${esc(a.action_id)}"><button class="propose-hunk" data-action-id="${esc(a.action_id)}">重新提交</button>` : ''}`
+        ? ui`<p class="${a.hunk_decision.decision === 'approve' ? 'ok' : 'error'}">人工决定：${esc(a.hunk_decision.decision)} · ${esc(a.hunk_decision.reason)}</p>${a.hunk_decision.decision === 'reject' ? ui`<label>提交新的修改文本</label><textarea id="revision-${esc(a.action_id)}"></textarea><label>新 Hunk 理由</label><input id="revision-reason-${esc(a.action_id)}">${provenanceFields(a)}<button class="propose-hunk" data-action-id="${esc(a.action_id)}">重新提交</button>` : ''}`
         : ui`<label>Hunk 决定理由</label><input id="hunk-reason-${esc(a.hunk.hunk_id)}"><div class="row"><button class="decide-hunk" data-hunk-id="${esc(a.hunk.hunk_id)}" data-decision="approve">批准这一项</button><button class="decide-hunk danger" data-hunk-id="${esc(a.hunk.hunk_id)}" data-decision="reject">驳回并重写</button></div>`;
-      return ui`<article class="card revision-action-card" data-action-id="${esc(a.action_id)}">${header}${reasons}<label>拟应用文本</label><div class="quote">${esc(a.hunk.after_text)}</div><p class="muted">操作：${esc(op[a.operation])} · 来源：${esc(a.hunk.provenance)} · 理由：${esc(a.hunk.rationale)}</p>${decision}</article>`;
+      const redraft = a.hunk_decision?.decision === 'approve' && a.operation !== 'delete_block'
+        ? ui`<details class="hunk-redraft"><summary>编辑并重新提交这一项</summary><p>新提案需要重新批准；旧提案和人工决定会保留。</p><label>新的具体文本</label><textarea id="revision-${esc(a.action_id)}">${esc(a.hunk.after_text)}</textarea><label>新 Hunk 理由</label><input id="revision-reason-${esc(a.action_id)}">${provenanceFields(a)}<button class="propose-hunk" data-action-id="${esc(a.action_id)}">重新提交</button></details>` : '';
+      return ui`<article class="card revision-action-card" data-action-id="${esc(a.action_id)}">${header}${reasons}<label>拟应用文本</label><div class="quote">${esc(a.hunk.after_text)}</div><p class="muted">操作：${esc(op[a.operation])} · 来源：${esc(a.hunk.provenance)} · 理由：${esc(a.hunk.rationale)}</p>${decision}${redraft}${operationSettings}</article>`;
     })
     .join('');
   return ui`<div class="card next"><h2>逐项修改与批准</h2><p>Action 绑定工作组和明确 Finding 集。操作类型必须由人显式选择，系统的自然语言推断只显示为建议。</p></div>${cards}<div class="card"><button id="finalize-revision" ${ws.ready_to_finalize ? '' : 'disabled'}>生成修改稿并复审</button><p class="muted">所有 Action 都必须确认操作类型，并完成最新 Hunk 的批准或驳回。</p><div id="err" class="error"></div></div>`;
@@ -256,6 +255,7 @@ function argumentAssessment(view) {
   }).join('')}</section>`;
 }
 function findingWorkspace(view) {
+  if (view.extraction?.reviewable === false) return '';
   const items = view.findings || [],
     summary = view.finding_summary || {},
     queue = view.attention_queue || { groups: [] };

@@ -13,6 +13,7 @@ import html
 import json
 import math
 import re
+import unicodedata
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Mapping
 
@@ -500,6 +501,22 @@ def list_marker(block: DocumentBlock) -> str:
     return "1." if ordered else "-"
 
 
+def has_reviewable_text(document: StructuredDocument | None) -> bool:
+    """Require visible source text, without judging its length or language.
+
+    Containers, generated image labels and auxiliary page furniture cannot
+    stand in for a body. Unicode format/control marks alone are not content.
+    """
+    if document is None:
+        return False
+    text_kinds = {"paragraph", "heading", "list_item", "blockquote", "table_cell"}
+    return any(
+        not char.isspace() and unicodedata.category(char) not in {"Cc", "Cf", "Cs"}
+        for block in document.blocks if block.kind in text_kinds
+        for char in block.text
+    )
+
+
 def table_cell_positions(document: StructuredDocument) -> dict[str, tuple[str, int, int]]:
     """Resolve stored grid slots, including historical compact Word tables.
 
@@ -588,5 +605,5 @@ __all__ = [
     "ReviewContext", "SCHEMA_VERSION", "SEVERITIES", "StructuredDocument", "SUPPORTED_EXTENSIONS",
     "UNSUPPORTED_EXTENSIONS", "VERIFICATION_STATES", "canonical_json", "make_location",
     "document_location_contract", "finding_verification_context", "review_verification_context",
-    "list_marker", "model_to_markdown", "table_cell_positions", "stable_id", "validate_finding_dict",
+    "list_marker", "model_to_markdown", "has_reviewable_text", "table_cell_positions", "stable_id", "validate_finding_dict",
 ]

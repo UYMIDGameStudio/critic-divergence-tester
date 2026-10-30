@@ -35,6 +35,7 @@ jobs:
             dist/browser-recovery-*/
             dist/browser-docx-visibility/
             dist/browser-docx-containers/
+            dist/browser-reviewable-text/
             dist/browser-xml-limits/
             dist/browser-table-grid/
             dist/browser-resolution-evidence/

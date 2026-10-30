@@ -6,6 +6,9 @@ from unified_app import serve_unified_app
 
 fixture = None
 project_dir = None
+if "--empty-body" in sys.argv[2:]:
+    from document_review_studio import DocumentReviewProject
+    project_dir = DocumentReviewProject.create(Path(sys.argv[1]), filename="empty.csv", content=b',\n,\n').root
 if "--docx-containers" in sys.argv[2:]:
     from document_review_studio import DocumentReviewProject
     from studio_selftest import _docx_container_fixture

@@ -47,6 +47,7 @@ from document_review_model import (
     list_marker,
     make_location,
     model_to_markdown,
+    has_reviewable_text,
     table_cell_positions,
     review_verification_context,
     stable_id,
@@ -671,7 +672,7 @@ class DocumentReviewProject:
             # that failed verification (including prompts and follow-up runs).
             return {
                 "review_critics": {}, "project": manifest, "product_status": "experimental-preview", "state": state,
-                "extraction": {"available": False, "metadata": {}, "quality": {}, "warnings": [], "blocks": [], "total_blocks": 0},
+                "extraction": {"available": False, "reviewable": False, "correction_available": False, "metadata": {}, "quality": {}, "warnings": [], "blocks": [], "total_blocks": 0},
                 "context": {}, "can_review": False, "review_blockers": list(state.get("integrity_errors", [])),
                 "ai_requests": [], "argument_assessments": [], "adversarial_reviews": [], "adversarial_eligible_finding_ids": [],
                 "findings": [], "verification_context": {}, "finding_summary": {"total": 0, "open": 0, "by_severity": {}},
@@ -684,6 +685,13 @@ class DocumentReviewProject:
         except (OSError, KeyError, TypeError, ValueError, ReviewStudioError):
             document = None
         can_review, reasons = self.can_review()
+        reviewable = has_reviewable_text(document)
+        correction_available = True
+        if document is not None and not reviewable:
+            try:
+                self._ensure_extraction_correction_allowed()
+            except ReviewStudioError:
+                correction_available = False
         try:
             finding_objects = self.findings()
             finding_rows = [finding.to_dict() for finding in finding_objects]
@@ -718,7 +726,7 @@ class DocumentReviewProject:
             "by_severity": {severity: sum(1 for item in finding_rows if item.get("severity") == severity) for severity in ("critical", "high", "medium", "low", "info")},
         }
         exports = self.export_summary()
-        extraction_confirmed = state.get("extraction_state") in {"confirmed", "confirmed_corrected", "confirmed_with_warning"}
+        extraction_confirmed = reviewable and state.get("extraction_state") in {"confirmed", "confirmed_corrected", "confirmed_with_warning"}
         local_complete = any(
             value.get("model_label") == "deterministic-local-rules"
             for critic in CRITIC_DIMENSIONS
@@ -742,7 +750,7 @@ class DocumentReviewProject:
             {"key": "bridge", "label": "受约束修改", "status": "completed" if revision_complete else "in_progress" if bridge_complete else "not_started", "detail": "修改与复审流程已完成" if revision_complete else "修改稿已生成，复审待完成" if revision_generated else "逐段修改中" if bridge_complete else "未开始"},
             {"key": "export", "label": "导出结果", "status": "completed" if export_complete else "not_started", "detail": "已有导出文件" if export_complete else "未导出"},
         ]
-        return {"review_critics": {key: CRITIC_LABELS[key] for key in self.review_critics()}, "project": manifest, "product_status": "experimental-preview", "state": state, "extraction": {"available": document is not None, "metadata": document.metadata if document else {}, "quality": document.quality.to_dict() if document else {}, "warnings": [warning.to_dict() for warning in document.warnings] if document else [], "blocks": [block.to_dict() for block in document.blocks] if document else [], "total_blocks": len(document.blocks) if document else 0}, "context": self.context().to_dict() if self.context() else {"model_suggestion": self.suggested_document_type()}, "can_review": can_review, "review_blockers": reasons, "ai_requests": ai_requests, "argument_assessments": argument_assessments, "adversarial_reviews": adversarial_reviews, "adversarial_eligible_finding_ids": sorted(adversarial_eligible_ids), "findings": finding_rows, "verification_context": verification_context, "finding_summary": finding_summary, "attention_queue": attention_queue, "revision_workspace": revision_workspace, "workflow": workflow, "exports": exports}
+        return {"review_critics": {key: CRITIC_LABELS[key] for key in self.review_critics()}, "project": manifest, "product_status": "experimental-preview", "state": state, "extraction": {"available": document is not None, "reviewable": reviewable, "correction_available": correction_available, "metadata": document.metadata if document else {}, "quality": document.quality.to_dict() if document else {}, "warnings": [warning.to_dict() for warning in document.warnings] if document else [], "blocks": [block.to_dict() for block in document.blocks] if document else [], "total_blocks": len(document.blocks) if document else 0}, "context": self.context().to_dict() if self.context() else {"model_suggestion": self.suggested_document_type()}, "can_review": can_review, "review_blockers": reasons, "ai_requests": ai_requests, "argument_assessments": argument_assessments, "adversarial_reviews": adversarial_reviews, "adversarial_eligible_finding_ids": sorted(adversarial_eligible_ids), "findings": finding_rows, "verification_context": verification_context, "finding_summary": finding_summary, "attention_queue": attention_queue, "revision_workspace": revision_workspace, "workflow": workflow, "exports": exports}
 
 
 def _document_from_dict(value: Mapping[str, Any]) -> StructuredDocument:
