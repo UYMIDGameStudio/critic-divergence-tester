@@ -49,7 +49,7 @@ class IngestionState(_ProjectComponent):
         try:
             audit_runs = list(self._active_audit_run_records().values())
             current_round = self.current_review_round()
-        except (OSError, ValueError, ReviewStudioError):
+        except (OSError, KeyError, TypeError, ValueError, ReviewStudioError):
             audit_runs, current_round = [], None
         has_ai = False
         has_audit = False

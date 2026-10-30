@@ -665,6 +665,19 @@ class DocumentReviewProject:
         self._enforce_integrity()
         manifest = self.manifest()
         state = self.state()
+        if state.get("read_only"):
+            # Recovery must not depend on parsing or rendering the artifacts
+            # that failed verification (including prompts and follow-up runs).
+            return {
+                "review_critics": {}, "project": manifest, "product_status": "experimental-preview", "state": state,
+                "extraction": {"available": False, "metadata": {}, "quality": {}, "warnings": [], "blocks": [], "total_blocks": 0},
+                "context": {}, "can_review": False, "review_blockers": list(state.get("integrity_errors", [])),
+                "ai_requests": [], "argument_assessments": [], "adversarial_reviews": [], "adversarial_eligible_finding_ids": [],
+                "findings": [], "verification_context": {}, "finding_summary": {"total": 0, "open": 0, "by_severity": {}},
+                "attention_queue": {"default_limit": 30, "total_groups": 0, "hidden_groups": 0, "groups": []},
+                "revision_workspace": {"plan": None, "actions": [], "ready_to_finalize": False, "revision": None},
+                "workflow": [], "exports": [],
+            }
         try:
             _, document = self._review_document_record()
         except (OSError, KeyError, TypeError, ValueError, ReviewStudioError):

@@ -70,6 +70,10 @@ async function main() {
     release();
     assert.equal((await saved).status(), 201);
     await b.locator('#response').waitFor();
+    // Response headers and visible fields need not imply all pending API work
+    // has settled. Wait for the actual interaction boundary without a sleep.
+    await b.waitForFunction(() => !document.body.inert && researchMutationPending === 0
+      && state.selected.stage === 'atomization_result');
     assert.equal(await b.evaluate(() => document.body.inert), false);
 
     // A genuine validated model record containing markup stays plain document data.

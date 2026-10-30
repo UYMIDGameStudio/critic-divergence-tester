@@ -32,6 +32,7 @@ jobs:
             dist/browser-research-localization/
             dist/browser-close-reading-0.2.2/
             dist/browser-composition-*/
+            dist/browser-recovery-*/
             dist/browser-resolution-evidence/
             dist/browser-adversarial/
             dist/http-protocol-security/browser/

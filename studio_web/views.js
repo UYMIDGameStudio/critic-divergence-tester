@@ -285,5 +285,10 @@ function project() {
   const v = state.selected,
     st = v.state;
   const readonly = st.read_only || st.integrity_errors?.length;
-  root.innerHTML = ui`${serviceDetails(state.notice)}${readonly ? ui`<div class="card readonly"><h2>项目已切换为只读</h2><p>${esc((st.integrity_errors || []).join('；') || tr('完整性链异常'))}</p><p>请恢复可信项目副本后再继续，下载也会被阻止。</p></div>` : ''}<div class="card project-heading"><div class="row"><button class="secondary" id="back">← 返回项目列表</button><button class="danger" id="delete-selected" data-dir="${esc(v.directory)}">删除本地项目</button></div><h2>${esc(v.project.title)}</h2><p class="muted">原件：${esc(v.project.source.name)} · SHA-256 ${esc(v.project.source.sha256)}</p></div>${pdfReaderControl(v)}${workflow(v)}${extractionCard(v)}${contextCard(v)}${reviewCards(v)}${argumentAssessment(v)}${findingWorkspace(v)}${adversarialHistory(v)}${exportCenter(v)}`;
+  const heading = ui`<div class="card project-heading"><div class="row"><button class="secondary" id="back">← 返回项目列表</button><button class="danger" id="delete-selected" data-dir="${esc(v.directory)}">删除本地项目</button></div><h2>${esc(v.project.title)}</h2><p class="muted">原件：${esc(v.project.source?.name || '')} · SHA-256 ${esc(v.project.source?.sha256 || '')}</p></div>`;
+  if (readonly) {
+    root.innerHTML = ui`${serviceDetails(state.notice)}<div class="card readonly"><h2>项目已切换为只读</h2><p>请恢复可信项目副本后再继续，下载也会被阻止。</p><details class="integrity-details"><summary>查看完整性详情</summary><p>${esc((st.integrity_errors || []).join('；') || tr('完整性链异常'))}</p></details></div>${heading}`;
+    return;
+  }
+  root.innerHTML = ui`${serviceDetails(state.notice)}${heading}${pdfReaderControl(v)}${workflow(v)}${extractionCard(v)}${contextCard(v)}${reviewCards(v)}${argumentAssessment(v)}${findingWorkspace(v)}${adversarialHistory(v)}${exportCenter(v)}`;
 }

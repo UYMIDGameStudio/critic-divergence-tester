@@ -59,6 +59,8 @@ def run_self_test() -> dict:
         checked.append("eight-language-import")
         _check_academic_protocols(root / "academic")
         checked.append("academic-quality-protocols")
+        _check_readonly_recovery(root / "recovery")
+        checked.append("readonly-recovery")
         project = DocumentReviewProject.create(root / "library", filename="draft.md", content=b"# Draft\n\nExample document.")
         project.confirm_extraction("confirm")
         project.confirm_context(ReviewContext(document_type="document", jurisdiction="unknown",
@@ -148,6 +150,30 @@ def run_self_test() -> dict:
             server.server_close()
         checked.append("research-http")
     return {"passed": True, "checked": checked}
+
+
+def _check_readonly_recovery(library: Path) -> None:
+    """A corrupt exchange must still expose the recovery view in an installed app."""
+    from document_review_studio import DocumentReviewProject, ReviewStudioError
+    from document_review_model import ReviewContext
+    project = DocumentReviewProject.create(library, filename="recovery.md", content=b"A synthetic recovery document.")
+    project.confirm_extraction("confirm")
+    project.confirm_context(ReviewContext(document_type="document", jurisdiction="unknown", effective_date="unknown",
+        publisher_type="author", audience="editors").to_dict())
+    request = project.prepare_ai_audits(["expression_ambiguity"], provider="self-test", model="not-invoked")[0]
+    path = project.root / "ai-requests" / request["request_id"] / "request.json"
+    path.write_bytes(b"{truncated")
+    view = project.view()
+    if not view["state"].get("read_only") or view["can_review"] or view["ai_requests"] or view["findings"]:
+        raise RuntimeError("Packaged app does not isolate a damaged review exchange")
+    try:
+        project.prepare_ai_audits(["expression_ambiguity"], provider="self-test", model="not-invoked")
+    except ReviewStudioError:
+        pass
+    else:
+        raise RuntimeError("Packaged app permits writes after exchange corruption")
+    if path.read_bytes() != b"{truncated":
+        raise RuntimeError("Packaged recovery silently rewrote a damaged exchange")
 
 
 def _check_academic_protocols(library: Path) -> None:

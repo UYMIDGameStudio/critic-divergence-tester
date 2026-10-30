@@ -10,6 +10,15 @@ from academic_review import academic_precheck_capabilities
 from document_review_composition import assessment_protocol, assessment_contract_errors, assessment_example, validate_argument_assessment
 from document_review_model import document_location_contract
 
+
+def _audit_run_order(row):
+    value = row[1]
+    return (
+        int(value.get("run_sequence", 0)) if isinstance(value.get("run_sequence"), int) else 0,
+        str(value.get("created_at", "")), str(value.get("run_id", "")),
+    )
+
+
 class AuditRunStore(_ProjectComponent):
     def _current_review_binding(self) -> tuple[Path, StructuredDocument, dict[str, Any]]:
         """Bind a review to its exact IR, context and formal review round."""
@@ -114,16 +123,7 @@ class AuditRunStore(_ProjectComponent):
 
     def _ordered_audit_runs(self, critic: str) -> list[tuple[Path, dict[str, Any], str]]:
         records = self._audit_run_records(critic)
-        return sorted(
-            records,
-            key=lambda row: (
-                int(row[1].get("run_sequence", 0))
-                if isinstance(row[1].get("run_sequence"), int)
-                else 0,
-                str(row[1].get("created_at", "")),
-                str(row[1].get("run_id", "")),
-            ),
-        )
+        return sorted(records, key=_audit_run_order)
 
     def _next_audit_binding(self, critic: str) -> tuple[int, str | None]:
         records = self._ordered_audit_runs(critic)
@@ -139,9 +139,10 @@ class AuditRunStore(_ProjectComponent):
         if not self.document_path.is_file() or not (self.root / "context.json").is_file():
             return active
         _, _, binding = self._current_review_binding()
+        all_records = self._audit_run_records()
         for critic in CRITIC_DIMENSIONS:
-            records = [row for row in self._ordered_audit_runs(critic)
-                       if self._belongs_to_current_review(row[1], binding)]
+            records = sorted((row for row in all_records if row[1]["critic"] == critic
+                              and self._belongs_to_current_review(row[1], binding)), key=_audit_run_order)
             if records:
                 # A local precheck is a separate diagnostic, not a replacement
                 # for an imported review. Keep the latest AI run in this review
@@ -369,21 +370,27 @@ class AuditRunStore(_ProjectComponent):
         )
 
     def _active_ai_request(self, critic: str) -> tuple[Path, dict[str, Any], str] | None:
+        return self._active_ai_requests().get(critic)
+
+    def _active_ai_requests(self) -> dict[str, tuple[Path, dict[str, Any], str]]:
+        """Read each request once per lookup; never cache across project actions."""
         if not self.document_path.is_file() or not (self.root / "context.json").is_file():
-            return None
+            return {}
         _, _, binding = self._current_review_binding()
-        records = [row for row in self._ai_request_records(critic)
-                   if self._belongs_to_current_review(row[1], binding)]
-        return records[-1] if records else None
+        active = {}
+        for row in self._ai_request_records():
+            if row[1].get("critic") in CRITIC_DIMENSIONS and self._belongs_to_current_review(row[1], binding):
+                active[row[1]["critic"]] = row
+        return active
 
     def _ai_request_chain_errors(self) -> list[str]:
         errors: list[str] = []
+        try:
+            all_records = self._ai_request_records()
+        except (OSError, ValueError, KeyError, TypeError, ReviewStudioError) as exc:
+            return [f"AI request chain unreadable: {exc}"]
         for critic in CRITIC_DIMENSIONS:
-            try:
-                records = self._ai_request_records(critic)
-            except (OSError, ValueError, KeyError, TypeError, ReviewStudioError) as exc:
-                errors.append(f"{critic}: AI request chain unreadable: {exc}")
-                continue
+            records = [row for row in all_records if row[1].get("critic") == critic]
             if not records:
                 continue
             legacy = [row for row in records if "request_sequence" not in row[1]]

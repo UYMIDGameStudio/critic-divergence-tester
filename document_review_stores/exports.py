@@ -354,8 +354,11 @@ class ExportCenter(_ProjectComponent):
 
     def ai_requests(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
-        active = [record for critic in CRITIC_DIMENSIONS if (record := self._active_ai_request(critic)) is not None]
-        for request_path, request_value, _ in active:
+        active = self._active_ai_requests()
+        for critic in CRITIC_DIMENSIONS:
+            if critic not in active:
+                continue
+            request_path, request_value, _ = active[critic]
             try:
                 value = dict(request_value)
                 prompt_path = request_path.parent / "prompt.md"

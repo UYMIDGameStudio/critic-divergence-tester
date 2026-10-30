@@ -1,4 +1,5 @@
 {
+  "查看完整性详情": {"zh-Hant": "查看完整性詳情", "en": "View integrity details"},
   "重新解析为新项目（保留旧项目与审查记录）": {"zh-Hant": "重新解析為新專案（保留舊專案與審查記錄）", "en": "Reparse as a new project (keep the existing project and review history)"},
   "模型声明已核实（应用未独立核验）": {"zh-Hant": "模型聲明已核實（應用未獨立核驗）", "en": "Model-declared verified (not independently checked by this application)"},
   "本地规则已检查（非外部事实核验）": {"zh-Hant": "本地規則已檢查（非外部事實核驗）", "en": "Checked by a local rule (not external fact verification)"},

@@ -6,6 +6,15 @@ from unified_app import serve_unified_app
 
 fixture = None
 project_dir = None
+if "--readonly-recovery" in sys.argv[2:]:
+    from test.test_review_round_protocols import ReviewRoundProtocolTests
+    fixture = ReviewRoundProtocolTests()
+    fixture.setUp()
+    request = fixture.request()
+    folder = fixture.project.root / "ai-requests" / request["request_id"]
+    (folder / "request.json").write_bytes(b'{"private":"RECOVERY-MUST-NOT-RENDER"')
+    (folder / "prompt.md").write_text('RECOVERY-MUST-NOT-RENDER <img src=x onerror="window.__recoveryInjected=true">', encoding="utf-8")
+    project_dir = fixture.project.root
 if "--argument-composition" in sys.argv[2:]:
     from test.test_argument_composition import ArgumentCompositionTests
     fixture = ArgumentCompositionTests()

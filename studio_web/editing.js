@@ -31,6 +31,7 @@ function bindDelivery() {
     };
     return;
   }
+  if (state.selected.state.read_only || state.selected.state.integrity_errors?.length) return;
   const toolbar = document.createElement('div');
   toolbar.className = 'card row session-toolbar';
   toolbar.innerHTML = ui`<button class="secondary" id="create-backup">备份当前项目</button><button class="secondary" id="download-draft">下载当前草稿</button><button class="secondary" id="retry-draft">保存草稿</button>${draftContext?.legacy ? tr('<button class="secondary" id="legacy-draft">找回旧版草稿</button>') : ''}<span id="draft-status" role="status">表单草稿保存在本机</span><small>版本 ${esc(state.app_version)}</small>`;
