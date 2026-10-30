@@ -6,6 +6,10 @@ from unified_app import serve_unified_app
 
 fixture = None
 project_dir = None
+if "--docx-visibility" in sys.argv[2:]:
+    from document_review_studio import DocumentReviewProject
+    from studio_selftest import _docx_visibility_fixture
+    project_dir = DocumentReviewProject.create(Path(sys.argv[1]), filename="visibility.docx", content=_docx_visibility_fixture()).root
 if "--readonly-recovery" in sys.argv[2:]:
     from test.test_review_round_protocols import ReviewRoundProtocolTests
     fixture = ReviewRoundProtocolTests()

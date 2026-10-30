@@ -14,13 +14,13 @@ import re
 import zipfile
 from xml.dom import minidom
 
-from document_review_ingest import IngestionLimits, _zip_safety, _docx_xml
+from document_review_ingest import IngestionLimits, _zip_safety, _docx_xml, _docx_story_revisions, _docx_tracking_enabled, DOCX_REVISION_TAGS
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 XMLNS = "http://www.w3.org/2000/xmlns/"
 TEXT_KINDS = {"paragraph", "heading", "list_item"}
 PROTECTED_KINDS = {"header", "footer", "image_placeholder", "page_break", "table"}
-REVISION_TAGS = {"ins", "del", "moveFrom", "moveTo", "pPrChange", "rPrChange", "sectPrChange", "tblPrChange", "tcPrChange", "trPrChange"}
+REVISION_TAGS = DOCX_REVISION_TAGS
 
 
 class WordEditUnsupported(ValueError):
@@ -375,15 +375,19 @@ def preserve_docx(source_bytes, original, revised, *, tracked=False):
     if hashlib.sha256(source_bytes).hexdigest() != original.source.sha256:
         raise WordEditUnsupported("Word 原件摘要与审查文档不一致")
     archive = _zip_safety(source_bytes, IngestionLimits())
-    if _docx_xml(archive, "word/document.xml") is None:
+    document_xml = _docx_xml(archive, "word/document.xml")
+    if document_xml is None:
         raise WordEditUnsupported("Word 原件缺少正文")
     if original.quality.human_corrected or original.metadata.get("revisions_present"):
         raise WordEditUnsupported("原件含既有修订或识别全文经过人工替换，无法安全绑定原位 Word 修改")
+    if _docx_story_revisions(archive, document_xml=document_xml):
+        raise WordEditUnsupported("原件含既有修订，无法安全绑定原位 Word 修改")
+    del document_xml
     doc = minidom.parseString(archive.read("word/document.xml"))
     if any(_all(doc, name) for name in REVISION_TAGS):
         raise WordEditUnsupported("原件含既有修订，无法安全绑定原位 Word 修改")
     settings = _docx_xml(archive, "word/settings.xml")
-    if settings is not None and settings.find(f"{{{W}}}trackRevisions") is not None:
+    if _docx_tracking_enabled(settings):
         raise WordEditUnsupported("原件已启用修订跟踪，无法安全绑定原位 Word 修改")
     body_nodes = _children(doc.documentElement, "body")
     if doc.documentElement.namespaceURI != W or doc.documentElement.localName != "document" or len(body_nodes) != 1:

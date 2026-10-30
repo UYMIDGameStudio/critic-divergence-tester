@@ -58,8 +58,11 @@ MEDIA_TYPES = {
     ".ppt": "application/vnd.ms-powerpoint", ".dps": "application/vnd.ms-powerpoint",
 }
 PARSER_VERSION = "document-review-studio-v1"
+DOCX_PARSER_VERSION = "document-review-studio-docx-v2"
 W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 R_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+DOCX_REVISION_TAGS = frozenset({"ins", "del", "moveFrom", "moveTo", "moveFromRangeStart", "moveFromRangeEnd",
+    "moveToRangeStart", "moveToRangeEnd", "pPrChange", "rPrChange", "sectPrChange", "tblPrChange", "tcPrChange", "trPrChange"})
 
 
 class IngestionError(ValueError):
@@ -483,6 +486,25 @@ def _block_identity_sha(source: RawFileBinding, identity_sha256: str | None) -> 
     return identity_sha256
 
 
+def _docx_story_revisions(archive, *, document_xml=None) -> dict[str, list[str]]:
+    """Inspect known text-bearing parts, including revisions outside the body."""
+    result = {}
+    tags = {W_NS + name: name for name in DOCX_REVISION_TAGS}
+    for name in sorted(archive.namelist()):
+        if not re.fullmatch(r"word/(?:document|footnotes|endnotes|comments|header\d+|footer\d+)\.xml", name):
+            continue
+        root = document_xml if name == "word/document.xml" and document_xml is not None else _docx_xml(archive, name)
+        kinds = sorted({tags[node.tag] for node in root.iter() if node.tag in tags}) if root is not None else []
+        if kinds:
+            result[name] = kinds
+    return result
+
+
+def _docx_tracking_enabled(settings) -> bool:
+    element = settings.find(W_NS + "trackRevisions") if settings is not None else None
+    return element is not None and element.attrib.get(W_NS + "val", "true").strip().casefold() not in {"false", "off", "0"}
+
+
 def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits, *, identity_sha256: str | None = None) -> StructuredDocument:
     if len(data) > limits.max_file_bytes:
         raise IngestionError("DOCX 原件大小超出安全限制")
@@ -504,26 +526,40 @@ def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits, *,
     blocks: list[DocumentBlock] = []
     mapping: list[dict[str, Any]] = []
     warnings: list[ExtractionWarning] = []
-    revisions = bool(document_xml.findall(".//" + W_NS + "ins") or document_xml.findall(".//" + W_NS + "del"))
+    revision_parts = _docx_story_revisions(archive, document_xml=document_xml)
+    revisions = bool(revision_parts)
     settings = _docx_xml(archive, "word/settings.xml")
-    if settings is not None and settings.find(W_NS + "trackRevisions") is not None:
+    if _docx_tracking_enabled(settings):
         revisions = True
     comments = "word/comments.xml" in archive.namelist()
-    footnotes = "word/footnotes.xml" in archive.namelist()
+    note_visibility = {}
+    for kind in ("footnote", "endnote"):
+        part = f"word/{kind}s.xml"
+        root = _docx_xml(archive, part)
+        references = len(document_xml.findall(".//" + W_NS + kind + "Reference"))
+        count = sum(node.attrib.get(W_NS + "type", "normal") == "normal" for node in root.findall(W_NS + kind)) if root is not None else 0
+        note_visibility[kind] = {"part_present": root is not None, "reference_count": references,
+                                 "note_count": count, "content_extracted": False}
+    footnotes = note_visibility["footnote"]["part_present"] or bool(note_visibility["footnote"]["reference_count"])
+    endnotes = note_visibility["endnote"]["part_present"] or bool(note_visibility["endnote"]["reference_count"])
     hyperlinks = bool(document_xml.findall(".//" + W_NS + "hyperlink"))
     images = [name for name in archive.namelist() if name.startswith("word/media/")]
     if len(images) > limits.max_images:
         raise IngestionError("DOCX 图片数量超过安全限制")
     if revisions:
-        warnings.append(ExtractionWarning("unaccepted-revisions", "critical", "文档包含 w:ins/w:del 或启用修订跟踪；未确认前禁止进入审查"))
+        warnings.append(ExtractionWarning("unaccepted-revisions", "critical", "DOCX 含未接受的文本、移动或格式修订，或已启用修订跟踪；请先在 Word 中核对修订，当前识别不代表最终定稿。", details={"parts": revision_parts}))
     if comments:
         warnings.append(ExtractionWarning("comments-present", "medium", "DOCX 含批注；正文审查不会假装已包含批注语义"))
-    if footnotes:
-        warnings.append(ExtractionWarning("footnotes-present", "medium", "DOCX 含脚注或尾注；已记录存在状态，引用语义需人工确认"))
+    for kind, label in (("footnote", "脚注"), ("endnote", "尾注")):
+        visibility = note_visibility[kind]
+        if visibility["reference_count"] or visibility["note_count"]:
+            warnings.append(ExtractionWarning(kind + "s-present", "high", f"DOCX 含{label}，相关注释正文尚未提取；请对照原件补充或修正识别结果。", details=visibility))
     if hyperlinks:
         warnings.append(ExtractionWarning("hyperlinks-present", "low", "DOCX 含超链接；链接目标存在状态已记录"))
 
     def add_block(kind: str, text: str, paragraph: int, *, level: int | None = None, attrs: dict[str, Any] | None = None, page: int | None = None, table_id: str | None = None, row: int | None = None, column: int | None = None) -> DocumentBlock:
+        if len(blocks) >= limits.max_text_blocks:
+            raise IngestionError("DOCX 文本块或表格单元格数量超过安全上限，拒绝不完整截断")
         block_id = _block_id(identity, kind, len(blocks), text, paragraph, table_id, row, column)
         block = DocumentBlock(block_id, kind, text=text, level=level, location=DocumentLocation(block_id, kind, page=page, paragraph=paragraph, table_id=table_id, row=row, column=column, source_path=source.original_name), attrs=attrs or {})
         blocks.append(block)
@@ -590,7 +626,7 @@ def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits, *,
                 add_block(kind, text, paragraph_index, attrs={"part": part})
                 paragraph_index += 1
     quality = QualitySignals(page_count=1, text_coverage=1.0 if any(b.text.strip() for b in blocks) else 0.0, table_count=sum(b.kind == "table" for b in blocks), tables_parsed=sum(b.kind == "table" for b in blocks), footnote_comment_revision_risk=[w.code for w in warnings], requires_confirmation=True)
-    return StructuredDocument(stable_id("DOC", identity), next((b.text for b in blocks if b.kind == "heading"), Path(source.original_name).stem), source, "docx-xml", PARSER_VERSION, blocks, warnings, quality, mapping, {"revisions_present": revisions, "comments_present": comments, "footnotes_present": footnotes, "hyperlinks_present": hyperlinks, "image_count": len(images), "nested_tables_present": any(b.attrs.get("nested_tables", 0) for b in blocks)})
+    return StructuredDocument(stable_id("DOC", identity), next((b.text for b in blocks if b.kind == "heading"), Path(source.original_name).stem), source, "docx-xml", DOCX_PARSER_VERSION, blocks, warnings, quality, mapping, {"revisions_present": revisions, "revision_parts": revision_parts, "comments_present": comments, "footnotes_present": footnotes, "endnotes_present": endnotes, "note_visibility": note_visibility, "hyperlinks_present": hyperlinks, "image_count": len(images), "nested_tables_present": any(b.attrs.get("nested_tables", 0) for b in blocks)})
 
 
 def _pdf_backend() -> tuple[str, Any] | None:

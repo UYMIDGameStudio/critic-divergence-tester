@@ -19,7 +19,7 @@ class SourceVisibilityTests(unittest.TestCase):
             archive.writestr("word/footnotes.xml", '<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:footnote w:id="1"><w:p><w:r><w:t>NOTE NOT EXTRACTED</w:t></w:r></w:p></w:footnote></w:footnotes>')
         with tempfile.TemporaryDirectory() as temp:
             project = DocumentReviewProject.create(temp, filename="paper.docx", content=raw.getvalue())
-            project.confirm_extraction("confirm")
+            project.confirm_extraction("continue_with_warning")
             project.confirm_context({**ReviewContext("academic article", "unknown", "unknown", "author", "researchers").to_dict(), "review_profile": "academic", "discipline": "humanities", "research_type": "theoretical"})
             request = project.prepare_ai_audits(["academic_citations"], provider="test", model="reviewer")[0]
             prompt = request["prompt"]

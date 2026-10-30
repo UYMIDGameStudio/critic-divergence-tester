@@ -57,6 +57,8 @@ def run_self_test() -> dict:
         root = Path(temp)
         _check_language_imports(root / "languages")
         checked.append("eight-language-import")
+        _check_docx_visibility(root / "docx-visibility")
+        checked.append("docx-visibility")
         _check_academic_protocols(root / "academic")
         checked.append("academic-quality-protocols")
         _check_readonly_recovery(root / "recovery")
@@ -176,6 +178,43 @@ def _check_readonly_recovery(library: Path) -> None:
         raise RuntimeError("Packaged app permits writes after exchange corruption")
     if path.read_bytes() != b"{truncated":
         raise RuntimeError("Packaged recovery silently rewrote a damaged exchange")
+
+
+def _docx_visibility_fixture() -> bytes:
+    """Small synthetic Word file with revisions and omitted note material."""
+    import zipfile
+    namespace = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr('[Content_Types].xml', '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
+        archive.writestr('word/document.xml', f'<w:document xmlns:w="{namespace}"><w:body><w:p><w:pPr><w:pPrChange w:id="1"><w:pPr/></w:pPrChange></w:pPr><w:r><w:t>Review the supplied claim only.</w:t><w:footnoteReference w:id="1"/><w:endnoteReference w:id="1"/></w:r></w:p></w:body></w:document>')
+        for kind in ('footnote', 'endnote'):
+            archive.writestr(f'word/{kind}s.xml', f'<w:{kind}s xmlns:w="{namespace}"><w:{kind} w:id="1"><w:p><w:r><w:t>SYNTHETIC-NOTE-NOT-EXTRACTED</w:t></w:r></w:p></w:{kind}></w:{kind}s>')
+    return output.getvalue()
+
+
+def _check_docx_visibility(library: Path) -> None:
+    from document_review_studio import DocumentReviewProject, ReviewStudioError
+    from document_review_model import ReviewContext
+    project = DocumentReviewProject.create(library, filename="visibility.docx", content=_docx_visibility_fixture())
+    expected = {"unaccepted-revisions", "footnotes-present", "endnotes-present"}
+    if not expected <= {warning.code for warning in project.document().warnings}:
+        raise RuntimeError("Packaged Word recognition misses revisions or omitted notes")
+    try:
+        project.confirm_extraction("confirm")
+    except ReviewStudioError:
+        pass
+    else:
+        raise RuntimeError("Packaged Word recognition bypasses its warning gate")
+    project.confirm_extraction("continue_with_warning")
+    project.confirm_context(ReviewContext('academic article', 'unknown', 'unknown', 'author', 'researchers',
+        review_profile='academic', discipline='humanities', research_type='theoretical').to_dict())
+    request = project.prepare_ai_audits(['academic_citations'], provider='self-test', model='not-invoked')[0]
+    contract = json.loads(request['prompt'].split('```json\n', 1)[1].split('\n```', 1)[0])
+    if not expected <= {row['code'] for row in contract['source_visibility']['extraction_warnings']}:
+        raise RuntimeError("Packaged Word visibility limits do not reach the saved prompt")
+    if 'SYNTHETIC-NOTE-NOT-EXTRACTED' in request['prompt'] or project.integrity_errors():
+        raise RuntimeError("Packaged Word prompt misrepresents its visible source")
 
 
 def _check_academic_protocols(library: Path) -> None:
