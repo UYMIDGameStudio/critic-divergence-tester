@@ -372,38 +372,6 @@ function filterSourcePreview(event) {
     )
     .join('\n\n');
 }
-function revealSource(event) {
-  if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
-  const target = document.getElementById(event.currentTarget.getAttribute('href').slice(1));
-  if (!target?.classList.contains('source-block') || !root.contains(target)) return;
-  const search = target.classList.contains('revised-source-block')
-    ? null : document.getElementById('workspace-search');
-  if (target.hidden && search) {
-    search.value = '';
-    search.dispatchEvent(new Event('input', {bubbles: true}));
-  }
-  let ancestor = target;
-  while (ancestor && ancestor !== root) {
-    ancestor.hidden = false;
-    ancestor.classList.remove('hidden');
-    if (ancestor.tagName === 'DETAILS') ancestor.open = true;
-    ancestor = ancestor.parentElement;
-  }
-  // Native anchor activation still updates the fragment and browser history.
-  // A focusable source also gives keyboard users the quoted passage itself.
-  target.tabIndex = -1;
-  target.focus({preventScroll: true});
-  target.scrollIntoView({block: 'center'});
-}
-function filterWorkspace(event) {
-  const q = event.target.value.toLowerCase();
-  document
-    .querySelectorAll('.source-block:not(.revised-source-block)')
-    .forEach(
-      (block) =>
-        (block.hidden = !sourceMatchesQuery(block.textContent, q)),
-    );
-}
 function selectedRequest() {
   const id = document.getElementById('ai-request')?.value;
   return state.selected?.ai_requests?.find((x) => x.request_id === id);

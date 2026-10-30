@@ -85,6 +85,28 @@ main { max-width: 1480px; margin: auto; padding: 28px 32px 64px; }
 .quote, .block, .source-block, .card p, .card h3 { overflow-wrap: anywhere; word-break: normal; }
 .source-block { padding: 20px 4px; border-bottom: 1px solid var(--line); white-space: pre-wrap; font: 1rem/1.9 var(--font-reading); scroll-margin-block: 16px; }
 .source-block small { font: .6875rem/1.6 var(--font-sans); color: var(--muted); }
+.source-kind-heading .source-text { margin-top: 8px; font-weight: 600; font-size: 1.15rem; line-height: 1.5; }
+.source-reader-toolbar { position: sticky; top: 0; z-index: 1; padding-top: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); background: var(--paper); }
+.workspace > .manuscript-pane { padding-top: 0; }
+.workspace > .manuscript-pane > .source-reader-toolbar { padding-top: 24px; }
+.source-reader-toolbar > h3 { margin-top: 0; margin-bottom: 10px; }
+.source-reader-controls { display: flex; gap: 8px; align-items: center; }
+.source-reader-controls input { flex: 1; min-width: 0; }
+.source-reader-controls button { flex: 0 0 auto; margin: 0; white-space: nowrap; }
+.source-reader-status { font-size: .8125rem; margin: 8px 0; }
+.source-reader-navigation { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 8px 0; }
+.source-reader-navigation > :only-child { grid-column: 1 / -1; }
+.source-reader-navigation details, .source-navigation-help { min-width: 0; }
+.source-reader-navigation details { margin: 0; }
+.source-reader-navigation summary { font-size: .875rem; }
+.source-outline nav, .source-pages nav { max-height: 24vh; overflow: auto; }
+.source-outline ol { padding: 0; margin: 12px 0; list-style: none; }
+.source-outline li { padding-inline-start: calc(var(--source-depth, 0) * 8px); }
+.source-outline a { display: block; padding: 5px 0; overflow-wrap: anywhere; }
+.source-pages nav { display: flex; gap: 6px; flex-wrap: wrap; padding: 12px 0; }
+.source-navigation-help { font-size: .8125rem; }
+.standalone-reader > summary { font: 1.1rem/1.5 var(--font-reading); }
+.standalone-reader > .manuscript-pane { margin-top: 16px; padding-top: 0; border-top: 1px solid var(--line); background: var(--paper); }
 .source-block:target { background: var(--action-soft); box-shadow: inset 3px 0 var(--action); }
 /* Presentation only: the original source, anchors and quotes stay unchanged. */
 #app:not(.pdf-original-breaks) .pdf-fragmented-text { white-space: normal; }

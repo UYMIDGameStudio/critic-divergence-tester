@@ -1,12 +1,14 @@
 function bindWorkflowNavigation() {
   const targets = {
-    extraction: '#source-preview', context: '#confirm-context', local: '#run-precheck',
-    ai: '#ai-request', adjudication: '.finding-card',
+    extraction: ['#source-preview', '#workspace-search'], context: '#confirm-context', local: '#run-precheck',
+    ai: '#ai-request', adjudication: ['.finding-card', '.argument-assessment', '.review-empty'],
     bridge: '.revision-action-card, #prepare-bridge',
     export: '.download, #export-final, #export-results',
   };
   root.querySelectorAll('[data-stage]').forEach(button => {
-    const target = root.querySelector(targets[button.dataset.stage]);
+    const selectors = targets[button.dataset.stage];
+    const target = (Array.isArray(selectors) ? selectors : [selectors])
+      .map(selector => root.querySelector(selector)).find(Boolean);
     button.disabled = !target;
     button.onclick = () => {
       let parent = target;

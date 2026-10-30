@@ -276,7 +276,9 @@ function argumentAssessment(view) {
   const statuses = {effective: tr('有效的安排'), mixed: tr('有作用，也有取舍'),
     weak: tr('需要改进'), 'unable-to-assess': tr('材料不足')};
   const knownTitles = ['论证结构', '论证方向', '论证方法', '特征特点'];
-  const sources = (anchors, refs) => anchors.map((anchor, index) => `<div class="quote"><small>${esc(anchor.block_id)}</small><p>${esc(anchor.quote)}</p></div>${sourceQuoteReference(refs?.[index])}`).join('');
+  const sourceIds = new Set((view.extraction?.blocks || []).map(block => block.block_id));
+  const sources = (anchors, refs) => anchors.map((anchor, index) => `<div class="quote"><small>${sourceIds.has(anchor.block_id)
+    ? `<a href="#source-${esc(anchor.block_id)}">${esc(anchor.block_id)} · ${tr('查看原文')}</a>` : esc(anchor.block_id)}</small><p>${esc(anchor.quote)}</p></div>${sourceQuoteReference(refs?.[index])}`).join('');
   return ui`<section class="card argument-assessment"><h2>论证与文章综合审查</h2><p class="muted">按文章的问题和贡献选择审查角度，记录有效之处、局限与建议。以下为模型意见，原文定位通过不等于人工认可。</p>${rows.map(row => {
     const frame = row.assessment.review_frame;
     return ui`<p class="muted">来源审查：${esc(row.request_id)} · ${esc(row.run_id)}</p><div class="assessment-frame"><p><b>实际问题：</b>${esc(frame.question)}</p><p><b>意图贡献：</b>${esc(frame.intended_contribution)}</p><p><b>整体路线：</b>${esc(frame.argument_route)}</p><p><b>审查重点：</b>${frame.priorities.map(esc).join(' · ')}</p>${frame.scope_limits.length ? ui`<p><b>范围限制：</b>${frame.scope_limits.map(esc).join(' · ')}</p>` : ''}${frame.evidence.length ? ui`<details><summary>审查方案依据</summary>${sources(frame.evidence, row.quote_refs?.review_frame)}</details>` : ''}</div><div class="assessment-axes">${row.assessment.dimensions.map((dimension, dimensionIndex) => ui`<article class="assessment-axis" data-axis="${esc(dimension.id)}"><h3>${esc(knownTitles.includes(dimension.title) ? tr(dimension.title) : dimension.title)}</h3><span class="pill">${esc(statuses[dimension.status])}</span><p class="muted assessment-relevance">${esc(dimension.why_relevant)}</p><p class="assessment-description">${esc(dimension.description)}</p><p>${esc(dimension.assessment)}</p>${dimension.strengths.length ? ui`<p><b>有效之处</b></p><ul>${dimension.strengths.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}${dimension.limitations.length ? ui`<p><b>局限与取舍</b></p><ul>${dimension.limitations.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}<p><b>保留或调整建议：</b>${esc(dimension.recommendation)}</p>${dimension.evidence.length ? ui`<details><summary>原文依据</summary>${sources(dimension.evidence, row.quote_refs?.dimensions?.[dimensionIndex])}</details>` : ''}</article>`).join('')}</div>`;
@@ -290,11 +292,10 @@ function findingWorkspace(view) {
   if (!items.length)
     return view.state.review_state !== 'not_started'
       ? tr(
-          '<div class="card"><h2>本轮没有产生 Finding</h2><p>零 Finding 不代表自动确认合规或质量，审查范围仍记录在审计产物中。</p><button id="export-results">仅导出审查结果</button></div>',
+          '<div class="card review-empty"><h2>本轮没有产生 Finding</h2><p>零 Finding 不代表自动确认合规或质量，审查范围仍记录在审计产物中。</p><button id="export-results">仅导出审查结果</button></div>',
         )
       : '';
-  const blocks = view.extraction.blocks || [],
-    limit = queue.default_limit || 30;
+  const limit = queue.default_limit || 30;
   const groups = queue.groups || [];
   return ui`<div class="card queue-overview"><h2>人工裁决队列</h2><div class="summary"><span class="pill">${queue.total_groups || 0} 个工作组</span><span class="pill">${summary.total || 0} 条原子 Finding</span><span class="pill">待处理 ${summary.open || 0} ${tr('条计数单位')}</span><span class="pill">高/严重 ${(summary.by_severity?.high || 0) + (summary.by_severity?.critical || 0)} ${tr('条计数单位')}</span></div><p class="muted">默认只展示前 ${limit} 个承重工作组；归组仅管理注意力，不合并 critic 的理由、证据或决定。</p>${queue.hidden_groups ? ui`<button class="secondary" id="show-all-groups">展开其余 ${queue.hidden_groups} 个工作组</button>` : ''}<div class="toolbar"><label>维度<select id="filter-critic"><option value="">全部</option>${Object.entries(
     critics,
@@ -302,7 +303,7 @@ function findingWorkspace(view) {
     .map(([k, v]) => `<option value="${k}">${esc(tr(v))}</option>`)
     .join(
       '',
-    )}</select></label><label>严重度<select id="filter-severity"><option value="">全部</option>${['critical', 'high', 'medium', 'low', 'info'].map((x) => `<option>${x}</option>`).join('')}</select></label><label>状态<select id="filter-status"><option value="">全部</option>${['open', 'accept', 'correct', 'reject', 'defer'].map((x) => `<option>${x}</option>`).join('')}</select></label></div></div><div class="workspace"><section class="card pane manuscript-pane"><h3>原文与定位</h3><input id="workspace-search" type="text" placeholder="搜索原文">${blocks.map((b) => `<div class="source-block" id="source-${esc(b.location?.block_id || b.block_id)}"><small>${esc(b.location?.block_id || b.block_id)} · page ${esc(b.location?.page || '-')}</small><br>${pdfDisplayText(sourceBlockText(b))}</div>`).join('')}</section><section>${groups.map((g, index) => ui`<section class="finding-group ${index >= limit ? 'hidden extra-finding-group' : ''}"><div class="card group-heading"><div class="row"><b>工作组 ${esc(g.block_id)}</b><span class="pill">${g.finding_count} ${tr('条计数单位')}</span><span class="pill">${g.critic_count} 个 critic</span></div><p><b>排序依据：</b>${esc(g.priority_reasons.map(tr).join(uiLocale === 'en' ? '; ' : '；'))}</p><p><b>共同修改动作：</b>${esc(g.suggested_action)}</p></div>${g.findings.map(findingCard).join('')}</section>`).join('')}</section><aside class="card sticky completion-panel"><h3>完成门</h3><p>所有原子 Finding 裁决完成后，才可生成 Action 和 Hunk。</p><p><b>待处理：</b>${summary.open || 0}</p><button id="prepare-bridge" ${summary.open ? 'disabled' : ''}>生成逐段修改计划</button><p><button id="export-results" ${summary.open ? 'disabled' : ''}>仅导出审查结果</button></p></aside></div><div id="err" class="error"></div>${revisionWorkspace(view)}`;
+    )}</select></label><label>严重度<select id="filter-severity"><option value="">全部</option>${['critical', 'high', 'medium', 'low', 'info'].map((x) => `<option>${x}</option>`).join('')}</select></label><label>状态<select id="filter-status"><option value="">全部</option>${['open', 'accept', 'correct', 'reject', 'defer'].map((x) => `<option>${x}</option>`).join('')}</select></label></div></div><div class="workspace">${sourceReaderPane(view)}<section>${groups.map((g, index) => ui`<section class="finding-group ${index >= limit ? 'hidden extra-finding-group' : ''}"><div class="card group-heading"><div class="row"><b>工作组 ${esc(g.block_id)}</b><span class="pill">${g.finding_count} ${tr('条计数单位')}</span><span class="pill">${g.critic_count} 个 critic</span></div><p><b>排序依据：</b>${esc(g.priority_reasons.map(tr).join(uiLocale === 'en' ? '; ' : '；'))}</p><p><b>共同修改动作：</b>${esc(g.suggested_action)}</p></div>${g.findings.map(findingCard).join('')}</section>`).join('')}</section><aside class="card sticky completion-panel"><h3>完成门</h3><p>所有原子 Finding 裁决完成后，才可生成 Action 和 Hunk。</p><p><b>待处理：</b>${summary.open || 0}</p><button id="prepare-bridge" ${summary.open ? 'disabled' : ''}>生成逐段修改计划</button><p><button id="export-results" ${summary.open ? 'disabled' : ''}>仅导出审查结果</button></p></aside></div><div id="err" class="error"></div>${revisionWorkspace(view)}`;
 }
 function exportCenter(view) {
   const rows = view.exports || [];
@@ -318,5 +319,5 @@ function project() {
     root.innerHTML = ui`${serviceDetails(state.notice)}<div class="card readonly"><h2>项目已切换为只读</h2><p>请恢复可信项目副本后再继续，下载也会被阻止。</p><details class="integrity-details"><summary>查看完整性详情</summary><p>${esc((st.integrity_errors || []).join('；') || tr('完整性链异常'))}</p></details></div>${heading}`;
     return;
   }
-  root.innerHTML = ui`${serviceDetails(state.notice)}${heading}${pdfReaderControl(v)}${workflow(v)}${extractionCard(v)}${contextCard(v)}${reviewCards(v)}${argumentAssessment(v)}${findingWorkspace(v)}${adversarialHistory(v)}${exportCenter(v)}`;
+  root.innerHTML = ui`${serviceDetails(state.notice)}${heading}${pdfReaderControl(v)}${workflow(v)}${extractionCard(v)}${contextCard(v)}${reviewCards(v)}${standaloneSourceReader(v)}${argumentAssessment(v)}${findingWorkspace(v)}${adversarialHistory(v)}${exportCenter(v)}`;
 }

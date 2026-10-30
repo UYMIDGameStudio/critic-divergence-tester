@@ -3,7 +3,7 @@
 from importlib.resources import files
 import json
 
-SCRIPTS = ("i18n.js", "state.js", "api.js", "drafts.js", "imports.js", "adversarial.js", "views.js", "events.js", "editing.js", "navigation.js", "app.js")
+SCRIPTS = ("i18n.js", "state.js", "api.js", "drafts.js", "imports.js", "source_reader.js", "adversarial.js", "views.js", "events.js", "editing.js", "navigation.js", "app.js")
 
 
 def shell_template() -> str:

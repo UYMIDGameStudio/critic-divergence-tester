@@ -43,13 +43,16 @@ function render() {
   bindImportControls();
   bindDelivery();
   bindWorkflowNavigation();
+  bindSourceReader();
   document
     .getElementById('export-ai-reviews')
     ?.addEventListener('click', () => act('export_ai_reviews'));
   restoreDraftFields();
   if (state.selected?.directory !== lastDraftProject) {
     lastDraftProject = state.selected?.directory;
-    requestAnimationFrame(() => window.scrollTo(0, draftContext?.scroll || 0));
+    requestAnimationFrame(() => {
+      if (!revealSourceFragment()) window.scrollTo(0, draftContext?.scroll || 0);
+    });
   }
 }
 async function runMutation(label, operation) {
@@ -163,6 +166,7 @@ async function removeProject(directory) {
 async function quitStudio() {
   return runMutation(tr('退出工作台'), () => api('/api/shutdown', {}));
 }
+window.addEventListener('hashchange', revealSourceFragment);
 api('/api/state')
   .then((value) => {
     state = value;

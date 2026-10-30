@@ -1,4 +1,4 @@
-// Four-axis review with no defects, original model text and local-only navigation.
+// Adaptive article review with zero Findings, original text and source access.
 const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const {spawn} = require('node:child_process');
 const fs = require('node:fs/promises');
@@ -8,7 +8,7 @@ const assert = require('node:assert/strict');
 
 async function main() {
   const root = path.resolve(__dirname, '..');
-  const output = path.join(root, 'dist', 'browser-composition-0.2.39');
+  const output = path.join(root, 'dist', 'browser-composition-0.2.42');
   await fs.mkdir(output, {recursive: true});
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'composition-browser-'));
   const child = spawn(process.env.STUDIO_PYTHON || 'python',

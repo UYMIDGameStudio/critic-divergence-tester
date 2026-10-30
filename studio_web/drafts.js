@@ -87,11 +87,12 @@ function restoreDraftFields() {
     );
   }
   filterFindings();
+  restoreSourceReaderState();
   draftStatus();
 }
 function captureDraftFields() {
   if (!draftContext) return;
-  let changed = false;
+  let changed = captureSourceReaderState();
   for (const element of editableFields()) {
     const key = element.dataset.draftKey || fieldKey(element);
     const value = elementValue(element);

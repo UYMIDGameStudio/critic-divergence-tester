@@ -6,6 +6,10 @@ from unified_app import serve_unified_app
 
 fixture = None
 project_dir = None
+for flag, mode in (('--source-reader', 'article'), ('--reader-pages', 'pages'), ('--reader-followup', 'followup')):
+    if flag in sys.argv[2:]:
+        from test import source_reader_fixtures
+        project_dir = getattr(source_reader_fixtures, mode)(Path(sys.argv[1])).root
 if "--source-projection" in sys.argv[2:]:
     from test.test_source_projection import long_review_fixture
     project_dir = long_review_fixture(Path(sys.argv[1]))[0].root

@@ -39,6 +39,7 @@ jobs:
             dist/browser-quote-context/
             dist/browser-report-text/
             dist/browser-source-projection/
+            dist/browser-source-reader/
             dist/browser-xml-limits/
             dist/browser-table-grid/
             dist/browser-resolution-evidence/
