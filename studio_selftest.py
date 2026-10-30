@@ -82,6 +82,8 @@ def run_self_test() -> dict:
         checked.append("quote-context")
         _check_secondary_quotes(project)
         checked.append("secondary-quotes")
+        _check_report_text(project)
+        checked.append("report-literal-text")
         _check_review_context(project, reviewed_finding_id)
         checked.append("review-context")
         _check_resolution_pipeline(project, reviewed_finding_id)
@@ -237,6 +239,21 @@ def _check_quote_context(project) -> None:
     if not project.findings() or any(not contexts.get(finding.finding_id, {}).get('source_quote_review', {}).get('matched')
                                    for finding in project.findings()):
         raise RuntimeError('Packaged finding view omits source quotation context')
+
+
+def _check_report_text(project) -> None:
+    from document_review_studio import _ai_review_markdown, _difference_report
+    attack = '<img src=x onerror="window.__reportInjected=true">\n\n# FORGED APPROVAL'
+    active = next(run for _, run, _ in project._active_audit_run_records().values() if run.get('findings'))
+    run = {**active, 'findings': [{**active['findings'][0], 'issue': attack}],
+           'declared_model_metadata': {'provider': attack, 'model': attack}}
+    snapshot = {'source': {'original_name': attack, 'sha256': '0' * 64}, 'runs': [run], 'finding_count': 1}
+    report = _ai_review_markdown(snapshot)
+    if '<img' in report or '\n# FORGED APPROVAL' in report or '&lt;img' not in report:
+        raise RuntimeError('Packaged report promotes external prose to active Markdown')
+    diff = _difference_report('old', '```\n' + attack)
+    if '\n    +<img' not in diff or '\n# FORGED APPROVAL' in diff:
+        raise RuntimeError('Packaged difference report loses literal source boundaries')
 
 
 def _check_reviewable_text(library: Path) -> None:

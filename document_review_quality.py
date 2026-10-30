@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import hashlib
+import html
+import re
 import unicodedata
 
 
@@ -337,6 +339,24 @@ def validate_close_reading(value, blocks_by_id: Mapping, *, version: int = 1) ->
     return errors
 
 
+REPORT_RENDERING_VERSION = 1
+
+
+def markdown_text(value) -> str:
+    """Literal report prose in CommonMark; never use inside a code span."""
+    text = html.escape(str(value).replace('\r\n', '\n').replace('\r', '\n'), quote=False)
+    text = re.sub(r'([\\`*_{}\[\]!|~])', r'\\\1', text)
+    # Preserve ordinary IDs, decimals and hyphenated words. At line starts,
+    # neutralize lists, headings, setext headings and thematic breaks too.
+    text = re.sub(r'(?m)^([ \t]*)([#=+.-])', r'\1\\\2', text)
+    return re.sub(r'(?m)^([ \t]*\d{1,9})([.)])', r'\1\\\2', text)
+
+
+def markdown_code_block(value: str) -> list[str]:
+    """Indented literal lines cannot close a fence supplied by the template."""
+    return [''] + ['    ' + line for line in value.splitlines()] + ['']
+
+
 def close_reading_markdown(finding: Mapping, *, quote_refs=None, quote_contexts=None) -> list[str]:
     detail = finding.get("check_data", {}).get("close_reading")
     if not isinstance(detail, Mapping):
@@ -344,9 +364,9 @@ def close_reading_markdown(finding: Mapping, *, quote_refs=None, quote_contexts=
     labels = {"author_position": "Author's actual position", "strongest_defense": "Strongest defense",
               "why_defense_fails": "Remaining defect", "repair_test": "Repair acceptance test"}
     lines = ["Close-reading justification (model-proposed; not a verified verdict):", ""]
-    lines.extend(f"- {label}: {detail.get(key, '')}" for key, label in labels.items())
+    lines.extend(f"- {label}: {markdown_text(detail.get(key, ''))}" for key, label in labels.items())
     for index, anchor in enumerate(detail.get("context_evidence", [])):
-        lines.append(f"- Context `{anchor['block_id']}` ({anchor['role']}): {anchor['quote']}")
+        lines.append(f"- Context {markdown_text(anchor['block_id'])} ({markdown_text(anchor['role'])}): {markdown_text(anchor['quote'])}")
         if quote_refs and index < len(quote_refs):
             lines.extend(quote_reference_markdown(quote_refs[index], quote_contexts))
     return lines + [""]

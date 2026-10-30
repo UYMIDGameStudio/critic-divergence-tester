@@ -104,11 +104,11 @@ class ExportCenter(_ProjectComponent):
         if not rows:
             lines.append("当前本地与外部复审决定中没有未解决项；这不等于自动确认文档正确、合规或完整。")
         for row in rows:
-            lines.extend([f"## {row['finding_id']} · {row['critic']}", "", f"- check_id：{row.get('check_id') or '未提供'}", f"- 状态：{row['state']}", f"- 依据：{row.get('basis', '')}", ""])
+            lines.extend([f"## {markdown_text(row['finding_id'])} · {markdown_text(row['critic'])}", "", f"- check_id：{markdown_text(row.get('check_id') or '未提供')}", f"- 状态：{markdown_text(row['state'])}", f"- 依据：{markdown_text(row.get('basis', ''))}", ""])
         if external.get("followup_blockers"):
             lines.extend(["## 下一轮定位待补充", "",
                           "以下未解决项没有可核对的修订稿定位，不能自动挂到其他段落：",
-                          ", ".join(external["followup_blockers"]), "",
+                          markdown_text(", ".join(external["followup_blockers"])), "",
                           "请补充带修订稿原文引句的复审结果，再开始下一轮。", ""])
         return "\n".join(lines)
 
@@ -151,6 +151,7 @@ class ExportCenter(_ProjectComponent):
         adversarial_reviews, adversarial_parents = self._export_adversarial_reviews(output)
         snapshot = {
             "artifact_type": "independent-ai-review-snapshot",
+            "report_rendering_version": REPORT_RENDERING_VERSION,
             "schema_version": 1,
             "export_id": export_id,
             "status": "unadjudicated-review-snapshot",
@@ -172,6 +173,7 @@ class ExportCenter(_ProjectComponent):
         _write_tracked(self.root, report_path, _ai_review_markdown(snapshot).encode("utf-8"), parents=[_parent_ref(self.root, json_path, role="ai-review-snapshot")], provenance="deterministic-ai-review-render")
         manifest = {
             "artifact_type": "independent-ai-review-export",
+            "report_rendering_version": REPORT_RENDERING_VERSION,
             "schema_version": 1,
             "export_id": export_id,
             "status": "unadjudicated-review-snapshot",
@@ -277,6 +279,7 @@ class ExportCenter(_ProjectComponent):
             chain_parents.append(_parent_ref(self.root, current_round[0], role="current-review-round"))
         audit = {"artifact_type": "document-review-export", "schema_version": 2, "product_status": "experimental-preview", "export_id": export_id, "source": document.source.to_dict(), "parser": {"name": document.parser_name, "version": document.parser_version}, "quality": document.quality.to_dict(), "warnings": [warning.to_dict() for warning in document.warnings], "audit_runs": runs, "findings": [finding.to_dict() for finding in findings], "decisions": list(decisions.values()), "review_round": current_round[1] if current_round else None, "revision": trusted_revision[1] if trusted_revision else None, "external_recheck": external_recheck, "review_context": self.context().to_dict(), "independent_critics": list(self.review_critics()), "scores": None, "legal_boundary": "合规筛查不是律师意见；无来源材料时只能输出待核实问题", "created_at": _now()}
         quote_index = QuoteReviewIndex(document)
+        audit['report_rendering_version'] = REPORT_RENDERING_VERSION
         audit["verification_context"] = self._finding_verification_context(document, audit['findings'], index=quote_index)
         audit['argument_quote_refs'] = {
             run['run_id']: assessment_quote_refs(run['argument_assessment'], quote_index)
@@ -323,8 +326,13 @@ class ExportCenter(_ProjectComponent):
                     except WordEditUnsupported as exc:
                         word_report["track_changes_limitation"] = str(exc)
             _write_tracked(self.root, revised_docx_path, word_bytes, parents=[_parent_ref(self.root, revised_markdown_path, role="approved-revised-markdown"), _parent_ref(self.root, trusted_revision[0] / "document.json", role="approved-revised-document"), *base_parents], provenance="approved-revision-docx-export")
-            _write_tracked(self.root, output / "Word导出说明.md", ("# Word 导出说明\n\n" + word_report["message"] + "\n\n" + word_report.get("track_changes_limitation", "") + "\n").encode("utf-8"), parents=[_parent_ref(self.root, revised_docx_path, role="word-output")], provenance="word-capability-report")
-            for name in ("修改说明.md", "recheck.json"):
+            _write_tracked(self.root, output / "Word导出说明.md", ("# Word 导出说明\n\n" + markdown_text(word_report["message"]) + "\n\n" + markdown_text(word_report.get("track_changes_limitation", "")) + "\n").encode("utf-8"), parents=[_parent_ref(self.root, revised_docx_path, role="word-output")], provenance="word-capability-report")
+            # Re-render the human report, including revisions finalized by an
+            # older renderer. Preserve the bound historical artifacts verbatim.
+            difference_path = output / '修改说明.md'
+            _write_tracked(self.root, difference_path, _difference_report(normalized, trusted_markdown).encode('utf-8'),
+                parents=base_parents, provenance='deterministic-revision-difference-render')
+            for name in ("recheck.json",):
                 source_path = trusted_revision[0] / name
                 if source_path.is_file():
                     _write_tracked(self.root, output / name, source_path.read_bytes(), parents=[_parent_ref(self.root, source_path, role="revision-evidence")], provenance="approved-revision-evidence-export")

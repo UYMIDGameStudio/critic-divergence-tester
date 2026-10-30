@@ -30,7 +30,7 @@ from project_lifecycle import before_write, transaction, recover, compatibility,
 from document_review_ingest import IngestionError, IngestionLimits, ingest_bytes, safe_upload_name
 from academic_review import academic_prechecks
 from document_review_quality import (close_reading_markdown, source_quote_reviews, quote_review_markdown,
-    QuoteReviewIndex, quote_reference_markdown)
+    QuoteReviewIndex, quote_reference_markdown, markdown_text, markdown_code_block, REPORT_RENDERING_VERSION)
 from document_review_composition import assessment_markdown, assessment_quote_refs
 from document_review_model import (
     AuditRun,
@@ -810,11 +810,11 @@ def _adversarial_review_markdown(sessions: Iterable[Mapping[str, Any]]) -> list[
     lines = ["## Adversarial deep review", "",
              "These are model proposals. Source excerpts and task bindings were checked; semantic accuracy and completeness are not established. Human decisions remain separate.", ""]
     for session in sessions:
-        lines.extend([f"### {session['finding_id']} · {session['session_id']}", "",
-                      f"- Status: {session['status']}; current: {session['current']}",
-                      f"- Original critic: {session['critic']}", ""])
+        lines.extend([f"### {markdown_text(session['finding_id'])} · {markdown_text(session['session_id'])}", "",
+                      f"- Status: {markdown_text(session['status'])}; current: {markdown_text(session['current'])}",
+                      f"- Original critic: {markdown_text(session['critic'])}", ""])
         for request in session.get("requests", []):
-            lines.append(f"- {request['stage']}: {request['provider']} / {request['model']} (declared)")
+            lines.append(f"- {markdown_text(request['stage'])}: {markdown_text(request['provider'])} / {markdown_text(request['model'])} (declared)")
         for stage, fields in (
             ("defense", ("author_position", "strongest_defense", "limitations")),
             ("assessment", ("disposition", "reasons", "remaining_issue", "minimal_repair", "repair_test")),
@@ -824,13 +824,13 @@ def _adversarial_review_markdown(sessions: Iterable[Mapping[str, Any]]) -> list[
                 continue
             lines.extend(["", f"#### {stage.capitalize()}", ""])
             for key in fields:
-                lines.append(f"- {key.replace('_', ' ').capitalize()}: {result.get(key, '')}")
+                lines.append(f"- {key.replace('_', ' ').capitalize()}: {markdown_text(result.get(key, ''))}")
             for index, anchor in enumerate(result.get("context_evidence", [])):
-                lines.append(f"- Source `{anchor['block_id']}`: {anchor['quote']}")
+                lines.append(f"- Source {markdown_text(anchor['block_id'])}: {markdown_text(anchor['quote'])}")
                 refs = session.get('quote_refs', {}).get(stage, [])
                 if index < len(refs):
                     lines.extend(quote_reference_markdown(refs[index], session.get('quote_contexts')))
-        lines.extend(["", f"Exchange records: `{session['relative_path']}`", ""])
+        lines.extend(["", f"Exchange records: {markdown_text(session['relative_path'])}", ""])
     return lines
 
 
@@ -857,7 +857,7 @@ def _verification_close_reading_markdown(finding: Mapping[str, Any], context: Ma
 
 def _audit_markdown(audit: Mapping[str, Any]) -> str:
     verification_context = audit.get("verification_context") or review_verification_context(audit.get("audit_runs", []))
-    lines = ["# Document Review Studio audit report", "", f"Source: `{audit['source']['original_name']}`", f"SHA-256: `{audit['source']['sha256']}`", "", "## Recognition quality", "", f"- Text coverage: {audit['quality'].get('text_coverage', 0):.2f}", f"- Blank pages: {audit['quality'].get('blank_pages', [])}", f"- OCR low-confidence blocks: {audit['quality'].get('ocr_low_confidence_blocks', 0)}", f"- Reading order suspected: {audit['quality'].get('suspected_reading_order', False)}", ""]
+    lines = ["# Document Review Studio audit report", "", f"Source: {markdown_text(audit['source']['original_name'])}", f"SHA-256: {markdown_text(audit['source']['sha256'])}", "", "## Recognition quality", "", f"- Text coverage: {audit['quality'].get('text_coverage', 0):.2f}", f"- Blank pages: {markdown_text(audit['quality'].get('blank_pages', []))}", f"- OCR low-confidence blocks: {markdown_text(audit['quality'].get('ocr_low_confidence_blocks', 0))}", f"- Reading order suspected: {markdown_text(audit['quality'].get('suspected_reading_order', False))}", ""]
     for run in audit.get("audit_runs", []):
         refs = audit.get('argument_quote_refs', {}).get(run['run_id'])
         if run.get('argument_assessment') and 'argument_quote_refs' in audit and refs is None:
@@ -868,20 +868,20 @@ def _audit_markdown(audit: Mapping[str, Any]) -> str:
         lines.append("No Finding was produced. This is supported only by the recorded recognition scope and recorded review; it is not a guarantee of quality or legality.")
     for finding in audit["findings"]:
         verification = verification_context.get(finding["finding_id"]) or finding_verification_context(finding)
-        lines.extend([f"### {finding['finding_id']} · {finding['critic']}", "", f"- Location: `{finding['location']['block_id']}` page {finding['location'].get('page') or '-'}", f"- Evidence: {finding['evidence']}", f"- Issue: {finding['issue']}", f"- Standard: {finding['standard']}", f"- Consequence: {finding['consequence']}", f"- Severity: {finding['severity']}; verification: {verification['display_label_en']}", f"- Action: {finding['suggested_action']}", ""])
+        lines.extend([f"### {markdown_text(finding['finding_id'])} · {markdown_text(finding['critic'])}", "", f"- Location: {markdown_text(finding['location']['block_id'])} page {markdown_text(finding['location'].get('page') or '-')}", f"- Evidence: {markdown_text(finding['evidence'])}", f"- Issue: {markdown_text(finding['issue'])}", f"- Standard: {markdown_text(finding['standard'])}", f"- Consequence: {markdown_text(finding['consequence'])}", f"- Severity: {markdown_text(finding['severity'])}; verification: {markdown_text(verification['display_label_en'])}", f"- Action: {markdown_text(finding['suggested_action'])}", ""])
         lines.extend(_verification_close_reading_markdown(finding, verification, audit.get('quote_contexts')))
         if finding.get("external_basis", {}).get("unresolved_facts"):
-            lines.append("- Unresolved facts: " + "；".join(finding["external_basis"]["unresolved_facts"]))
+            lines.append("- Unresolved facts: " + markdown_text("；".join(finding["external_basis"]["unresolved_facts"])))
     lines.extend(_adversarial_review_markdown(audit.get("adversarial_reviews", [])))
     external = audit.get('external_recheck') or {}
     for request in external.get('requests', []):
         for item in request.get('items', []):
             refs = item.get('quote_refs', [])
             if refs:
-                lines.extend([f"### Revised evidence · {item['finding_id']}", ''])
+                lines.extend([f"### Revised evidence · {markdown_text(item['finding_id'])}", ''])
                 for ref in refs:
                     lines.extend(quote_reference_markdown(ref, external.get('quote_contexts')))
-    lines.extend(["", "## Boundary", "", audit["legal_boundary"], ""])
+    lines.extend(["", "## Boundary", "", markdown_text(audit["legal_boundary"]), ""])
     return "\n".join(lines)
 
 
@@ -893,8 +893,8 @@ def _ai_review_markdown(snapshot: Mapping[str, Any]) -> str:
         "",
         "> 状态：未经人工裁决的审查快照。本报告不表示 Finding 已被接受、解决或应用到原文。",
         "",
-        f"- 原始文件：`{source['original_name']}`",
-        f"- 原始文件 SHA-256：`{source['sha256']}`",
+        f"- 原始文件：{markdown_text(source['original_name'])}",
+        f"- 原始文件 SHA-256：{markdown_text(source['sha256'])}",
         f"- 已导入 critic：{len({run['critic'] for run in snapshot['runs']})}",
         f"- Finding：{snapshot['finding_count']}",
         "",
@@ -903,7 +903,7 @@ def _ai_review_markdown(snapshot: Mapping[str, Any]) -> str:
         metadata = run.get("declared_model_metadata", {})
         binding = run.get("response_binding")
         binding_label = binding.get("mode", "未记录") if isinstance(binding, Mapping) else binding or "未记录"
-        lines.extend([f"## {run['critic']}", "", f"- Provider / model：{metadata.get('provider', '未声明')} / {metadata.get('model', '未声明')}", f"- Run：`{run['run_id']}`", f"- Response binding：{binding_label}", ""])
+        lines.extend([f"## {markdown_text(run['critic'])}", "", f"- Provider / model：{markdown_text(metadata.get('provider', '未声明'))} / {markdown_text(metadata.get('model', '未声明'))}", f"- Run：{markdown_text(run['run_id'])}", f"- Response binding：{markdown_text(binding_label)}", ""])
         lines.extend(assessment_markdown(run.get("argument_assessment"),
             quote_refs=snapshot.get('argument_quote_refs', {}).get(run['run_id']), quote_contexts=snapshot.get('quote_contexts')))
         if run.get("origin") == "external-recheck-followup":
@@ -911,11 +911,11 @@ def _ai_review_markdown(snapshot: Mapping[str, Any]) -> str:
         findings = run.get("findings", [])
         if not findings:
             basis = "；".join(run.get("zero_finding_basis", [])) or "模型未提供零 Finding 检查依据"
-            lines.extend(["本 critic 未返回 Finding。", "", f"检查依据：{basis}", ""])
+            lines.extend(["本 critic 未返回 Finding。", "", f"检查依据：{markdown_text(basis)}", ""])
             continue
         for finding in findings:
             verification = verification_context.get(finding["finding_id"]) or finding_verification_context(finding, source_kind="model")
-            lines.extend([f"### {finding['finding_id']}", "", f"- 位置：`{finding['location']['block_id']}`，page {finding['location'].get('page') or '-'}", f"- 证据：{finding['evidence']}", f"- 问题：{finding['issue']}", f"- 判断标准：{finding['standard']}", f"- 后果：{finding['consequence']}", f"- 严重度：{finding['severity']}", f"- 核实状态：{verification['display_label']}", f"- 建议动作：{finding['suggested_action']}", ""])
+            lines.extend([f"### {markdown_text(finding['finding_id'])}", "", f"- 位置：{markdown_text(finding['location']['block_id'])}，page {markdown_text(finding['location'].get('page') or '-')}", f"- 证据：{markdown_text(finding['evidence'])}", f"- 问题：{markdown_text(finding['issue'])}", f"- 判断标准：{markdown_text(finding['standard'])}", f"- 后果：{markdown_text(finding['consequence'])}", f"- 严重度：{markdown_text(finding['severity'])}", f"- 核实状态：{markdown_text(verification['display_label'])}", f"- 建议动作：{markdown_text(finding['suggested_action'])}", ""])
             lines.extend(_verification_close_reading_markdown(finding, verification, snapshot.get('quote_contexts')))
     lines.extend(_adversarial_review_markdown(snapshot.get("adversarial_reviews", [])))
     lines.extend(["## 后续", "", "请回到 Document Review Studio 对每条 Finding 分别接受、修正、拒绝或暂缓；不要把本快照当作已经批准的修改意见。", ""])
@@ -923,8 +923,11 @@ def _ai_review_markdown(snapshot: Mapping[str, Any]) -> str:
 
 
 def _difference_report(before: str, after: str) -> str:
-    diff = "".join(difflib.unified_diff(before.splitlines(keepends=True), after.splitlines(keepends=True), fromfile="internal-document", tofile="revised-draft"))
-    return "# V1/V2 difference report\n\n```diff\n" + diff + "```\n\nNative Word Track Changes are not claimed. Review the audit JSON and the existing constrained revision chain before approval.\n"
+    diff = ''.join(line if line.endswith('\n') else line + '\n\\ No newline at end of file\n'
+        for line in difflib.unified_diff(before.splitlines(keepends=True), after.splitlines(keepends=True),
+            fromfile='internal-document', tofile='revised-draft'))
+    return '\n'.join(['# V1/V2 difference report', *markdown_code_block(diff),
+        'Native Word Track Changes are not claimed. Review the audit JSON and the existing constrained revision chain before approval.', ''])
 
 
 def _minimal_docx(markdown: str, *, document: StructuredDocument | None = None) -> bytes:

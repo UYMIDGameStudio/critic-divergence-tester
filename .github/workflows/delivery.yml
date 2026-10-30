@@ -37,6 +37,7 @@ jobs:
             dist/browser-docx-containers/
             dist/browser-reviewable-text/
             dist/browser-quote-context/
+            dist/browser-report-text/
             dist/browser-xml-limits/
             dist/browser-table-grid/
             dist/browser-resolution-evidence/

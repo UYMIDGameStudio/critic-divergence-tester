@@ -157,7 +157,7 @@ class RevisionPlanBuilder(_ProjectComponent):
         for finding in accepted:
             decision_id = decisions[finding.finding_id]["decision_id"]
             decision_paths.append(self.root / "finding-decisions" / f"{decision_id}.json")
-        bridge_id = stable_id("BRG", *[_sha256(path.read_bytes()) for path in decision_paths])
+        bridge_id = stable_id("BRG", f"report-rendering-{REPORT_RENDERING_VERSION}", *[_sha256(path.read_bytes()) for path in decision_paths])
         bridge = self.root / "exports" / "revision-bridge" / bridge_id
         bridge.mkdir(parents=True, exist_ok=True)
         existing_report = bridge / "findings-report.md"
@@ -168,13 +168,14 @@ class RevisionPlanBuilder(_ProjectComponent):
         for finding in accepted:
             decision = decisions[finding.finding_id]
             approved_action = (decision.get("corrected_action") or finding.suggested_action).strip()
-            lines.extend([f"## {finding.finding_id} · {finding.critic}", "", f"- Location: `{finding.location.block_id}` page={finding.location.page}", f"- Evidence: {finding.evidence}", f"- Issue: {finding.issue}", f"- Standard: {finding.standard}", f"- Consequence: {finding.consequence}", f"- Original suggested action: {finding.suggested_action}", f"- Human-approved action: {approved_action}", f"- Human decision: {finding.status} (sequence {decision['sequence']})", ""])
+            lines.extend([f"## {markdown_text(finding.finding_id)} · {markdown_text(finding.critic)}", "", f"- Location: {markdown_text(finding.location.block_id)} page={markdown_text(finding.location.page)}", f"- Evidence: {markdown_text(finding.evidence)}", f"- Issue: {markdown_text(finding.issue)}", f"- Standard: {markdown_text(finding.standard)}", f"- Consequence: {markdown_text(finding.consequence)}", f"- Original suggested action: {markdown_text(finding.suggested_action)}", f"- Human-approved action: {markdown_text(approved_action)}", f"- Human decision: {markdown_text(finding.status)} (sequence {decision['sequence']})", ""])
         report = "\n".join(lines).encode("utf-8")
         report_path = bridge / "findings-report.md"
         bridge_parents = [_parent_ref(self.root, document_path, role="structured-document"), *[_parent_ref(self.root, path, role="current-finding-decision") for path in decision_paths]]
         _write_tracked(self.root, report_path, report, parents=bridge_parents, provenance="deterministic-revision-bridge")
         binding = {"artifact_type": "revision-bridge", "schema_version": 2, "bridge_id": bridge_id, "source_sha256": document.source.sha256, "source_name": document.source.original_name, "report_relative_path": str(report_path.relative_to(self.root)).replace("\\", "/"), "report_sha256": _sha256(report), "finding_ids": [item.finding_id for item in accepted], "decision_bindings": [{"finding_id": item.finding_id, "decision_id": decisions[item.finding_id]["decision_id"], "decision_sha256": _sha256((self.root / "finding-decisions" / f"{decisions[item.finding_id]['decision_id']}.json").read_bytes()), "approved_action": (decisions[item.finding_id].get("corrected_action") or item.suggested_action).strip()} for item in accepted], "revision_loop": "existing-argument-workbench-constrained-revision", "track_changes_claimed": False, "revised_document_ready": False, "lifecycle": "immutable"}
         binding_path = bridge / "bridge.json"
+        binding['report_rendering_version'] = REPORT_RENDERING_VERSION
         _write_tracked(self.root, binding_path, canonical_json(binding), parents=[*bridge_parents, _parent_ref(self.root, report_path, role="bridge-report")], provenance="deterministic-revision-bridge-binding")
         self._append_event("revision_bridge_prepared", binding)
         return report_path
@@ -874,7 +875,7 @@ class RevisionPlanBuilder(_ProjectComponent):
         if not unresolved_rows:
             unresolved_lines.append("当前复审记录中没有未解决项；这不等于自动确认文档正确、合规或完整。")
         for row in unresolved_rows:
-            unresolved_lines.extend([f"## {row['finding_id']} · {row['critic']}", "", f"- check_id：{row.get('check_id') or '未提供'}", f"- 状态：{row['state']}", f"- 依据：{row['basis']}", ""])
+            unresolved_lines.extend([f"## {markdown_text(row['finding_id'])} · {markdown_text(row['critic'])}", "", f"- check_id：{markdown_text(row.get('check_id') or '未提供')}", f"- 状态：{markdown_text(row['state'])}", f"- 依据：{markdown_text(row['basis'])}", ""])
 
         # Build the complete Revision and its receipts in a private staging
         # directory.  Only after every byte is ready do we rename it into the
