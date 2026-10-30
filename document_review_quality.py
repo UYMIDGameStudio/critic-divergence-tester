@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import hashlib
 import unicodedata
 
 
@@ -112,17 +113,142 @@ def close_reading_example(*, version: int = 1) -> dict:
     }
 
 
-def quote_matches(quote: str, text: str) -> bool:
-    def normalized(value):
-        return " ".join(unicodedata.normalize("NFC", value).split())
-    quote, text = normalized(quote), normalized(text)
-    if quote and quote in text:
-        return True
+def _normalized_excerpt(value: str) -> str:
+    return " ".join(unicodedata.normalize("NFC", value).split())
+
+
+def _find_excerpt(quote: str, text: str) -> tuple[str, int, bool]:
+    start = text.find(quote) if quote else -1
+    if start >= 0:
+        return quote, start, False
     pairs = {'"': '"', "'": "'", "“": "”", "‘": "’", "「": "」", "『": "』", "«": "»", "‹": "›"}
     if len(quote) >= 2 and pairs.get(quote[0]) == quote[-1]:
         quote = quote[1:-1].strip()
-        return bool(quote and quote in text)
-    return False
+        return quote, text.find(quote) if quote else -1, True
+    return quote, -1, False
+
+
+def quote_matches(quote: str, text: str) -> bool:
+    # Retain the published matching semantics for existing response contracts.
+    return _find_excerpt(_normalized_excerpt(quote), _normalized_excerpt(text))[1] >= 0
+
+
+def _lexical_char(char: str) -> bool:
+    if not char or unicodedata.category(char)[0] not in {'L', 'M', 'N'}:
+        return False
+    # This is a review hint, not a dictionary segmenter. Do not impose
+    # space-delimited word boundaries on Chinese or Japanese excerpts.
+    name = unicodedata.name(char, '')
+    return not any(part in name for part in ('CJK', 'HIRAGANA', 'KATAKANA', 'BOPOMOFO', 'IDEOGRAPH'))
+
+
+def _excerpt_edges(text: str, start: int, end: int) -> list[str]:
+    notes = set()
+    for edge, direction in ((start, -1), (end - 1, 1)):
+        adjacent = edge + direction
+        if not 0 <= adjacent < len(text) or not _lexical_char(text[edge]):
+            continue
+        if _lexical_char(text[adjacent]):
+            notes.add('partial-token')
+        elif text[adjacent] in "'’‐‑-\u00ad" and 0 <= adjacent + direction < len(text) and _lexical_char(text[adjacent + direction]):
+            notes.add('partial-token')
+        elif text[edge].isdecimal():
+            if direction < 0 and text[adjacent] in '+-−':
+                notes.add('partial-number')
+            elif text[adjacent] in '.,:/٬٫' and 0 <= adjacent + direction < len(text) and text[adjacent + direction].isdecimal():
+                notes.add('partial-number')
+    return sorted(notes)
+
+
+def _quote_review(quote: str, text: str, *, normalized_source: bool) -> dict:
+    normalized_quote = _normalized_excerpt(quote)
+    needle, start, wrapper_removed = _find_excerpt(normalized_quote, text)
+    result = {'version': 1, 'matched': start >= 0, 'advisory_only': True,
+              'semantic_accuracy': 'not-established', 'context_basis': 'NFC-and-collapsed-whitespace',
+              'normalization_applied': normalized_source or normalized_quote != quote,
+              'wrapper_removed': wrapper_removed, 'match_count': 0, 'count_is_exact': True,
+              'contexts': [], 'flags': []}
+    flags = set()
+    if start >= 0 and not any(not char.isspace() and unicodedata.category(char) not in {'Cc', 'Cf', 'Cs'} for char in needle):
+        flags.add('invisible-only')
+    while start >= 0:
+        end = start + len(needle)
+        result['match_count'] += 1
+        notes = _excerpt_edges(text, start, end)
+        flags.update(notes)
+        contexts = result['contexts']
+        if len(contexts) < 3 or notes and not any(item['edge_notes'] for item in contexts):
+            context = {'occurrence': result['match_count'], 'before': text[max(0, start - 96):start],
+                       'excerpt': needle[:240], 'after': text[end:end + 96], 'edge_notes': notes,
+                       'left_clipped': start > 96, 'right_clipped': end + 96 < len(text),
+                       'excerpt_clipped': len(needle) > 240}
+            if len(contexts) < 3:
+                contexts.append(context)
+            else:
+                # Keep a visible example of the warning, even when the first
+                # matches were complete words and a later occurrence is not.
+                contexts[-1] = context
+        if result['match_count'] == 129:
+            result['count_is_exact'] = False
+            flags.add('scan-limited')
+            break
+        start = text.find(needle, start + 1)  # Include overlapping occurrences.
+    if result['match_count'] > 1:
+        flags.add('multiple-matches')
+    result['flags'] = sorted(flags)
+    return result
+
+
+def quote_review(quote: str, text: str) -> dict:
+    """Bounded display context; never an editing offset or a semantic verdict."""
+    normalized = _normalized_excerpt(text)
+    return _quote_review(quote, normalized, normalized_source=normalized != text)
+
+
+def source_quote_reviews(document, findings) -> dict[str, dict]:
+    """Derive display evidence from this exact IR; retain no manuscript cache."""
+    blocks = {block.block_id: block for block in document.blocks}
+    cache, result = {}, {}
+    for finding in findings:
+        block_id = finding.get('location', {}).get('block_id')
+        block = blocks.get(block_id)
+        quote = finding.get('evidence')
+        if block is None or not isinstance(quote, str):
+            result[finding['finding_id']] = {'version': 1, 'matched': False, 'advisory_only': True,
+                'semantic_accuracy': 'not-established', 'contexts': [], 'flags': ['source-unavailable']}
+            continue
+        if block_id not in cache:
+            normalized = _normalized_excerpt(block.text)
+            cache[block_id] = (normalized, normalized != block.text, hashlib.sha256(block.text.encode('utf-8')).hexdigest())
+        normalized, changed, text_sha256 = cache[block_id]
+        review = _quote_review(quote, normalized, normalized_source=changed)
+        review.update(block_id=block_id, document_id=document.document_id, block_text_sha256=text_sha256)
+        result[finding['finding_id']] = review
+    return result
+
+
+def quote_review_markdown(review) -> list[str]:
+    if not isinstance(review, Mapping):
+        return []
+    lines = ['Quotation context (display check only; not a semantic verdict):', '']
+    if not review.get('matched'):
+        return lines + ['No matching source context is available. Check the bound original before relying on this quotation.', '']
+    flags = review.get('flags', [])
+    if 'partial-token' in flags or 'partial-number' in flags:
+        lines += ['Caution: at least one excerpt cuts into a word, compound or number. Inspect the complete expression.', '']
+    if 'multiple-matches' in flags:
+        lines += ['Caution: the quotation occurs more than once in this block. Check which context supports the finding.', '']
+    if 'invisible-only' in flags:
+        lines += ['Caution: the quotation contains only invisible characters. Inspect the actual source context.', '']
+    lines += ['Spacing and canonical Unicode forms are normalized for this display; the original text is unchanged.', '']
+    for context in review.get('contexts', []):
+        text = ('…' if context['left_clipped'] else '') + context['before'] + context['excerpt']
+        text += ('…' if context['excerpt_clipped'] else '') + context['after'] + ('…' if context['right_clipped'] else '')
+        # Indented code keeps document HTML and backticks inert in this section.
+        lines += [f"Occurrence {context['occurrence']} (bounded preview):", '', '    ' + text, '']
+    if not review.get('count_is_exact', True):
+        lines += ['The occurrence scan reached its limit; this is not an exhaustive list.', '']
+    return lines
 
 
 def validate_close_reading(value, blocks_by_id: Mapping, *, version: int = 1) -> list[str]:

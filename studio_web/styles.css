@@ -78,6 +78,9 @@ main { max-width: 1480px; margin: auto; padding: 28px 32px 64px; }
 .finding-card > label:has(.select-finding) { font-size: .8125rem; color: var(--muted); padding-bottom: 12px; border-bottom: 1px solid var(--line); }
 .finding-card .quote { border-left: 2px solid var(--annotation); background: var(--paper); }
 .close-reading { border-top: 1px solid var(--line); padding-top: 16px; }
+.source-quote-review { border-top: 1px solid var(--line); padding: 12px 0; }
+.excerpt-context small { color: var(--muted); }
+.excerpt-context mark { background: var(--action-soft); color: inherit; text-decoration: underline; text-decoration-color: var(--annotation); }
 .toolbar { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .quote, .block, .source-block, .card p, .card h3 { overflow-wrap: anywhere; word-break: normal; }
 .source-block { padding: 20px 4px; border-bottom: 1px solid var(--line); white-space: pre-wrap; font: 1rem/1.9 var(--font-reading); scroll-margin-block: 16px; }

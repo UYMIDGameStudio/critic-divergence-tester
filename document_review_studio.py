@@ -29,7 +29,7 @@ from project_lifecycle import before_write, transaction, recover, compatibility,
 
 from document_review_ingest import IngestionError, IngestionLimits, ingest_bytes, safe_upload_name
 from academic_review import academic_prechecks
-from document_review_quality import close_reading_markdown
+from document_review_quality import close_reading_markdown, source_quote_reviews, quote_review_markdown
 from document_review_composition import assessment_markdown
 from document_review_model import (
     AuditRun,
@@ -655,12 +655,20 @@ class DocumentReviewProject:
             raise ReviewStudioError("项目或导出文件完整性校验失败，拒绝按可信文件下载：" + "; ".join(errors))
         return candidate
 
-    def _finding_verification_context(self) -> dict[str, dict[str, Any]]:
+    def _finding_verification_context(self, document=None, findings=None) -> dict[str, dict[str, Any]]:
         runs = [run for _, run, _ in self._active_audit_run_records().values()]
         current_round = self.current_review_round()
         if current_round:
             runs.append({"origin": "external-recheck-followup", "findings": current_round[1].get("findings", [])})
-        return review_verification_context(runs)
+        contexts = review_verification_context(runs)
+        if document is None:
+            try:
+                _, document = self._review_document_record()
+            except (OSError, KeyError, TypeError, ValueError, ReviewStudioError):
+                return contexts
+        if findings is None:
+            findings = [finding.to_dict() for finding in self.findings()]
+        return _with_source_quote_reviews(contexts, document, findings)
 
     @_serialized_mutation
     def view(self) -> dict[str, Any]:
@@ -695,7 +703,7 @@ class DocumentReviewProject:
         try:
             finding_objects = self.findings()
             finding_rows = [finding.to_dict() for finding in finding_objects]
-            verification_context = self._finding_verification_context()
+            verification_context = self._finding_verification_context(document, finding_rows)
             attention_queue = self.finding_work_groups(finding_objects)
         except (OSError, KeyError, TypeError, ValueError, ReviewStudioError):
             finding_rows = []
@@ -806,10 +814,21 @@ def _adversarial_review_markdown(sessions: Iterable[Mapping[str, Any]]) -> list[
     return lines
 
 
+def _with_source_quote_reviews(contexts, document, findings):
+    result = dict(contexts)
+    reviews = source_quote_reviews(document, findings)
+    for finding in findings:
+        identity = finding['finding_id']
+        result[identity] = {**(contexts.get(identity) or finding_verification_context(finding)),
+                            'source_quote_review': reviews[identity]}
+    return result
+
+
 def _verification_close_reading_markdown(finding: Mapping[str, Any], context: Mapping[str, Any]) -> list[str]:
+    quote_context = quote_review_markdown(context.get('source_quote_review'))
     if context.get("source_kind") == "model" and not isinstance(finding.get("check_data", {}).get("close_reading"), Mapping):
-        return ["Close-reading context checks were not supplied for this model finding; review the surrounding document before relying on it.", ""]
-    return close_reading_markdown(finding)
+        return quote_context + ["Close-reading context checks were not supplied for this model finding; review the surrounding document before relying on it.", ""]
+    return quote_context + close_reading_markdown(finding)
 
 
 def _audit_markdown(audit: Mapping[str, Any]) -> str:

@@ -78,6 +78,8 @@ def run_self_test() -> dict:
         project.run_local_prechecks(["expression_ambiguity"])
         reviewed_finding_id = _check_adversarial_pipeline(project)
         checked.append("adversarial-review")
+        _check_quote_context(project)
+        checked.append("quote-context")
         _check_review_context(project, reviewed_finding_id)
         checked.append("review-context")
         _check_resolution_pipeline(project, reviewed_finding_id)
@@ -216,6 +218,23 @@ def _table_grid_fixture() -> bytes:
         archive.writestr('_rels/.rels', f'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="document" Type="{relation}/officeDocument" Target="word/document.xml"/></Relationships>')
         archive.writestr('word/document.xml', f'<w:document xmlns:w="{namespace}"><w:body>{body}<w:sectPr/></w:body></w:document>')
     return output.getvalue()
+
+
+def _check_quote_context(project) -> None:
+    from document_review_quality import quote_review
+    cases = [('can', 'This cannot establish causation.', 'partial-token'),
+             ('5%', 'The rate was 15%.', 'partial-token'),
+             ('approved', 'A was approved. B was not approved.', 'multiple-matches')]
+    for quote, source, flag in cases:
+        result = quote_review(quote, source)
+        if not result['matched'] or flag not in result['flags'] or result['semantic_accuracy'] != 'not-established':
+            raise RuntimeError('Packaged quotation context obscures a fragment or repeated source')
+    if not quote_review('可能', 'それは不可能です。')['matched']:
+        raise RuntimeError('Packaged quotation context imposes word boundaries on Japanese')
+    contexts = project.view()['verification_context']
+    if not project.findings() or any(not contexts.get(finding.finding_id, {}).get('source_quote_review', {}).get('matched')
+                                   for finding in project.findings()):
+        raise RuntimeError('Packaged finding view omits source quotation context')
 
 
 def _check_reviewable_text(library: Path) -> None:

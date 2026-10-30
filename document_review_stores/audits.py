@@ -104,7 +104,7 @@ class AuditRunStore(_ProjectComponent):
                 },
             },
             "rules": {"independent": True, "do_not_vote_or_score": True, "location_must_use_existing_block_id": True, "legal_screen_never_claims_counsel": True,
-                      "evidence": "Quote a contiguous excerpt from the referenced block. Whitespace and Unicode canonical equivalents are allowed; preserve all languages. Do not translate or invent a quotation.",
+                      "evidence": "Quote a contiguous excerpt from the referenced block. Whitespace and Unicode canonical equivalents are allowed; preserve all languages. Do not translate or invent a quotation. Include complete words, compounds and numbers with enough context to preserve negation, quantity, scope and attribution. Character occurrence alone does not establish that the quotation supports the criticism; if it repeats, identify the relevant surrounding passage.",
                       "location": "Copy the block location or supply only block_id. Do not invent page, table coordinates or character offsets.",
                       "zero_finding_basis": "If findings is empty, supply a nonempty array of explanatory strings describing the actual inspected scope and checks. An empty result is not a verified pass."},
         }

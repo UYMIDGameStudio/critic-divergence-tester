@@ -6,6 +6,9 @@ from unified_app import serve_unified_app
 
 fixture = None
 project_dir = None
+if "--quote-context" in sys.argv[2:]:
+    from test.test_quote_context_review import reviewed_fixture
+    project_dir = reviewed_fixture(Path(sys.argv[1]))[0].root
 if "--empty-body" in sys.argv[2:]:
     from document_review_studio import DocumentReviewProject
     project_dir = DocumentReviewProject.create(Path(sys.argv[1]), filename="empty.csv", content=b',\n,\n').root

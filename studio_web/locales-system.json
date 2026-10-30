@@ -1,4 +1,13 @@
 {
+  "核对引文的上下文": {"zh-Hant": "核對引文的上下文", "en": "Check the quotation in context"},
+  "字符匹配不代表批评成立；请核对否定、数量、限定条件和说话者。": {"zh-Hant": "字元匹配不代表批評成立；請核對否定、數量、限定條件和說話者。", "en": "A character match does not establish the criticism. Check negation, quantities, qualifications and attribution."},
+  "未找到可核对的来源上下文，请检查绑定的原文。": {"zh-Hant": "未找到可核對的來源上下文，請檢查綁定的原文。", "en": "No matching source context was found. Check the bound original text."},
+  "引文可能从词语、复合表达或数字内部截取，请核对完整表达。": {"zh-Hant": "引文可能從詞語、複合表達或數字內部截取，請核對完整表達。", "en": "The excerpt may cut into a word, compound or number. Check the complete expression."},
+  "这段引文在同一文本块中出现多次，请核对相关上下文。": {"zh-Hant": "這段引文在同一文字區塊中出現多次，請核對相關上下文。", "en": "This quotation occurs more than once in the block. Check the relevant context."},
+  "引文仅含不可见字符，请核对实际来源内容。": {"zh-Hant": "引文僅含不可見字元，請核對實際來源內容。", "en": "This quotation contains only invisible characters. Check the actual source context."},
+  "以下是截取的上下文预览，已统一空白与等价字符显示；原文保持不变。": {"zh-Hant": "以下是截取的上下文預覽，已統一空白與等價字元顯示；原文保持不變。", "en": "These are bounded context previews with spacing and equivalent characters normalized for display. The original text is unchanged."},
+  "匹配位置": {"zh-Hant": "匹配位置", "en": "Occurrence"},
+  "仅显示部分匹配位置，请继续查看原文；这不是穷尽检查。": {"zh-Hant": "僅顯示部分匹配位置，請繼續查看原文；這不是窮盡檢查。", "en": "Only some matching contexts are shown. Continue checking the original; this is not exhaustive."},
   "当前没有可审查正文，请补充识别文本或更换文件": {"zh-Hant": "目前沒有可審查正文，請補充辨識文字或更換檔案。", "en": "There is no body text to review. Correct the extracted text or replace the file."},
   "修正识别文本没有可审查正文，请补充实际文字": {"zh-Hant": "修正後仍沒有可審查正文，請補充實際文字。", "en": "The correction contains no body text to review. Add actual text."},
   "修改后没有可审查正文，请编辑修改提案并重新批准后再生成修改稿": {"zh-Hant": "修改後沒有可審查正文，請編輯修改提案並重新批准後再產生修改稿。", "en": "The approved changes leave no body text to review. Edit the proposal and approve it again before generating the revision."},
