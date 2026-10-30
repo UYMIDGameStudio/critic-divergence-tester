@@ -6,6 +6,12 @@ from unified_app import serve_unified_app
 
 fixture = None
 project_dir = None
+if "--xml-limits" in sys.argv[2:]:
+    from document_review_studio import DocumentReviewProject
+    from document_review_ingest import IngestionLimits
+    from studio_selftest import _docx_visibility_fixture
+    project_dir = DocumentReviewProject.create(Path(sys.argv[1]), filename="structure.docx",
+        content=_docx_visibility_fixture(), limits=IngestionLimits(max_xml_elements=1)).root
 if "--docx-visibility" in sys.argv[2:]:
     from document_review_studio import DocumentReviewProject
     from studio_selftest import _docx_visibility_fixture

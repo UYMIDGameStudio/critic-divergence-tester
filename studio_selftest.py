@@ -59,6 +59,8 @@ def run_self_test() -> dict:
         checked.append("eight-language-import")
         _check_docx_visibility(root / "docx-visibility")
         checked.append("docx-visibility")
+        _check_xml_limits(root / "xml-limits")
+        checked.append("xml-limits")
         _check_academic_protocols(root / "academic")
         checked.append("academic-quality-protocols")
         _check_readonly_recovery(root / "recovery")
@@ -191,6 +193,31 @@ def _docx_visibility_fixture() -> bytes:
         for kind in ('footnote', 'endnote'):
             archive.writestr(f'word/{kind}s.xml', f'<w:{kind}s xmlns:w="{namespace}"><w:{kind} w:id="1"><w:p><w:r><w:t>SYNTHETIC-NOTE-NOT-EXTRACTED</w:t></w:r></w:p></w:{kind}></w:{kind}s>')
     return output.getvalue()
+
+
+def _check_xml_limits(library: Path) -> None:
+    from dataclasses import replace
+    from document_review_ingest import IngestionError, IngestionLimits, ingest_bytes
+    from document_review_studio import DocumentReviewProject
+    raw = _docx_visibility_fixture()
+    for changes, message in (({"max_xml_elements": 1}, "单个部件"),
+                             ({"max_xml_total_elements": 1}, "总解析"),
+                             ({"max_xml_depth": 0}, "嵌套深度")):
+        try:
+            ingest_bytes('structure.docx', raw, limits=replace(IngestionLimits(), **changes))
+        except IngestionError as error:
+            if message not in str(error):
+                raise RuntimeError("Packaged XML budget failed for an unrelated reason") from error
+        else:
+            raise RuntimeError("Packaged XML parser ignores its structural limits")
+    project = DocumentReviewProject.create(library, filename='structure.docx', content=raw,
+        limits=replace(IngestionLimits(), max_xml_elements=1))
+    if (project.document_path.exists() or project.state()['extraction_state'] != 'blocked'
+            or (project.root / 'source/structure.docx').read_bytes() != raw):
+        raise RuntimeError("Packaged XML rejection loses the source or leaves partial IR")
+    fresh = DocumentReviewProject.create(library, filename='structure.docx', content=raw, new_project=True)
+    if fresh.document() is None or fresh.integrity_errors():
+        raise RuntimeError("An XML budget leaked into a separate ingestion")
 
 
 def _check_docx_visibility(library: Path) -> None:

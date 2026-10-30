@@ -70,14 +70,13 @@ def _xml(archive, name, *, required=True):
             namespace, local = name[1:].split("}", 1)
             return _tag(STRICT_NS.get(namespace, namespace), local)
         return name
-    pending = [(root, 0)]
+    # Structural limits were enforced while parsing, before this tree existed.
+    pending = [root]
     while pending:
-        node, depth = pending.pop()
-        if depth > 128:
-            _fail("Office XML 嵌套深度超出安全限制")
+        node = pending.pop()
         node.tag = normalized(node.tag)
         node.attrib = {normalized(key): value for key, value in node.attrib.items()}
-        pending.extend((child, depth + 1) for child in node)
+        pending.extend(node)
     return root
 
 

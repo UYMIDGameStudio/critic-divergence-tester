@@ -20,7 +20,7 @@ import sys
 import tempfile
 import zipfile
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Protocol
 from xml.etree import ElementTree as ET
@@ -94,6 +94,9 @@ class IngestionLimits:
     max_office_text_chars: int = 8000000
     max_text_blocks: int = 50000
     max_text_lines: int = 250000
+    max_xml_elements: int = 1_000_000
+    max_xml_total_elements: int = 2_000_000
+    max_xml_depth: int = 128
 
 
 class OCRAdapter(Protocol):
@@ -399,9 +402,32 @@ def _xml_text(element: ET.Element, *, include_deleted: bool = False) -> str:
     return "".join(parts).strip()
 
 
+def _xml_limit(limits, name: str) -> int:
+    value = getattr(limits, name, getattr(IngestionLimits, name))
+    if type(value) is not int or value < 0:
+        raise IngestionError("Office XML 解析上限必须是非负整数")
+    return value
+
+
+@dataclass
+class _XMLParseBudget:
+    remaining: int
+
+    def consume(self) -> None:
+        if self.remaining <= 0:
+            raise IngestionError("Office XML 总解析元素数量超过安全上限")
+        self.remaining -= 1
+
+
 @dataclass(frozen=True)
 class _VerifiedZipArchive:
     entries: dict[str, bytes]
+    limits: IngestionLimits = field(default_factory=IngestionLimits)
+    _xml_budget: _XMLParseBudget = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self):
+        maximum = _xml_limit(self.limits, "max_xml_total_elements")
+        object.__setattr__(self, "_xml_budget", _XMLParseBudget(maximum))
 
     def read(self, name: str) -> bytes:
         try:
@@ -455,10 +481,34 @@ def _zip_safety(data: bytes, limits: IngestionLimits) -> _VerifiedZipArchive:
     finally:
         if archive is not None:
             archive.close()
-    return _VerifiedZipArchive(extracted)
+    return _VerifiedZipArchive(extracted, limits)
 
 
 class _SafeDocxTreeBuilder(ET.TreeBuilder):
+    def __init__(self, limits: IngestionLimits, budget: _XMLParseBudget):
+        super().__init__()
+        self.max_elements = _xml_limit(limits, "max_xml_elements")
+        self.max_depth = _xml_limit(limits, "max_xml_depth")
+        self.budget = budget
+        self.elements = 0
+        self.depth = -1  # Root depth is zero, as in the Office adapter.
+
+    def start(self, tag, attrs):
+        # Refuse before TreeBuilder allocates/appends the next DOM element.
+        if self.elements >= self.max_elements:
+            raise IngestionError("Office XML 单个部件元素数量超过安全上限")
+        if self.depth + 1 > self.max_depth:
+            raise IngestionError("Office XML 嵌套深度超过安全上限")
+        self.budget.consume()
+        self.elements += 1
+        self.depth += 1
+        return super().start(tag, attrs)
+
+    def end(self, tag):
+        result = super().end(tag)
+        self.depth -= 1
+        return result
+
     def doctype(self, name, pubid, system):
         # Parser-level rejection also covers UTF-16/32 declarations that a
         # byte-level ASCII scan cannot recognize.
@@ -470,7 +520,7 @@ def _docx_xml(archive: _VerifiedZipArchive, name: str) -> ET.Element | None:
         raw = archive.read(name)
         if b"<!DOCTYPE" in raw.upper() or b"<!ENTITY" in raw.upper():
             raise IngestionError(f"DOCX XML 包含外部实体声明：{name}")
-        return ET.fromstring(raw, parser=ET.XMLParser(target=_SafeDocxTreeBuilder()))
+        return ET.fromstring(raw, parser=ET.XMLParser(target=_SafeDocxTreeBuilder(archive.limits, archive._xml_budget)))
     except KeyError:
         return None
     except (ET.ParseError, LookupError) as exc:

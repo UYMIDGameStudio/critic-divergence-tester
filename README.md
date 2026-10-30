@@ -6,9 +6,10 @@
 由你逐项批准，再生成独立新版本复查。核心文本流程不依赖第三方 Python 包；
 PDF、扫描件及旧 Office/WPS 格式按需使用额外组件。
 
-**0.2.33** 补齐 Word 移动、格式及辅助部件修订的识别，明确提示未提取的脚注与尾注。
-识别与原位 Word 导出共用修订检查；明确关闭追踪修订不会误报，也补上 Word 文本块数量上限。
-见 [0.2.33 升级记录](docs/release-engineering-0.2.33.md)。
+**0.2.34** 在构造 XML 树时限制元素数量、嵌套深度与总解析工作量，覆盖 Word、Excel、
+PowerPoint 与 ODT。超限后保留原件，不生成残缺正文；繁中、英文界面提供重新导入指引。
+见 [0.2.34 升级记录](docs/release-engineering-0.2.34.md)。
+[0.2.33](docs/release-engineering-0.2.33.md) 补齐 Word 修订识别，并明确提示未提取的脚注与尾注。
 [0.2.32](docs/release-engineering-0.2.32.md) 阻止旧页面覆盖较新的人工决定，并保留安全重试与语言选择。
 [0.2.31](docs/release-engineering-0.2.31.md) 将综合审查模板改为中性格式示例，按文章需要开放选角。
 [0.2.30](docs/release-engineering-0.2.30.md) 修复损坏项目的恢复入口，并减少审查记录的重复读取。

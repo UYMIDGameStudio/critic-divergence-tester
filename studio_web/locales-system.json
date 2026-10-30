@@ -1,4 +1,8 @@
 {
+  "Office XML 解析上限必须是非负整数": {"zh-Hant": "Office XML 解析上限必須是非負整數。", "en": "The Office XML parser limits must be non-negative integers."},
+  "Office XML 单个部件元素数量超过安全上限": {"zh-Hant": "文件中的單一部件過於複雜，無法安全辨識。請拆分或簡化檔案後重新匯入。", "en": "One part of this document is too complex to parse safely. Split or simplify the file, then import it again."},
+  "Office XML 总解析元素数量超过安全上限": {"zh-Hant": "整份文件的解析工作量超過安全上限。請拆分或簡化檔案後重新匯入。", "en": "Parsing this document exceeds the safety limit. Split or simplify the file, then import it again."},
+  "Office XML 嵌套深度超过安全上限": {"zh-Hant": "文件內容的巢狀層級過深，無法安全辨識。請簡化檔案結構後重新匯入。", "en": "This document is nested too deeply to parse safely. Simplify its structure, then import it again."},
   "DOCX 含未接受的文本、移动或格式修订，或已启用修订跟踪；请先在 Word 中核对修订，当前识别不代表最终定稿。": {"zh-Hant": "DOCX 含未接受的文字、移動或格式修訂，或已啟用追蹤修訂；請先在 Word 中核對修訂，目前辨識結果不代表最終定稿。", "en": "This DOCX contains unaccepted text, move or formatting revisions, or has change tracking enabled. Check the revisions in Word first; this extraction does not represent a confirmed final draft."},
   "DOCX 含脚注，相关注释正文尚未提取；请对照原件补充或修正识别结果。": {"zh-Hant": "DOCX 含腳註，相關註釋正文尚未擷取；請對照原件補充或修正辨識結果。", "en": "This DOCX contains footnotes whose text has not been extracted. Check the original and supplement or correct the extraction."},
   "DOCX 含尾注，相关注释正文尚未提取；请对照原件补充或修正识别结果。": {"zh-Hant": "DOCX 含尾註，相關註釋正文尚未擷取；請對照原件補充或修正辨識結果。", "en": "This DOCX contains endnotes whose text has not been extracted. Check the original and supplement or correct the extraction."},
