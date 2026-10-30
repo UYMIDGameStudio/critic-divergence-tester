@@ -1000,7 +1000,9 @@ class DocumentReviewStudioTests(unittest.TestCase):
             self.assertEqual(external_request["original_provider"], "example-provider")
             self.assertEqual(external_request["original_model"], "example-model")
             self.assertIn("# Document Review Studio independent AI review", external_request["prompt"])
-            self.assertIn("Bound critic definition", external_request["prompt"])
+            historical = external_request['prompt'].split('## Bound original review snapshot\n', 1)[1]
+            contract, _ = json.JSONDecoder().raw_decode(historical.split('## Contract and critic-specific protocol\n```json\n', 1)[1])
+            self.assertEqual(contract['protocol'], external_request['critic_protocol'])
             request_receipt = json.loads((revision_dir / "external-recheck-requests" / critic / ".integrity" / "request.json.json").read_text(encoding="utf-8"))
             self.assertTrue({"original-critic-prompt", "original-ai-request", "original-audit-run"}.issubset({item["role"] for item in request_receipt["parents"]}))
             revised_block = json.loads((revision_dir / "document.json").read_text(encoding="utf-8"))["blocks"][0]

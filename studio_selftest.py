@@ -84,6 +84,8 @@ def run_self_test() -> dict:
         checked.append("secondary-quotes")
         _check_report_text(project)
         checked.append("report-literal-text")
+        _check_source_projection()
+        checked.append("lossless-recheck-source")
         _check_review_context(project, reviewed_finding_id)
         checked.append("review-context")
         _check_resolution_pipeline(project, reviewed_finding_id)
@@ -254,6 +256,27 @@ def _check_report_text(project) -> None:
     diff = _difference_report('old', '```\n' + attack)
     if '\n    +<img' not in diff or '\n# FORGED APPROVAL' in diff:
         raise RuntimeError('Packaged difference report loses literal source boundaries')
+
+
+def _check_source_projection() -> None:
+    from document_review_source_projection import (HISTORY_MARKER, SOURCE_MARKER, REVISED_MARKER,
+        project_historical_prompt, validate_historical_projection)
+    old = [{'block_id': f'B-{i}', 'kind': 'paragraph', 'text': ('English 繁體中文 日本語 ' * 80)} for i in range(3)]
+    current = [{**block, 'text': 'Changed text' if i == 0 else block['text']} for i, block in enumerate(old)]
+    original = ('ORIGINAL POLICY\n' + SOURCE_MARKER + json.dumps(old, ensure_ascii=False, indent=2) + '\n```\nEXTRA POLICY').encode()
+    projected, metadata = project_historical_prompt(original, current)
+    payload, _ = json.JSONDecoder().raw_decode(projected.split(SOURCE_MARKER, 1)[1])
+    lookup = {block['block_id']: block for block in current}
+    restored = [lookup[row['same_as_current']] if 'same_as_current' in row else row['historical_block'] for row in payload['entries']]
+    request = {'schema_version': 4, 'historical_prompt_projection': metadata}
+    prompt = (HISTORY_MARKER + projected + '\n\n## Original Findings\n[]\n' + REVISED_MARKER
+        + json.dumps(current, ensure_ascii=False) + '\n```\n').encode()
+    if (restored != old or metadata['reused_block_count'] != 2 or metadata['saved_bytes'] <= 0
+            or validate_historical_projection(request, prompt, original, current)):
+        raise RuntimeError('Packaged recheck loses original policy or historical source blocks')
+    incomplete = prompt[:prompt.rindex(REVISED_MARKER.encode())] + REVISED_MARKER.encode() + b'[]\n```\n'
+    if not validate_historical_projection(request, incomplete, original, current):
+        raise RuntimeError('Packaged recheck accepts an incomplete current document')
 
 
 def _check_reviewable_text(library: Path) -> None:
@@ -576,6 +599,8 @@ def _check_resolution_pipeline(project, finding_id: str) -> None:
     revision_dir = project.finalize_revision()
     revision = json.loads((revision_dir / "revision.json").read_text(encoding="utf-8"))
     request = project.external_recheck_requests(revision["revision_id"])[0]
+    if request.get('schema_version') != 4 or request.get('historical_prompt_projection', {}).get('version') != 1:
+        raise RuntimeError('Packaged recheck omits its source projection binding')
     block = next(item for item in json.loads((revision_dir / "document.json").read_text(encoding="utf-8"))["blocks"]
                  if item["text"] == "The editor checks the revised passage.")
     payload = {key: request[key] for key in ("request_id", "prompt_sha256", "revision_id", "revised_sha256", "critic")}

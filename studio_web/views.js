@@ -167,6 +167,10 @@ function externalResolutionLabel(value) {
 function revisedSourceId(status, blockId) {
   return `revised-source-${status.revision_id}-${blockId}`;
 }
+function historicalReuseNotice(request) {
+  return request.historical_prompt_projection?.mode === 'lossless-current-block-references'
+    ? ui`<p class="muted protocol-reuse-notice">复审协议复用相同段落，改动和删除的旧段落仍完整保留。本轮抽取正文完整包含在协议中。</p>` : '';
+}
 function externalRecheckImport(status, request) {
   const controls = ui`<label>本次复审 provider</label><input id="external-provider-${esc(request.critic)}"><label>本次复审 model/版本</label><input id="external-model-${esc(request.critic)}"><label>响应绑定方式</label><select id="external-binding-${esc(request.critic)}"><option value="strict">严格绑定（推荐）</option><option value="manual_association">人工关联（较弱审计）</option></select><label>外部复审原始 JSON 响应</label><textarea id="external-response-${esc(request.critic)}"></textarea><button class="import-external-recheck" data-revision-id="${esc(status.revision_id)}" data-critic="${esc(request.critic)}">导入复审结果</button>`;
   return request.result
@@ -210,7 +214,7 @@ function externalRecheckWorkspace(ws) {
   const requests = status.requests
     .map(
       (request) =>
-        ui`<details class="external-recheck-request" open><summary>${request.complete ? '✓' : '○'} ${esc(tr(critics[request.critic] || request.critic))}</summary><div class="row"><button class="secondary copy-external-recheck" data-critic="${esc(request.critic)}">复制复审协议</button><button class="secondary download" data-path="${esc(request.relative_path)}">下载协议</button></div><p class="muted">原请求 ${esc(request.original_request_id)} · 原模型 ${esc(request.original_provider)}/${esc(request.original_model)} · 原 AuditRun ${esc(request.original_audit_run_id)}</p><details class="external-recheck-protocol"><summary>查看复审协议</summary><div class="block">${esc(request.prompt)}</div></details>${request.result ? ui`<p class="muted">本次复审声明：${esc(request.result.declared_model_metadata?.provider)}/${esc(request.result.declared_model_metadata?.model)}。模型提议不会自动成为最终决定。</p>${request.items.map(item => externalResolutionItem(item, request, status)).join('')}` : ''}${externalRecheckImport(status, request)}</details>`,
+        ui`<details class="external-recheck-request" open><summary>${request.complete ? '✓' : '○'} ${esc(tr(critics[request.critic] || request.critic))}</summary><div class="row"><button class="secondary copy-external-recheck" data-critic="${esc(request.critic)}">复制复审协议</button><button class="secondary download" data-path="${esc(request.relative_path)}">下载协议</button></div><p class="muted">原请求 ${esc(request.original_request_id)} · 原模型 ${esc(request.original_provider)}/${esc(request.original_model)} · 原 AuditRun ${esc(request.original_audit_run_id)}</p>${historicalReuseNotice(request)}<details class="external-recheck-protocol"><summary>查看复审协议</summary><div class="block">${esc(request.prompt)}</div></details>${request.result ? ui`<p class="muted">本次复审声明：${esc(request.result.declared_model_metadata?.provider)}/${esc(request.result.declared_model_metadata?.model)}。模型提议不会自动成为最终决定。</p>${request.items.map(item => externalResolutionItem(item, request, status)).join('')}` : ''}${externalRecheckImport(status, request)}</details>`,
     )
     .join('');
   const sources = (status.revised_blocks || []).length ? ui`<details class="external-revised-sources"><summary>修订稿原文与定位</summary><p class="muted">这里显示本次复审所依据的修订稿段落。</p><div class="pane">${status.revised_blocks.map(block => `<div class="source-block revised-source-block" id="${esc(revisedSourceId(status, block.block_id))}"><small>${esc(block.block_id)} · page ${esc(block.location?.page || '-')}</small><br>${esc(block.text)}</div>`).join('')}</div></details>` : '';

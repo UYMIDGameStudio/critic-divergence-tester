@@ -176,7 +176,7 @@ class ResolutionEvidenceTests(unittest.TestCase):
 
     def test_real_request_snapshots_contract_and_import_records_only_structural_checks(self):
         protocol = json.loads(self.request["prompt"].split(CONTRACT_MARKER, 1)[1].split("\n```", 1)[0])
-        self.assertEqual(self.request["schema_version"], 3)
+        self.assertEqual(self.request["schema_version"], 4)
         self.assertEqual(protocol["version"], 1)
         self.assertEqual(protocol, self.request["resolution_evidence_protocol"])
         self.assertEqual(hashlib.sha256(studio.canonical_json(protocol)).hexdigest(), self.request["resolution_evidence_protocol_sha256"])
@@ -407,7 +407,7 @@ class ResolutionEvidenceWriterCompatibilityTests(unittest.TestCase):
         revision_dir = self.project.finalize_revision()
         revision = json.loads((revision_dir / "revision.json").read_bytes())
         requests = self.project.external_recheck_requests(revision["revision_id"])
-        self.assertEqual([request["schema_version"] for request in requests], [3])
+        self.assertEqual([request["schema_version"] for request in requests], [4])
         self.assertEqual(self.index_version(), 2)
         self.assertEqual(self.project.integrity_errors(), [])
 

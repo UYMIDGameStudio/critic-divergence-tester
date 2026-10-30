@@ -6,6 +6,9 @@ from unified_app import serve_unified_app
 
 fixture = None
 project_dir = None
+if "--source-projection" in sys.argv[2:]:
+    from test.test_source_projection import long_review_fixture
+    project_dir = long_review_fixture(Path(sys.argv[1]))[0].root
 if "--quote-context" in sys.argv[2:]:
     from test.test_quote_context_review import reviewed_fixture
     project_dir = reviewed_fixture(Path(sys.argv[1]))[0].root

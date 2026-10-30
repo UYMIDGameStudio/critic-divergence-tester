@@ -49,6 +49,7 @@ jobs:
           document_review_word.py
           document_review_pdf_render.py
           document_review_quality.py
+          document_review_source_projection.py
           document_review_adversarial.py
           project_lifecycle.py
           studio_ui_state.py

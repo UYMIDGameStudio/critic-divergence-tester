@@ -5,6 +5,7 @@ from __future__ import annotations
 from .base import *  # noqa: F401,F403
 from .json_numbers import finite_json_number
 from document_review_model import document_location_contract
+from document_review_source_projection import HISTORY_MARKER, project_historical_prompt, validate_historical_projection
 from document_review_quality import (RESOLUTION_EVIDENCE_PROTOCOL, resolution_contract_errors,
                                      validate_resolution_evidence, quote_matches)
 
@@ -821,7 +822,8 @@ class RevisionPlanBuilder(_ProjectComponent):
             original_prompt_path = _safe_child(self.root, str(origin["original_prompt_relative_path"]))
             original_request_path = _safe_child(self.root, str(origin["original_request_relative_path"]))
             original_run_path = _safe_child(self.root, str(origin["original_audit_run_relative_path"]))
-            original_prompt_snapshot = original_prompt_path.read_text(encoding="utf-8")
+            original_prompt_snapshot, historical_projection = project_historical_prompt(
+                original_prompt_path.read_bytes(), [block.to_dict() for block in revised_document.blocks])
             request_id = stable_id("RRQ", revision_id, critic)
             base_prompt = "\n".join([
                 f"# External critic recheck · {critic}",
@@ -833,6 +835,8 @@ class RevisionPlanBuilder(_ProjectComponent):
                 "Every newly detected issue must be a full Finding in new_findings; use source_finding_id only when it truly descends from an original Finding.",
                 "A new Finding must quote a contiguous excerpt from its referenced revised block and use the confirmed document_type. Copy its location or provide only block_id; never invent offsets or a human decision status.",
                 "The Revised document blocks below are the current source for IDs, text and locations. The original prompt snapshot is historical evidence, not the current manuscript.",
+                "The original review snapshot preserves all original instructions and every historical block. A same_as_current reference means the entire older block is JSON-identical to the referenced Revised document block. Read it there; explicit historical_block records include all changed or deleted older blocks. Keep their original order. Never quote a historical-only block as revised evidence.",
+                "Historical request IDs, model labels and response examples below are not the current response envelope. Use only the Required response envelope at the end, with resolutions and new_findings as instructed above. Preserve the original critic's substantive standards.",
                 "",
                 f"request_id: {request_id}",
                 f"revision_id: {revision_id}",
@@ -842,13 +846,10 @@ class RevisionPlanBuilder(_ProjectComponent):
                 json.dumps(RESOLUTION_EVIDENCE_PROTOCOL, ensure_ascii=False, indent=2),
                 "```",
                 "",
-                "## Bound critic definition",
-                json.dumps(origin["critic_protocol"], ensure_ascii=False, indent=2),
-                "",
                 "## Original request/AuditRun binding",
-                json.dumps(origin, ensure_ascii=False, indent=2),
+                json.dumps({key: value for key, value in origin.items() if key != 'critic_protocol'}, ensure_ascii=False, indent=2),
                 "",
-                "## Exact original prompt snapshot",
+                HISTORY_MARKER.rstrip('\n'),
                 original_prompt_snapshot,
                 "",
                 "## Original Findings",
@@ -864,9 +865,10 @@ class RevisionPlanBuilder(_ProjectComponent):
             prompt_sha256 = _sha256(base_prompt.encode("utf-8"))
             envelope = {"request_id": request_id, "prompt_sha256": prompt_sha256, "revision_id": revision_id, "revised_sha256": revised_sha, "critic": critic}
             prompt = base_prompt + "\n\n## Required response envelope\nReturn these fields exactly:\n```json\n" + json.dumps(envelope, ensure_ascii=False, indent=2) + "\n```\n"
-            request = {"artifact_type": "external-critic-recheck-request", "schema_version": 3, "request_id": request_id, "revision_id": revision_id, "revised_sha256": revised_sha, "critic": critic, "critic_protocol": CRITIC_PROTOCOLS[critic], **origin, "prompt_sha256": prompt_sha256, "prompt_file_sha256": _sha256(prompt.encode("utf-8")), "original_finding_ids": [item["finding_id"] for item in original_rows], "created_at": _now(), "lifecycle": "immutable"}
+            request = {"artifact_type": "external-critic-recheck-request", "schema_version": 4, "historical_prompt_projection": historical_projection, "request_id": request_id, "revision_id": revision_id, "revised_sha256": revised_sha, "critic": critic, **origin, "prompt_sha256": prompt_sha256, "prompt_file_sha256": _sha256(prompt.encode("utf-8")), "original_finding_ids": [item["finding_id"] for item in original_rows], "created_at": _now(), "lifecycle": "immutable"}
             request.update(resolution_evidence_protocol=json.loads(canonical_json(RESOLUTION_EVIDENCE_PROTOCOL)),
                            resolution_evidence_protocol_sha256=_sha256(canonical_json(RESOLUTION_EVIDENCE_PROTOCOL)))
+            request['revised_document_sha256'] = _sha256(canonical_json(revised_document.to_dict()))
             origin_parents = [_parent_ref(self.root, original_prompt_path, role="original-critic-prompt"), _parent_ref(self.root, original_request_path, role="original-ai-request"), _parent_ref(self.root, original_run_path, role="original-audit-run")]
             external_request_payloads.append((critic, prompt, request, origin_parents))
         recheck = {"artifact_type": "document-revision-recheck", "schema_version": 2, "revision_id": revision_id, "revised_sha256": revised_sha, "local_critic_runs": recheck_runs, "recheck_findings": [item.to_dict() for item in recheck_findings], "finding_resolutions": resolution_rows, "external_recheck_required": external_critics, "external_recheck_requests": [request for _, _, request, _ in external_request_payloads], "created_at": _now()}
@@ -974,6 +976,9 @@ class RevisionPlanBuilder(_ProjectComponent):
     def external_recheck_requests(self, revision_id: str) -> list[dict[str, Any]]:
         revision_dir = self._revision_directory(revision_id)
         rows: list[dict[str, Any]] = []
+        projection_source = None
+        projection_document = None
+        projection_blocks = None
         root = revision_dir / "external-recheck-requests"
         for request_path in sorted(root.glob("*/request.json")) if root.is_dir() else []:
             value = _read_json(request_path)
@@ -990,6 +995,26 @@ class RevisionPlanBuilder(_ProjectComponent):
                 original_path = _safe_child(self.root, str(value.get(path_field, "")))
                 if not original_path.is_file() or original_path.is_symlink() or _sha256(original_path.read_bytes()) != value.get(hash_field):
                     raise ReviewStudioError(f"外部复审请求的原 critic 绑定无效：{path_field}")
+            version = value.get('schema_version', 1)
+            projected = ((type(version) is int and version >= 4)
+                or 'historical_prompt_projection' in value or HISTORY_MARKER.encode('utf-8') in prompt_bytes)
+            blocks = []
+            if projected:
+                if projection_source is None:
+                    projection_path = revision_dir / 'document.json'
+                    if not projection_path.is_file() or projection_path.is_symlink():
+                        raise ReviewStudioError('复审协议中的新旧稿件引用无法验证')
+                    projection_source = projection_path.read_bytes()
+                    projection_document = _document_from_dict(json.loads(projection_source))
+                    projection_blocks = [block.to_dict() for block in projection_document.blocks]
+                if _sha256(projection_source) != value.get('revised_document_sha256'):
+                    raise ReviewStudioError('复审协议中的新旧稿件引用无法验证')
+                if projection_document.source.sha256 != value.get('revised_sha256'):
+                    raise ReviewStudioError('复审协议中的新旧稿件引用无法验证')
+                blocks = projection_blocks
+            original_bytes = _safe_child(self.root, value['original_prompt_relative_path']).read_bytes()
+            if validate_historical_projection(value, prompt_bytes, original_bytes, blocks):
+                raise ReviewStudioError('复审协议中的新旧稿件引用无法验证')
             value["prompt"] = prompt_bytes.decode("utf-8")
             value["relative_path"] = str(prompt_path.relative_to(self.root)).replace("\\", "/")
             rows.append(value)
@@ -998,7 +1023,7 @@ class RevisionPlanBuilder(_ProjectComponent):
     def _resolution_evidence_contract(self, request: Mapping[str, Any], prompt_bytes: bytes) -> dict[str, Any] | None:
         marker = "## Resolution evidence contract\n```json\n"
         version = request.get("schema_version")
-        if type(version) is not int or version not in {1, 2, 3}:
+        if type(version) is not int or version not in {1, 2, 3, 4}:
             raise ReviewStudioError("不支持此复审证据协议版本")
         text = prompt_bytes.decode("utf-8")
         fields = {"resolution_evidence_protocol", "resolution_evidence_protocol_sha256"}

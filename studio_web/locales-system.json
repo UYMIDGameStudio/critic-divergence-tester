@@ -221,6 +221,8 @@
   "当前请求未绑定论证设计综评协议，请生成新的学术论证请求": {"zh-Hant": "目前請求未綁定論證設計綜評協議，請產生新的學術論證請求", "en": "This request has no argument design protocol; prepare a new academic argument request"},
   "论证设计与有效性": {"zh-Hant": "論證設計與有效性", "en": "Argument design and validity"},
   "论证方法与研究设计": {"zh-Hant": "論證方法與研究設計", "en": "Argument methods and research design"},
+  "复审协议复用相同段落，改动和删除的旧段落仍完整保留。本轮抽取正文完整包含在协议中。": {"zh-Hant": "複審協議重用相同段落，改動和刪除的舊段落仍完整保留。本輪抽取正文完整包含在協議中。", "en": "The recheck protocol reuses identical passages and retains changed or deleted older passages in full. Every extracted block from this revision is included."},
+  "复审协议中的新旧稿件引用无法验证": {"zh-Hant": "無法驗證複審協議中的新舊稿件引用", "en": "Cannot verify the original and revised sources in this recheck protocol."},
   "论证与文章综合审查": {"zh-Hant": "論證與文章綜合審查", "en": "Article and argument review"},
   "按文章的问题和贡献选择审查角度，记录有效之处、局限与建议。以下为模型意见，原文定位通过不等于人工认可。": {"zh-Hant": "按文章的問題和貢獻選擇審查角度，記錄有效之處、局限與建議。以下為模型意見，原文定位通過不等於人工認可。", "en": "Review angles follow the article’s question and contribution, recording strengths, limitations and recommendations. These are model opinions; locating quotations does not establish human approval."},
   "实际问题：": {"zh-Hant": "實際問題：", "en": "Question: "},
