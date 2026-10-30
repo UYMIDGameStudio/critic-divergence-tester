@@ -80,10 +80,11 @@ class AdversarialReviewStore(_ProjectComponent):
                 and _sha256(path.read_bytes()) == parent["sha256"]
                 and _sha256(canonical_json(challenge)) == session["challenge_sha256"])
 
-    def _adversarial_view(self, path: Path, session: dict, *, superseded_ids: set[str] | None = None) -> dict:
+    def _adversarial_view(self, path: Path, session: dict, *, superseded_ids: set[str] | None = None, quote_indexes=None) -> dict:
         value = {**session, "relative_path": path.relative_to(self.root).as_posix(),
                  "current": self._adversarial_current(session, superseded_ids=superseded_ids), "requests": [],
-                 "defense": None, "assessment": None, "status": "awaiting_defense"}
+                 "defense": None, "assessment": None, "status": "awaiting_defense", "quote_refs": {}, "quote_contexts": {}}
+        quote_indexes = {} if quote_indexes is None else quote_indexes
         for stage in ("defense", "assessment"):
             request_path = path.parent / stage / "request.json"
             if not request_path.is_file():
@@ -104,6 +105,23 @@ class AdversarialReviewStore(_ProjectComponent):
                 if result["request_id"] != request["request_id"] or result["stage"] != stage:
                     raise ReviewStudioError("对抗深审结果未绑定对应阶段")
                 value[stage] = result["result"]
+                # Old sessions must not consume the current session's preview
+                # allowance, even when both bind the same manuscript version.
+                key = (session['document_relative_path'], session['document_sha256'], value['current'])
+                if key not in quote_indexes:
+                    source_path = _safe_child(self.root, key[0])
+                    raw = source_path.read_bytes()
+                    if _sha256(raw) != key[1]:
+                        raise ReviewStudioError('对抗深审原文与快照绑定不一致')
+                    document = _document_from_dict(json.loads(raw))
+                    if document.source.sha256 != session['source_sha256']:
+                        raise ReviewStudioError('对抗深审原文与快照绑定不一致')
+                    quote_indexes[key] = QuoteReviewIndex(document)
+                index = quote_indexes[key]
+                value['quote_refs'][stage] = index.references(value[stage].get('context_evidence', []))
+                # Each session exposes only the catalog entries it references,
+                # even when several historical sessions share a read index.
+                value['quote_contexts'].update({ref: index.catalog[ref] for ref in value['quote_refs'][stage]})
         if value["assessment"] is not None:
             value["status"] = "completed"
         elif len(value["requests"]) == 2:
@@ -118,7 +136,8 @@ class AdversarialReviewStore(_ProjectComponent):
         # This index exists only for the current verified read. Never cache it
         # across requests: a restart or another review round can invalidate it.
         superseded_ids = {value["supersedes_session_id"] for _, value in records if value.get("supersedes_session_id")}
-        return [self._adversarial_view(path, value, superseded_ids=superseded_ids) for path, value in records]
+        quote_indexes = {}
+        return [self._adversarial_view(path, value, superseded_ids=superseded_ids, quote_indexes=quote_indexes) for path, value in records]
 
     def _adversarial_model_labels(self, provider: str, model: str) -> tuple[str, str]:
         for value in (provider, model):

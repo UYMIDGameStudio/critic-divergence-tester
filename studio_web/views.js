@@ -134,21 +134,27 @@ function closeReadingDetail(f) {
   if (!detail) return findingVerification(f).source_kind === 'model'
     ? ui`<p class="muted">未提供上下文反证核对；请先检查作者是否已在其他段落回答此问题。</p>` : '';
   const roles = {context: tr('上下文'), support: tr('支持材料'), counterevidence: tr('反证材料'), qualification: tr('限定条件')};
-  return ui`<details class="close-reading" open><summary>细读依据（模型判断）</summary><p><b>作者的实际主张：</b>${esc(detail.author_position)}</p><p><b>最强辩护：</b>${esc(detail.strongest_defense)}</p><p><b>仍然存在的问题：</b>${esc(detail.why_defense_fails)}</p><p><b>修正验收方法：</b>${esc(detail.repair_test)}</p>${(detail.context_evidence || []).map(anchor => `<div class="quote"><a href="#source-${esc(anchor.block_id)}">${esc(anchor.block_id)} · ${esc(roles[anchor.role] || anchor.role)}</a><p>${pdfDisplayText(anchor.quote)}</p></div>`).join('')}<p class="muted">引文已核对，判断是否成立仍需你确认。</p></details>`;
+  return ui`<details class="close-reading" open><summary>细读依据（模型判断）</summary><p><b>作者的实际主张：</b>${esc(detail.author_position)}</p><p><b>最强辩护：</b>${esc(detail.strongest_defense)}</p><p><b>仍然存在的问题：</b>${esc(detail.why_defense_fails)}</p><p><b>修正验收方法：</b>${esc(detail.repair_test)}</p>${(detail.context_evidence || []).map((anchor, index) => `<div class="quote"><a href="#source-${esc(anchor.block_id)}">${esc(anchor.block_id)} · ${esc(roles[anchor.role] || anchor.role)}</a><p>${pdfDisplayText(anchor.quote)}</p></div>${sourceQuoteReference(findingVerification(f).context_quote_refs?.[index])}`).join('')}<p class="muted">引文已核对，判断是否成立仍需你确认。</p></details>`;
 }
 
 function findingCard(f) {
   return ui`<article class="card finding finding-card" data-critic="${esc(f.critic)}" data-severity="${esc(f.severity)}" data-status="${esc(f.status)}"><div class="row"><a href="#source-${esc(f.location.block_id)}" class="pill">${esc(f.location.block_id)} · page ${esc(f.location.page || '-')}</a><span class="pill">${esc(tr(critics[f.critic] || f.critic))}</span><span class="pill">${esc(f.severity)}</span><span class="pill">${esc(tr(findingVerification(f).display_label))}</span></div><div class="quote">${pdfDisplayText(f.evidence)}</div>${sourceQuoteContext(f)}<p><b>问题：</b>${esc(f.issue)}</p><p><b>后果：</b>${esc(f.consequence)}</p><p><b>建议动作：</b>${esc(f.suggested_action)}</p>${closeReadingDetail(f)}${adversarialFindingDetail(f)}<details><summary>完整专业字段</summary><p><b>判断标准：</b>${esc(f.standard)}</p><p><b>外部依据：</b>${esc(f.external_basis?.source_name || tr('未提供'))} ${esc(f.external_basis?.locator || '')}</p><p><b>尚待确认：</b>${esc((f.uncertainties || []).join('；') || tr('无'))}</p><p><b>建议责任人：</b>${esc(f.suggested_owner || tr('未指定'))}</p><p><b>阻断发布/执行：</b>${f.blocks_release_or_execution ? tr('是') : tr('否')}</p><p><b>需要观察：</b>${esc(f.required_observation || tr('无'))}</p><p><b>竞争读法：</b>${esc((f.competing_readings || []).join('；') || tr('无'))}</p></details><label>人工决定理由</label><input id="reason-${esc(f.finding_id)}"><label>人工修正动作</label><textarea id="action-${esc(f.finding_id)}" placeholder="${esc(f.suggested_action)}"></textarea><div class="row"><button class="decision" data-id="${esc(f.finding_id)}" data-value="accept">接受</button><button class="decision secondary" data-id="${esc(f.finding_id)}" data-value="correct">修正后接受</button><button class="decision danger" data-id="${esc(f.finding_id)}" data-value="reject">拒绝</button><button class="decision secondary" data-id="${esc(f.finding_id)}" data-value="defer">暂缓</button><span>当前：${esc(f.status)}</span></div></article>`;
 }
 function sourceQuoteContext(f) {
-  const review = findingVerification(f).source_quote_review;
+  return sourceQuoteReview(findingVerification(f).source_quote_review);
+}
+function sourceQuoteReference(reference, catalog = state.selected?.quote_contexts) {
+  return sourceQuoteReview(catalog?.[reference]);
+}
+function sourceQuoteReview(review) {
   if (!review) return '';
   const flags = review.flags || [];
   const partial = flags.includes('partial-token') || flags.includes('partial-number');
   const multiple = flags.includes('multiple-matches');
   const invisible = flags.includes('invisible-only');
+  const limited = flags.includes('projection-limited');
   const contexts = review.contexts || [];
-  return ui`<details class="source-quote-review" ${partial || multiple || invisible || !review.matched ? 'open' : ''}><summary>核对引文的上下文</summary><p class="muted">字符匹配不代表批评成立；请核对否定、数量、限定条件和说话者。</p>${!review.matched ? tr('<p class="warning">未找到可核对的来源上下文，请检查绑定的原文。</p>') : ''}${partial ? tr('<p class="warning excerpt-edge-warning">引文可能从词语、复合表达或数字内部截取，请核对完整表达。</p>') : ''}${multiple ? tr('<p class="warning excerpt-repeat-warning">这段引文在同一文本块中出现多次，请核对相关上下文。</p>') : ''}${invisible ? tr('<p class="warning">引文仅含不可见字符，请核对实际来源内容。</p>') : ''}${contexts.length ? tr('<p class="muted">以下是截取的上下文预览，已统一空白与等价字符显示；原文保持不变。</p>') : ''}${contexts.map(context => `<div class="quote excerpt-context"><small>${esc(tr('匹配位置'))} ${esc(context.occurrence)}</small><p>${context.left_clipped ? '…' : ''}${esc(context.before)}<mark>${esc(context.excerpt)}</mark>${context.excerpt_clipped ? '…' : ''}${esc(context.after)}${context.right_clipped ? '…' : ''}</p></div>`).join('')}${contexts.length < review.match_count || review.count_is_exact === false ? tr('<p class="muted">仅显示部分匹配位置，请继续查看原文；这不是穷尽检查。</p>') : ''}</details>`;
+  return ui`<details class="source-quote-review" ${partial || multiple || invisible || !review.matched ? 'open' : ''}><summary>核对引文的上下文</summary><p class="muted">字符匹配不代表批评成立；请核对否定、数量、限定条件和说话者。</p>${limited ? tr('<p class="warning excerpt-budget-warning">上下文预览已达本次上限，请直接核对原文；这不表示引文不匹配。</p>') : !review.matched ? tr('<p class="warning">未找到可核对的来源上下文，请检查绑定的原文。</p>') : ''}${partial ? tr('<p class="warning excerpt-edge-warning">引文可能从词语、复合表达或数字内部截取，请核对完整表达。</p>') : ''}${multiple ? tr('<p class="warning excerpt-repeat-warning">这段引文在同一文本块中出现多次，请核对相关上下文。</p>') : ''}${invisible ? tr('<p class="warning">引文仅含不可见字符，请核对实际来源内容。</p>') : ''}${contexts.length ? tr('<p class="muted">以下是截取的上下文预览，已统一空白与等价字符显示；原文保持不变。</p>') : ''}${contexts.map(context => `<div class="quote excerpt-context"><small>${esc(tr('匹配位置'))} ${esc(context.occurrence)}</small><p>${context.left_clipped ? '…' : ''}${esc(context.before)}<mark>${esc(context.excerpt)}</mark>${context.excerpt_clipped ? '…' : ''}${esc(context.after)}${context.right_clipped ? '…' : ''}</p></div>`).join('')}${contexts.length < review.match_count || review.count_is_exact === false ? tr('<p class="muted">仅显示部分匹配位置，请继续查看原文；这不是穷尽检查。</p>') : ''}</details>`;
 }
 function externalResolutionLabel(value) {
   const labels = {
@@ -168,15 +174,22 @@ function externalRecheckImport(status, request) {
     : controls;
 }
 function externalResolutionEvidence(item, status) {
+  if (item.kind === 'new' && item.primary_quote) {
+    const anchor = item.primary_quote;
+    const available = (status.revised_blocks || []).some(block => block.block_id === anchor.block_id);
+    return ui`<p class="muted">新问题的修订稿引文</p><div class="quote external-source-evidence">${available
+      ? `<a href="#${esc(revisedSourceId(status, anchor.block_id))}">${esc(anchor.block_id)} · ${tr('查看修订稿原文')}</a>`
+      : `<span>${esc(anchor.block_id)}</span>`}<p>${esc(anchor.quote)}</p></div>${sourceQuoteReference(item.quote_refs?.[0], status.quote_contexts)}<p class="muted external-evidence-limit">仅核对引文是否来自这份修订稿；问题是否解决仍需人工判断。</p>`;
+  }
   const explanation = ui`<p class="muted">模型证据说明（非核验引文）</p><div class="quote external-evidence-explanation">${esc(item.evidence)}</div>`;
   if (item.kind === 'new') return explanation;
   const checked = item.evidence_validation === 'checked-revised-excerpts';
   const legacy = item.evidence_validation === 'legacy-unchecked' || !item.evidence_validation;
-  const excerpts = checked ? (item.source_evidence || []).map(anchor => {
+  const excerpts = checked ? (item.source_evidence || []).map((anchor, index) => {
     const available = (status.revised_blocks || []).some(block => block.block_id === anchor.block_id);
     return `<div class="quote external-source-evidence">${available
       ? `<a href="#${esc(revisedSourceId(status, anchor.block_id))}">${esc(anchor.block_id)} · ${tr('查看修订稿原文')}</a>`
-      : `<span>${esc(anchor.block_id)}</span>`}<p>${esc(anchor.quote)}</p></div>`;
+      : `<span>${esc(anchor.block_id)}</span>`}<p>${esc(anchor.quote)}</p></div>${sourceQuoteReference(item.quote_refs?.[index], status.quote_contexts)}`;
   }).join('') : '';
   return `${explanation}${item.state === 'unable-to-assess'
     ? ui`<p class="warning external-unable-limit">模型无法评估本项；这不会自动解决问题或替你作出人工结论。</p>` : ''}${checked
@@ -259,9 +272,10 @@ function argumentAssessment(view) {
   const statuses = {effective: tr('有效的安排'), mixed: tr('有作用，也有取舍'),
     weak: tr('需要改进'), 'unable-to-assess': tr('材料不足')};
   const knownTitles = ['论证结构', '论证方向', '论证方法', '特征特点'];
+  const sources = (anchors, refs) => anchors.map((anchor, index) => `<div class="quote"><small>${esc(anchor.block_id)}</small><p>${esc(anchor.quote)}</p></div>${sourceQuoteReference(refs?.[index])}`).join('');
   return ui`<section class="card argument-assessment"><h2>论证与文章综合审查</h2><p class="muted">按文章的问题和贡献选择审查角度，记录有效之处、局限与建议。以下为模型意见，原文定位通过不等于人工认可。</p>${rows.map(row => {
     const frame = row.assessment.review_frame;
-    return ui`<p class="muted">来源审查：${esc(row.request_id)} · ${esc(row.run_id)}</p><div class="assessment-frame"><p><b>实际问题：</b>${esc(frame.question)}</p><p><b>意图贡献：</b>${esc(frame.intended_contribution)}</p><p><b>整体路线：</b>${esc(frame.argument_route)}</p><p><b>审查重点：</b>${frame.priorities.map(esc).join(' · ')}</p>${frame.scope_limits.length ? ui`<p><b>范围限制：</b>${frame.scope_limits.map(esc).join(' · ')}</p>` : ''}${frame.evidence.length ? ui`<details><summary>审查方案依据</summary>${frame.evidence.map(anchor => `<div class="quote"><small>${esc(anchor.block_id)}</small><p>${esc(anchor.quote)}</p></div>`).join('')}</details>` : ''}</div><div class="assessment-axes">${row.assessment.dimensions.map(dimension => ui`<article class="assessment-axis" data-axis="${esc(dimension.id)}"><h3>${esc(knownTitles.includes(dimension.title) ? tr(dimension.title) : dimension.title)}</h3><span class="pill">${esc(statuses[dimension.status])}</span><p class="muted assessment-relevance">${esc(dimension.why_relevant)}</p><p class="assessment-description">${esc(dimension.description)}</p><p>${esc(dimension.assessment)}</p>${dimension.strengths.length ? ui`<p><b>有效之处</b></p><ul>${dimension.strengths.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}${dimension.limitations.length ? ui`<p><b>局限与取舍</b></p><ul>${dimension.limitations.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}<p><b>保留或调整建议：</b>${esc(dimension.recommendation)}</p>${dimension.evidence.length ? ui`<details><summary>原文依据</summary>${dimension.evidence.map(anchor => `<div class="quote"><small>${esc(anchor.block_id)}</small><p>${esc(anchor.quote)}</p></div>`).join('')}</details>` : ''}</article>`).join('')}</div>`;
+    return ui`<p class="muted">来源审查：${esc(row.request_id)} · ${esc(row.run_id)}</p><div class="assessment-frame"><p><b>实际问题：</b>${esc(frame.question)}</p><p><b>意图贡献：</b>${esc(frame.intended_contribution)}</p><p><b>整体路线：</b>${esc(frame.argument_route)}</p><p><b>审查重点：</b>${frame.priorities.map(esc).join(' · ')}</p>${frame.scope_limits.length ? ui`<p><b>范围限制：</b>${frame.scope_limits.map(esc).join(' · ')}</p>` : ''}${frame.evidence.length ? ui`<details><summary>审查方案依据</summary>${sources(frame.evidence, row.quote_refs?.review_frame)}</details>` : ''}</div><div class="assessment-axes">${row.assessment.dimensions.map((dimension, dimensionIndex) => ui`<article class="assessment-axis" data-axis="${esc(dimension.id)}"><h3>${esc(knownTitles.includes(dimension.title) ? tr(dimension.title) : dimension.title)}</h3><span class="pill">${esc(statuses[dimension.status])}</span><p class="muted assessment-relevance">${esc(dimension.why_relevant)}</p><p class="assessment-description">${esc(dimension.description)}</p><p>${esc(dimension.assessment)}</p>${dimension.strengths.length ? ui`<p><b>有效之处</b></p><ul>${dimension.strengths.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}${dimension.limitations.length ? ui`<p><b>局限与取舍</b></p><ul>${dimension.limitations.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}<p><b>保留或调整建议：</b>${esc(dimension.recommendation)}</p>${dimension.evidence.length ? ui`<details><summary>原文依据</summary>${sources(dimension.evidence, row.quote_refs?.dimensions?.[dimensionIndex])}</details>` : ''}</article>`).join('')}</div>`;
   }).join('')}</section>`;
 }
 function findingWorkspace(view) {

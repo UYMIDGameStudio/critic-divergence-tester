@@ -29,8 +29,9 @@ from project_lifecycle import before_write, transaction, recover, compatibility,
 
 from document_review_ingest import IngestionError, IngestionLimits, ingest_bytes, safe_upload_name
 from academic_review import academic_prechecks
-from document_review_quality import close_reading_markdown, source_quote_reviews, quote_review_markdown
-from document_review_composition import assessment_markdown
+from document_review_quality import (close_reading_markdown, source_quote_reviews, quote_review_markdown,
+    QuoteReviewIndex, quote_reference_markdown)
+from document_review_composition import assessment_markdown, assessment_quote_refs
 from document_review_model import (
     AuditRun,
     DocumentBlock,
@@ -655,7 +656,7 @@ class DocumentReviewProject:
             raise ReviewStudioError("项目或导出文件完整性校验失败，拒绝按可信文件下载：" + "; ".join(errors))
         return candidate
 
-    def _finding_verification_context(self, document=None, findings=None) -> dict[str, dict[str, Any]]:
+    def _finding_verification_context(self, document=None, findings=None, *, index=None) -> dict[str, dict[str, Any]]:
         runs = [run for _, run, _ in self._active_audit_run_records().values()]
         current_round = self.current_review_round()
         if current_round:
@@ -668,7 +669,7 @@ class DocumentReviewProject:
                 return contexts
         if findings is None:
             findings = [finding.to_dict() for finding in self.findings()]
-        return _with_source_quote_reviews(contexts, document, findings)
+        return _with_source_quote_reviews(contexts, document, findings, index=index)
 
     @_serialized_mutation
     def view(self) -> dict[str, Any]:
@@ -683,7 +684,7 @@ class DocumentReviewProject:
                 "extraction": {"available": False, "reviewable": False, "correction_available": False, "metadata": {}, "quality": {}, "warnings": [], "blocks": [], "total_blocks": 0},
                 "context": {}, "can_review": False, "review_blockers": list(state.get("integrity_errors", [])),
                 "ai_requests": [], "argument_assessments": [], "adversarial_reviews": [], "adversarial_eligible_finding_ids": [],
-                "findings": [], "verification_context": {}, "finding_summary": {"total": 0, "open": 0, "by_severity": {}},
+                "findings": [], "verification_context": {}, "quote_contexts": {}, "finding_summary": {"total": 0, "open": 0, "by_severity": {}},
                 "attention_queue": {"default_limit": 30, "total_groups": 0, "hidden_groups": 0, "groups": []},
                 "revision_workspace": {"plan": None, "actions": [], "ready_to_finalize": False, "revision": None},
                 "workflow": [], "exports": [],
@@ -693,6 +694,7 @@ class DocumentReviewProject:
         except (OSError, KeyError, TypeError, ValueError, ReviewStudioError):
             document = None
         can_review, reasons = self.can_review()
+        quote_index = QuoteReviewIndex(document) if document is not None else None
         reviewable = has_reviewable_text(document)
         correction_available = True
         if document is not None and not reviewable:
@@ -703,7 +705,7 @@ class DocumentReviewProject:
         try:
             finding_objects = self.findings()
             finding_rows = [finding.to_dict() for finding in finding_objects]
-            verification_context = self._finding_verification_context(document, finding_rows)
+            verification_context = self._finding_verification_context(document, finding_rows, index=quote_index)
             attention_queue = self.finding_work_groups(finding_objects)
         except (OSError, KeyError, TypeError, ValueError, ReviewStudioError):
             finding_rows = []
@@ -720,7 +722,8 @@ class DocumentReviewProject:
                 if run.get("argument_assessment") is not None:
                     argument_assessments.append({"run_id": run["run_id"], "source_sha256": run["source_sha256"],
                         "request_id": run.get("declared_model_metadata", {}).get("request_id"),
-                        "assessment": run["argument_assessment"]})
+                        "assessment": run["argument_assessment"],
+                        "quote_refs": assessment_quote_refs(run['argument_assessment'], quote_index) if quote_index else None})
                 if run.get("model_label") != "deterministic-local-rules" and isinstance(run.get("declared_model_metadata"), Mapping):
                     adversarial_eligible_ids.update(item["finding_id"] for item in run.get("findings", []))
             current_round = self.current_review_round()
@@ -758,7 +761,21 @@ class DocumentReviewProject:
             {"key": "bridge", "label": "受约束修改", "status": "completed" if revision_complete else "in_progress" if bridge_complete else "not_started", "detail": "修改与复审流程已完成" if revision_complete else "修改稿已生成，复审待完成" if revision_generated else "逐段修改中" if bridge_complete else "未开始"},
             {"key": "export", "label": "导出结果", "status": "completed" if export_complete else "not_started", "detail": "已有导出文件" if export_complete else "未导出"},
         ]
-        return {"review_critics": {key: CRITIC_LABELS[key] for key in self.review_critics()}, "project": manifest, "product_status": "experimental-preview", "state": state, "extraction": {"available": document is not None, "reviewable": reviewable, "correction_available": correction_available, "metadata": document.metadata if document else {}, "quality": document.quality.to_dict() if document else {}, "warnings": [warning.to_dict() for warning in document.warnings] if document else [], "blocks": [block.to_dict() for block in document.blocks] if document else [], "total_blocks": len(document.blocks) if document else 0}, "context": self.context().to_dict() if self.context() else {"model_suggestion": self.suggested_document_type()}, "can_review": can_review, "review_blockers": reasons, "ai_requests": ai_requests, "argument_assessments": argument_assessments, "adversarial_reviews": adversarial_reviews, "adversarial_eligible_finding_ids": sorted(adversarial_eligible_ids), "findings": finding_rows, "verification_context": verification_context, "finding_summary": finding_summary, "attention_queue": attention_queue, "revision_workspace": revision_workspace, "workflow": workflow, "exports": exports}
+        return {"review_critics": {key: CRITIC_LABELS[key] for key in self.review_critics()}, "project": manifest,
+                "product_status": "experimental-preview", "state": state,
+                "extraction": {"available": document is not None, "reviewable": reviewable,
+                    "correction_available": correction_available, "metadata": document.metadata if document else {},
+                    "quality": document.quality.to_dict() if document else {},
+                    "warnings": [warning.to_dict() for warning in document.warnings] if document else [],
+                    "blocks": [block.to_dict() for block in document.blocks] if document else [],
+                    "total_blocks": len(document.blocks) if document else 0},
+                "context": self.context().to_dict() if self.context() else {"model_suggestion": self.suggested_document_type()},
+                "can_review": can_review, "review_blockers": reasons, "ai_requests": ai_requests,
+                "argument_assessments": argument_assessments, "adversarial_reviews": adversarial_reviews,
+                "adversarial_eligible_finding_ids": sorted(adversarial_eligible_ids), "findings": finding_rows,
+                "verification_context": verification_context, "quote_contexts": quote_index.catalog if quote_index else {},
+                "finding_summary": finding_summary, "attention_queue": attention_queue,
+                "revision_workspace": revision_workspace, "workflow": workflow, "exports": exports}
 
 
 def _document_from_dict(value: Mapping[str, Any]) -> StructuredDocument:
@@ -808,44 +825,62 @@ def _adversarial_review_markdown(sessions: Iterable[Mapping[str, Any]]) -> list[
             lines.extend(["", f"#### {stage.capitalize()}", ""])
             for key in fields:
                 lines.append(f"- {key.replace('_', ' ').capitalize()}: {result.get(key, '')}")
-            for anchor in result.get("context_evidence", []):
+            for index, anchor in enumerate(result.get("context_evidence", [])):
                 lines.append(f"- Source `{anchor['block_id']}`: {anchor['quote']}")
+                refs = session.get('quote_refs', {}).get(stage, [])
+                if index < len(refs):
+                    lines.extend(quote_reference_markdown(refs[index], session.get('quote_contexts')))
         lines.extend(["", f"Exchange records: `{session['relative_path']}`", ""])
     return lines
 
 
-def _with_source_quote_reviews(contexts, document, findings):
+def _with_source_quote_reviews(contexts, document, findings, *, index=None):
+    index = index or QuoteReviewIndex(document)
+    findings = list(findings)
     result = dict(contexts)
-    reviews = source_quote_reviews(document, findings)
+    reviews = source_quote_reviews(document, findings, index=index)
     for finding in findings:
         identity = finding['finding_id']
         result[identity] = {**(contexts.get(identity) or finding_verification_context(finding)),
                             'source_quote_review': reviews[identity]}
+        detail = finding.get('check_data', {}).get('close_reading')
+        result[identity]['context_quote_refs'] = index.references(detail.get('context_evidence')) if isinstance(detail, Mapping) else []
     return result
 
 
-def _verification_close_reading_markdown(finding: Mapping[str, Any], context: Mapping[str, Any]) -> list[str]:
+def _verification_close_reading_markdown(finding: Mapping[str, Any], context: Mapping[str, Any], quote_contexts=None) -> list[str]:
     quote_context = quote_review_markdown(context.get('source_quote_review'))
     if context.get("source_kind") == "model" and not isinstance(finding.get("check_data", {}).get("close_reading"), Mapping):
         return quote_context + ["Close-reading context checks were not supplied for this model finding; review the surrounding document before relying on it.", ""]
-    return quote_context + close_reading_markdown(finding)
+    return quote_context + close_reading_markdown(finding, quote_refs=context.get('context_quote_refs'), quote_contexts=quote_contexts)
 
 
 def _audit_markdown(audit: Mapping[str, Any]) -> str:
     verification_context = audit.get("verification_context") or review_verification_context(audit.get("audit_runs", []))
     lines = ["# Document Review Studio audit report", "", f"Source: `{audit['source']['original_name']}`", f"SHA-256: `{audit['source']['sha256']}`", "", "## Recognition quality", "", f"- Text coverage: {audit['quality'].get('text_coverage', 0):.2f}", f"- Blank pages: {audit['quality'].get('blank_pages', [])}", f"- OCR low-confidence blocks: {audit['quality'].get('ocr_low_confidence_blocks', 0)}", f"- Reading order suspected: {audit['quality'].get('suspected_reading_order', False)}", ""]
     for run in audit.get("audit_runs", []):
-        lines.extend(assessment_markdown(run.get("argument_assessment")))
+        refs = audit.get('argument_quote_refs', {}).get(run['run_id'])
+        if run.get('argument_assessment') and 'argument_quote_refs' in audit and refs is None:
+            lines.extend(['Historical assessment: an earlier review state; current-document context is not implied.', ''])
+        lines.extend(assessment_markdown(run.get("argument_assessment"), quote_refs=refs, quote_contexts=audit.get('quote_contexts')))
     lines.extend(["## Independent findings", ""])
     if not audit["findings"]:
         lines.append("No Finding was produced. This is supported only by the recorded recognition scope and recorded review; it is not a guarantee of quality or legality.")
     for finding in audit["findings"]:
         verification = verification_context.get(finding["finding_id"]) or finding_verification_context(finding)
         lines.extend([f"### {finding['finding_id']} · {finding['critic']}", "", f"- Location: `{finding['location']['block_id']}` page {finding['location'].get('page') or '-'}", f"- Evidence: {finding['evidence']}", f"- Issue: {finding['issue']}", f"- Standard: {finding['standard']}", f"- Consequence: {finding['consequence']}", f"- Severity: {finding['severity']}; verification: {verification['display_label_en']}", f"- Action: {finding['suggested_action']}", ""])
-        lines.extend(_verification_close_reading_markdown(finding, verification))
+        lines.extend(_verification_close_reading_markdown(finding, verification, audit.get('quote_contexts')))
         if finding.get("external_basis", {}).get("unresolved_facts"):
             lines.append("- Unresolved facts: " + "；".join(finding["external_basis"]["unresolved_facts"]))
     lines.extend(_adversarial_review_markdown(audit.get("adversarial_reviews", [])))
+    external = audit.get('external_recheck') or {}
+    for request in external.get('requests', []):
+        for item in request.get('items', []):
+            refs = item.get('quote_refs', [])
+            if refs:
+                lines.extend([f"### Revised evidence · {item['finding_id']}", ''])
+                for ref in refs:
+                    lines.extend(quote_reference_markdown(ref, external.get('quote_contexts')))
     lines.extend(["", "## Boundary", "", audit["legal_boundary"], ""])
     return "\n".join(lines)
 
@@ -869,7 +904,8 @@ def _ai_review_markdown(snapshot: Mapping[str, Any]) -> str:
         binding = run.get("response_binding")
         binding_label = binding.get("mode", "未记录") if isinstance(binding, Mapping) else binding or "未记录"
         lines.extend([f"## {run['critic']}", "", f"- Provider / model：{metadata.get('provider', '未声明')} / {metadata.get('model', '未声明')}", f"- Run：`{run['run_id']}`", f"- Response binding：{binding_label}", ""])
-        lines.extend(assessment_markdown(run.get("argument_assessment")))
+        lines.extend(assessment_markdown(run.get("argument_assessment"),
+            quote_refs=snapshot.get('argument_quote_refs', {}).get(run['run_id']), quote_contexts=snapshot.get('quote_contexts')))
         if run.get("origin") == "external-recheck-followup":
             lines.extend(["本组问题继承自外部复审；本轮尚待逐项人工裁决。", ""])
         findings = run.get("findings", [])
@@ -880,7 +916,7 @@ def _ai_review_markdown(snapshot: Mapping[str, Any]) -> str:
         for finding in findings:
             verification = verification_context.get(finding["finding_id"]) or finding_verification_context(finding, source_kind="model")
             lines.extend([f"### {finding['finding_id']}", "", f"- 位置：`{finding['location']['block_id']}`，page {finding['location'].get('page') or '-'}", f"- 证据：{finding['evidence']}", f"- 问题：{finding['issue']}", f"- 判断标准：{finding['standard']}", f"- 后果：{finding['consequence']}", f"- 严重度：{finding['severity']}", f"- 核实状态：{verification['display_label']}", f"- 建议动作：{finding['suggested_action']}", ""])
-            lines.extend(_verification_close_reading_markdown(finding, verification))
+            lines.extend(_verification_close_reading_markdown(finding, verification, snapshot.get('quote_contexts')))
     lines.extend(_adversarial_review_markdown(snapshot.get("adversarial_reviews", [])))
     lines.extend(["## 后续", "", "请回到 Document Review Studio 对每条 Finding 分别接受、修正、拒绝或暂缓；不要把本快照当作已经批准的修改意见。", ""])
     return "\n".join(lines)

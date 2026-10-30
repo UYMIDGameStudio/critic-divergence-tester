@@ -205,25 +205,64 @@ def quote_review(quote: str, text: str) -> dict:
     return _quote_review(quote, normalized, normalized_source=normalized != text)
 
 
-def source_quote_reviews(document, findings) -> dict[str, dict]:
+class QuoteReviewIndex:
+    """One bound IR per operation; deduplicate previews and cap total work."""
+    def __init__(self, document, *, max_previews: int = 512):
+        if type(max_previews) is not int or max_previews < 0:
+            raise ValueError('Quotation preview limit must be a non-negative integer')
+        self.document = document
+        self.blocks = {block.block_id: block for block in document.blocks}
+        self.max_previews = max_previews
+        self._sources, self._reviews = {}, {}
+        self.catalog: dict[str, dict] = {}
+
+    def _resolve(self, block_id, quote) -> tuple[str, dict]:
+        block = self.blocks.get(block_id) if isinstance(block_id, str) else None
+        if block is None or not isinstance(quote, str):
+            return 'QC-UNAVAILABLE', {'version': 1, 'matched': False, 'advisory_only': True,
+                'document_id': self.document.document_id, 'semantic_accuracy': 'not-established',
+                'contexts': [], 'flags': ['source-unavailable']}
+        key = (block_id, block.text, quote)
+        if key in self._reviews:
+            return self._reviews[key]
+        if len(self._reviews) >= self.max_previews:
+            return 'QC-LIMIT', {'version': 1, 'matched': None, 'advisory_only': True,
+                'document_id': self.document.document_id, 'semantic_accuracy': 'not-established',
+                'contexts': [], 'flags': ['projection-limited']}
+        cached = self._sources.get(block_id)
+        if cached is None or cached[0] != block.text:
+            normalized = _normalized_excerpt(block.text)
+            cached = (block.text, normalized, hashlib.sha256(block.text.encode('utf-8')).hexdigest())
+            self._sources[block_id] = cached
+        original, normalized, text_sha256 = cached
+        review = _quote_review(quote, normalized, normalized_source=normalized != original)
+        review.update(block_id=block_id, document_id=self.document.document_id, block_text_sha256=text_sha256)
+        identity = 'QC-' + hashlib.sha256((self.document.document_id + '\0' + block_id + '\0' + text_sha256 + '\0' + quote).encode('utf-8')).hexdigest()
+        self._reviews[key] = (identity, review)
+        return identity, review
+
+    def review(self, block_id, quote) -> dict:
+        return self._resolve(block_id, quote)[1]
+
+    def reference(self, anchor) -> str:
+        anchor = anchor if isinstance(anchor, Mapping) else {}
+        identity, review = self._resolve(anchor.get('block_id'), anchor.get('quote'))
+        self.catalog.setdefault(identity, review)
+        return identity
+
+    def references(self, anchors) -> list[str]:
+        return [self.reference(anchor) for anchor in anchors] if isinstance(anchors, list) else []
+
+
+def source_quote_reviews(document, findings, *, index=None) -> dict[str, dict]:
     """Derive display evidence from this exact IR; retain no manuscript cache."""
-    blocks = {block.block_id: block for block in document.blocks}
-    cache, result = {}, {}
+    index = index or QuoteReviewIndex(document)
+    if index.document is not document:
+        raise ValueError('Quotation index belongs to a different document')
+    result = {}
     for finding in findings:
         block_id = finding.get('location', {}).get('block_id')
-        block = blocks.get(block_id)
-        quote = finding.get('evidence')
-        if block is None or not isinstance(quote, str):
-            result[finding['finding_id']] = {'version': 1, 'matched': False, 'advisory_only': True,
-                'semantic_accuracy': 'not-established', 'contexts': [], 'flags': ['source-unavailable']}
-            continue
-        if block_id not in cache:
-            normalized = _normalized_excerpt(block.text)
-            cache[block_id] = (normalized, normalized != block.text, hashlib.sha256(block.text.encode('utf-8')).hexdigest())
-        normalized, changed, text_sha256 = cache[block_id]
-        review = _quote_review(quote, normalized, normalized_source=changed)
-        review.update(block_id=block_id, document_id=document.document_id, block_text_sha256=text_sha256)
-        result[finding['finding_id']] = review
+        result[finding['finding_id']] = index.review(block_id, finding.get('evidence'))
     return result
 
 
@@ -231,6 +270,8 @@ def quote_review_markdown(review) -> list[str]:
     if not isinstance(review, Mapping):
         return []
     lines = ['Quotation context (display check only; not a semantic verdict):', '']
+    if 'projection-limited' in review.get('flags', []):
+        return lines + ['The preview budget was reached. This excerpt was not inspected for display; check the original directly.', '']
     if not review.get('matched'):
         return lines + ['No matching source context is available. Check the bound original before relying on this quotation.', '']
     flags = review.get('flags', [])
@@ -249,6 +290,10 @@ def quote_review_markdown(review) -> list[str]:
     if not review.get('count_is_exact', True):
         lines += ['The occurrence scan reached its limit; this is not an exhaustive list.', '']
     return lines
+
+
+def quote_reference_markdown(reference, catalog) -> list[str]:
+    return quote_review_markdown((catalog or {}).get(reference))
 
 
 def validate_close_reading(value, blocks_by_id: Mapping, *, version: int = 1) -> list[str]:
@@ -292,7 +337,7 @@ def validate_close_reading(value, blocks_by_id: Mapping, *, version: int = 1) ->
     return errors
 
 
-def close_reading_markdown(finding: Mapping) -> list[str]:
+def close_reading_markdown(finding: Mapping, *, quote_refs=None, quote_contexts=None) -> list[str]:
     detail = finding.get("check_data", {}).get("close_reading")
     if not isinstance(detail, Mapping):
         return []
@@ -300,6 +345,8 @@ def close_reading_markdown(finding: Mapping) -> list[str]:
               "why_defense_fails": "Remaining defect", "repair_test": "Repair acceptance test"}
     lines = ["Close-reading justification (model-proposed; not a verified verdict):", ""]
     lines.extend(f"- {label}: {detail.get(key, '')}" for key, label in labels.items())
-    for anchor in detail.get("context_evidence", []):
+    for index, anchor in enumerate(detail.get("context_evidence", [])):
         lines.append(f"- Context `{anchor['block_id']}` ({anchor['role']}): {anchor['quote']}")
+        if quote_refs and index < len(quote_refs):
+            lines.extend(quote_reference_markdown(quote_refs[index], quote_contexts))
     return lines + [""]

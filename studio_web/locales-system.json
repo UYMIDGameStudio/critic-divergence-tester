@@ -1,4 +1,7 @@
 {
+  "上下文预览已达本次上限，请直接核对原文；这不表示引文不匹配。": {"zh-Hant": "上下文預覽已達本次上限，請直接核對原文；這不表示引文不匹配。", "en": "The context preview limit was reached. Check the original directly; this does not mean the quotation failed to match."},
+  "新问题的修订稿引文": {"zh-Hant": "新問題的修訂稿引文", "en": "Revised-text quotation for the new finding"},
+  "对抗深审原文与快照绑定不一致": {"zh-Hant": "對抗深審原文與快照綁定不一致。", "en": "The adversarial review source does not match its bound snapshot."},
   "核对引文的上下文": {"zh-Hant": "核對引文的上下文", "en": "Check the quotation in context"},
   "字符匹配不代表批评成立；请核对否定、数量、限定条件和说话者。": {"zh-Hant": "字元匹配不代表批評成立；請核對否定、數量、限定條件和說話者。", "en": "A character match does not establish the criticism. Check negation, quantities, qualifications and attribution."},
   "未找到可核对的来源上下文，请检查绑定的原文。": {"zh-Hant": "未找到可核對的來源上下文，請檢查綁定的原文。", "en": "No matching source context was found. Check the bound original text."},

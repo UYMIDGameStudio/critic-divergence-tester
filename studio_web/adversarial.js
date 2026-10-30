@@ -28,14 +28,14 @@ function adversarialErrorMessage(message) {
     (raw.endsWith(archived) ? '\n' + tr(archived.slice(1)) : '');
 }
 
-function adversarialEvidence(evidence, current) {
+function adversarialEvidence(evidence, current, quoteRefs = [], quoteContexts = {}) {
   const roles = {context: tr('上下文'), support: tr('支持材料'),
     counterevidence: tr('反证材料'), qualification: tr('限定条件')};
-  return (evidence || []).map(anchor => {
+  return (evidence || []).map((anchor, index) => {
     const label = `${anchor.evidence_id ? anchor.evidence_id + ' · ' : ''}${anchor.block_id} · ${roles[anchor.role] || anchor.role}`;
     return `<div class="quote">${current
       ? `<a href="#source-${esc(anchor.block_id)}">${esc(label)}</a>`
-      : `<span>${esc(label)}</span>`}<p>${pdfDisplayText(anchor.quote)}</p></div>`;
+      : `<span>${esc(label)}</span>`}<p>${pdfDisplayText(anchor.quote)}</p></div>${sourceQuoteReference(quoteRefs[index], quoteContexts)}`;
   }).join('');
 }
 
@@ -71,10 +71,10 @@ function adversarialSession(session) {
     ${current ? '' : ui`<p class="warning">此记录对应较早的稿件或审查状态，仅供查阅；请针对当前问题重新深审。</p>`}
     ${!current && session.challenge ? ui`<details><summary>当时的批评与原文</summary><p>${esc(session.challenge.issue)}</p><div class="quote">${esc(session.challenge.evidence)}</div></details>` : ''}
     ${defenseRequest ? adversarialRequest(session, defenseRequest, Boolean(defense)) : ''}
-    ${defense ? ui`<details class="adversarial-defense" open><summary>辩护结果（模型提议）</summary><p><b>作者的实际主张：</b>${esc(defense.author_position)}</p><p><b>最强辩护：</b>${esc(defense.strongest_defense)}</p><p><b>辩护的局限：</b>${esc(defense.limitations)}</p>${adversarialEvidence(defense.context_evidence, current)}</details>` : ''}
+    ${defense ? ui`<details class="adversarial-defense" open><summary>辩护结果（模型提议）</summary><p><b>作者的实际主张：</b>${esc(defense.author_position)}</p><p><b>最强辩护：</b>${esc(defense.strongest_defense)}</p><p><b>辩护的局限：</b>${esc(defense.limitations)}</p>${adversarialEvidence(defense.context_evidence, current, session.quote_refs?.defense, session.quote_contexts)}</details>` : ''}
     ${current && session.status === 'defense_ready' ? ui`<div class="adversarial-next"><h4>下一步：独立复核双方证据</h4><p class="muted">在新的模型会话中执行复核协议。模型来源由你声明，工作台无法证明服务商或模型彼此独立。</p>${adversarialModelFields(session.session_id)}<button class="adv-assess" data-session-id="${esc(session.session_id)}" ${state.selected.state.read_only ? 'disabled' : ''}>生成证据复核任务</button></div>` : ''}
     ${assessmentRequest ? adversarialRequest(session, assessmentRequest, Boolean(assessment)) : ''}
-    ${assessment ? ui`<details class="adversarial-assessment" open><summary>${esc(dispositions[assessment.disposition] || assessment.disposition)} · ${tr('模型提议')}</summary><p><b>复核理由：</b>${esc(assessment.reasons)}</p><p><b>仍然存在的问题：</b>${esc(assessment.remaining_issue)}</p><p><b>最小修改：</b>${esc(assessment.minimal_repair)}</p><p><b>修正验收方法：</b>${esc(assessment.repair_test)}</p><p><b>已回应的辩护证据：</b>${esc((assessment.defense_evidence_ids || []).join(', '))}</p>${adversarialEvidence(assessment.context_evidence, current)}<p class="muted">请使用下方人工决定按钮处理原问题；深审建议不会自动接受、撤回或解决问题。</p></details>` : ''}
+    ${assessment ? ui`<details class="adversarial-assessment" open><summary>${esc(dispositions[assessment.disposition] || assessment.disposition)} · ${tr('模型提议')}</summary><p><b>复核理由：</b>${esc(assessment.reasons)}</p><p><b>仍然存在的问题：</b>${esc(assessment.remaining_issue)}</p><p><b>最小修改：</b>${esc(assessment.minimal_repair)}</p><p><b>修正验收方法：</b>${esc(assessment.repair_test)}</p><p><b>已回应的辩护证据：</b>${esc((assessment.defense_evidence_ids || []).join(', '))}</p>${adversarialEvidence(assessment.context_evidence, current, session.quote_refs?.assessment, session.quote_contexts)}<p class="muted">请使用下方人工决定按钮处理原问题；深审建议不会自动接受、撤回或解决问题。</p></details>` : ''}
     ${defense || assessment ? ui`<p class="muted">已核对引文与任务绑定；论证是否成立仍需人工判断。</p>` : ''}
   </details>`;
 }

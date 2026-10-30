@@ -30,7 +30,7 @@ jobs:
             dist/browser-localization/
             dist/browser-fresh-import-verification/
             dist/browser-research-localization/
-            dist/browser-close-reading-0.2.2/
+            dist/browser-close-reading-*/
             dist/browser-composition-*/
             dist/browser-recovery-*/
             dist/browser-docx-visibility/

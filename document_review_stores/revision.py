@@ -1207,6 +1207,7 @@ class RevisionPlanBuilder(_ProjectComponent):
         revision_dir = self._revision_directory(revision_id)
         revised_document = _document_from_dict(_read_json(revision_dir / "document.json"))
         blocks_by_id = {block.block_id: block for block in revised_document.blocks}
+        quote_index = QuoteReviewIndex(revised_document)
         cited_blocks: set[str] = set()
         followup_blockers: list[str] = []
         all_decisions = self._external_resolution_records(revision_id)
@@ -1230,8 +1231,15 @@ class RevisionPlanBuilder(_ProjectComponent):
             followup_items = [item for item in items if item["kind"] == "new" or (item.get("human_decision") and item["human_decision"].get("state") != "resolved")]
             for item in items:
                 if item["kind"] != "original":
+                    finding = item['finding']
+                    anchor = {'block_id': finding['location']['block_id'], 'quote': finding['evidence']}
+                    item['primary_quote'] = anchor
+                    item['quote_refs'] = [quote_index.reference(anchor)]
+                    if anchor['block_id'] in blocks_by_id:
+                        cited_blocks.add(anchor['block_id'])
                     continue
                 item.setdefault("evidence_validation", "legacy-unchecked")
+                item['quote_refs'] = quote_index.references(item.get('source_evidence', [])) if item['evidence_validation'] == 'checked-revised-excerpts' else []
                 for anchor in item.get("source_evidence", []):
                     if anchor.get("block_id") in blocks_by_id:
                         cited_blocks.add(anchor["block_id"])
@@ -1243,7 +1251,12 @@ class RevisionPlanBuilder(_ProjectComponent):
         followup_required = any(row["followup_required"] for row in rows)
         for row in rows:
             row["complete"] = row["resolution_complete"] and (not row["followup_required"] or followup_started)
-        return {"revision_id": revision_id, "requests": rows, "resolutions_complete": resolutions_complete, "followup_required": followup_required, "followup_started": followup_started, "can_start_followup": resolutions_complete and followup_required and not followup_started and not followup_blockers, "followup_blockers": followup_blockers, "revised_blocks": [block.to_dict() for block in revised_document.blocks if block.block_id in cited_blocks], "complete": resolutions_complete and (not followup_required or followup_started)}
+        return {"revision_id": revision_id, "requests": rows, "resolutions_complete": resolutions_complete,
+                "followup_required": followup_required, "followup_started": followup_started,
+                "can_start_followup": resolutions_complete and followup_required and not followup_started and not followup_blockers,
+                "followup_blockers": followup_blockers, "quote_contexts": quote_index.catalog,
+                "revised_blocks": [block.to_dict() for block in revised_document.blocks if block.block_id in cited_blocks],
+                "complete": resolutions_complete and (not followup_required or followup_started)}
 
     def _resolution_followup_anchor(self, resolution: Mapping[str, Any], blocks_by_id: Mapping[str, DocumentBlock]) -> dict[str, str] | None:
         anchors = resolution.get("source_evidence")

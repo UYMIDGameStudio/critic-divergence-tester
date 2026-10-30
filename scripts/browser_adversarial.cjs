@@ -112,7 +112,7 @@ async function main() {
 
     const sourceBlock = current.blocks.find(block => block.text.includes('Straße'));
     assert.ok(sourceBlock);
-    const anchor = {block_id: sourceBlock.block_id, quote: sourceBlock.text, role: 'qualification'};
+    const anchor = {block_id: sourceBlock.block_id, quote: 'nglish', role: 'qualification'};
     const defense = {
       author_position: 'The manuscript describes a bounded multilingual event.',
       strongest_defense: '<img src=x onerror="window.__injected=true"> The cited table may already assign responsibility.',
@@ -144,6 +144,9 @@ async function main() {
     current = await snapshot(page);
     assert.equal(current.sessions[0].status, 'defense_ready');
     assert.deepEqual(current.sessions[0].defense, defense);
+    assert.equal(await page.locator('.adversarial-defense .source-quote-review').count(), 1);
+    assert.ok((await page.locator('.adversarial-defense .excerpt-context').innerText()).includes('English'));
+    assert.equal(await page.locator('.adversarial-defense .excerpt-edge-warning').count(), 1);
     assert.equal(await page.locator('.adversarial-defense img').count(), 0);
     assert.equal(await page.evaluate(() => Boolean(window.__injected)), false);
     assert.equal(current.finding.status, 'open');
@@ -192,6 +195,7 @@ async function main() {
     assert.equal(current.sessions[0].status, 'completed');
     assert.equal(current.finding.status, 'open');
     assert.deepEqual(current.sessions[0].assessment, assessment);
+    assert.equal(await page.locator('.adversarial-assessment .excerpt-edge-warning').count(), 1);
     assert.match(await page.locator('.adversarial-assessment').textContent(), /Proposal: narrow the criticism/);
     assert.match(await page.locator('.adversarial-assessment').textContent(), /D1/);
     assert.match(await page.locator('.adversarial-session').textContent(), /argument still requires human judgment/);

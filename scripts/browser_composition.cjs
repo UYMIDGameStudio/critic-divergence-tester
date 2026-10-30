@@ -8,7 +8,7 @@ const assert = require('node:assert/strict');
 
 async function main() {
   const root = path.resolve(__dirname, '..');
-  const output = path.join(root, 'dist', 'browser-composition-0.2.29');
+  const output = path.join(root, 'dist', 'browser-composition-0.2.39');
   await fs.mkdir(output, {recursive: true});
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'composition-browser-'));
   const child = spawn(process.env.STUDIO_PYTHON || 'python',
@@ -54,8 +54,11 @@ async function main() {
       assert.equal(await page.evaluate(() => state.selected.findings.length), 0);
       report.checks.push(`${locale}: selected design judgements and an additional angle survive with zero Findings and original model text`);
       const evidence = panel.locator('.assessment-axis details').first();
-      await evidence.locator('summary').click();
-      assert.ok((await evidence.locator('.quote').innerText()).includes('Bounded comparison'));
+      await evidence.locator(':scope > summary').click();
+      assert.ok((await evidence.locator('.quote').first().innerText()).includes('Bounded comparison'));
+      assert.equal(await panel.locator('.source-quote-review').count(), 6);
+      assert.equal(await panel.locator('.excerpt-edge-warning').count(), 2);
+      assert.ok((await panel.locator('.excerpt-context').allTextContents()).join(' ').includes('interpretations'));
       report.checks.push(`${locale}: exact source evidence is readable`);
       for (const width of [1440, 390, 320]) {
         await page.setViewportSize({width, height: width === 1440 ? 1000 : 844});

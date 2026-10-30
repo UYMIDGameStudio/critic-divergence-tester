@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 import re
-from document_review_quality import quote_matches
+from document_review_quality import quote_matches, quote_reference_markdown
 
 SUGGESTED_DIMENSIONS = {
     "structure": ("论证结构", "重构中心问题、主次论证和章节任务，评价顺序、铺垫、篇幅重心与收束的作用。"),
@@ -141,7 +141,14 @@ def validate_argument_assessment(value, blocks_by_id: Mapping) -> list[str]:
     errors.extend(_evidence_errors(frame["evidence"], blocks_by_id, "review_frame.evidence", 0 if unavailable else 1))
     return errors
 
-def assessment_markdown(value) -> list[str]:
+def assessment_quote_refs(value, index):
+    if not value:
+        return None
+    return {'review_frame': index.references(value['review_frame']['evidence']),
+            'dimensions': [index.references(dimension['evidence']) for dimension in value['dimensions']]}
+
+
+def assessment_markdown(value, *, quote_refs=None, quote_contexts=None) -> list[str]:
     if not value:
         return []
     frame = value["review_frame"]
@@ -149,12 +156,21 @@ def assessment_markdown(value) -> list[str]:
              "- 实际问题：" + frame["question"], "- 意图贡献：" + frame["intended_contribution"],
              "- 整体路线：" + frame["argument_route"], "- 审查重点：" + "；".join(frame["priorities"])]
     lines.extend("- 范围限制：" + x for x in frame["scope_limits"])
-    lines.extend(f"- 原文 `{a['block_id']}`：{a['quote']}" for a in frame["evidence"])
-    for dimension in value["dimensions"]:
+    for index, anchor in enumerate(frame['evidence']):
+        lines.append(f"- 原文 `{anchor['block_id']}`：{anchor['quote']}")
+        refs = (quote_refs or {}).get('review_frame', [])
+        if index < len(refs):
+            lines.extend(quote_reference_markdown(refs[index], quote_contexts))
+    for dimension_index, dimension in enumerate(value["dimensions"]):
         lines.extend(["", "### " + dimension["title"], "", "- 为什么适用：" + dimension["why_relevant"],
                       dimension["description"], "", dimension["assessment"], "",
                       "- 设计效果：" + dimension["status"], "- 建议：" + dimension["recommendation"]])
         lines.extend("- 有效之处：" + text for text in dimension["strengths"])
         lines.extend("- 局限与取舍：" + text for text in dimension["limitations"])
-        lines.extend(f"- 原文 `{a['block_id']}`：{a['quote']}" for a in dimension["evidence"])
+        groups = (quote_refs or {}).get('dimensions', [])
+        refs = groups[dimension_index] if dimension_index < len(groups) else []
+        for index, anchor in enumerate(dimension['evidence']):
+            lines.append(f"- 原文 `{anchor['block_id']}`：{anchor['quote']}")
+            if index < len(refs):
+                lines.extend(quote_reference_markdown(refs[index], quote_contexts))
     return lines + [""]

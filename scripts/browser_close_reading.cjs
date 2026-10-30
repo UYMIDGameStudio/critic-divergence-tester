@@ -8,7 +8,7 @@ const assert = require('node:assert/strict');
 
 async function main() {
   const repo = path.resolve(__dirname, '..');
-  const output = path.join(repo, 'dist', 'browser-close-reading-0.2.2');
+  const output = path.join(repo, 'dist', 'browser-close-reading-0.2.39');
   await fs.mkdir(output, { recursive: true });
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'close-reading-browser-'));
   const child = spawn(process.env.STUDIO_PYTHON || 'python',
@@ -91,6 +91,9 @@ async function main() {
     }
     assert.match(await card.textContent(), /細讀依據（模型判斷）/);
     assert.match(await card.textContent(), /最強辯護/);
+    assert.equal(await card.locator('.source-quote-review').count(), 3);
+    assert.ok((await card.locator('.excerpt-edge-warning').innerText()).includes('內部截取'));
+    assert.equal(await card.locator('mark').filter({hasText: 'nglish'}).count(), 1);
     report.checks.push('Traditional Chinese diagnosis');
     await checkProtocolErrorTranslation('Traditional Chinese', '無法驗證原細讀協議：目前程式不支援這份細讀協議的版本。');
     await checkFilteredSourceNavigation('Traditional Chinese');
@@ -99,6 +102,7 @@ async function main() {
     await page.waitForFunction(() => document.documentElement.lang === 'en');
     assert.match(await card.textContent(), /Close-reading justification \(model proposal\)/);
     assert.match(await card.textContent(), /Repair acceptance test/);
+    assert.ok((await card.locator('.excerpt-edge-warning').innerText()).includes('cut into a word'));
     assert.equal(await page.locator('.finding-group').getByText('Affects the conclusion, structure or execution', { exact: false }).count(), 1);
     assert.doesNotMatch((await page.locator('.summary').allTextContents()).join(' '), /[条條]/);
     assert.match(await card.textContent(), /Straße 日本語 Русский Latīna/);

@@ -144,6 +144,10 @@ class ExportCenter(_ProjectComponent):
             _write_tracked(self.root, exported_raw, raw_data, parents=[raw_parent], provenance="verbatim-model-response-export")
             raw_exports.append({"critic": critic, "run_id": run_id, "relative_path": str(exported_raw.relative_to(output)).replace("\\", "/"), "sha256": _sha256(raw_data)})
         findings = [item for _, run, _ in export_runs for item in run.get("findings", [])]
+        quote_index = QuoteReviewIndex(document)
+        verification = _with_source_quote_reviews(review_verification_context([run for _, run, _ in export_runs]), document, findings, index=quote_index)
+        argument_refs = {run['run_id']: assessment_quote_refs(run['argument_assessment'], quote_index)
+                         for _, run, _ in export_runs if run.get('argument_assessment') is not None}
         adversarial_reviews, adversarial_parents = self._export_adversarial_reviews(output)
         snapshot = {
             "artifact_type": "independent-ai-review-snapshot",
@@ -153,7 +157,9 @@ class ExportCenter(_ProjectComponent):
             "source": document.source.to_dict(),
             "runs": [run for _, run, _ in export_runs],
             "findings": findings,
-            "verification_context": _with_source_quote_reviews(review_verification_context([run for _, run, _ in export_runs]), document, findings),
+            "verification_context": verification,
+            "argument_quote_refs": argument_refs,
+            "quote_contexts": quote_index.catalog,
             "adversarial_reviews": adversarial_reviews,
             "raw_responses": raw_exports,
             "finding_count": len(findings),
@@ -270,7 +276,12 @@ class ExportCenter(_ProjectComponent):
         if current_round:
             chain_parents.append(_parent_ref(self.root, current_round[0], role="current-review-round"))
         audit = {"artifact_type": "document-review-export", "schema_version": 2, "product_status": "experimental-preview", "export_id": export_id, "source": document.source.to_dict(), "parser": {"name": document.parser_name, "version": document.parser_version}, "quality": document.quality.to_dict(), "warnings": [warning.to_dict() for warning in document.warnings], "audit_runs": runs, "findings": [finding.to_dict() for finding in findings], "decisions": list(decisions.values()), "review_round": current_round[1] if current_round else None, "revision": trusted_revision[1] if trusted_revision else None, "external_recheck": external_recheck, "review_context": self.context().to_dict(), "independent_critics": list(self.review_critics()), "scores": None, "legal_boundary": "合规筛查不是律师意见；无来源材料时只能输出待核实问题", "created_at": _now()}
-        audit["verification_context"] = self._finding_verification_context(document, audit['findings'])
+        quote_index = QuoteReviewIndex(document)
+        audit["verification_context"] = self._finding_verification_context(document, audit['findings'], index=quote_index)
+        audit['argument_quote_refs'] = {
+            run['run_id']: assessment_quote_refs(run['argument_assessment'], quote_index)
+            for _, run, _ in self._active_audit_run_records().values() if run.get('argument_assessment') is not None}
+        audit['quote_contexts'] = quote_index.catalog
         audit_path = output / "audit.json"
         adversarial_reviews, adversarial_parents = self._export_adversarial_reviews(output)
         audit["adversarial_reviews"] = adversarial_reviews

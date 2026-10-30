@@ -45,6 +45,8 @@ if "--argument-composition" in sys.argv[2:]:
     fixture.setUp()
     request = fixture.request()
     payload = fixture.payload(request)
+    payload['argument_assessment']['review_frame']['evidence'][0]['quote'] = 'pretations'
+    payload['argument_assessment']['dimensions'][1]['evidence'][0]['quote'] = 'pretations'
     payload["argument_assessment"]["dimensions"][3]["assessment"] = '<img src=x onerror="window.__compositionInjected=true"> Straße 日本語 Русский Latīna'
     import copy
     extra = copy.deepcopy(payload["argument_assessment"]["dimensions"][0])
@@ -59,6 +61,8 @@ if "--close-reading" in sys.argv[2:]:
     request = fixture.helper.request()
     finding = fixture.helper.finding()
     detail = fixture.detail()
+    english = next(block for block in fixture.project.document().blocks if 'English' in block.text)
+    detail['context_evidence'].append({'block_id': english.block_id, 'quote': 'nglish', 'role': 'qualification'})
     detail["strongest_defense"] = '<img src=x onerror="window.__injected=true"> Straße 日本語 Русский Latīna'
     finding["check_data"] = {"close_reading": detail}
     fixture.helper.collect(request, fixture.helper.response(request, finding))

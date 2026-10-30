@@ -80,6 +80,8 @@ def run_self_test() -> dict:
         checked.append("adversarial-review")
         _check_quote_context(project)
         checked.append("quote-context")
+        _check_secondary_quotes(project)
+        checked.append("secondary-quotes")
         _check_review_context(project, reviewed_finding_id)
         checked.append("review-context")
         _check_resolution_pipeline(project, reviewed_finding_id)
@@ -525,6 +527,27 @@ def _check_adversarial_pipeline(project) -> str:
     return run.findings[0].finding_id
 
 
+def _check_secondary_quotes(project) -> None:
+    from document_review_quality import QuoteReviewIndex
+    document = project._review_document_record()[1]
+    block = document.blocks[-1]
+    index = QuoteReviewIndex(document, max_previews=1)
+    anchor = {'block_id': block.block_id, 'quote': block.text}
+    reference = index.reference(anchor)
+    limited = index.reference({**anchor, 'quote': 'Another excerpt'})
+    if (index.reference(anchor) != reference or index.catalog[limited]['matched'] is not None
+            or index.catalog[limited]['flags'] != ['projection-limited']):
+        raise RuntimeError('Packaged quotation preview cache lost its explicit inspection boundary')
+    sessions = project.adversarial_reviews()
+    session = next(value for value in sessions if value['status'] == 'completed')
+    for stage in ('defense', 'assessment'):
+        refs = session['quote_refs'][stage]
+        review = session['quote_contexts'][refs[0]]
+        if (review['document_id'] != document.document_id or not review['matched']
+                or review['semantic_accuracy'] != 'not-established'):
+            raise RuntimeError('Packaged secondary quotation context lost its source binding')
+
+
 def _check_resolution_pipeline(project, finding_id: str) -> None:
     """Persist a source-grounded recheck and carry it to the right revised block."""
     from document_review_studio import ReviewStudioError
@@ -553,6 +576,10 @@ def _check_resolution_pipeline(project, finding_id: str) -> None:
         raise RuntimeError("Rejected recheck left a published result")
     resolution["source_evidence"][0]["quote"] = block["text"]
     result = project.collect_external_recheck(revision["revision_id"], request["critic"], json.dumps(payload), provider="self-test", model="fixture")
+    status = project.external_recheck_status(revision['revision_id'])
+    item = status['requests'][0]['items'][0]
+    if not status['quote_contexts'][item['quote_refs'][0]]['matched']:
+        raise RuntimeError('Packaged external recheck lost its revised quotation context')
     if result["resolution_evidence_receipt"]["protocol_version"] != 1 or project.external_recheck_status(revision["revision_id"])["complete"]:
         raise RuntimeError("Packaged recheck did not preserve evidence binding or human authority")
     project.decide_external_resolution(revision["revision_id"], result["result_id"], finding_id, "unresolved", reason="Synthetic followup decision")

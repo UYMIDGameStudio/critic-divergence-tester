@@ -109,6 +109,11 @@ async function main() {
       {finding_id: unableId, state: 'unable-to-assess', reason: 'No reliable conclusion from the available passages.',
         evidence: 'The removed passage cannot supply a current source anchor.', source_evidence: []},
     ], new_findings: []};
+    const newBlock = promptBlocks.find(block => block.text.includes('活动场地')) || promptBlocks.find(block => block.block_id !== revised.block_id);
+    assert.ok(newBlock);
+    payload.new_findings = [{...current.findings[0], finding_id: 'NEW-RECHECK',
+      location: {block_id: newBlock.block_id}, evidence: newBlock.text, status: 'open',
+      issue: 'Synthetic new issue on another revised block'}];
     await reimport(page, payload);
     current = await snapshot(page);
     assert.equal(current.status.complete, false);
@@ -126,6 +131,15 @@ async function main() {
       assert.match(await unableCard.textContent(), stateLabel);
       assert.match(await unableCard.textContent(), noEvidence);
       assert.match(await checkedCard.textContent(), caveat);
+      const newItem = current.status.requests[0].items.find(item => item.kind === 'new');
+      const newCard = page.locator(`.external-resolution-item[data-finding-id="${newItem.finding_id}"]`);
+      assert.doesNotMatch(await newCard.textContent(), /Legacy result|舊版結果/);
+      assert.equal(await newCard.locator('.source-quote-review').count(), 1);
+      assert.ok(current.status.revised_blocks.some(block => block.block_id === newBlock.block_id));
+      const newLink = await newCard.locator('.external-source-evidence a').getAttribute('href');
+      await newCard.locator('.external-source-evidence a').click();
+      assert.equal(await page.locator(`[id="${newLink.slice(1)}"]`).isVisible(), true);
+      await workspace.locator('.external-revised-sources > summary').click();
       assert.equal(await checkedCard.locator('.external-evidence-explanation').textContent(), explanation);
       assert.equal(await checkedCard.locator('.external-source-evidence p').textContent(), revised.text);
       assert.equal(await workspace.locator('img').count(), 0);
