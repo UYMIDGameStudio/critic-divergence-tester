@@ -58,11 +58,12 @@ MEDIA_TYPES = {
     ".ppt": "application/vnd.ms-powerpoint", ".dps": "application/vnd.ms-powerpoint",
 }
 PARSER_VERSION = "document-review-studio-v1"
-DOCX_PARSER_VERSION = "document-review-studio-docx-v2"
+DOCX_PARSER_VERSION = "document-review-studio-docx-v3"
 W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 R_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 DOCX_REVISION_TAGS = frozenset({"ins", "del", "moveFrom", "moveTo", "moveFromRangeStart", "moveFromRangeEnd",
-    "moveToRangeStart", "moveToRangeEnd", "pPrChange", "rPrChange", "sectPrChange", "tblPrChange", "tcPrChange", "trPrChange"})
+    "moveToRangeStart", "moveToRangeEnd", "pPrChange", "rPrChange", "sectPrChange", "tblPrChange", "tcPrChange", "trPrChange",
+    "tblGridChange", "tblPrExChange", "cellIns", "cellDel", "cellMerge"})
 
 
 class IngestionError(ValueError):
@@ -555,6 +556,18 @@ def _docx_tracking_enabled(settings) -> bool:
     return element is not None and element.attrib.get(W_NS + "val", "true").strip().casefold() not in {"false", "off", "0"}
 
 
+def _docx_grid_value(value: str | None, *, minimum: int, maximum: int) -> int:
+    if (not isinstance(value, str) or len(value) > 64
+            or re.fullmatch(r"[+-]?[0-9]+", value.strip()) is None):
+        raise IngestionError("DOCX 表格跨度或偏移无效，无法可靠定位")
+    number = int(value)
+    if number < minimum:
+        raise IngestionError("DOCX 表格跨度或偏移无效，无法可靠定位")
+    if number > maximum:
+        raise IngestionError("DOCX 表格行列或展开单元格数量超过安全上限")
+    return number
+
+
 def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits, *, identity_sha256: str | None = None) -> StructuredDocument:
     if len(data) > limits.max_file_bytes:
         raise IngestionError("DOCX 原件大小超出安全限制")
@@ -616,6 +629,12 @@ def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits, *,
         mapping.append({"paragraph": paragraph, "block_id": block_id, "kind": kind, "table_id": table_id, "row": row, "column": column})
         return block
 
+    table_limits = {name: getattr(limits, 'max_office_' + name, getattr(IngestionLimits, 'max_office_' + name))
+                    for name in ('rows', 'columns', 'cells')}
+    if any(type(value) is not int or value < 1 for value in table_limits.values()):
+        raise IngestionError("DOCX 表格资源限制必须为正整数")
+    table_slots = 0
+    flattened_tables = 0
     paragraph_index = 0
     body = document_xml.find(".//" + W_NS + "body")
     if body is None:
@@ -645,28 +664,67 @@ def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits, *,
         elif child.tag == W_NS + "tbl":
             table_id = _block_id(identity, "table", len(blocks), "", paragraph_index)
             rows: list[list[str]] = []
-            table_block = add_block("table", "", paragraph_index, attrs={"rows": rows, "source": "docx"})
+            table_block = add_block("table", "", paragraph_index, attrs={"rows": rows, "source": "docx", "grid_layout": "logical-columns"})
             table_block.location = DocumentLocation(table_id, "table", paragraph=paragraph_index, table_id=table_id, source_path=source.original_name)
             table_block.block_id = table_id
             mapping[-1]["block_id"] = table_id
             mapping[-1]["table_id"] = table_id
+            declared_width = len(child.findall("./" + W_NS + "tblGrid/" + W_NS + "gridCol"))
+            width = declared_width
+            flattened = False
+
+            def check_extent(height, columns):
+                if (height > table_limits['rows'] or columns > table_limits['columns']
+                        or table_slots + height * columns > table_limits['cells']):
+                    raise IngestionError("DOCX 表格行列或展开单元格数量超过安全上限")
+
+            check_extent(0, width)
             table_cells = child.findall("./" + W_NS + "tr")
             for row_index, row_xml in enumerate(table_cells):
-                row_values: list[str] = []
-                column = 0
+                trpr = row_xml.find(W_NS + 'trPr')
+                offsets = {}
+                for name in ('gridBefore', 'gridAfter'):
+                    element = trpr.find(W_NS + name) if trpr is not None else None
+                    offsets[name] = _docx_grid_value(element.get(W_NS + 'val'), minimum=0,
+                        maximum=table_limits['columns']) if element is not None else 0
+                if ((offsets['gridBefore'] and offsets['gridBefore'] > declared_width)
+                        or (not declared_width and any(offsets.values()))):
+                    raise IngestionError("DOCX 暂不支持超出声明网格的表格偏移，无法可靠定位")
+                column = offsets['gridBefore']
+                flattened |= bool(column)
+                width = max(width, column)
+                check_extent(row_index + 1, width)
+                row_values: list[str] = [''] * column
                 for cell_xml in row_xml.findall("./" + W_NS + "tc"):
                     cell_text = _xml_text(cell_xml)
                     tcpr = cell_xml.find(W_NS + "tcPr")
                     grid_span = tcpr.find(W_NS + "gridSpan") if tcpr is not None else None
                     v_merge = tcpr.find(W_NS + "vMerge") if tcpr is not None else None
-                    attrs = {"grid_span": int(grid_span.attrib.get(W_NS + "val", "1")) if grid_span is not None else 1, "v_merge": v_merge.attrib.get(W_NS + "val", "continue") if v_merge is not None else None, "nested_tables": len(cell_xml.findall(".//" + W_NS + "tbl"))}
-                    row_values.append(cell_text)
+                    span = _docx_grid_value(grid_span.get(W_NS + 'val'), minimum=1,
+                        maximum=table_limits['columns']) if grid_span is not None else 1
+                    attrs = {"grid_span": span, "v_merge": v_merge.attrib.get(W_NS + "val", "continue") if v_merge is not None else None, "nested_tables": len(cell_xml.findall(".//" + W_NS + "tbl"))}
+                    # gridSpan can augment the grid. gridAfter does not: a
+                    # conflicting trailing offset is ignored by Word.
+                    next_width = max(width, column + span)
+                    check_extent(row_index + 1, next_width)
+                    width = next_width
+                    row_values.extend([cell_text] + [''] * (span - 1))
+                    flattened |= span > 1 or v_merge is not None or (tcpr is not None and tcpr.find(W_NS + 'hMerge') is not None)
                     cell = add_block("table_cell", cell_text, paragraph_index, attrs=attrs, table_id=table_id, row=row_index, column=column)
                     table_block.children.append(cell.block_id)
                     column += attrs["grid_span"]
                 rows.append(row_values)
+            for row_values in rows:
+                flattened |= len(row_values) != width
+                row_values.extend([''] * (width - len(row_values)))
+            table_slots += len(rows) * width
+            flattened_tables += bool(flattened)
             table_block.attrs["rows"] = rows
             paragraph_index += 1
+    if flattened_tables:
+        warnings.append(ExtractionWarning('docx-table-grid-flattened', 'medium',
+            'DOCX 合并或省略单元格已按逻辑列展开；规范化副本不保留合并外观，请对照原件核对表头关系。',
+            details={'table_count': flattened_tables}))
     for part in sorted(name for name in archive.namelist() if re.fullmatch(r"word/(?:header|footer)\d+\.xml", name)):
         kind = "header" if "/header" in part else "footer"
         root = _docx_xml(archive, part)

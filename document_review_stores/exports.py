@@ -219,12 +219,18 @@ class ExportCenter(_ProjectComponent):
             if latest_revision[1].get("decision_set_sha256") == current_decision_digest and latest_revision[1].get("decision_bindings") == current_bindings:
                 trusted_revision = latest_revision
         trusted_markdown = normalized
+        revised_model = None
         external_recheck: dict[str, Any] | None = None
         if trusted_revision:
             trusted_path = _safe_child(self.root, str(trusted_revision[1]["revised_markdown_relative_path"]))
             trusted_markdown = trusted_path.read_text(encoding="utf-8")
             if _sha256(trusted_markdown.encode("utf-8")) != trusted_revision[1].get("revised_sha256"):
                 raise ReviewStudioError("已批准修改稿与 Revision 绑定不一致")
+            revised_model = _document_from_dict(_read_json(trusted_revision[0] / "document.json"))
+            try:
+                table_cell_positions(revised_model)
+            except ValueError as exc:
+                raise ReviewStudioError("修改稿表格正文与定位不一致，无法正式导出。请使用「重新解析为新项目」重新审查；旧项目和记录会保留。") from exc
             external_recheck = self.external_recheck_status(str(trusted_revision[1]["revision_id"]))
         if revised_markdown is not None and revised_markdown != trusted_markdown:
             raise ReviewStudioError("外部文本未经过 Finding→Action→Hunk→人工批准链，不能作为修改稿导出")
@@ -278,7 +284,6 @@ class ExportCenter(_ProjectComponent):
             revised_markdown_path = output / f"{document_label}.md"
             _write_tracked(self.root, revised_markdown_path, draft.encode("utf-8"), parents=[_parent_ref(self.root, trusted_revision[0] / "修改稿.md", role="approved-revised-markdown")], provenance="approved-revision-export")
             revised_docx_path = output / f"{document_label}.docx"
-            revised_model = _document_from_dict(_read_json(trusted_revision[0] / "document.json"))
             word_bytes = _minimal_docx(draft, document=revised_model)
             word_report = {"source_layout_preserved": False, "native_track_changes": False, "message": "由已批准文本生成规范化 Word 副本"}
             original = self.document()

@@ -47,6 +47,7 @@ from document_review_model import (
     list_marker,
     make_location,
     model_to_markdown,
+    table_cell_positions,
     review_verification_context,
     stable_id,
     validate_finding_dict,

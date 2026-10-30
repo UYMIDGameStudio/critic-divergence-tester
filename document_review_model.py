@@ -500,6 +500,51 @@ def list_marker(block: DocumentBlock) -> str:
     return "1." if ordered else "-"
 
 
+def table_cell_positions(document: StructuredDocument) -> dict[str, tuple[str, int, int]]:
+    """Resolve stored grid slots, including historical compact Word tables.
+
+    Block coordinates stay source anchors; legacy Word rows use physical
+    siblings, while every other table representation uses logical columns.
+    Reject a disagreement rather than choosing either copy of the cell text.
+    """
+    by_id = {block.block_id: block for block in document.blocks}
+    members: dict[str, set[str]] = {}
+    legacy_columns: dict[str, int] = {}
+    for table in document.blocks:
+        if table.kind != "table":
+            continue
+        members[table.block_id] = set(table.children)
+        if "grid_layout" in table.attrs and table.attrs["grid_layout"] != "logical-columns":
+            raise ValueError("无法识别表格网格布局，拒绝生成错列修改稿")
+        if table.attrs.get("source") == "docx" and "grid_layout" not in table.attrs:
+            row_counts: dict[int, int] = {}
+            for identity in table.children:
+                child = by_id.get(identity)
+                if child and child.location and type(child.location.row) is int:
+                    row = child.location.row
+                    legacy_columns[identity] = row_counts.get(row, 0)
+                    row_counts[row] = row_counts.get(row, 0) + 1
+    positions = {}
+    for cell in document.blocks:
+        if cell.kind != "table_cell":
+            continue
+        location = cell.location
+        table = by_id.get(location.table_id) if location else None
+        if table is None or table.kind != "table":
+            raise ValueError("找不到单元格的表格容器，拒绝生成修改稿")
+        row, column = location.row, location.column
+        rows = table.attrs.get("rows")
+        if (cell.block_id not in members[table.block_id] or type(row) is not int
+                or type(column) is not int or row < 0 or column < 0):
+            raise ValueError("表格正文与单元格定位不一致，拒绝生成错列修改稿")
+        column = legacy_columns.get(cell.block_id, column)
+        if (not isinstance(rows, list) or row >= len(rows) or not isinstance(rows[row], list)
+                or column >= len(rows[row]) or rows[row][column] != cell.text):
+            raise ValueError("表格正文与单元格定位不一致，拒绝生成错列修改稿")
+        positions[cell.block_id] = (table.block_id, row, column)
+    return positions
+
+
 def model_to_markdown(document: StructuredDocument) -> str:
     """Render a conservative editable draft from the internal model."""
     def cell_text(value):
@@ -543,5 +588,5 @@ __all__ = [
     "ReviewContext", "SCHEMA_VERSION", "SEVERITIES", "StructuredDocument", "SUPPORTED_EXTENSIONS",
     "UNSUPPORTED_EXTENSIONS", "VERIFICATION_STATES", "canonical_json", "make_location",
     "document_location_contract", "finding_verification_context", "review_verification_context",
-    "list_marker", "model_to_markdown", "stable_id", "validate_finding_dict",
+    "list_marker", "model_to_markdown", "table_cell_positions", "stable_id", "validate_finding_dict",
 ]

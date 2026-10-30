@@ -670,20 +670,24 @@ class RevisionPlanBuilder(_ProjectComponent):
                 revised_blocks[index] = replace(block, kind=kind, location=location, attrs=attributes)
 
         revised_by_id = {block.block_id: index for index, block in enumerate(revised_blocks)}
+        cell_positions = {}
+        if any(action["operation"] == "replace_table_cell" for action, _, _ in approved):
+            try:
+                cell_positions = table_cell_positions(document)
+            except ValueError as exc:
+                raise ReviewStudioError(str(exc)) from exc
         for action, (_, hunk, _), _ in approved:
             if action["operation"] != "replace_table_cell":
                 continue
-            cell = original_by_id[action["block_id"]]
-            if cell.location and cell.location.table_id and cell.location.table_id in revised_by_id:
-                table_index = revised_by_id[cell.location.table_id]
-                table = revised_blocks[table_index]
-                rows = [list(row) for row in table.attrs.get("rows", [])]
-                row, column = cell.location.row, cell.location.column
-                siblings = [original_by_id[b] for b in table.children if b in original_by_id and original_by_id[b].location and original_by_id[b].location.row == row]
-                column = next((i for i, b in enumerate(siblings) if b.block_id == cell.block_id), column)
-                if row is not None and column is not None and row < len(rows) and column < len(rows[row]):
-                    rows[row][column] = str(hunk["after_text"])
-                    revised_blocks[table_index] = replace(table, attrs={**table.attrs, "rows": rows})
+            position = cell_positions.get(action["block_id"])
+            if position is None or position[0] not in revised_by_id:
+                raise ReviewStudioError('找不到单元格的表格容器，拒绝生成修改稿')
+            table_id, row, column = position
+            table_index = revised_by_id[table_id]
+            table = revised_blocks[table_index]
+            rows = [list(row_values) for row_values in table.attrs["rows"]]
+            rows[row][column] = str(hunk["after_text"])
+            revised_blocks[table_index] = replace(table, attrs={**table.attrs, "rows": rows})
         provisional = replace(document, blocks=revised_blocks)
         revised_markdown = model_to_markdown(provisional)
         revised_sha = _sha256(revised_markdown.encode("utf-8"))

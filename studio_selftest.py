@@ -61,6 +61,8 @@ def run_self_test() -> dict:
         checked.append("docx-visibility")
         _check_xml_limits(root / "xml-limits")
         checked.append("xml-limits")
+        _check_table_grid(root / "table-grid")
+        checked.append("table-grid")
         _check_academic_protocols(root / "academic")
         checked.append("academic-quality-protocols")
         _check_readonly_recovery(root / "recovery")
@@ -193,6 +195,57 @@ def _docx_visibility_fixture() -> bytes:
         for kind in ('footnote', 'endnote'):
             archive.writestr(f'word/{kind}s.xml', f'<w:{kind}s xmlns:w="{namespace}"><w:{kind} w:id="1"><w:p><w:r><w:t>SYNTHETIC-NOTE-NOT-EXTRACTED</w:t></w:r></w:p></w:{kind}></w:{kind}s>')
     return output.getvalue()
+
+
+def _table_grid_fixture() -> bytes:
+    """Valid minimal Word package with omitted columns and a merged cell."""
+    import zipfile
+    namespace = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    relation = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+    body = ('<w:tbl><w:tblGrid>' + '<w:gridCol w:w="1000"/>' * 5 + '</w:tblGrid>'
+        '<w:tr><w:trPr><w:gridBefore w:val="1"/><w:gridAfter w:val="1"/></w:trPr>'
+        '<w:tc><w:tcPr><w:gridSpan w:val="2"/></w:tcPr><w:p><w:r><w:t>Unchanged</w:t></w:r></w:p></w:tc>'
+        '<w:tc><w:p><w:r><w:t>相关人员及时完成报名。</w:t></w:r></w:p></w:tc></w:tr></w:tbl>')
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr('[Content_Types].xml', '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>')
+        archive.writestr('_rels/.rels', f'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="document" Type="{relation}/officeDocument" Target="word/document.xml"/></Relationships>')
+        archive.writestr('word/document.xml', f'<w:document xmlns:w="{namespace}"><w:body>{body}<w:sectPr/></w:body></w:document>')
+    return output.getvalue()
+
+
+def _check_table_grid(library: Path) -> None:
+    from document_review_studio import DocumentReviewProject
+    from document_review_model import ReviewContext
+    from document_review_ingest import ingest_bytes
+    old, new = '相关人员及时完成报名。', '负责人周五前完成报名。'
+    html = f'<table><tr><td colspan="2">Unchanged</td><td>{old}</td></tr></table>'.encode()
+    for filename, raw, column in (('grid.html', html, 2), ('grid.docx', _table_grid_fixture(), 3)):
+        project = DocumentReviewProject.create(library, filename=filename, content=raw)
+        project.confirm_extraction('confirm')
+        project.confirm_context(ReviewContext('document', 'unknown', 'unknown', 'author', 'readers').to_dict())
+        project.run_local_prechecks(['expression_ambiguity'])
+        target = next(block for block in project.document().blocks if block.kind == 'table_cell' and block.text == old)
+        finding = next(item for item in project.findings() if item.location.block_id == target.block_id)
+        for item in project.findings():
+            project.decide_finding(item.finding_id, 'accept' if item.finding_id == finding.finding_id else 'reject', reason='Synthetic grid self-test')
+        action = project.prepare_revision_plan()['actions'][0]
+        project.set_revision_action_operation(action['action_id'], 'replace_table_cell', reason='Synthetic target-cell edit')
+        hunk = project.propose_revision_hunk(action['action_id'], new, rationale='Synthetic clarification')
+        project.decide_revision_hunk(hunk['hunk_id'], 'approve', reason='Synthetic explicit approval')
+        output = project.finalize_revision()
+        document = json.loads((output / 'document.json').read_text(encoding='utf-8'))
+        rows = next(block['attrs']['rows'] for block in document['blocks'] if block['kind'] == 'table')
+        if rows[0][column] != new or old in (output / '修改稿.md').read_text(encoding='utf-8'):
+            raise RuntimeError('Packaged revision writes a table cell into the wrong grid column')
+        if filename.endswith('.docx'):
+            exported = project.export()
+            native = ingest_bytes('checked.docx', (exported / '修改稿.docx').read_bytes())
+            native_rows = next(block.attrs['rows'] for block in native.blocks if block.kind == 'table')
+            if native_rows != [['', 'Unchanged', '', new, '']]:
+                raise RuntimeError('Packaged Word export changes the wrong source cell')
+        if (project.root / 'source' / filename).read_bytes() != raw or project.integrity_errors():
+            raise RuntimeError('Packaged grid revision changed its immutable source')
 
 
 def _check_xml_limits(library: Path) -> None:

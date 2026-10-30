@@ -1,4 +1,13 @@
 {
+  "表格正文与单元格定位不一致，拒绝生成错列修改稿": {"zh-Hant": "表格正文與儲存格定位不一致，無法安全產生修改稿。請核對原件並重新解析。", "en": "The table text and cell locations disagree. Check the original and reparse it before creating a revision."},
+  "无法识别表格网格布局，拒绝生成错列修改稿": {"zh-Hant": "無法辨識表格的欄位配置，無法安全產生修改稿。請核對原件並重新解析。", "en": "The table's grid layout is not supported. Check the original and reparse it before creating a revision."},
+  "找不到单元格的表格容器，拒绝生成修改稿": {"zh-Hant": "找不到儲存格所屬的表格，無法安全產生修改稿。請核對原件並重新解析。", "en": "The cell's parent table cannot be found. Check the original and reparse it before creating a revision."},
+  "修改稿表格正文与定位不一致，无法正式导出。请使用「重新解析为新项目」重新审查；旧项目和记录会保留。": {"zh-Hant": "修改稿的表格正文與定位不一致，無法正式匯出。請使用「重新解析為新專案」重新審查；舊專案和記錄會保留。", "en": "The revision's table text and cell locations disagree, so formal export is blocked. Use Reparse as a new project and review again; the existing project and history will be kept."},
+  "DOCX 表格跨度或偏移无效，无法可靠定位": {"zh-Hant": "Word 表格的合併或偏移資料無效，無法可靠定位。請在 Word 中修復或重新儲存檔案。", "en": "This Word table has invalid merge or offset information. Repair or resave the file in Word before importing it again."},
+  "DOCX 表格行列或展开单元格数量超过安全上限": {"zh-Hant": "Word 表格展開後過於龐大，無法安全辨識。請拆分或簡化表格後重新匯入。", "en": "This Word table expands beyond the safety limit. Split or simplify the table, then import the file again."},
+  "DOCX 表格资源限制必须为正整数": {"zh-Hant": "Word 表格的資源上限必須是正整數。", "en": "The Word table resource limits must be positive integers."},
+  "DOCX 暂不支持超出声明网格的表格偏移，无法可靠定位": {"zh-Hant": "目前無法可靠定位這份 Word 表格的偏移。請在 Word 中重新儲存或拆分表格後匯入。", "en": "This Word table's offset cannot currently be mapped reliably. Resave or split the table in Word, then import it again."},
+  "DOCX 合并或省略单元格已按逻辑列展开；规范化副本不保留合并外观，请对照原件核对表头关系。": {"zh-Hant": "Word 合併或省略的儲存格已依邏輯欄展開；正規化副本不保留合併外觀，請對照原件核對表頭關係。", "en": "Merged or omitted Word cells are represented by logical columns. The normalized copy does not retain merged-cell appearance; check heading relationships against the original."},
   "Office XML 解析上限必须是非负整数": {"zh-Hant": "Office XML 解析上限必須是非負整數。", "en": "The Office XML parser limits must be non-negative integers."},
   "Office XML 单个部件元素数量超过安全上限": {"zh-Hant": "文件中的單一部件過於複雜，無法安全辨識。請拆分或簡化檔案後重新匯入。", "en": "One part of this document is too complex to parse safely. Split or simplify the file, then import it again."},
   "Office XML 总解析元素数量超过安全上限": {"zh-Hant": "整份文件的解析工作量超過安全上限。請拆分或簡化檔案後重新匯入。", "en": "Parsing this document exceeds the safety limit. Split or simplify the file, then import it again."},

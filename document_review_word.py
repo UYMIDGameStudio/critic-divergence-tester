@@ -14,7 +14,7 @@ import re
 import zipfile
 from xml.dom import minidom
 
-from document_review_ingest import IngestionLimits, _zip_safety, _docx_xml, _docx_story_revisions, _docx_tracking_enabled, DOCX_REVISION_TAGS
+from document_review_ingest import IngestionLimits, IngestionError, _zip_safety, _docx_xml, _docx_story_revisions, _docx_tracking_enabled, _docx_grid_value, DOCX_REVISION_TAGS
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 XMLNS = "http://www.w3.org/2000/xmlns/"
@@ -204,13 +204,27 @@ def _cell(table, location):
     row = rows[_checked_index(location.row, len(rows), "表格行")]
     if type(location.column) is not int or location.column < 0:
         raise WordEditUnsupported("表格列定位无效")
-    column = 0
+    props = _children(row, 'trPr')
+    before = _children(props[0], 'gridBefore') if props else []
+    after = _children(props[0], 'gridAfter') if props else []
+    try:
+        column = _docx_grid_value(before[0].getAttributeNS(W, 'val'), minimum=0,
+            maximum=IngestionLimits.max_office_columns) if before else 0
+        trailing = _docx_grid_value(after[0].getAttributeNS(W, 'val'), minimum=0,
+            maximum=IngestionLimits.max_office_columns) if after else 0
+    except IngestionError as error:
+        raise WordEditUnsupported(str(error)) from error
+    grid = _children(table, 'tblGrid')
+    declared = len(_children(grid[0], 'gridCol')) if grid else 0
+    if (column and column > declared) or (not declared and (column or trailing)):
+        raise WordEditUnsupported('暂不支持超出声明网格的表格偏移，无法可靠定位')
     for candidate in _children(row, "tc"):
         props = _children(candidate, "tcPr")
         spans = _children(props[0], "gridSpan") if props else []
         try:
-            span = int(spans[0].getAttributeNS(W, "val")) if spans else 1
-        except ValueError as exc:
+            span = _docx_grid_value(spans[0].getAttributeNS(W, 'val'), minimum=1,
+                maximum=IngestionLimits.max_office_columns) if spans else 1
+        except IngestionError as exc:
             raise WordEditUnsupported("表格合并跨度无效") from exc
         if span < 1:
             raise WordEditUnsupported("表格合并跨度无效")
