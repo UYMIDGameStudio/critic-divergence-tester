@@ -209,16 +209,28 @@ def _check_academic_protocols(library: Path) -> None:
         if restored != protocol:
             raise RuntimeError("Packaged academic prompt differs from its saved protocol")
         if row["critic"] == "academic_argument":
-            from document_review_composition import assessment_example, validate_argument_assessment
+            from document_review_composition import validate_argument_assessment
             if row.get("argument_assessment_protocol", {}).get("response_fields") != ["version", "review_frame", "dimensions"]:
                 raise RuntimeError("Packaged academic argument design review is missing")
-            overview = assessment_example()
+            response = json.loads(row["prompt"].rsplit("```json\n", 1)[1].split("```", 1)[0])
+            overview = response["argument_assessment"]
+            seeds = row["argument_assessment_protocol"].get("dimension_seeds", {})
+            if len(overview["dimensions"]) != 1 or overview["dimensions"][0]["id"] in seeds:
+                raise RuntimeError("Packaged review template prescribes the example angles")
             block = project.document().blocks[-1]
             overview["review_frame"]["evidence"] = [{"block_id": block.block_id, "quote": block.text}]
-            for axis in overview["dimensions"]:
-                axis["evidence"] = [{"block_id": block.block_id, "quote": block.text}]
+            shape = overview["dimensions"][0]
+            overview["dimensions"] = [dict(shape, id=identity, title=title,
+                evidence=[{"block_id": block.block_id, "quote": block.text}]) for identity, title in (
+                    ("interpretive-scope", "Interpretive scope"), ("reader-orientation", "Reader orientation"))]
             if validate_argument_assessment(overview, {block.block_id: block}):
                 raise RuntimeError("Packaged argument design review evidence cannot validate")
+            response.update(findings=[], zero_finding_basis=["Synthetic check of the supplied passage only."])
+            project.collect_model_audit("academic_argument", json.dumps(response),
+                provider="self-test", model="not-invoked", request_id=row["request_id"])
+            saved = DocumentReviewProject(project.root).view()["argument_assessments"]
+            if len(saved) != 1 or saved[0]["assessment"] != overview:
+                raise RuntimeError("Packaged review cannot persist article-specific angles")
     if project.integrity_errors():
         raise RuntimeError("Packaged academic protocol provenance failed verification")
 

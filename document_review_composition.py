@@ -30,6 +30,7 @@ ARGUMENT_ASSESSMENT_PROTOCOL = {
     "rules": [
         "先提交 review_frame：还原实际问题、意图贡献和整体路线，说明本次优先检查什么及可见材料的限制。贡献是作者意图与评审者判断，不凭记忆宣称新颖性已核验。",
         "再按全文实际任务选择 dimensions。完整学术稿需兼顾整体设计、具体论证及读者/知识效果，不能只重复严谨性检查；短片段或材料不足时缩小范围并说明。原例中的结构、方向、方法和特点不构成审查上限，也不是每稿必须填满的固定四轴。",
+        "选角度时，从本文最需要解释的张力、最承重的选择及目标读者理解或使用结论的障碍出发，说明保留或调整会改变什么。重要问题不在示例中也应提出；同一问题的近义角度应合并，不为覆盖名单拆成多项。",
         "每个角度用唯一 id、可读 title 和 why_relevant 说明它为何影响本文的问题、贡献或目标读者。先描述实际做法，再作有依据的效果判断；不得凭另一个学科或流派偏好强迫作者换研究。",
         "每维给出简短 description、assessment、status、最多3项 strengths/limitations 和 recommendation；建议可明确保留有效选择。正文一般选择3至6个承重角度，不为达到数量制造问题；系统允许1至10个角度以控制篇幅。",
         "review_frame 与每维 evidence 引用当前稿件原语言的连续原句 {block_id, quote}。跨段组织判断引相关两端；特征的重复性须有材料，一处例证只能支持暂定或局部特征。缺少外部文献不应被填为已核验事实。",
@@ -58,14 +59,16 @@ def assessment_example() -> dict:
             "argument_route": "A short account of its overall strategy",
             "priorities": ["The most consequential review angles for this article"], "scope_limits": [],
             "evidence": [{"block_id": "COPY_AN_EXISTING_BLOCK_ID", "quote": "exact source quotation"}]},
-        "dimensions": [{"id": name, "title": title,
+        # One neutral shape avoids presenting the seed list as completed work.
+        # Its length and angle are illustrative, not a quota or selected lens.
+        "dimensions": [{"id": "selected-angle", "title": "Name an angle selected for this article",
             "why_relevant": "Explain why this angle matters to this particular article",
             "description": "Brief source-grounded account of the actual choice",
             "assessment": "How this choice serves the question and readers, including its trade-offs",
             "status": "effective", "strengths": [], "limitations": [],
             "recommendation": "Keep an effective choice, or describe a justified local improvement",
             "evidence": [{"block_id": "COPY_AN_EXISTING_BLOCK_ID", "quote": "exact source quotation"}],
-        } for name, (title, _) in SUGGESTED_DIMENSIONS.items()]}
+        }]}
 
 def _text(value, maximum=3000):
     return isinstance(value, str) and bool(value.strip()) and len(value) <= maximum

@@ -18,6 +18,11 @@ from document_review_studio import DocumentReviewProject, ReviewStudioError
 def synthetic_assessment(project):
     """A hand-authored fixture, never a claim about model performance."""
     value = assessment_example()
+    # Preserve an old four-angle result independently of the current template.
+    shape = value["dimensions"][0]
+    value["dimensions"] = [dict(copy.deepcopy(shape), id=name, title=title) for name, title in (
+        ("structure", "论证结构"), ("direction", "论证方向"),
+        ("method", "论证方法"), ("features", "特征特点"))]
     blocks = project.document().blocks
     value["review_frame"]["evidence"] = [{"block_id": blocks[1].block_id, "quote": blocks[1].text}]
     for index, axis in enumerate(value["dimensions"]):
@@ -86,7 +91,7 @@ class ArgumentCompositionTests(unittest.TestCase):
         mutated["dimension_seeds"]["structure"] = "caller mutation"
         self.assertEqual(assessment_protocol(), original)
 
-    def test_requires_every_axis_and_current_exact_evidence_even_with_no_findings(self):
+    def test_requires_valid_selected_angles_and_current_exact_evidence_even_with_no_findings(self):
         request = self.request()
         payload = self.payload(request)
         changes = [lambda p: p.pop("argument_assessment"),
@@ -146,6 +151,40 @@ class ArgumentCompositionTests(unittest.TestCase):
         payload["argument_assessment"]["dimensions"] = [angle]
         self.collect(request, payload)
         self.assertEqual(self.project.view()["argument_assessments"][0]["assessment"]["dimensions"], [angle])
+
+    def test_generated_request_uses_a_neutral_shape_and_accepts_an_article_specific_set(self):
+        request = self.request()
+        example = json.loads(request["prompt"].rsplit("```json\n", 1)[1].split("```", 1)[0])
+        dimensions = example["argument_assessment"]["dimensions"]
+        self.assertEqual(len(dimensions), 1)
+        self.assertNotIn(dimensions[0]["id"], request["argument_assessment_protocol"]["dimension_seeds"])
+        self.assertIn("not a selected angle or a required count", request["prompt"])
+        payload = self.payload(request)
+        payload["argument_assessment"]["dimensions"] = payload["argument_assessment"]["dimensions"][:3]
+        for dimension, (identity, title) in zip(payload["argument_assessment"]["dimensions"], (
+            ("question-framing", "問題設定"), ("comparative-yield", "Comparative explanatory yield"),
+            ("translation-boundary", "Übersetzung und Begriffsgrenzen"))):
+            dimension.update(id=identity, title=title)
+        self.collect(request, payload)
+        restored = DocumentReviewProject(self.project.root)
+        self.assertEqual(restored.view()["argument_assessments"][0]["assessment"], payload["argument_assessment"])
+        self.assertEqual(restored.integrity_errors(), [])
+
+    def test_saved_four_angle_request_uses_its_original_template_and_protocol(self):
+        legacy_protocol = assessment_protocol()
+        legacy_protocol["rules"] = [rule for rule in legacy_protocol["rules"] if not rule.startswith("选角度时")]
+        legacy_example = synthetic_assessment(self.project)
+        with patch("document_review_stores.audits.assessment_protocol", return_value=legacy_protocol), patch(
+                "document_review_stores.audits.assessment_example", return_value=legacy_example):
+            request = self.request()
+        folder = self.project.root / "ai-requests" / request["request_id"]
+        original = {name: (folder / name).read_bytes() for name in ("request.json", "prompt.md")}
+        with patch("document_review_stores.audits.assessment_protocol", side_effect=AssertionError("current protocol used")), patch(
+                "document_review_stores.audits.assessment_example", side_effect=AssertionError("current template used")):
+            self.collect(request, self.payload(request))
+            self.assertEqual(self.project.view()["argument_assessments"][0]["assessment"]["dimensions"], legacy_example["dimensions"])
+            self.assertEqual(self.project.integrity_errors(), [])
+        self.assertEqual({name: (folder / name).read_bytes() for name in original}, original)
 
     def test_selected_angles_need_distinct_id_relevance_and_a_review_plan(self):
         blocks = {b.block_id: b for b in self.project.document().blocks}
