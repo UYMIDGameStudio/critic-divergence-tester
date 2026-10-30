@@ -1,4 +1,6 @@
 async function api(path, body) {
+  if (path === '/api/action' && body && !Object.hasOwn(body, 'review_context'))
+    body = { ...body, review_context: state?.review_context };
   let response;
   try {
     response = await fetch(path, {
@@ -31,6 +33,10 @@ async function api(path, body) {
     throw error;
   }
   if (!response.ok) {
+    if (path === '/api/action' && response.status === 400
+      && /^[a-f0-9]{64}$/.test(value.review_context || '')
+      && body.review_context === state?.review_context)
+      state.review_context = value.review_context;
     const rawError = value.error || tr('操作失败');
     const errorText = path === '/api/upload' && rawError === '文件名含路径、保留名称或不支持的字符，请重命名原文件后重新导入'
       ? tr(rawError) : rawError;

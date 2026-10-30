@@ -79,6 +79,7 @@ async function main() {
   let browser;
   let stderr = '';
   let releaseHeldDraft;
+  let releaseStartupState;
   const errors = [];
   const externalRequests = [];
   const evidence = {};
@@ -108,6 +109,29 @@ async function main() {
     page.setDefaultTimeout(30000);
     page.on('pageerror', (error) => errors.push(error.message));
     await page.goto(url);
+    await page.locator('#file').waitFor();
+    await page.locator('#ui-language').selectOption('zh-Hant');
+    await page.evaluate(() => preferenceWrites);
+    const startupGate = deferred(), startupReady = deferred();
+    releaseStartupState = startupGate.resolve;
+    await page.route('**/api/state', async route => {
+      const response = await route.fetch();
+      startupReady.resolve();
+      await startupGate.promise;
+      await route.fulfill({response});
+    }, {times: 1});
+    await page.reload();
+    await within(startupReady.promise, 'Initial state response');
+    await page.locator('#ui-language').selectOption('en');
+    await page.evaluate(() => preferenceWrites);
+    assert.equal(await page.evaluate(() => state), null);
+    assert.equal(await page.evaluate(() => document.documentElement.lang), 'en');
+    startupGate.resolve();
+    await page.locator('#file').waitFor();
+    assert.equal(await page.evaluate(() => uiLocale), 'en', 'late startup state must not undo the explicit language choice');
+    evidence.startupLanguageChoicePreserved = true;
+    await page.locator('#ui-language').selectOption('zh-Hant');
+    await page.evaluate(() => preferenceWrites);
     await page.locator('#file').setInputFiles({
       name: '草稿故障验收.md', mimeType: 'text/markdown',
       buffer: Buffer.from('# 活动方案\n\n相关人员应当及时完成报名。\n\n活动目的：说明报名的安排。\n'),
@@ -259,17 +283,72 @@ async function main() {
     assert.ok(await page.locator('.finding-card').count() > 0);
     evidence.committedResponseLossHasSingleResult = true;
     evidence.replayedRequestId = requestIds[0];
-    assert.deepEqual(errors, []);
-    assert.deepEqual(externalRequests, []);
     const output = process.env.STUDIO_STATE_E2E_OUTPUT || path.join(root, 'dist', 'browser-state-verification');
     await fs.mkdir(output, { recursive: true });
+
+    // Use a shared, already saved note so draft-version conflicts cannot mask
+    // an independently stale review decision. DOM activation avoids scrolling
+    // and changing the draft's saved scroll position before submission.
+    const reason = page.locator('input[id^="reason-"]').first();
+    const reasonId = await reason.getAttribute('id');
+    const findingId = reasonId.slice('reason-'.length);
+    const note = 'Preserve this decision note. 日本語 Русский 繁體';
+    await reason.fill(note);
+    await save(page);
+    for (const [locale, decision] of [['zh-Hant', 'reject'], ['en', 'accept']]) {
+      const currentTab = await context.newPage(), oldTab = await context.newPage();
+      for (const tab of [currentTab, oldTab]) {
+        tab.on('pageerror', error => errors.push(error.message));
+        tab.on('dialog', dialog => dialog.dismiss());
+        await tab.goto(url);
+        await tab.locator('#ui-language').selectOption(locale);
+        await tab.locator('#' + reasonId).waitFor();
+        await tab.evaluate(() => new Promise(requestAnimationFrame));
+      }
+      const shown = await oldTab.evaluate(() => ({context: state.review_context,
+        revision: draftContext.revision, fields: draftContext.fields}));
+      assert.equal(await currentTab.evaluate(() => state.review_context), shown.context);
+      assert.equal(await oldTab.locator('#' + reasonId).inputValue(), note);
+      let draftPosts = 0;
+      for (const tab of [currentTab, oldTab]) tab.on('request', request => {
+        if (request.url().endsWith('/api/draft') && request.method() === 'POST') draftPosts++;
+      });
+      const choose = (tab, value) => tab.locator(`.decision[data-id="${findingId}"][data-value="${value}"]`).evaluate(node => node.click());
+      let response = currentTab.waitForResponse(r => r.url().endsWith('/api/action'));
+      await choose(currentTab, decision);
+      assert.equal((await response).status(), 201);
+      await waitIdle(currentTab);
+      response = oldTab.waitForResponse(r => r.url().endsWith('/api/action'));
+      await choose(oldTab, decision === 'accept' ? 'reject' : 'accept');
+      assert.equal((await response).status(), 409);
+      await waitIdle(oldTab);
+      assert.equal(draftPosts, 0, 'review protection must not depend on a conflicting draft write');
+      assert.equal(await oldTab.evaluate(() => state.review_context), shown.context);
+      assert.equal(await oldTab.locator('#' + reasonId).inputValue(), note);
+      const status = await oldTab.locator('#operation-status').innerText();
+      assert.ok(status.includes(locale === 'en' ? 'The review state has changed' : '審查狀態已變更'));
+      const currentState = await currentTab.evaluate(() => api('/api/state'));
+      assert.equal(currentState.selected.findings.find(row => row.finding_id === findingId).status, decision);
+      assert.equal(currentState.selected.ui_draft.revision, shown.revision);
+      await oldTab.screenshot({path: path.join(output, `stale-review-${locale}.png`), fullPage: true});
+      await oldTab.reload();
+      await oldTab.locator('#' + reasonId).waitFor();
+      assert.equal(await oldTab.locator('#' + reasonId).inputValue(), note);
+      assert.notEqual(await oldTab.evaluate(() => state.review_context), shown.context);
+      await currentTab.close();
+      await oldTab.close();
+    }
+    evidence.staleReviewRejectedWithoutDraftConflict = true;
+    assert.deepEqual(errors, []);
+    assert.deepEqual(externalRequests, []);
     await page.screenshot({ path: path.join(output, 'completed.png'), fullPage: true });
     await fs.writeFile(path.join(output, 'result.json'), JSON.stringify({ passed: true, evidence, browserErrors: errors, externalRequests }, null, 2));
-    console.log('Browser state regressions passed: task drafts, reload protection, save failure, stale tabs, and committed-response replay.');
+    console.log('Browser state regressions passed: task drafts, reload protection, save failure, stale draft/review tabs, and committed-response replay.');
   } catch (error) {
     if (stderr) console.error(stderr);
     throw error;
   } finally {
+    releaseStartupState?.();
     releaseHeldDraft?.();
     if (browser) await browser.close();
     server.kill();

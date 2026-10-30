@@ -68,6 +68,8 @@ def run_self_test() -> dict:
         project.run_local_prechecks(["expression_ambiguity"])
         reviewed_finding_id = _check_adversarial_pipeline(project)
         checked.append("adversarial-review")
+        _check_review_context(project, reviewed_finding_id)
+        checked.append("review-context")
         _check_resolution_pipeline(project, reviewed_finding_id)
         checked.append("revision-evidence")
         original_record = project.document_path.read_bytes()
@@ -233,6 +235,29 @@ def _check_academic_protocols(library: Path) -> None:
                 raise RuntimeError("Packaged review cannot persist article-specific angles")
     if project.integrity_errors():
         raise RuntimeError("Packaged academic protocol provenance failed verification")
+
+
+def _check_review_context(project, finding_id: str) -> None:
+    """A stale page cannot replace a newer decision, even with unchanged text."""
+    from document_review_ui import StudioApp
+    from studio_ui_state import UIStateConflict
+    app = StudioApp.create(project.root.parent, project.root)
+    view = app.view()
+    payload = {"action": "decide_finding", "request_id": "selftest-review-12345678",
+        "project_directory": project.root.name, "review_context": view["review_context"],
+        "document_scope": view["selected"]["ui_draft"]["scope"],
+        "data": {"finding_id": finding_id, "decision": "reject", "reason": "Synthetic concurrency check"}}
+    app.act(payload, require_context=True)
+    try:
+        app.act({**payload, "request_id": "selftest-stale-12345678",
+            "data": {**payload["data"], "decision": "accept"}}, require_context=True)
+    except UIStateConflict:
+        pass
+    else:
+        raise RuntimeError("Packaged app allows a stale review decision")
+    app.act(payload, require_context=True)
+    if project._decisions()[finding_id]["decision"] != "reject" or len(project._decision_records()[finding_id]) != 1:
+        raise RuntimeError("Packaged request replay changed a human decision")
 
 
 def _check_adversarial_pipeline(project) -> str:

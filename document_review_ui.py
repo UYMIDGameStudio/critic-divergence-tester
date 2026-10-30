@@ -3,11 +3,12 @@
 from __future__ import annotations
 import re
 import tempfile
-from project_lifecycle import APP_VERSION, create_backup, restore_backup, transaction, _atomic
-from project_lock import ProjectMutationLockedError
+from project_lifecycle import APP_VERSION, CommitValidationResult, create_backup, restore_backup, transaction, _atomic
+from project_lock import ProjectMutationLockedError, project_mutation_lock
 
 import base64
 import io
+import hashlib
 import json
 import mimetypes
 import os
@@ -25,10 +26,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit, quote
 
-from argument_ui import LocalHTTPProtocolError, LocalHTTPServer, LocalRequestHandler
+from argument_ui import LocalHTTPProtocolError, LocalHTTPServer, LocalRequestHandler, request_context
 from argument_workbench import WorkbenchError, parse_json_strict
 from document_review_ingest import doctor_dependencies, repair_dependencies
-from document_review_studio import DocumentReviewProject, ReviewStudioError
+from document_review_studio import DocumentReviewProject, ReviewStudioError, INTEGRITY_INDEX_NAME
 from document_review_ui_shell import SHELL_TEMPLATE
 from studio_ui_state import UIStateConflict, document_scope, read_ui_draft, save_ui_draft, read_ui_language, save_ui_language
 from review_profiles import CRITIC_LABELS, DISCIPLINES, RESEARCH_TYPES
@@ -36,6 +37,8 @@ from review_profiles import CRITIC_LABELS, DISCIPLINES, RESEARCH_TYPES
 
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
 MAX_REQUEST_BYTES = 42 * 1024 * 1024
+REVIEW_CONTEXT_CONFLICT = "审查状态已变化，未提交修改；请先下载当前草稿，再重新打开项目并核对内容"
+CONTEXT_FREE_ACTIONS = {"close_project", "delete_project", "restore_backup", "create_backup", "open_export_folder"}
 
 
 def _strict_json_payload(data: bytes) -> object:
@@ -83,11 +86,35 @@ class StudioApp:
         return rows
 
     def view(self) -> dict[str, Any]:
-        selected = self.project.view() if self.project else None
-        if selected is not None:
-            selected["directory"] = self.project.root.name
-            selected["ui_draft"] = read_ui_draft(self.project)
-        return {"storage_path": str(self.data_dir), "projects": self.projects(), "selected": selected, "dependencies": doctor_dependencies(), "notice": self.notice, "app_version": APP_VERSION, "ui_language": read_ui_language(self.data_dir)}
+        selected, context = None, None
+        if self.project is not None:
+            # A CLI writer must not slip between the displayed state and its
+            # binding. Draft writes do not alter the review integrity index.
+            with project_mutation_lock(self.project.root):
+                selected = self.project.view()
+                selected["directory"] = self.project.root.name
+                selected["ui_draft"] = read_ui_draft(self.project)
+                context = self._review_context()
+        return {"storage_path": str(self.data_dir), "projects": self.projects(), "selected": selected, "review_context": context, "dependencies": doctor_dependencies(), "notice": self.notice, "app_version": APP_VERSION, "ui_language": read_ui_language(self.data_dir)}
+
+    def _review_context(self) -> str:
+        project = self.require_project()
+        index = project.root / INTEGRITY_INDEX_NAME
+        fingerprint = None
+        if not index.is_symlink():
+            try:
+                fingerprint = hashlib.sha256(index.read_bytes()).hexdigest()
+            except OSError:
+                pass  # Recovery pages may describe a missing or damaged index.
+        return request_context(self.token, project.root, {"integrity_index_sha256": fingerprint})
+
+    def _require_review_context(self, payload: dict[str, Any], *, required: bool) -> None:
+        if "review_context" not in payload and not required:
+            return  # Preserve direct Python callers; HTTP mutations require it.
+        supplied = payload.get("review_context")
+        if (not isinstance(supplied, str) or not re.fullmatch(r"[a-f0-9]{64}", supplied)
+                or not secrets.compare_digest(supplied, self._review_context())):
+            raise UIStateConflict(REVIEW_CONTEXT_CONFLICT)
 
     def _project_directory(self, directory: str, *, must_exist: bool) -> Path:
         if not isinstance(directory, str) or Path(directory).name != directory or not directory.endswith(".document-review-studio"):
@@ -204,33 +231,47 @@ class StudioApp:
             new_project=payload.get("new_project", False))
         return replace(self, project=project, notice="文档已导入，请确认识别结果。")
 
-    def act(self, payload: dict[str, Any]) -> "StudioApp":
+    def act(self, payload: dict[str, Any], *, require_context: bool = False) -> "StudioApp":
         expected = payload.get("project_directory")
         if expected is not None and expected != (self.project.root.name if self.project else None):
             raise ReviewStudioError("此页面的项目已变化，请刷新后继续，未提交到其他项目")
         expected_scope = payload.get("document_scope")
         request_id = payload.get("request_id")
-        if request_id is None or self.project is None or payload.get("action") in {"close_project", "delete_project", "restore_backup", "create_backup"}:
+        if (self.project is None or payload.get("action") in CONTEXT_FREE_ACTIONS
+                or request_id is None and not require_context and "review_context" not in payload):
             if expected_scope is not None and self.project and expected_scope != document_scope(self.project):
                 raise UIStateConflict("此页面的文档版本已变化，未提交修改；请先保存当前草稿再刷新")
             return self._act(payload)
-        if not isinstance(request_id, str) or not re.fullmatch(r"[a-zA-Z0-9-]{16,80}", request_id):
+        if request_id is not None and (not isinstance(request_id, str) or not re.fullmatch(r"[a-zA-Z0-9-]{16,80}", request_id)):
             raise ReviewStudioError("操作编号无效")
         from document_review_studio import _write_tracked, _sha256, canonical_json
-        digest = _sha256(canonical_json({"action": payload.get("action"), "data": payload.get("data"), "document_scope": expected_scope}))
-        path = self.project.root / ".requests" / f"{request_id}.json"
-        with transaction(self.project.root):
-            self.project._ensure_writable()
-            if path.is_file():
-                saved = json.loads(path.read_text(encoding="utf-8"))
-                if saved.get("sha256") != digest:
-                    raise ReviewStudioError("同一操作编号不能重复用于不同内容")
-                return replace(self, notice=saved["notice"])
-            if expected_scope is not None and expected_scope != document_scope(self.project):
-                raise UIStateConflict("此页面的文档版本已变化，未提交修改；请先保存当前草稿再刷新")
-            result = self._act(payload)
-            _write_tracked(self.project.root, path, canonical_json({"sha256": digest, "notice": result.notice}), provenance="committed-ui-request")
-            return result
+        binding = {"action": payload.get("action"), "data": payload.get("data"), "document_scope": expected_scope}
+        if "review_context" in payload:
+            binding["review_context"] = payload["review_context"]
+        digest = _sha256(canonical_json(binding))
+        path = self.project.root / ".requests" / f"{request_id}.json" if request_id is not None else None
+        with project_mutation_lock(self.project.root):
+            try:
+                with transaction(self.project.root):
+                    self.project._ensure_writable()
+                    if path is not None and path.is_file():
+                        saved = json.loads(path.read_text(encoding="utf-8"))
+                        if saved.get("sha256") != digest:
+                            raise ReviewStudioError("同一操作编号不能重复用于不同内容")
+                        return replace(self, notice=saved["notice"])
+                    if expected_scope is not None and expected_scope != document_scope(self.project):
+                        raise UIStateConflict("此页面的文档版本已变化，未提交修改；请先保存当前草稿再刷新")
+                    self._require_review_context(payload, required=require_context)
+                    result = self._act(payload)
+                    if path is not None:
+                        _write_tracked(self.project.root, path, canonical_json({"sha256": digest, "notice": result.notice}), provenance="committed-ui-request")
+                    return result
+            except CommitValidationResult as exc:
+                # Only a committed rejection archive may advance the client's
+                # binding without replacing its fields. Keep the lock through
+                # this capture so another writer cannot be silently authorized.
+                exc.review_context = self._review_context()
+                raise
 
     def _act(self, payload: dict[str, Any]) -> "StudioApp":
         action, data = payload.get("action"), payload.get("data", {})
@@ -529,13 +570,18 @@ class StudioRequestHandler(LocalRequestHandler):
                 elif path == "/api/open":
                     self.server.app = self.server.app.open_project(str(payload.get("directory", "")))
                 else:
-                    self.server.app = self.server.app.act(payload)
+                    self.server.app = self.server.app.act(payload, require_context=True)
                 response = self.server.app.view()
             self._json(HTTPStatus.CREATED, response)
         except LocalHTTPProtocolError as exc:
             self._json(exc.status, {"error": str(exc)})
         except (ProjectMutationLockedError, UIStateConflict) as exc:
             self._json(HTTPStatus.CONFLICT, {"error": str(exc)})
+        except CommitValidationResult as exc:
+            error = {"error": str(exc)}
+            if isinstance(getattr(exc, "review_context", None), str):
+                error["review_context"] = exc.review_context
+            self._json(HTTPStatus.BAD_REQUEST, error)
         except (UnicodeDecodeError, json.JSONDecodeError, OSError, ValueError, ReviewStudioError) as exc:
             self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except Exception as exc:

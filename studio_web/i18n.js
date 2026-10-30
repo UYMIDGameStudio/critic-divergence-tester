@@ -3,6 +3,7 @@
 const UI_MESSAGES = __UI_MESSAGES__;
 let uiLocale = 'zh-Hant';
 let preferenceWrites = Promise.resolve();
+let languageChosenForPage = false;
 try {
   const saved = localStorage.getItem('studio-ui-language');
   if (saved === 'en' || saved === 'zh-Hant') uiLocale = saved;
@@ -73,6 +74,7 @@ function changeLanguage(event) {
     files: element.type === 'file' ? element.files : null,
   }));
   uiLocale = event.target.value;
+  languageChosenForPage = true;
   try {
     localStorage.setItem('studio-ui-language', uiLocale);
   } catch (_) {}
@@ -82,6 +84,7 @@ function changeLanguage(event) {
       operationStatus(uiLocale === 'en' ? 'The language changed for this page, but the preference could not be saved.' : '此頁語言已切換，但偏好設定未能保存。', 'failure');
     });
   renderLanguageHeader();
+  if (!state) return;
   render();
   // Completed operation notices belong to the old locale. Keep failures visible,
   // but replace an obsolete success toast with the current language change.

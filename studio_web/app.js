@@ -104,6 +104,7 @@ async function act(action, data = {}) {
     request_id: crypto.randomUUID(),
     project_directory: state.selected?.directory,
     document_scope: state.selected?.ui_draft?.scope,
+    review_context: state.review_context,
   };
   return runMutation(tr(actionLabels[action] || '操作'), async () => {
     try {
@@ -165,7 +166,7 @@ async function quitStudio() {
 api('/api/state')
   .then((value) => {
     state = value;
-    if (value.ui_language === 'en' || value.ui_language === 'zh-Hant') uiLocale = value.ui_language;
+    if (!languageChosenForPage && (value.ui_language === 'en' || value.ui_language === 'zh-Hant')) uiLocale = value.ui_language;
     render();
   })
   .catch((error) => {
