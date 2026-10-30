@@ -6,6 +6,10 @@ from unified_app import serve_unified_app
 
 fixture = None
 project_dir = None
+if '--docx-notes' in sys.argv[2:]:
+    from document_review_studio import DocumentReviewProject
+    from studio_selftest import _docx_notes_fixture
+    project_dir = DocumentReviewProject.create(Path(sys.argv[1]), filename='academic-notes.docx', content=_docx_notes_fixture()).root
 for flag, mode in (('--source-reader', 'article'), ('--reader-pages', 'pages'), ('--reader-followup', 'followup')):
     if flag in sys.argv[2:]:
         from test import source_reader_fixtures

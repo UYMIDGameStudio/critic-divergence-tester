@@ -13,6 +13,7 @@ import importlib
 import io
 import math
 import os
+import posixpath
 import re
 import shutil
 import subprocess
@@ -23,6 +24,7 @@ import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Protocol
+from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree as ET
 from document_file_names import is_portable_file_name
 
@@ -58,13 +60,15 @@ MEDIA_TYPES = {
     ".ppt": "application/vnd.ms-powerpoint", ".dps": "application/vnd.ms-powerpoint",
 }
 PARSER_VERSION = "document-review-studio-v1"
-DOCX_PARSER_VERSION = "document-review-studio-docx-v4"
+DOCX_PARSER_VERSION = "document-review-studio-docx-v5"
 W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 R_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 MC_NS = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
 MATH_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
 DOCX_CONTENT_WRAPPERS = frozenset({"customXml", "ins", "del", "moveFrom", "moveTo"})
 DOCX_CONTENT_LAYOUT = "wrapped-blocks-v1"
+DOCX_NOTE_LAYOUT = "note-stories-v1"
+DOCX_TEXT_PROPERTIES = frozenset({'pPr', 'rPr', 'tblPr', 'tblPrEx', 'tblGrid', 'trPr', 'tcPr', 'sdtPr', 'customXmlPr', 'sectPr'})
 DOCX_SPECIAL_CONTENT = frozenset({W_NS + name for name in ("altChunk", "subDoc", "object", "txbxContent")}
     | {MC_NS + "AlternateContent", MATH_NS + "oMath", MATH_NS + "oMathPara"})
 DOCX_REVISION_TAGS = frozenset({"ins", "del", "moveFrom", "moveTo", "moveFromRangeStart", "moveFromRangeEnd",
@@ -396,11 +400,12 @@ def _text_blocks(text: str, source: RawFileBinding, *, parser: str, warnings: li
 
 def _xml_text(element: ET.Element, *, include_deleted: bool = False) -> str:
     parts: list[str] = []
+    non_text = {W_NS + name for name in DOCX_TEXT_PROPERTIES} | {MC_NS + "AlternateContent", W_NS + "altChunk", MATH_NS + "oMath", MATH_NS + "oMathPara"}
 
     def visible_nodes(node):
         # These are alternatives or require a separate renderer. Concatenating
         # Choice and Fallback produces duplicate, potentially contradictory text.
-        if node.tag in {MC_NS + "AlternateContent", W_NS + "altChunk", MATH_NS + "oMath", MATH_NS + "oMathPara"}:
+        if node.tag in non_text:
             return
         yield node
         for child in node:
@@ -447,7 +452,8 @@ def _docx_content_issues(root) -> dict[str, int]:
             seen.add(id(node))
             issues[node.tag] = issues.get(node.tag, 0) + 1
 
-    contexts = {W_NS + 'body': {'p', 'tbl'}, W_NS + 'tbl': {'tr'}, W_NS + 'tr': {'tc'}}
+    contexts = {W_NS + name: {'p', 'tbl'} for name in ('body', 'footnote', 'endnote')}
+    contexts.update({W_NS + 'tbl': {'tr'}, W_NS + 'tr': {'tc'}})
     for node in root.iter():
         if node.tag in DOCX_SPECIAL_CONTENT:
             record(node)
@@ -591,18 +597,86 @@ def _block_identity_sha(source: RawFileBinding, identity_sha256: str | None) -> 
     return identity_sha256
 
 
-def _docx_story_revisions(archive, *, document_xml=None) -> dict[str, list[str]]:
+def _docx_story_revisions(archive, *, document_xml=None, note_parts=None) -> dict[str, list[str]]:
     """Inspect known text-bearing parts, including revisions outside the body."""
     result = {}
     tags = {W_NS + name: name for name in DOCX_REVISION_TAGS}
     for name in sorted(archive.namelist()):
-        if not re.fullmatch(r"word/(?:document|footnotes|endnotes|comments|header\d+|footer\d+)\.xml", name):
+        if not re.fullmatch(r"word/(?:document|footnotes|endnotes|comments|header\d+|footer\d+)\.xml", name) and name not in (note_parts or {}):
             continue
-        root = document_xml if name == "word/document.xml" and document_xml is not None else _docx_xml(archive, name)
+        root = (document_xml if name == "word/document.xml" and document_xml is not None
+                else note_parts[name] if name in (note_parts or {}) else _docx_xml(archive, name))
         kinds = sorted({tags[node.tag] for node in root.iter() if node.tag in tags}) if root is not None else []
         if kinds:
             result[name] = kinds
     return result
+
+
+def _docx_note_id(value: str | None) -> str:
+    if not isinstance(value, str) or len(value) > 64 or re.fullmatch(r'[+-]?[0-9]+', value.strip()) is None:
+        raise IngestionError('DOCX 注释标识无效，无法可靠关联正文')
+    return str(int(value))
+
+
+def _docx_note_parts(archive):
+    """Resolve internal note stories; never fetch external relationships."""
+    relations = _docx_xml(archive, 'word/_rels/document.xml.rels')
+    if relations is not None and relations.tag != '{http://schemas.openxmlformats.org/package/2006/relationships}Relationships':
+        raise IngestionError('DOCX 注释关系部件结构无效')
+    result = {}
+    for kind in ('footnote', 'endnote'):
+        matches = [node for node in (relations if relations is not None else [])
+                   if node.tag == '{http://schemas.openxmlformats.org/package/2006/relationships}Relationship'
+                   and node.get('Type') == R_NS[1:-1] + '/' + kind + 's']
+        if len(matches) > 1:
+            raise IngestionError('DOCX 注释部件关系重复，无法可靠定位')
+        part, external = f'word/{kind}s.xml', False
+        if matches:
+            node = matches[0]
+            mode, target = node.get('TargetMode', 'Internal'), node.get('Target', '')
+            if not target or mode not in {'Internal', 'External'}:
+                raise IngestionError('DOCX 注释部件目标无效')
+            external = mode == 'External'
+            if external:
+                part = None
+            else:
+                decoded = unquote(target)
+                url = urlsplit(decoded)
+                if url.scheme or url.netloc or url.query or url.fragment or '\\' in decoded or any(ord(c) < 32 for c in decoded):
+                    raise IngestionError('DOCX 注释部件包含不安全路径')
+                part = posixpath.normpath(decoded.lstrip('/') if decoded.startswith('/') else posixpath.join('word', decoded))
+                if part in {'', '.', '..'} or part.startswith('../'):
+                    raise IngestionError('DOCX 注释部件路径超出文档包')
+        root = _docx_xml(archive, part) if part else None
+        if root is not None and root.tag != W_NS + kind + 's':
+            raise IngestionError('DOCX 注释部件类型与关系不一致')
+        notes = {}
+        for node in root if root is not None else []:
+            if node.tag != W_NS + kind:
+                raise IngestionError('DOCX 注释部件含无法映射的内容')
+            note_type = node.get(W_NS + 'type', 'normal')
+            if note_type in {'separator', 'continuationSeparator', 'continuationNotice'}:
+                continue
+            if note_type != 'normal':
+                raise IngestionError('DOCX 注释类型不受支持')
+            identifier = _docx_note_id(node.get(W_NS + 'id'))
+            if identifier in notes:
+                raise IngestionError('DOCX 注释标识重复，无法可靠关联正文')
+            notes[identifier] = node
+        result[kind] = {'part': part, 'root': root, 'notes': notes, 'external': external, 'relationship_bound': bool(matches)}
+    return result
+
+
+def _docx_note_references(node):
+    references = {}
+    tags = {W_NS + kind + 'Reference': kind for kind in ('footnote', 'endnote')}
+    for child in node.iter():
+        kind = tags.get(child.tag)
+        if kind:
+            identifier = _docx_note_id(child.get(W_NS + 'id'))
+            reference = references.setdefault((kind, identifier), {'kind': kind, 'id': identifier, 'occurrences': 0})
+            reference['occurrences'] += 1
+    return list(references.values())
 
 
 def _docx_tracking_enabled(settings) -> bool:
@@ -647,7 +721,9 @@ def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits, *,
     main_issues = _docx_content_issues(document_xml)
     if main_issues:
         content_issues['word/document.xml'] = main_issues
-    revision_parts = _docx_story_revisions(archive, document_xml=document_xml)
+    note_parts = _docx_note_parts(archive)
+    note_roots = {data['part']: data['root'] for data in note_parts.values() if data['root'] is not None}
+    revision_parts = _docx_story_revisions(archive, document_xml=document_xml, note_parts=note_roots)
     revisions = bool(revision_parts)
     settings = _docx_xml(archive, "word/settings.xml")
     if _docx_tracking_enabled(settings):
@@ -655,12 +731,14 @@ def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits, *,
     comments = "word/comments.xml" in archive.namelist()
     note_visibility = {}
     for kind in ("footnote", "endnote"):
-        part = f"word/{kind}s.xml"
-        root = _docx_xml(archive, part)
-        references = len(document_xml.findall(".//" + W_NS + kind + "Reference"))
-        count = sum(node.attrib.get(W_NS + "type", "normal") == "normal" for node in root.findall(W_NS + kind)) if root is not None else 0
-        note_visibility[kind] = {"part_present": root is not None, "reference_count": references,
-                                 "note_count": count, "content_extracted": False}
+        data = note_parts[kind]
+        references = document_xml.findall(".//" + W_NS + kind + "Reference")
+        reference_ids = [_docx_note_id(node.get(W_NS + 'id')) for node in references]
+        note_visibility[kind] = {"part_present": data['root'] is not None, "reference_count": len(references),
+            "note_count": len(data['notes']), "content_extracted": data['root'] is not None,
+            "part": data['part'], "external": data['external'], 'relationship_bound': data['relationship_bound'],
+            "missing_ids": sorted(set(reference_ids) - data['notes'].keys()),
+            "unreferenced_ids": sorted(data['notes'].keys() - set(reference_ids))}
     footnotes = note_visibility["footnote"]["part_present"] or bool(note_visibility["footnote"]["reference_count"])
     endnotes = note_visibility["endnote"]["part_present"] or bool(note_visibility["endnote"]["reference_count"])
     hyperlinks = bool(document_xml.findall(".//" + W_NS + "hyperlink"))
@@ -673,18 +751,26 @@ def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits, *,
         warnings.append(ExtractionWarning("comments-present", "medium", "DOCX 含批注；正文审查不会假装已包含批注语义"))
     for kind, label in (("footnote", "脚注"), ("endnote", "尾注")):
         visibility = note_visibility[kind]
-        if visibility["reference_count"] or visibility["note_count"]:
-            warnings.append(ExtractionWarning(kind + "s-present", "high", f"DOCX 含{label}，相关注释正文尚未提取；请对照原件补充或修正识别结果。", details=visibility))
+        if visibility['missing_ids'] or visibility['external']:
+            warnings.append(ExtractionWarning(kind + "s-incomplete", "high", f"DOCX 的{label}引用缺少可读取的注释正文；请对照原件核对，不能将未读取内容当作原文遗漏。", details=visibility))
+    if any(data['notes'] and not data['relationship_bound'] for data in note_parts.values()):
+        warnings.append(ExtractionWarning('docx-note-relationship-inferred', 'high',
+            'DOCX 注释部件缺少明确的文件关系，已按常用路径读取；请对照原件确认注释归属。'))
     if hyperlinks:
         warnings.append(ExtractionWarning("hyperlinks-present", "low", "DOCX 含超链接；链接目标存在状态已记录"))
 
-    def add_block(kind: str, text: str, paragraph: int, *, level: int | None = None, attrs: dict[str, Any] | None = None, page: int | None = None, table_id: str | None = None, row: int | None = None, column: int | None = None) -> DocumentBlock:
+    def add_block(kind: str, text: str, paragraph: int, *, level: int | None = None, attrs: dict[str, Any] | None = None, page: int | None = None, table_id: str | None = None, row: int | None = None, column: int | None = None, story=None) -> DocumentBlock:
         if len(blocks) >= limits.max_text_blocks:
             raise IngestionError("DOCX 文本块或表格单元格数量超过安全上限，拒绝不完整截断")
         block_id = _block_id(identity, kind, len(blocks), text, paragraph, table_id, row, column)
-        block = DocumentBlock(block_id, kind, text=text, level=level, location=DocumentLocation(block_id, kind, page=page, paragraph=paragraph, table_id=table_id, row=row, column=column, source_path=source.original_name), attrs=attrs or {})
+        attributes = dict(attrs or {})
+        if story:
+            attributes['docx_story'] = dict(story)
+        block = DocumentBlock(block_id, kind, text=text, level=level, location=DocumentLocation(block_id, kind, page=page, paragraph=paragraph, table_id=table_id, row=row, column=column, source_path=source.original_name), attrs=attributes)
         blocks.append(block)
         mapping.append({"paragraph": paragraph, "block_id": block_id, "kind": kind, "table_id": table_id, "row": row, "column": column})
+        if story:
+            mapping[-1]['docx_story'] = dict(story)
         return block
 
     table_limits = {name: getattr(limits, 'max_office_' + name, getattr(IngestionLimits, 'max_office_' + name))
@@ -697,92 +783,102 @@ def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits, *,
     body = document_xml.find(".//" + W_NS + "body")
     if body is None:
         raise IngestionError("DOCX 缺少正文 body")
-    for child in _docx_content_nodes(body, {'p', 'tbl'}):
-        if child.tag == W_NS + "p":
-            text = _xml_text(child)
-            ppr = child.find(W_NS + "pPr")
-            style_id = ppr.find(W_NS + "pStyle").attrib.get(W_NS + "val") if ppr is not None and ppr.find(W_NS + "pStyle") is not None else ""
-            style_name = styles.get(style_id, style_id)
-            outline = ppr.find(W_NS + "outlineLvl") if ppr is not None else None
-            heading_match = re.search(r"heading\s*([1-9])", (style_name or "").casefold())
-            level = int(heading_match.group(1)) if heading_match else (int(outline.attrib.get(W_NS + "val", "0")) + 1 if outline is not None else None)
-            num_pr = ppr.find(W_NS + "numPr") if ppr is not None else None
-            attrs = {"style_id": style_id, "style_name": style_name, "has_hyperlink": bool(child.findall(".//" + W_NS + "hyperlink")), "has_drawing": bool(child.findall(".//" + W_NS + "drawing"))}
-            if num_pr is not None:
-                attrs["list"] = True
-                ilvl = num_pr.find(W_NS + "ilvl")
-                num_id = num_pr.find(W_NS + "numId")
-                attrs["list_level"] = int(ilvl.attrib.get(W_NS + "val", "0")) if ilvl is not None else 0
-                attrs["num_id"] = num_id.attrib.get(W_NS + "val") if num_id is not None else None
-            if attrs["has_drawing"]:
-                add_block("image_placeholder", "[图片]", paragraph_index, attrs={**attrs, "description": text})
-            if text:
-                add_block("heading" if level else ("list_item" if attrs.get("list") else "paragraph"), text, paragraph_index, level=level, attrs=attrs)
-            paragraph_index += 1
-        elif child.tag == W_NS + "tbl":
-            table_id = _block_id(identity, "table", len(blocks), "", paragraph_index)
-            rows: list[list[str]] = []
-            table_block = add_block("table", "", paragraph_index, attrs={"rows": rows, "source": "docx", "grid_layout": "logical-columns"})
-            table_block.location = DocumentLocation(table_id, "table", paragraph=paragraph_index, table_id=table_id, source_path=source.original_name)
-            table_block.block_id = table_id
-            mapping[-1]["block_id"] = table_id
-            mapping[-1]["table_id"] = table_id
-            declared_width = len(child.findall("./" + W_NS + "tblGrid/" + W_NS + "gridCol"))
-            width = declared_width
-            flattened = False
+    def parse_content(parent, *, story=None):
+        nonlocal table_slots, flattened_tables
+        paragraph_index = 0
+        def emit(*args, **kwargs):
+            return add_block(*args, **kwargs, story=story)
+        for child in _docx_content_nodes(parent, {'p', 'tbl'}):
+            if child.tag == W_NS + "p":
+                text = _xml_text(child)
+                ppr = child.find(W_NS + "pPr")
+                style_id = ppr.find(W_NS + "pStyle").attrib.get(W_NS + "val") if ppr is not None and ppr.find(W_NS + "pStyle") is not None else ""
+                style_name = styles.get(style_id, style_id)
+                outline = ppr.find(W_NS + "outlineLvl") if ppr is not None else None
+                heading_match = re.search(r"heading\s*([1-9])", (style_name or "").casefold())
+                level = int(heading_match.group(1)) if heading_match else (int(outline.attrib.get(W_NS + "val", "0")) + 1 if outline is not None else None)
+                num_pr = ppr.find(W_NS + "numPr") if ppr is not None else None
+                attrs = {"style_id": style_id, "style_name": style_name, "has_hyperlink": bool(child.findall(".//" + W_NS + "hyperlink")), "has_drawing": bool(child.findall(".//" + W_NS + "drawing"))}
+                if num_pr is not None:
+                    attrs["list"] = True
+                    ilvl = num_pr.find(W_NS + "ilvl")
+                    num_id = num_pr.find(W_NS + "numId")
+                    attrs["list_level"] = int(ilvl.attrib.get(W_NS + "val", "0")) if ilvl is not None else 0
+                    attrs["num_id"] = num_id.attrib.get(W_NS + "val") if num_id is not None else None
+                note_refs = _docx_note_references(child)
+                if note_refs:
+                    attrs['note_references'] = note_refs
+                if attrs["has_drawing"]:
+                    emit("image_placeholder", "[图片]", paragraph_index, attrs={**attrs, "description": text})
+                if text or note_refs:
+                    emit("heading" if level else ("list_item" if attrs.get("list") else "paragraph"), text, paragraph_index, level=level, attrs=attrs)
+                paragraph_index += 1
+            elif child.tag == W_NS + "tbl":
+                table_id = _block_id(identity, "table", len(blocks), "", paragraph_index)
+                rows: list[list[str]] = []
+                table_block = emit("table", "", paragraph_index, attrs={"rows": rows, "source": "docx", "grid_layout": "logical-columns"})
+                table_block.location = DocumentLocation(table_id, "table", paragraph=paragraph_index, table_id=table_id, source_path=source.original_name)
+                table_block.block_id = table_id
+                mapping[-1]["block_id"] = table_id
+                mapping[-1]["table_id"] = table_id
+                declared_width = len(child.findall("./" + W_NS + "tblGrid/" + W_NS + "gridCol"))
+                width = declared_width
+                flattened = False
 
-            def check_extent(height, columns):
-                if (height > table_limits['rows'] or columns > table_limits['columns']
-                        or table_slots + height * columns > table_limits['cells']):
-                    raise IngestionError("DOCX 表格行列或展开单元格数量超过安全上限")
+                def check_extent(height, columns):
+                    if (height > table_limits['rows'] or columns > table_limits['columns']
+                            or table_slots + height * columns > table_limits['cells']):
+                        raise IngestionError("DOCX 表格行列或展开单元格数量超过安全上限")
 
-            check_extent(0, width)
-            table_cells = _docx_content_nodes(child, {'tr'})
-            for row_index, row_xml in enumerate(table_cells):
-                trpr = row_xml.find(W_NS + 'trPr')
-                offsets = {}
-                for name in ('gridBefore', 'gridAfter'):
-                    element = trpr.find(W_NS + name) if trpr is not None else None
-                    offsets[name] = _docx_grid_value(element.get(W_NS + 'val'), minimum=0,
-                        maximum=table_limits['columns']) if element is not None else 0
-                if ((offsets['gridBefore'] and offsets['gridBefore'] > declared_width)
-                        or (not declared_width and any(offsets.values()))):
-                    raise IngestionError("DOCX 暂不支持超出声明网格的表格偏移，无法可靠定位")
-                column = offsets['gridBefore']
-                flattened |= bool(column)
-                width = max(width, column)
-                check_extent(row_index + 1, width)
-                row_values: list[str] = [''] * column
-                for cell_xml in _docx_content_nodes(row_xml, {'tc'}):
-                    cell_text = _xml_text(cell_xml)
-                    tcpr = cell_xml.find(W_NS + "tcPr")
-                    grid_span = tcpr.find(W_NS + "gridSpan") if tcpr is not None else None
-                    v_merge = tcpr.find(W_NS + "vMerge") if tcpr is not None else None
-                    span = _docx_grid_value(grid_span.get(W_NS + 'val'), minimum=1,
-                        maximum=table_limits['columns']) if grid_span is not None else 1
-                    attrs = {"grid_span": span, "v_merge": v_merge.attrib.get(W_NS + "val", "continue") if v_merge is not None else None, "nested_tables": len(cell_xml.findall(".//" + W_NS + "tbl"))}
-                    # gridSpan can augment the grid. gridAfter does not: a
-                    # conflicting trailing offset is ignored by Word.
-                    next_width = max(width, column + span)
-                    check_extent(row_index + 1, next_width)
-                    width = next_width
-                    row_values.extend([cell_text] + [''] * (span - 1))
-                    flattened |= span > 1 or v_merge is not None or (tcpr is not None and tcpr.find(W_NS + 'hMerge') is not None)
-                    cell = add_block("table_cell", cell_text, paragraph_index, attrs=attrs, table_id=table_id, row=row_index, column=column)
-                    table_block.children.append(cell.block_id)
-                    column += attrs["grid_span"]
-                rows.append(row_values)
-            for row_values in rows:
-                flattened |= len(row_values) != width
-                row_values.extend([''] * (width - len(row_values)))
-            table_slots += len(rows) * width
-            flattened_tables += bool(flattened)
-            table_block.attrs["rows"] = rows
-            paragraph_index += 1
-    if flattened_tables:
-        warnings.append(ExtractionWarning('docx-table-grid-flattened', 'medium',
-            'DOCX 合并或省略单元格已按逻辑列展开；规范化副本不保留合并外观，请对照原件核对表头关系。',
-            details={'table_count': flattened_tables}))
+                check_extent(0, width)
+                table_cells = _docx_content_nodes(child, {'tr'})
+                for row_index, row_xml in enumerate(table_cells):
+                    trpr = row_xml.find(W_NS + 'trPr')
+                    offsets = {}
+                    for name in ('gridBefore', 'gridAfter'):
+                        element = trpr.find(W_NS + name) if trpr is not None else None
+                        offsets[name] = _docx_grid_value(element.get(W_NS + 'val'), minimum=0,
+                            maximum=table_limits['columns']) if element is not None else 0
+                    if ((offsets['gridBefore'] and offsets['gridBefore'] > declared_width)
+                            or (not declared_width and any(offsets.values()))):
+                        raise IngestionError("DOCX 暂不支持超出声明网格的表格偏移，无法可靠定位")
+                    column = offsets['gridBefore']
+                    flattened |= bool(column)
+                    width = max(width, column)
+                    check_extent(row_index + 1, width)
+                    row_values: list[str] = [''] * column
+                    for cell_xml in _docx_content_nodes(row_xml, {'tc'}):
+                        cell_text = _xml_text(cell_xml)
+                        tcpr = cell_xml.find(W_NS + "tcPr")
+                        grid_span = tcpr.find(W_NS + "gridSpan") if tcpr is not None else None
+                        v_merge = tcpr.find(W_NS + "vMerge") if tcpr is not None else None
+                        span = _docx_grid_value(grid_span.get(W_NS + 'val'), minimum=1,
+                            maximum=table_limits['columns']) if grid_span is not None else 1
+                        attrs = {"grid_span": span, "v_merge": v_merge.attrib.get(W_NS + "val", "continue") if v_merge is not None else None, "nested_tables": len(cell_xml.findall(".//" + W_NS + "tbl"))}
+                        note_refs = _docx_note_references(cell_xml)
+                        if note_refs:
+                            attrs['note_references'] = note_refs
+                        # gridSpan can augment the grid. gridAfter does not: a
+                        # conflicting trailing offset is ignored by Word.
+                        next_width = max(width, column + span)
+                        check_extent(row_index + 1, next_width)
+                        width = next_width
+                        row_values.extend([cell_text] + [''] * (span - 1))
+                        flattened |= span > 1 or v_merge is not None or (tcpr is not None and tcpr.find(W_NS + 'hMerge') is not None)
+                        cell = emit("table_cell", cell_text, paragraph_index, attrs=attrs, table_id=table_id, row=row_index, column=column)
+                        table_block.children.append(cell.block_id)
+                        column += attrs["grid_span"]
+                    rows.append(row_values)
+                for row_values in rows:
+                    flattened |= len(row_values) != width
+                    row_values.extend([''] * (width - len(row_values)))
+                table_slots += len(rows) * width
+                flattened_tables += bool(flattened)
+                table_block.attrs["rows"] = rows
+                paragraph_index += 1
+        return paragraph_index
+
+    paragraph_index = parse_content(body)
     for part in sorted(name for name in archive.namelist() if re.fullmatch(r"word/(?:header|footer)\d+\.xml", name)):
         kind = "header" if "/header" in part else "footer"
         root = _docx_xml(archive, part)
@@ -794,12 +890,31 @@ def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits, *,
             if text:
                 add_block(kind, text, paragraph_index, attrs={"part": part})
                 paragraph_index += 1
+    for kind, data in note_parts.items():
+        if data['root'] is not None:
+            issues = _docx_content_issues(data['root'])
+            if issues:
+                content_issues[data['part']] = issues
+        for identifier, node in data['notes'].items():
+            parse_content(node, story={'kind': kind, 'id': identifier, 'part': data['part']})
+    note_blocks = {}
+    for block in blocks:
+        story = block.attrs.get('docx_story')
+        if story:
+            note_blocks.setdefault((story['kind'], story['id']), block.block_id)
+    for block in blocks:
+        for reference in block.attrs.get('note_references', []):
+            reference['block_id'] = note_blocks.get((reference['kind'], reference['id']))
+    if flattened_tables:
+        warnings.append(ExtractionWarning('docx-table-grid-flattened', 'medium',
+            'DOCX 合并或省略单元格已按逻辑列展开；规范化副本不保留合并外观，请对照原件核对表头关系。',
+            details={'table_count': flattened_tables}))
     if content_issues:
         warnings.append(ExtractionWarning('docx-special-content', 'high',
             'DOCX 含尚未完整识别的特殊内容；请对照原件核对，必要时在 Word 中另存为 DOCX 后重新导入，或修正识别结果。',
             details={'parts': content_issues, 'content_completeness': 'not-established'}))
     quality = QualitySignals(page_count=1, text_coverage=1.0 if any(b.text.strip() for b in blocks) else 0.0, table_count=sum(b.kind == "table" for b in blocks), tables_parsed=sum(b.kind == "table" for b in blocks), footnote_comment_revision_risk=[w.code for w in warnings], requires_confirmation=True)
-    return StructuredDocument(stable_id("DOC", identity), next((b.text for b in blocks if b.kind == "heading"), Path(source.original_name).stem), source, "docx-xml", DOCX_PARSER_VERSION, blocks, warnings, quality, mapping, {"revisions_present": revisions, "revision_parts": revision_parts, "comments_present": comments, "footnotes_present": footnotes, "endnotes_present": endnotes, "note_visibility": note_visibility, "hyperlinks_present": hyperlinks, "image_count": len(images), "nested_tables_present": any(b.attrs.get("nested_tables", 0) for b in blocks), "docx_content_layout": DOCX_CONTENT_LAYOUT, "docx_content_visibility": {"issues": content_issues, "content_completeness": "not-established", "coverage_measurement": "not-measured"}})
+    return StructuredDocument(stable_id("DOC", identity), next((b.text for b in blocks if b.kind == "heading" and not b.attrs.get("docx_story")), Path(source.original_name).stem), source, "docx-xml", DOCX_PARSER_VERSION, blocks, warnings, quality, mapping, {"revisions_present": revisions, "revision_parts": revision_parts, "comments_present": comments, "footnotes_present": footnotes, "endnotes_present": endnotes, "note_visibility": note_visibility, "docx_note_layout": DOCX_NOTE_LAYOUT, "hyperlinks_present": hyperlinks, "image_count": len(images), "nested_tables_present": any(b.attrs.get("nested_tables", 0) for b in blocks), "docx_content_layout": DOCX_CONTENT_LAYOUT, "docx_content_visibility": {"issues": content_issues, "content_completeness": "not-established", "coverage_measurement": "not-measured"}})
 
 
 def _pdf_backend() -> tuple[str, Any] | None:

@@ -13,9 +13,10 @@ from pathlib import Path
 
 
 class SourceVisibilityTests(unittest.TestCase):
-    def test_omitted_docx_notes_are_in_the_bound_prompt(self):
+    def test_extracted_docx_notes_and_scope_are_in_the_bound_prompt(self):
         raw = io.BytesIO(_docx())
         with zipfile.ZipFile(raw, "a") as archive:
+            archive.writestr('word/_rels/document.xml.rels', '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="foot" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/></Relationships>')
             archive.writestr("word/footnotes.xml", '<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:footnote w:id="1"><w:p><w:r><w:t>NOTE NOT EXTRACTED</w:t></w:r></w:p></w:footnote></w:footnotes>')
         with tempfile.TemporaryDirectory() as temp:
             project = DocumentReviewProject.create(temp, filename="paper.docx", content=raw.getvalue())
@@ -26,9 +27,10 @@ class SourceVisibilityTests(unittest.TestCase):
             contract = json.loads(prompt.split("```json\n", 1)[1].split("\n```", 1)[0])
             visibility = contract["source_visibility"]
             self.assertEqual(visibility["extraction_warnings"], [w.to_dict() for w in project.document().warnings])
-            self.assertIn("footnotes-present", [w["code"] for w in visibility["extraction_warnings"]])
-            self.assertIn("footnotes-present", visibility["quality_signals"]["footnote_comment_revision_risk"])
-            self.assertNotIn("NOTE NOT EXTRACTED", prompt)
+            self.assertNotIn("footnotes-incomplete", [w["code"] for w in visibility["extraction_warnings"]])
+            self.assertTrue(visibility['note_visibility']['footnote']['content_extracted'])
+            self.assertEqual(visibility['note_visibility']['footnote']['unreferenced_ids'], ['1'])
+            self.assertIn("NOTE NOT EXTRACTED", prompt)
             saved = (project.root / "ai-requests" / request["request_id"] / "prompt.md").read_text(encoding="utf-8")
             self.assertEqual(saved, prompt)
             self.assertIn("make dependent criticisms conditional", visibility["rule"])

@@ -489,6 +489,8 @@ def document_location_contract(document: StructuredDocument) -> dict[str, Any]:
             "Use current block IDs and text for findings."
             if revised else "Use the supplied block IDs and extracted text; do not invent source coordinates."
         ),
+        **({"note_stories": "Blocks with attrs.docx_story are footnote/endnote content, not body paragraphs. Their paragraph coordinates are local to that note and their IDs are source XML identifiers, not rendered note numbers. attrs.note_references links a citing block to the entry block of each available note, with an occurrence count; all blocks sharing its docx_story belong to that note. Read relevant qualifications and sources there before diagnosing an omission or overstatement. Retain the distinction between the author's note and a cited source; extracted citation text is not independent verification."}
+           if document.metadata.get('docx_note_layout') else {}),
     }
 
 
@@ -512,7 +514,7 @@ def has_reviewable_text(document: StructuredDocument | None) -> bool:
     text_kinds = {"paragraph", "heading", "list_item", "blockquote", "table_cell"}
     return any(
         not char.isspace() and unicodedata.category(char) not in {"Cc", "Cf", "Cs"}
-        for block in document.blocks if block.kind in text_kinds
+        for block in document.blocks if block.kind in text_kinds and not block.attrs.get('docx_story')
         for char in block.text
     )
 
@@ -573,7 +575,16 @@ def model_to_markdown(document: StructuredDocument) -> str:
         return re.sub(r"^[ \t]+|[ \t]+$", lambda match: "".join(f"&#{ord(char)};" for char in match.group()), escaped)
 
     lines: list[str] = []
+    seen_notes = set()
     for block in document.blocks:
+        story = block.attrs.get('docx_story')
+        if isinstance(story, dict) and story.get('kind') in {'footnote', 'endnote'}:
+            identifier = str(story.get('id', ''))
+            key = (story['kind'], identifier)
+            if key not in seen_notes:
+                identifier = identifier if re.fullmatch(r'-?[0-9]{1,64}', identifier) else 'unknown'
+                lines.extend([f"### {story['kind'].title()} · source ID {identifier}", ''])
+                seen_notes.add(key)
         item_prefix = list_marker(block) + " " if block.attrs.get("list_item_start") is True else ""
         if block.kind == "heading":
             lines.append("#" * max(1, min(block.level or 1, 6)) + " " + item_prefix + block.text)
@@ -594,6 +605,13 @@ def model_to_markdown(document: StructuredDocument) -> str:
                     lines.append("| " + " | ".join(cell_text(cell) for cell in row) + " |")
         elif block.text:
             lines.append(item_prefix + block.text)
+        captions = []
+        for reference in block.attrs.get('note_references', []):
+            identifier = str(reference.get('id', ''))
+            if reference.get('kind') in {'footnote', 'endnote'} and re.fullmatch(r'-?[0-9]{1,64}', identifier):
+                captions.append(f"{reference['kind'].title()} source ID {identifier}")
+        if captions:
+            lines.extend(['', '(' + '; '.join(captions) + ')'])
         if lines and lines[-1] != "":
             lines.append("")
     return "\n".join(lines).rstrip() + "\n"

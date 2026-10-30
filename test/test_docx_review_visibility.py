@@ -27,6 +27,10 @@ def package(body='<w:p><w:r><w:t>Bounded claim.</w:t></w:r></w:p>', *, parts=Non
             archive.writestr('word/settings.xml', f'<w:settings xmlns:w="{W}"><w:trackRevisions{attribute}/></w:settings>')
         for name, data in (parts or {}).items():
             archive.writestr(name, data)
+        notes = [kind for kind in ('footnote', 'endnote') if f'word/{kind}s.xml' in (parts or {})]
+        if notes and 'word/_rels/document.xml.rels' not in (parts or {}):
+            relations = ''.join(f'<Relationship Id="{kind}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/{kind}s" Target="{kind}s.xml"/>' for kind in notes)
+            archive.writestr('word/_rels/document.xml.rels', '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+relations+'</Relationships>')
     return output.getvalue()
 
 
@@ -84,26 +88,28 @@ class DocxReviewVisibilityTests(unittest.TestCase):
             with self.subTest(flag=flag):
                 self.assertTrue(ingest.ingest_bytes('tracked.docx', package(tracking=flag)).metadata['revisions_present'])
 
-    def test_omitted_notes_and_missing_parts_require_explicit_confirmation_and_reach_the_prompt(self):
+    def test_readable_notes_reach_the_prompt_and_missing_parts_require_explicit_confirmation(self):
         for kind in ('footnote', 'endnote'):
             for part_present in (False, True):
                 with self.subTest(kind=kind, part_present=part_present), tempfile.TemporaryDirectory() as temp:
                     notes = {f'word/{kind}s.xml': f'<w:{kind}s xmlns:w="{W}"><w:{kind} w:id="1"><w:p><w:r><w:t>OMITTED-NOTE-CONTENT</w:t></w:r></w:p></w:{kind}></w:{kind}s>'} if part_present else {}
                     raw = package(f'<w:p><w:r><w:t>Bounded claim.</w:t><w:{kind}Reference w:id="1"/></w:r></w:p>', parts=notes)
                     project = DocumentReviewProject.create(temp, filename='paper.docx', content=raw)
-                    warning = next(w for w in project.document().warnings if w.code == kind + 's-present')
-                    self.assertEqual(warning.severity, 'high')
-                    self.assertEqual(warning.details, {'part_present': part_present, 'reference_count': 1,
-                        'note_count': int(part_present), 'content_extracted': False})
-                    with self.assertRaises(ReviewStudioError):
+                    visibility = project.document().metadata['note_visibility'][kind]
+                    self.assertEqual(visibility['content_extracted'], part_present)
+                    self.assertEqual(visibility['missing_ids'], [] if part_present else ['1'])
+                    if part_present:
                         project.confirm_extraction('confirm')
-                    project.confirm_extraction('continue_with_warning')
+                    else:
+                        with self.assertRaises(ReviewStudioError):
+                            project.confirm_extraction('confirm')
+                        project.confirm_extraction('continue_with_warning')
                     project.confirm_context(ReviewContext('academic article', 'unknown', 'unknown', 'author', 'researchers',
                         review_profile='academic', discipline='humanities', research_type='theoretical').to_dict())
                     request = project.prepare_ai_audits(['academic_argument'], provider='fixture', model='not-invoked')[0]
                     contract = json.loads(request['prompt'].split('```json\n', 1)[1].split('\n```', 1)[0])
-                    self.assertIn(warning.to_dict(), contract['source_visibility']['extraction_warnings'])
-                    self.assertNotIn('OMITTED-NOTE-CONTENT', request['prompt'])
+                    self.assertEqual(contract['source_visibility']['note_visibility'][kind], visibility)
+                    self.assertEqual('OMITTED-NOTE-CONTENT' in request['prompt'], part_present)
                     self.assertEqual((project.root / 'source/paper.docx').read_bytes(), raw)
                     self.assertEqual(project.integrity_errors(), [])
 

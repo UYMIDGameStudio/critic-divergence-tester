@@ -364,11 +364,11 @@ function filterSourcePreview(event) {
     .filter(
       (b) =>
         sourceMatchesQuery(sourceBlockText(b), q) ||
-        sourceMatchesQuery(b.location?.block_id || b.block_id, q),
+        sourceMatchesQuery(sourceBlockLabel(b), q),
     )
     .map(
       (b) =>
-        `[${esc(b.location?.block_id || b.block_id)} · page ${esc(b.location?.page || '-')}] ${pdfDisplayText(sourceBlockText(b))}`,
+        `[${esc(sourceBlockLabel(b))}] ${pdfDisplayText(sourceBlockText(b))}`,
     )
     .join('\n\n');
 }

@@ -16,7 +16,7 @@ from xml.dom import minidom
 
 from document_review_ingest import (IngestionLimits, IngestionError, _zip_safety, _docx_xml, _docx_story_revisions,
     _docx_tracking_enabled, _docx_grid_value, _docx_content_issues, DOCX_REVISION_TAGS,
-    DOCX_CONTENT_WRAPPERS, DOCX_CONTENT_LAYOUT)
+    DOCX_CONTENT_WRAPPERS, DOCX_CONTENT_LAYOUT, DOCX_NOTE_LAYOUT, DOCX_TEXT_PROPERTIES, _docx_note_parts, _docx_note_id)
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 XMLNS = "http://www.w3.org/2000/xmlns/"
@@ -89,7 +89,13 @@ def _check_control_edit(node):
 
 def _text(node):
     parts = []
-    for child in node.getElementsByTagName("*"):
+    def visible_children(parent):
+        for child in _elements(parent):
+            if child.namespaceURI == W and child.localName in DOCX_TEXT_PROPERTIES:
+                continue
+            yield child
+            yield from visible_children(child)
+    for child in visible_children(node):
         if child.namespaceURI != W:
             continue
         if child.localName == "t":
@@ -126,7 +132,7 @@ def _put(node, text):
     node.appendChild(node.ownerDocument.createTextNode(text))
 
 
-def _editable(paragraph):
+def _editable(paragraph, *, allow_references=False):
     """Allow plain formatted runs, including soft breaks; reject hidden payloads."""
     if paragraph.namespaceURI != W or paragraph.localName != "p":
         raise WordEditUnsupported("修改位置不是 Word 段落")
@@ -137,7 +143,10 @@ def _editable(paragraph):
         raise WordEditUnsupported("修改位置包含已有修订")
     for run in _children(paragraph, "r"):
         for node in _elements(run):
-            if node.namespaceURI != W or node.localName not in {"rPr", "t", "tab", "br", "cr"}:
+            allowed = {"rPr", "t", "tab", "br", "cr"}
+            if allow_references:
+                allowed |= {'footnoteReference', 'endnoteReference', 'footnoteRef', 'endnoteRef'}
+            if node.namespaceURI != W or node.localName not in allowed:
                 raise WordEditUnsupported("修改位置包含图片、域、脚注、符号或其他非文本内容")
             if node.localName == "br" and node.getAttributeNS(W, "type") not in {"", "textWrapping"}:
                 raise WordEditUnsupported("修改位置包含分页或分栏符；请在 Word 中处理该位置")
@@ -210,17 +219,47 @@ def _replace_text(paragraph, text, tracked=False, change_ids=None):
     if old == text:
         return
     _check_control_edit(paragraph)
-    _editable(paragraph)
+    _editable(paragraph, allow_references=True)
     if any(not (c in "\t\n" or 0x20 <= ord(c) <= 0xD7FF or 0xE000 <= ord(c) <= 0xFFFD or 0x10000 <= ord(c) <= 0x10FFFF) for c in text):
         raise WordEditUnsupported("修改文本包含不能写入 Word 的控制字符")
     document = paragraph.ownerDocument
     runs = _children(paragraph, "r")
+    markers, offset = {}, 0
+    marker_count = 0
+    for run in runs:
+        for child in _elements(run):
+            if child.namespaceURI == W and child.localName in {'footnoteReference', 'endnoteReference', 'footnoteRef', 'endnoteRef'}:
+                marker_run = run.cloneNode(False)
+                for props in _children(run, 'rPr'):
+                    marker_run.appendChild(props.cloneNode(True))
+                marker_run.appendChild(child.cloneNode(True))
+                markers.setdefault(offset, []).append(marker_run)
+                marker_count += 1
+                if marker_count > 1024:
+                    raise WordEditUnsupported('单段注释标记过多，请在 Word 中核对并修改该位置')
+                run.removeChild(child)
+            elif child.namespaceURI == W and child.localName == 't':
+                offset += sum(len(c.data) for c in child.childNodes if c.nodeType in {c.TEXT_NODE, c.CDATA_SECTION_NODE})
+            elif child.namespaceURI == W and child.localName in {'tab', 'br', 'cr'}:
+                offset += 1
     result = []
+    emitted = set()
+    def emit_markers(position):
+        if position not in emitted:
+            result.extend(markers.get(position, []))
+            emitted.add(position)
     change_ids = change_ids if change_ids is not None else itertools.count(1)
     for tag, start, end, new_start, new_end in _opcodes(old, text):
+        emit_markers(start)
         if tag == "equal":
-            result.extend(_run_slices(runs, start, end))
+            cursor = start
+            for boundary in [*sorted(position for position in markers if start < position < end), end]:
+                result.extend(_run_slices(runs, cursor, boundary))
+                emit_markers(boundary)
+                cursor = boundary
             continue
+        if any(start < position < end for position in markers):
+            raise WordEditUnsupported('修改跨越注释引用，无法可靠保留其指向；请在 Word 中核对该位置')
         if tracked and end > start:
             deletion = _element(document, "del", id=next(change_ids), author="Document Review Studio")
             for run in _run_slices(runs, start, end, deleted=True):
@@ -234,6 +273,8 @@ def _replace_text(paragraph, text, tracked=False, change_ids=None):
                 result.append(insertion)
             else:
                 result.append(run)
+        emit_markers(end)
+    emit_markers(len(old))
     for run in runs:
         paragraph.removeChild(run)
     for node in result:
@@ -322,7 +363,7 @@ def _replace_cell(cell, desired, tracked, change_ids):
         _replace_text(paragraph, "".join(parts), tracked, change_ids)
 
 
-def _bind_blocks(body, original, revised):
+def _bind_blocks(body, original, revised, note_nodes=None):
     originals = {b.block_id: b for b in original.blocks}
     finals = {b.block_id: b for b in revised.blocks}
     if len(originals) != len(original.blocks) or len(finals) != len(revised.blocks):
@@ -338,7 +379,8 @@ def _bind_blocks(body, original, revised):
         if any(_all(body, name) for name in DOCX_CONTENT_WRAPPERS | {'sdt'}):
             raise WordEditUnsupported('旧版识别未绑定 Word 内容容器，请重新解析为新项目')
         source_nodes = [n for n in _elements(body) if n.namespaceURI == W and n.localName in {"p", "tbl"}]
-    nodes, text_nodes = {}, set()
+    nodes, text_nodes, note_source_nodes = {}, set(), {}
+    split_sources = {block.attrs.get('split_from_block_id') for block in revised.blocks if block.attrs.get('split_from_block_id')}
     for block in original.blocks:
         final = finals.get(block.block_id)
         if final is not None and (final.kind != block.kind or final.level != block.level or final.children != block.children):
@@ -353,13 +395,30 @@ def _bind_blocks(body, original, revised):
         location = block.location
         if location is None:
             raise WordEditUnsupported("Word 原文缺少定位")
-        node = source_nodes[_checked_index(location.paragraph, len(source_nodes), "Word 正文")]
+        story = block.attrs.get('docx_story')
+        sources = source_nodes
+        if story is not None:
+            if (original.metadata.get('docx_note_layout') != DOCX_NOTE_LAYOUT or not isinstance(story, dict)
+                    or set(story) != {'kind', 'id', 'part'}
+                    or any(not isinstance(value, str) for value in story.values())):
+                raise WordEditUnsupported('Word 注释定位版本或字段无效')
+            key = (story['kind'], story['id'], story['part'])
+            if key not in (note_nodes or {}):
+                raise WordEditUnsupported('Word 注释位置与原件不一致')
+            if key not in note_source_nodes:
+                note_source_nodes[key] = list(_content_nodes(note_nodes[key], {'p', 'tbl'}))
+            sources = note_source_nodes[key]
+        if final is not None and final.attrs.get('docx_story') != story:
+            raise WordEditUnsupported('原有文本块的 Word 部件归属发生变化')
+        if block.attrs.get('note_references') and block.block_id in split_sources:
+            raise WordEditUnsupported('含注释引用的段落拆分需要在 Word 中核对引用位置')
+        node = sources[_checked_index(location.paragraph, len(sources), "Word 正文或注释")]
         expected = "tbl" if block.kind in {"table", "table_cell"} else "p"
         if node.localName != expected:
             raise WordEditUnsupported("Word 原文定位类型不一致")
         if block.kind == "table_cell":
             container = originals.get(location.table_id)
-            if container is None or container.kind != "table" or container.location is None or container.location.paragraph != location.paragraph or block.block_id not in container.children:
+            if container is None or container.kind != "table" or container.location is None or container.location.paragraph != location.paragraph or container.attrs.get('docx_story') != story or block.block_id not in container.children:
                 raise WordEditUnsupported("表格单元格与容器绑定不一致")
             node = _cell(node, location)
             if final is None:
@@ -446,6 +505,13 @@ def _body_anchor(node, body):
 
 
 def preserve_docx(source_bytes, original, revised, *, tracked=False):
+    try:
+        return _preserve_docx(source_bytes, original, revised, tracked=tracked)
+    except IngestionError as exc:
+        raise WordEditUnsupported(str(exc)) from exc
+
+
+def _preserve_docx(source_bytes, original, revised, *, tracked=False):
     if hashlib.sha256(source_bytes).hexdigest() != original.source.sha256:
         raise WordEditUnsupported("Word 原件摘要与审查文档不一致")
     archive = _zip_safety(source_bytes, IngestionLimits())
@@ -454,9 +520,17 @@ def preserve_docx(source_bytes, original, revised, *, tracked=False):
         raise WordEditUnsupported("Word 原件缺少正文")
     if original.quality.human_corrected or original.metadata.get("revisions_present"):
         raise WordEditUnsupported("原件含既有修订或识别全文经过人工替换，无法安全绑定原位 Word 修改")
-    if _docx_story_revisions(archive, document_xml=document_xml):
+    note_parts = _docx_note_parts(archive)
+    note_roots = {data['part']: data['root'] for data in note_parts.values() if data['root'] is not None}
+    if _docx_story_revisions(archive, document_xml=document_xml, note_parts=note_roots):
         raise WordEditUnsupported("原件含既有修订，无法安全绑定原位 Word 修改")
-    if _docx_content_issues(document_xml):
+    for kind, data in note_parts.items():
+        if data['notes'] and not data['relationship_bound']:
+            raise WordEditUnsupported('Word 注释部件缺少明确关系，无法确认原位修改归属')
+        if data['external'] or any(_docx_note_id(ref.get('{'+W+'}id')) not in data['notes']
+                                  for ref in document_xml.findall('.//{'+W+'}'+kind+'Reference')):
+            raise WordEditUnsupported('Word 原件存在无法读取的注释引用，请先核对原件')
+    if _docx_content_issues(document_xml) or any(_docx_content_issues(root) for root in note_roots.values()):
         raise WordEditUnsupported('Word 原件含尚未完整识别的特殊内容，无法安全保格式导出')
     del document_xml
     doc = minidom.parseString(archive.read("word/document.xml"))
@@ -472,27 +546,43 @@ def preserve_docx(source_bytes, original, revised, *, tracked=False):
     # unrelated part of document.xml. New nodes use a collision-free prefix.
     _declare_word_prefix(doc)
     body = body_nodes[0]
-    originals, finals, nodes = _bind_blocks(body, original, revised)
-    existing_ids = [int(node.getAttributeNS(W, "id")) for node in doc.getElementsByTagName("*") if node.getAttributeNS(W, "id").isdigit()]
+    documents = {'word/document.xml': doc}
+    note_nodes = {}
+    for kind, data in note_parts.items():
+        if data['root'] is None:
+            continue
+        note_doc = minidom.parseString(archive.read(data['part']))
+        _declare_word_prefix(note_doc)
+        documents[data['part']] = note_doc
+        for node in _children(note_doc.documentElement, kind):
+            if node.getAttributeNS(W, 'type') in {'', 'normal'}:
+                note_nodes[(kind, _docx_note_id(node.getAttributeNS(W, 'id')), data['part'])] = node
+    originals, finals, nodes = _bind_blocks(body, original, revised, note_nodes)
+    existing_ids = [int(node.getAttributeNS(W, "id")) for document in documents.values()
+                    for node in document.getElementsByTagName("*") if node.getAttributeNS(W, "id").isdigit()]
     change_ids = itertools.count(max(existing_ids, default=0) + 1)
     changed, structural, retained_sections = 0, False, 0
+    changed_documents = set()
     for block in original.blocks:
         final = finals.get(block.block_id)
         if block.kind in PROTECTED_KINDS or (final is not None and final.text == block.text):
             continue
         node = nodes[block.block_id]
+        changed_documents.add(node.ownerDocument)
         changed += 1
         if final is None:
             if tracked:
                 raise WordEditUnsupported("本轮含段落删除；可导出保格式净稿，原生修订副本仅支持段内替换")
             if _wrapped_ancestor(node):
                 raise WordEditUnsupported('内容容器内的段落增删或拆分需要人工核对版式')
-            _editable(node)
-            if _all(node, "sectPr"):
+            note_marker = any(_all(node, name) for name in ('footnoteRef', 'endnoteRef'))
+            if not note_marker:
+                _editable(node)
+            if _all(node, "sectPr") or note_marker:
                 # A section break belongs to the paragraph mark, not the text.
                 # Keep its empty paragraph so header/footer/page layout survive.
                 _replace_text(node, "")
-                retained_sections += 1
+                retained_sections += bool(_all(node, 'sectPr'))
             else:
                 node.parentNode.removeChild(node)
             structural = True
@@ -507,24 +597,35 @@ def preserve_docx(source_bytes, original, revised, *, tracked=False):
             continue
         if tracked:
             raise WordEditUnsupported("本轮含新增段落；原生修订副本仅支持段内替换")
+        story = block.attrs.get('docx_story')
+        if story:
+            if not isinstance(story, dict) or set(story) != {'kind', 'id', 'part'} or any(not isinstance(value, str) for value in story.values()):
+                raise WordEditUnsupported('新增段落的 Word 注释归属无效')
+            parent = note_nodes.get((story['kind'], story['id'], story['part']))
+            if parent is None:
+                raise WordEditUnsupported('不能通过正文修改新增未绑定的 Word 注释')
+        else:
+            parent = body
         # Table cells form one indivisible body node. A body paragraph between
         # a container and its cells cannot represent the reviewed order.
-        following = revised.blocks[index + 1:]
+        following = [b for b in revised.blocks[index + 1:] if b.attrs.get('docx_story') == story]
+        preceding = [b for b in revised.blocks[:index] if b.attrs.get('docx_story') == story]
         next_original = next((b for b in following if b.block_id in originals), None)
-        previous_original = next((b for b in reversed(revised.blocks[:index]) if b.block_id in originals), None)
+        previous_original = next((b for b in reversed(preceding) if b.block_id in originals), None)
         if any(_wrapped_ancestor(nodes.get(b.block_id)) for b in (next_original, previous_original) if b):
             raise WordEditUnsupported('内容容器附近的段落增删或拆分需要人工核对版式')
-        previous_anchor = _body_anchor(nodes.get(previous_original.block_id), body) if previous_original else None
-        next_anchor = _body_anchor(nodes.get(next_original.block_id), body) if next_original else None
+        previous_anchor = _body_anchor(nodes.get(previous_original.block_id), parent) if previous_original else None
+        next_anchor = _body_anchor(nodes.get(next_original.block_id), parent) if next_original else None
         if next_original is not None and (next_original.kind == "table_cell" or (previous_anchor is not None and previous_anchor is next_anchor)):
             raise WordEditUnsupported("不能将正文段落插入表格单元格或同一图片段落内部")
-        next_node = next((nodes[b.block_id] for b in following if b.block_id in nodes and nodes[b.block_id].parentNode == body), None)
+        next_node = next((nodes[b.block_id] for b in following if b.block_id in nodes and nodes[b.block_id].parentNode == parent), None)
         if next_node is None:
-            sections = _children(body, "sectPr")
+            sections = _children(parent, "sectPr")
             next_node = sections[0] if sections else None
-        neighbors = list(reversed(revised.blocks[:index])) + following
-        node = _new_paragraph(doc, block, neighbors, nodes)
-        body.insertBefore(node, next_node)
+        neighbors = list(reversed(preceding)) + following
+        node = _new_paragraph(parent.ownerDocument, block, neighbors, nodes)
+        parent.insertBefore(node, next_node)
+        changed_documents.add(parent.ownerDocument)
         nodes[block.block_id] = node
         changed += 1
         structural = True
@@ -532,10 +633,11 @@ def preserve_docx(source_bytes, original, revised, *, tracked=False):
     report = {"source_layout_preserved": True, "native_track_changes": tracked, "changed_elements": changed, "structural_edits": structural, "unchanged_parts_preserved": True, "retained_section_boundaries": retained_sections, "moved_section_boundaries": moved_sections}
     if not changed:
         return source_bytes, report
-    main = doc.toxml(encoding="utf-8")
-    minidom.parseString(main)
+    serialized = {part: document.toxml(encoding='utf-8') for part, document in documents.items() if document in changed_documents}
+    for data in serialized.values():
+        minidom.parseString(data)
     result = io.BytesIO()
     with zipfile.ZipFile(result, "w", zipfile.ZIP_DEFLATED) as output:
         for name in archive.namelist():
-            output.writestr(name, main if name == "word/document.xml" else archive.read(name))
+            output.writestr(name, serialized.get(name, archive.read(name)))
     return result.getvalue(), report

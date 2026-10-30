@@ -27,6 +27,12 @@ const esc = (value) =>
   );
 
 // Presentation only: evidence and editable manuscript text remain unchanged.
+function sourceBlockLabel(block) {
+  const story = block.attrs?.docx_story;
+  const kind = story?.kind === 'footnote' ? '脚注' : story?.kind === 'endnote' ? '尾注' : null;
+  return `${block.block_id} · ${kind ? `${tr(kind)} · ${tr('来源标识')} ${story.id}` : `page ${block.location?.page || '-'}`}`;
+}
+
 function sourceBlockText(block) {
   const text = String(block.text ?? ''), attrs = block.attrs || {};
   const marker = typeof attrs.list_marker === 'string'

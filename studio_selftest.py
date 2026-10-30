@@ -65,6 +65,8 @@ def run_self_test() -> dict:
         checked.append("table-grid")
         _check_docx_containers(root / "docx-containers")
         checked.append("docx-containers")
+        _check_docx_notes(root / 'docx-notes')
+        checked.append('docx-notes')
         _check_reviewable_text(root / "reviewable-text")
         checked.append("reviewable-text")
         _check_academic_protocols(root / "academic")
@@ -197,16 +199,67 @@ def _check_readonly_recovery(library: Path) -> None:
 
 
 def _docx_visibility_fixture() -> bytes:
-    """Small synthetic Word file with revisions and omitted note material."""
+    """Small synthetic Word file with revisions and missing note references."""
     import zipfile
     namespace = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr('[Content_Types].xml', '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
-        archive.writestr('word/document.xml', f'<w:document xmlns:w="{namespace}"><w:body><w:p><w:pPr><w:pPrChange w:id="1"><w:pPr/></w:pPrChange></w:pPr><w:r><w:t>Review the supplied claim only.</w:t><w:footnoteReference w:id="1"/><w:endnoteReference w:id="1"/></w:r></w:p></w:body></w:document>')
+        archive.writestr('word/document.xml', f'<w:document xmlns:w="{namespace}"><w:body><w:p><w:pPr><w:pPrChange w:id="1"><w:pPr/></w:pPrChange></w:pPr><w:r><w:t>Review the supplied claim only.</w:t><w:footnoteReference w:id="2"/><w:endnoteReference w:id="2"/></w:r></w:p></w:body></w:document>')
+        relations = ''.join(f'<Relationship Id="{kind}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/{kind}s" Target="{kind}s.xml"/>' for kind in ('footnote', 'endnote'))
+        archive.writestr('word/_rels/document.xml.rels', '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+relations+'</Relationships>')
         for kind in ('footnote', 'endnote'):
-            archive.writestr(f'word/{kind}s.xml', f'<w:{kind}s xmlns:w="{namespace}"><w:{kind} w:id="1"><w:p><w:r><w:t>SYNTHETIC-NOTE-NOT-EXTRACTED</w:t></w:r></w:p></w:{kind}></w:{kind}s>')
+            archive.writestr(f'word/{kind}s.xml', f'<w:{kind}s xmlns:w="{namespace}"><w:{kind} w:id="1"><w:p><w:r><w:t>SYNTHETIC-NOTE-CONTENT</w:t></w:r></w:p></w:{kind}></w:{kind}s>')
     return output.getvalue()
+
+
+def _docx_notes_fixture() -> bytes:
+    import zipfile
+    namespace = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    relation = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr('[Content_Types].xml', '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/footnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"/><Override PartName="/word/endnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml"/></Types>')
+        archive.writestr('_rels/.rels', f'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="main" Type="{relation}/officeDocument" Target="word/document.xml"/></Relationships>')
+        archive.writestr('word/_rels/document.xml.rels', f'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="foot" Type="{relation}/footnotes" Target="footnotes.xml"/><Relationship Id="end" Type="{relation}/endnotes" Target="endnotes.xml"/></Relationships>')
+        archive.writestr('word/document.xml', f'<w:document xmlns:w="{namespace}"><w:body><w:p><w:r><w:t>Bounded claim.</w:t><w:footnoteReference w:id="7"/><w:endnoteReference w:id="7"/></w:r></w:p></w:body></w:document>')
+        for kind, text in [('footnote', '相关人员及时完成报名。 English 简体中文 繁體中文 Deutsch Straße Français été 日本語 Русский Latīna'), ('endnote', 'This claim excludes other settings.')]:
+            archive.writestr(f'word/{kind}s.xml', f'<w:{kind}s xmlns:w="{namespace}"><w:{kind} w:id="7"><w:p><w:pPr><w:tabs><w:tab w:val="left" w:pos="360"/></w:tabs></w:pPr><w:r><w:{kind}Ref/><w:t>{text}</w:t></w:r></w:p></w:{kind}></w:{kind}s>')
+    return output.getvalue()
+
+
+def _check_docx_notes(library: Path) -> None:
+    from copy import deepcopy
+    import zipfile
+    from xml.etree import ElementTree as ET
+    from document_review_studio import DocumentReviewProject
+    from document_review_model import ReviewContext
+    from document_review_word import preserve_docx
+    raw = _docx_notes_fixture()
+    project = DocumentReviewProject.create(library, filename='notes.docx', content=raw)
+    document = project.document()
+    note = next(block for block in document.blocks if block.attrs.get('docx_story', {}).get('kind') == 'footnote')
+    if note.block_id != document.blocks[0].attrs['note_references'][0]['block_id']:
+        raise RuntimeError('Packaged Word import loses a note association')
+    project.confirm_extraction('confirm')
+    project.confirm_context(ReviewContext('paper', 'unknown', 'unknown', 'author', 'researchers', review_profile='academic', research_type='theoretical').to_dict())
+    request = project.prepare_ai_audits(['academic_argument'], provider='self-test', model='not-invoked')[0]
+    if note.text not in request['prompt'] or 'Read relevant qualifications' not in request['prompt']:
+        raise RuntimeError('Packaged academic review omits note context')
+    revised = deepcopy(document)
+    next(block for block in revised.blocks if block.block_id == note.block_id).text = '负责人周五前完成报名。'
+    namespace = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
+    for tracked in (False, True):
+        result, _ = preserve_docx(raw, document, revised, tracked=tracked)
+        with zipfile.ZipFile(io.BytesIO(raw)) as before, zipfile.ZipFile(io.BytesIO(result)) as after:
+            root = ET.fromstring(after.read('word/footnotes.xml'))
+            if len(root.findall('.//' + namespace + 'footnoteRef')) != 1 or '负责人周五前完成报名。' != ''.join(node.text or '' for node in root.iter(namespace+'t')):
+                raise RuntimeError('Packaged Word note edit loses text or reference mark')
+            for name in before.namelist():
+                if name != 'word/footnotes.xml' and before.read(name) != after.read(name):
+                    raise RuntimeError('Packaged Word note edit changes an unrelated part')
+    if (project.root/'source/notes.docx').read_bytes() != raw or project.integrity_errors():
+        raise RuntimeError('Packaged note review changes source bytes')
 
 
 def _table_grid_fixture() -> bytes:
@@ -433,7 +486,7 @@ def _check_docx_visibility(library: Path) -> None:
     from document_review_studio import DocumentReviewProject, ReviewStudioError
     from document_review_model import ReviewContext
     project = DocumentReviewProject.create(library, filename="visibility.docx", content=_docx_visibility_fixture())
-    expected = {"unaccepted-revisions", "footnotes-present", "endnotes-present"}
+    expected = {"unaccepted-revisions", "footnotes-incomplete", "endnotes-incomplete"}
     if not expected <= {warning.code for warning in project.document().warnings}:
         raise RuntimeError("Packaged Word recognition misses revisions or omitted notes")
     try:
@@ -449,7 +502,7 @@ def _check_docx_visibility(library: Path) -> None:
     contract = json.loads(request['prompt'].split('```json\n', 1)[1].split('\n```', 1)[0])
     if not expected <= {row['code'] for row in contract['source_visibility']['extraction_warnings']}:
         raise RuntimeError("Packaged Word visibility limits do not reach the saved prompt")
-    if 'SYNTHETIC-NOTE-NOT-EXTRACTED' in request['prompt'] or project.integrity_errors():
+    if 'SYNTHETIC-NOTE-CONTENT' not in request['prompt'] or project.integrity_errors():
         raise RuntimeError("Packaged Word prompt misrepresents its visible source")
 
 

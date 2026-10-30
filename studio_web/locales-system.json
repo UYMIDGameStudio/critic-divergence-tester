@@ -238,5 +238,14 @@
   "整体路线：": {"zh-Hant": "整體路線：", "en": "Overall strategy: "},
   "审查重点：": {"zh-Hant": "審查重點：", "en": "Review priorities: "},
   "范围限制：": {"zh-Hant": "範圍限制：", "en": "Scope limits: "},
-  "审查方案依据": {"zh-Hant": "審查方案依據", "en": "Evidence for the review plan"}
+  "审查方案依据": {"zh-Hant": "審查方案依據", "en": "Evidence for the review plan"},
+  "脚注": {"zh-Hant": "腳註", "en": "Footnote"},
+  "尾注": {"zh-Hant": "尾註", "en": "Endnote"},
+  "来源标识": {"zh-Hant": "來源標識", "en": "Source ID"},
+  "注释": {"zh-Hant": "註釋", "en": "Notes"},
+  "返回引用段落": {"zh-Hant": "返回引用段落", "en": "Back to citing passage"},
+  "注释正文不可用": {"zh-Hant": "註釋正文無法讀取", "en": "Note text unavailable"},
+  "DOCX 的脚注引用缺少可读取的注释正文；请对照原件核对，不能将未读取内容当作原文遗漏。": {"zh-Hant": "DOCX 的腳註引用缺少可讀取的註釋正文；請對照原件核對，不能將未讀取內容當作原文遺漏。", "en": "Some DOCX footnote references have no readable note text. Check the original; unavailable content is not evidence of an omission."},
+  "DOCX 的尾注引用缺少可读取的注释正文；请对照原件核对，不能将未读取内容当作原文遗漏。": {"zh-Hant": "DOCX 的尾註引用缺少可讀取的註釋正文；請對照原件核對，不能將未讀取內容當作原文遺漏。", "en": "Some DOCX endnote references have no readable note text. Check the original; unavailable content is not evidence of an omission."},
+  "DOCX 注释部件缺少明确的文件关系，已按常用路径读取；请对照原件确认注释归属。": {"zh-Hant": "DOCX 註釋部件缺少明確的檔案關係，已按常用路徑讀取；請對照原件確認註釋歸屬。", "en": "The DOCX note part has no explicit package relationship and was read from the conventional path. Check its association against the original."}
 }

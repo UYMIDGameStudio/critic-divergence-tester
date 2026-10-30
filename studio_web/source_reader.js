@@ -1,6 +1,6 @@
 // Current extracted source stays available independently of the Finding count.
 function sourceReaderNavigation(blocks) {
-  const headings = blocks.filter(block => block.kind === 'heading' && block.text?.trim());
+  const headings = blocks.filter(block => block.kind === 'heading' && block.text?.trim() && !block.attrs?.docx_story);
   const pages = new Map();
   for (const block of blocks) {
     const page = block.location?.page;
@@ -13,15 +13,44 @@ function sourceReaderNavigation(blocks) {
     return `<li style="--source-depth:${level - 1}"><a href="#source-${esc(block.block_id)}" title="${esc(title)}">${esc(label)}</a></li>`;
   }).join('')}</ol></nav></details>` : ui`<p class="muted source-navigation-help">未识别出章节标题，可搜索正文或定位编号。</p>`;
   const pageList = pages.size ? ui`<details class="source-pages"><summary>来源页码 · ${pages.size}</summary><nav aria-label="${esc(tr('来源页码'))}">${[...pages].map(([page, id]) => `<a href="#source-${esc(id)}" class="pill">${page}</a>`).join('')}</nav></details>` : '';
-  return `<div class="source-reader-navigation">${headingList}${pageList}</div>`;
+  const notes = new Map();
+  for (const block of blocks) {
+    const story = block.attrs?.docx_story;
+    if (story && ['footnote', 'endnote'].includes(story.kind)) {
+      const key = `${story.kind}:${story.id}`;
+      if (!notes.has(key)) notes.set(key, block);
+    }
+  }
+  const noteList = notes.size ? ui`<details class="source-notes"><summary>注释 · ${notes.size}</summary><nav aria-label="${esc(tr('注释'))}">${[...notes.values()].map(block => `<a href="#source-${esc(block.block_id)}">${esc(sourceBlockLabel(block))}</a>`).join('')}</nav></details>` : '';
+  return `<div class="source-reader-navigation">${headingList}${pageList}${noteList}</div>`;
 }
 
 function sourceReaderPane(view, standalone = false) {
   const blocks = view.extraction?.blocks || [];
+  const notes = new Map(), origins = new Map();
+  for (const block of blocks) {
+    const story = block.attrs?.docx_story;
+    if (story && !notes.has(`${story.kind}:${story.id}`)) notes.set(`${story.kind}:${story.id}`, block.block_id);
+    for (const reference of block.attrs?.note_references || []) {
+      const key = `${reference.kind}:${reference.id}`;
+      if (!origins.has(key)) origins.set(key, new Set());
+      if (origins.get(key).size < 16) origins.get(key).add(block.block_id);
+    }
+  }
+  const noteLinks = block => {
+    const links = (block.attrs?.note_references || []).map(reference => {
+      const target = notes.get(`${reference.kind}:${reference.id}`);
+      const label = `${tr(reference.kind === 'footnote' ? '脚注' : '尾注')} · ${tr('来源标识')} ${reference.id}`;
+      return target ? `<a href="#source-${esc(target)}">${esc(label)}</a>` : `<span>${esc(label)} · ${tr('注释正文不可用')}</span>`;
+    });
+    const story = block.attrs?.docx_story;
+    for (const id of origins.get(`${story?.kind}:${story?.id}`) || []) links.push(`<a href="#source-${esc(id)}">${tr('返回引用段落')} · ${esc(id)}</a>`);
+    return links.length ? `<div class="source-note-links">${links.join('')}</div>` : '';
+  };
   return ui`<section class="${standalone ? '' : 'card '}pane manuscript-pane"><div class="source-reader-toolbar"><h3>原文与定位</h3><div class="source-reader-controls"><input id="workspace-search" type="search" aria-label="${esc(tr('搜索原文'))}" placeholder="搜索原文"><button type="button" id="clear-source-search" class="secondary" disabled>清除搜索</button></div><p id="source-search-status" class="muted source-reader-status" role="status" aria-live="polite">${esc(tr('搜索结果'))} · ${blocks.length} / ${blocks.length}</p>${sourceReaderNavigation(blocks)}</div>${blocks.map(block => {
     const heading = block.kind === 'heading';
     const level = Number.isInteger(block.level) && block.level > 0 && block.level <= 9 ? block.level : null;
-    return `<div class="source-block${heading ? ' source-kind-heading' : ''}" id="source-${esc(block.block_id)}"><small>${esc(block.block_id)} · page ${esc(block.location?.page || '-')}</small><div class="source-text"${heading && level ? ` role="heading" aria-level="${level}"` : ''}>${pdfDisplayText(sourceBlockText(block))}</div></div>`;
+    return `<div class="source-block${heading ? ' source-kind-heading' : ''}" id="source-${esc(block.block_id)}"><small>${esc(sourceBlockLabel(block))}</small><div class="source-text"${heading && level ? ` role="heading" aria-level="${level}"` : ''}>${pdfDisplayText(sourceBlockText(block))}</div>${noteLinks(block)}</div>`;
   }).join('')}</section>`;
 }
 

@@ -86,6 +86,8 @@ main { max-width: 1480px; margin: auto; padding: 28px 32px 64px; }
 .source-block { padding: 20px 4px; border-bottom: 1px solid var(--line); white-space: pre-wrap; font: 1rem/1.9 var(--font-reading); scroll-margin-block: 16px; }
 .source-block small { font: .6875rem/1.6 var(--font-sans); color: var(--muted); }
 .source-kind-heading .source-text { margin-top: 8px; font-weight: 600; font-size: 1.15rem; line-height: 1.5; }
+.source-note-links { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 10px; font: .75rem/1.6 var(--font-sans); }
+.source-notes nav { display: grid; gap: 8px; }
 .source-reader-toolbar { position: sticky; top: 0; z-index: 1; padding-top: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); background: var(--paper); }
 .workspace > .manuscript-pane { padding-top: 0; }
 .workspace > .manuscript-pane > .source-reader-toolbar { padding-top: 24px; }
@@ -99,7 +101,7 @@ main { max-width: 1480px; margin: auto; padding: 28px 32px 64px; }
 .source-reader-navigation details, .source-navigation-help { min-width: 0; }
 .source-reader-navigation details { margin: 0; }
 .source-reader-navigation summary { font-size: .875rem; }
-.source-outline nav, .source-pages nav { max-height: 24vh; overflow: auto; }
+.source-outline nav, .source-pages nav, .source-notes nav { max-height: 24vh; overflow: auto; }
 .source-outline ol { padding: 0; margin: 12px 0; list-style: none; }
 .source-outline li { padding-inline-start: calc(var(--source-depth, 0) * 8px); }
 .source-outline a { display: block; padding: 5px 0; overflow-wrap: anywhere; }

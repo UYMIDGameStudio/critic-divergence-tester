@@ -379,6 +379,8 @@ class RevisionPlanBuilder(_ProjectComponent):
             if any(b not in positions for b in block_ids):
                 raise ReviewStudioError("范围包含未知定位")
             indices = [positions[b] for b in block_ids]
+            if any(document.block(b).attrs.get('docx_story') != document.block(block_ids[0]).attrs.get('docx_story') for b in block_ids):
+                raise ReviewStudioError('范围替换不能跨越正文、脚注或尾注的不同部件')
             if indices != list(range(indices[0], indices[0] + len(indices))) or any(document.block(b).kind not in {"paragraph", "heading", "list_item"} for b in block_ids):
                 raise ReviewStudioError("只能选择连续普通文本块，不能跨越表格或图片")
         elif block_ids:
@@ -627,6 +629,9 @@ class RevisionPlanBuilder(_ProjectComponent):
             kind = "heading" if text.lstrip().startswith("# ") else "paragraph"
             clean_text = text.lstrip()[2:].strip() if kind == "heading" else text
             attrs = {"generated_by_action": action["action_id"]}
+            source_story = original_by_id[action['block_id']].attrs.get('docx_story')
+            if source_story and not position.startswith('append-'):
+                attrs['docx_story'] = dict(source_story)
             if split_from_block_id is not None:
                 attrs["split_from_block_id"] = split_from_block_id
                 attrs.update(list_attributes(original_by_id[split_from_block_id]))
@@ -675,6 +680,16 @@ class RevisionPlanBuilder(_ProjectComponent):
                 location = replace(block.location, block_kind=kind) if block.location else None
                 revised_blocks[index] = replace(block, kind=kind, location=location, attrs=attributes)
 
+        note_blocks = {}
+        for block in revised_blocks:
+            story = block.attrs.get('docx_story')
+            if story:
+                note_blocks.setdefault((story['kind'], story['id']), block.block_id)
+        for index, block in enumerate(revised_blocks):
+            if block.attrs.get('note_references'):
+                references = [{**ref, 'block_id': note_blocks.get((ref['kind'], ref['id']))}
+                              for ref in block.attrs['note_references']]
+                revised_blocks[index] = replace(block, attrs={**block.attrs, 'note_references': references})
         revised_by_id = {block.block_id: index for index, block in enumerate(revised_blocks)}
         cell_positions = {}
         if any(action["operation"] == "replace_table_cell" for action, _, _ in approved):

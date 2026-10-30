@@ -59,7 +59,7 @@ async function main() {
     }
     for (const [locale, width, expected] of [
       ['zh-Hant', 1440, containers ? ['尚未完整辨識的特殊內容'] : ['移動或格式修訂', '腳註', '尾註']],
-      ['en', 320, containers ? ['special content', 'not been fully extracted'] : ['move or formatting revisions', 'footnotes', 'endnotes']],
+      ['en', 320, containers ? ['special content', 'not been fully extracted'] : ['move or formatting revisions', 'footnote references', 'endnote references']],
     ]) {
       await page.locator('#ui-language').selectOption(locale);
       await page.setViewportSize({width, height: width === 1440 ? 1000 : 844});
@@ -88,11 +88,11 @@ async function main() {
       return {codes: contract.source_visibility.extraction_warnings.map(row => row.code),
         visibility: contract.source_visibility.docx_content_visibility,
         requestId: request.request_id, prompt: request.prompt,
-        noteTextPresent: request.prompt.includes('SYNTHETIC-NOTE-NOT-EXTRACTED'),
+        noteTextPresent: request.prompt.includes('SYNTHETIC-NOTE-CONTENT'),
         embeddedTextPresent: request.prompt.includes('SYNTHETIC-EMBEDDED-NOT-EXTRACTED')};
     });
-    assert.deepEqual(result.codes.sort(), containers ? ['docx-special-content'] : ['endnotes-present', 'footnotes-present', 'unaccepted-revisions']);
-    assert.equal(result.noteTextPresent, false);
+    assert.deepEqual(result.codes.sort(), containers ? ['docx-special-content'] : ['endnotes-incomplete', 'footnotes-incomplete', 'unaccepted-revisions']);
+    assert.equal(result.noteTextPresent, !containers);
     if (containers) {
       assert.equal(result.embeddedTextPresent, false);
       assert.equal(result.visibility.coverage_measurement, 'not-measured');

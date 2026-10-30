@@ -78,6 +78,7 @@ class AuditRunStore(_ProjectComponent):
                 "extraction_warnings": [warning.to_dict() for warning in document.warnings],
                 "quality_signals": document.quality.to_dict(),
                 "docx_content_visibility": document.metadata.get("docx_content_visibility"),
+                "note_visibility": document.metadata.get("note_visibility"),
                 "image_placeholder_count": sum(block.kind == "image_placeholder" for block in document.blocks),
                 "rule": "Review only the supplied blocks. Extraction confirmation is not proof that all original content was captured. If warnings indicate omitted notes, comments, images, tables or uncertain reading order, absence from these blocks is not evidence of absence from the original. Unexpanded embedded content, equations or compatibility branches must not be treated as absent. State the visibility limitation, identify what needs inspection, and make dependent criticisms conditional; do not invent missing content. Criticisms fully supported by visible passages remain eligible.",
             },
@@ -749,7 +750,7 @@ class AuditRunStore(_ProjectComponent):
             first.attrs.get("style_name", "").casefold() in {"title", "标题", "標題"}
             or first.text.strip() == Path(document.source.original_name).stem
             or kind and first.text.strip().casefold().endswith(kind)))
-        has_title = plain_title or any(block.kind == "heading" for block in document.blocks)
+        has_title = plain_title or any(block.kind == "heading" and not block.attrs.get('docx_story') for block in document.blocks)
         findings: list[Finding] = []
         observations: list[str] = []
         zero_basis: list[str] = []
