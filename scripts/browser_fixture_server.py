@@ -6,6 +6,10 @@ from unified_app import serve_unified_app
 
 fixture = None
 project_dir = None
+if "--docx-containers" in sys.argv[2:]:
+    from document_review_studio import DocumentReviewProject
+    from studio_selftest import _docx_container_fixture
+    project_dir = DocumentReviewProject.create(Path(sys.argv[1]), filename="containers.docx", content=_docx_container_fixture(special=True)).root
 if "--table-grid" in sys.argv[2:]:
     from document_review_studio import DocumentReviewProject
     from studio_selftest import _table_grid_fixture

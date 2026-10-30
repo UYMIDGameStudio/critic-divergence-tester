@@ -7,12 +7,14 @@ const os = require('node:os');
 const assert = require('node:assert/strict');
 
 async function main() {
+  const containers = process.argv.includes('--containers');
+  const label = containers ? 'docx-containers' : 'docx-visibility';
   const root = path.resolve(__dirname, '..');
-  const output = path.join(root, 'dist', 'browser-docx-visibility');
+  const output = path.join(root, 'dist', 'browser-' + label);
   await fs.mkdir(output, {recursive: true});
-  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'docx-visibility-'));
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), label + '-'));
   const child = spawn(process.env.STUDIO_PYTHON || 'python',
-    [path.join(__dirname, 'browser_fixture_server.py'), temporary, '--docx-visibility'],
+    [path.join(__dirname, 'browser_fixture_server.py'), temporary, '--' + label],
     {cwd: root, windowsHide: true, env: {...process.env, PYTHONUTF8: '1'}});
   let browser, stderr = '';
   const report = {passed: false, checks: [], errors: [], externalRequests: []};
@@ -47,9 +49,17 @@ async function main() {
     await page.goto(url);
     await page.locator('[data-action="confirm-extraction"]').waitFor();
     const originalBlocks = await page.evaluate(() => JSON.stringify(state.selected.extraction.blocks));
+    const source = await page.evaluate(() => ({directory: state.selected.directory, source: state.selected.project.source}));
+    const sourcePath = path.join(temporary, source.directory, source.source.relative_path);
+    const sourceBytes = await fs.readFile(sourcePath);
+    if (containers) {
+      assert.deepEqual(JSON.parse(originalBlocks).map(block => block.text),
+        ['Visible contribution inside a control.', 'Outside paragraph.']);
+      report.checks.push('Content-control text is present in extracted blocks in the original order');
+    }
     for (const [locale, width, expected] of [
-      ['zh-Hant', 1440, ['移動或格式修訂', '腳註', '尾註']],
-      ['en', 320, ['move or formatting revisions', 'footnotes', 'endnotes']],
+      ['zh-Hant', 1440, containers ? ['尚未完整辨識的特殊內容'] : ['移動或格式修訂', '腳註', '尾註']],
+      ['en', 320, containers ? ['special content', 'not been fully extracted'] : ['move or formatting revisions', 'footnotes', 'endnotes']],
     ]) {
       await page.locator('#ui-language').selectOption(locale);
       await page.setViewportSize({width, height: width === 1440 ? 1000 : 844});
@@ -58,7 +68,7 @@ async function main() {
       assert.equal(await page.evaluate(() => JSON.stringify(state.selected.extraction.blocks)), originalBlocks);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
       await page.screenshot({path: path.join(output, `${locale}-${width}.png`), fullPage: true});
-      report.checks.push(`${locale}-${width}: revisions, footnotes and endnotes have readable localized warnings; source remains intact`);
+      report.checks.push(`${locale}-${width}: ${label} warnings are localized and readable; source remains intact`);
     }
     await action('[data-action="confirm-extraction"]', 'confirm_extraction', 400);
     assert.equal(await page.evaluate(() => state.selected.state.extraction_state), 'unconfirmed');
@@ -76,10 +86,22 @@ async function main() {
       const request = state.selected.ai_requests.find(row => row.critic === 'academic_citations');
       const contract = JSON.parse(request.prompt.split('```json\n')[1].split('\n```')[0]);
       return {codes: contract.source_visibility.extraction_warnings.map(row => row.code),
-        noteTextPresent: request.prompt.includes('SYNTHETIC-NOTE-NOT-EXTRACTED')};
+        visibility: contract.source_visibility.docx_content_visibility,
+        requestId: request.request_id, prompt: request.prompt,
+        noteTextPresent: request.prompt.includes('SYNTHETIC-NOTE-NOT-EXTRACTED'),
+        embeddedTextPresent: request.prompt.includes('SYNTHETIC-EMBEDDED-NOT-EXTRACTED')};
     });
-    assert.deepEqual(result.codes.sort(), ['endnotes-present', 'footnotes-present', 'unaccepted-revisions']);
+    assert.deepEqual(result.codes.sort(), containers ? ['docx-special-content'] : ['endnotes-present', 'footnotes-present', 'unaccepted-revisions']);
     assert.equal(result.noteTextPresent, false);
+    if (containers) {
+      assert.equal(result.embeddedTextPresent, false);
+      assert.equal(result.visibility.coverage_measurement, 'not-measured');
+      assert.equal(result.visibility.issues['word/document.xml']['{http://schemas.openxmlformats.org/wordprocessingml/2006/main}altChunk'], 1);
+      assert.ok(result.prompt.includes('Visible contribution inside a control.'));
+      assert.ok(result.prompt.includes('equations or compatibility branches must not be treated as absent'));
+    }
+    assert.equal(await fs.readFile(path.join(temporary, source.directory, 'ai-requests', result.requestId, 'prompt.md'), 'utf8'), result.prompt);
+    assert.deepEqual(await fs.readFile(sourcePath), sourceBytes);
     report.checks.push('Explicit warning acceptance preserves the limits in the actual saved academic protocol');
     assert.deepEqual(report.errors, []);
     assert.deepEqual(report.externalRequests, []);
@@ -93,7 +115,7 @@ async function main() {
     await fs.writeFile(path.join(output, 'result.json'), JSON.stringify(report, null, 2));
     const cleanup = path.resolve(temporary);
     assert.equal(path.dirname(cleanup), path.resolve(os.tmpdir()));
-    assert.ok(path.basename(cleanup).startsWith('docx-visibility-'));
+    assert.ok(path.basename(cleanup).startsWith(label + '-'));
     await fs.rm(cleanup, {recursive: true, force: true});
   }
   process.stdout.write(JSON.stringify(report, null, 2) + '\n');

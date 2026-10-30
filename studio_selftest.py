@@ -63,6 +63,8 @@ def run_self_test() -> dict:
         checked.append("xml-limits")
         _check_table_grid(root / "table-grid")
         checked.append("table-grid")
+        _check_docx_containers(root / "docx-containers")
+        checked.append("docx-containers")
         _check_academic_protocols(root / "academic")
         checked.append("academic-quality-protocols")
         _check_readonly_recovery(root / "recovery")
@@ -212,6 +214,58 @@ def _table_grid_fixture() -> bytes:
         archive.writestr('_rels/.rels', f'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="document" Type="{relation}/officeDocument" Target="word/document.xml"/></Relationships>')
         archive.writestr('word/document.xml', f'<w:document xmlns:w="{namespace}"><w:body>{body}<w:sectPr/></w:body></w:document>')
     return output.getvalue()
+
+
+def _docx_container_fixture(*, special: bool = False) -> bytes:
+    import zipfile
+    namespace = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    relation = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+    body = ('<w:sdt><w:sdtPr><w:alias w:val="contribution"/></w:sdtPr><w:sdtContent>'
+        '<w:p><w:r><w:t>Visible contribution inside a control.</w:t></w:r></w:p>'
+        '</w:sdtContent></w:sdt><w:p><w:r><w:t>Outside paragraph.</w:t></w:r></w:p>')
+    if special:
+        body += '<w:altChunk r:id="chunk"/>'
+    output = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(_table_grid_fixture())) as template, zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
+        for name in template.namelist():
+            if name == 'word/document.xml':
+                archive.writestr(name, f'<w:document xmlns:w="{namespace}" xmlns:r="{relation}"><w:body>{body}<w:sectPr/></w:body></w:document>')
+            elif name == '[Content_Types].xml' and special:
+                archive.writestr(name, template.read(name).decode().replace('</Types>', '<Default Extension="html" ContentType="text/html"/></Types>'))
+            else:
+                archive.writestr(name, template.read(name))
+        if special:
+            archive.writestr('word/_rels/document.xml.rels', f'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="chunk" Type="{relation}/aFChunk" Target="import.html" TargetMode="Internal"/></Relationships>')
+            archive.writestr('word/import.html', '<p>SYNTHETIC-EMBEDDED-NOT-EXTRACTED</p>')
+    return output.getvalue()
+
+
+def _check_docx_containers(library: Path) -> None:
+    from copy import deepcopy
+    from document_review_studio import DocumentReviewProject, ReviewStudioError
+    from document_review_ingest import ingest_bytes
+    from document_review_word import preserve_docx
+    raw = _docx_container_fixture()
+    original = ingest_bytes('control.docx', raw)
+    if [block.text for block in original.blocks] != ['Visible contribution inside a control.', 'Outside paragraph.']:
+        raise RuntimeError('Packaged Word import omits content controls')
+    revised = deepcopy(original)
+    revised.blocks[0].text = 'A clarified contribution.'
+    native, report = preserve_docx(raw, original, revised)
+    if not report['source_layout_preserved'] or ingest_bytes('native.docx', native).blocks[0].text != revised.blocks[0].text:
+        raise RuntimeError('Packaged Word export loses a content control edit')
+    raw = _docx_container_fixture(special=True)
+    project = DocumentReviewProject.create(library, filename='special.docx', content=raw)
+    if 'docx-special-content' not in [warning.code for warning in project.document().warnings]:
+        raise RuntimeError('Packaged Word import hides unexpanded embedded content')
+    try:
+        project.confirm_extraction('confirm')
+    except ReviewStudioError:
+        pass
+    else:
+        raise RuntimeError('Packaged Word confirmation bypasses unexpanded content warning')
+    if (project.root / 'source/special.docx').read_bytes() != raw or project.integrity_errors():
+        raise RuntimeError('Packaged content-control import changed its original')
 
 
 def _check_table_grid(library: Path) -> None:

@@ -58,9 +58,15 @@ MEDIA_TYPES = {
     ".ppt": "application/vnd.ms-powerpoint", ".dps": "application/vnd.ms-powerpoint",
 }
 PARSER_VERSION = "document-review-studio-v1"
-DOCX_PARSER_VERSION = "document-review-studio-docx-v3"
+DOCX_PARSER_VERSION = "document-review-studio-docx-v4"
 W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 R_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+MC_NS = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
+MATH_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
+DOCX_CONTENT_WRAPPERS = frozenset({"customXml", "ins", "del", "moveFrom", "moveTo"})
+DOCX_CONTENT_LAYOUT = "wrapped-blocks-v1"
+DOCX_SPECIAL_CONTENT = frozenset({W_NS + name for name in ("altChunk", "subDoc", "object", "txbxContent")}
+    | {MC_NS + "AlternateContent", MATH_NS + "oMath", MATH_NS + "oMathPara"})
 DOCX_REVISION_TAGS = frozenset({"ins", "del", "moveFrom", "moveTo", "moveFromRangeStart", "moveFromRangeEnd",
     "moveToRangeStart", "moveToRangeEnd", "pPrChange", "rPrChange", "sectPrChange", "tblPrChange", "tcPrChange", "trPrChange",
     "tblGridChange", "tblPrExChange", "cellIns", "cellDel", "cellMerge"})
@@ -390,9 +396,18 @@ def _text_blocks(text: str, source: RawFileBinding, *, parser: str, warnings: li
 
 def _xml_text(element: ET.Element, *, include_deleted: bool = False) -> str:
     parts: list[str] = []
-    for child in element.iter():
+
+    def visible_nodes(node):
+        # These are alternatives or require a separate renderer. Concatenating
+        # Choice and Fallback produces duplicate, potentially contradictory text.
+        if node.tag in {MC_NS + "AlternateContent", W_NS + "altChunk", MATH_NS + "oMath", MATH_NS + "oMathPara"}:
+            return
+        yield node
+        for child in node:
+            yield from visible_nodes(child)
+
+    for child in visible_nodes(element):
         if child.tag in {W_NS + "t", W_NS + "delText"}:
-            parent = child
             if not include_deleted and child.tag == W_NS + "delText":
                 continue
             parts.append(child.text or "")
@@ -401,6 +416,45 @@ def _xml_text(element: ET.Element, *, include_deleted: bool = False) -> str:
         elif child.tag in {W_NS + "br", W_NS + "cr"}:
             parts.append("\n")
     return "".join(parts).strip()
+
+
+def _docx_content_nodes(parent, names, *, on_unmapped=None):
+    """Walk only content wrappers; never descend through properties or tables."""
+    accepted = {W_NS + name for name in names}
+    wrappers = {W_NS + name for name in DOCX_CONTENT_WRAPPERS}
+    for child in parent:
+        if child.tag in accepted:
+            yield child
+        elif child.tag == W_NS + "sdt":
+            contents = child.findall(W_NS + "sdtContent")
+            if len(contents) == 1:
+                yield from _docx_content_nodes(contents[0], names, on_unmapped=on_unmapped)
+            elif on_unmapped:
+                on_unmapped(child)
+        elif child.tag in wrappers:
+            yield from _docx_content_nodes(child, names, on_unmapped=on_unmapped)
+        elif on_unmapped and any(node.tag in {W_NS + 't', W_NS + 'delText', MATH_NS + 't'} for node in child.iter()):
+            on_unmapped(child)
+
+
+def _docx_content_issues(root) -> dict[str, int]:
+    """Report known unexpanded objects and unsupported structural text."""
+    issues: dict[str, int] = {}
+    seen = set()
+
+    def record(node):
+        if id(node) not in seen:
+            seen.add(id(node))
+            issues[node.tag] = issues.get(node.tag, 0) + 1
+
+    contexts = {W_NS + 'body': {'p', 'tbl'}, W_NS + 'tbl': {'tr'}, W_NS + 'tr': {'tc'}}
+    for node in root.iter():
+        if node.tag in DOCX_SPECIAL_CONTENT:
+            record(node)
+        if node.tag in contexts:
+            for _ in _docx_content_nodes(node, contexts[node.tag], on_unmapped=record):
+                pass
+    return issues
 
 
 def _xml_limit(limits, name: str) -> int:
@@ -589,6 +643,10 @@ def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits, *,
     blocks: list[DocumentBlock] = []
     mapping: list[dict[str, Any]] = []
     warnings: list[ExtractionWarning] = []
+    content_issues = {}
+    main_issues = _docx_content_issues(document_xml)
+    if main_issues:
+        content_issues['word/document.xml'] = main_issues
     revision_parts = _docx_story_revisions(archive, document_xml=document_xml)
     revisions = bool(revision_parts)
     settings = _docx_xml(archive, "word/settings.xml")
@@ -639,7 +697,7 @@ def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits, *,
     body = document_xml.find(".//" + W_NS + "body")
     if body is None:
         raise IngestionError("DOCX 缺少正文 body")
-    for child in list(body):
+    for child in _docx_content_nodes(body, {'p', 'tbl'}):
         if child.tag == W_NS + "p":
             text = _xml_text(child)
             ppr = child.find(W_NS + "pPr")
@@ -679,7 +737,7 @@ def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits, *,
                     raise IngestionError("DOCX 表格行列或展开单元格数量超过安全上限")
 
             check_extent(0, width)
-            table_cells = child.findall("./" + W_NS + "tr")
+            table_cells = _docx_content_nodes(child, {'tr'})
             for row_index, row_xml in enumerate(table_cells):
                 trpr = row_xml.find(W_NS + 'trPr')
                 offsets = {}
@@ -695,7 +753,7 @@ def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits, *,
                 width = max(width, column)
                 check_extent(row_index + 1, width)
                 row_values: list[str] = [''] * column
-                for cell_xml in row_xml.findall("./" + W_NS + "tc"):
+                for cell_xml in _docx_content_nodes(row_xml, {'tc'}):
                     cell_text = _xml_text(cell_xml)
                     tcpr = cell_xml.find(W_NS + "tcPr")
                     grid_span = tcpr.find(W_NS + "gridSpan") if tcpr is not None else None
@@ -729,12 +787,19 @@ def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits, *,
         kind = "header" if "/header" in part else "footer"
         root = _docx_xml(archive, part)
         if root is not None:
+            issues = _docx_content_issues(root)
+            if issues:
+                content_issues[part] = issues
             text = _xml_text(root)
             if text:
                 add_block(kind, text, paragraph_index, attrs={"part": part})
                 paragraph_index += 1
+    if content_issues:
+        warnings.append(ExtractionWarning('docx-special-content', 'high',
+            'DOCX 含尚未完整识别的特殊内容；请对照原件核对，必要时在 Word 中另存为 DOCX 后重新导入，或修正识别结果。',
+            details={'parts': content_issues, 'content_completeness': 'not-established'}))
     quality = QualitySignals(page_count=1, text_coverage=1.0 if any(b.text.strip() for b in blocks) else 0.0, table_count=sum(b.kind == "table" for b in blocks), tables_parsed=sum(b.kind == "table" for b in blocks), footnote_comment_revision_risk=[w.code for w in warnings], requires_confirmation=True)
-    return StructuredDocument(stable_id("DOC", identity), next((b.text for b in blocks if b.kind == "heading"), Path(source.original_name).stem), source, "docx-xml", DOCX_PARSER_VERSION, blocks, warnings, quality, mapping, {"revisions_present": revisions, "revision_parts": revision_parts, "comments_present": comments, "footnotes_present": footnotes, "endnotes_present": endnotes, "note_visibility": note_visibility, "hyperlinks_present": hyperlinks, "image_count": len(images), "nested_tables_present": any(b.attrs.get("nested_tables", 0) for b in blocks)})
+    return StructuredDocument(stable_id("DOC", identity), next((b.text for b in blocks if b.kind == "heading"), Path(source.original_name).stem), source, "docx-xml", DOCX_PARSER_VERSION, blocks, warnings, quality, mapping, {"revisions_present": revisions, "revision_parts": revision_parts, "comments_present": comments, "footnotes_present": footnotes, "endnotes_present": endnotes, "note_visibility": note_visibility, "hyperlinks_present": hyperlinks, "image_count": len(images), "nested_tables_present": any(b.attrs.get("nested_tables", 0) for b in blocks), "docx_content_layout": DOCX_CONTENT_LAYOUT, "docx_content_visibility": {"issues": content_issues, "content_completeness": "not-established", "coverage_measurement": "not-measured"}})
 
 
 def _pdf_backend() -> tuple[str, Any] | None:

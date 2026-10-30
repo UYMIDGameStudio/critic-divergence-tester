@@ -1,4 +1,5 @@
 {
+  "DOCX 含尚未完整识别的特殊内容；请对照原件核对，必要时在 Word 中另存为 DOCX 后重新导入，或修正识别结果。": {"zh-Hant": "DOCX 含尚未完整辨識的特殊內容；請對照原件核對，必要時在 Word 中另存為 DOCX 後重新匯入，或修正辨識結果。", "en": "Some special content in this DOCX has not been fully extracted. Check the original; if needed, open and resave it as DOCX in Word, or correct the extraction."},
   "表格正文与单元格定位不一致，拒绝生成错列修改稿": {"zh-Hant": "表格正文與儲存格定位不一致，無法安全產生修改稿。請核對原件並重新解析。", "en": "The table text and cell locations disagree. Check the original and reparse it before creating a revision."},
   "无法识别表格网格布局，拒绝生成错列修改稿": {"zh-Hant": "無法辨識表格的欄位配置，無法安全產生修改稿。請核對原件並重新解析。", "en": "The table's grid layout is not supported. Check the original and reparse it before creating a revision."},
   "找不到单元格的表格容器，拒绝生成修改稿": {"zh-Hant": "找不到儲存格所屬的表格，無法安全產生修改稿。請核對原件並重新解析。", "en": "The cell's parent table cannot be found. Check the original and reparse it before creating a revision."},

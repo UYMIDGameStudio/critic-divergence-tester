@@ -14,7 +14,9 @@ import re
 import zipfile
 from xml.dom import minidom
 
-from document_review_ingest import IngestionLimits, IngestionError, _zip_safety, _docx_xml, _docx_story_revisions, _docx_tracking_enabled, _docx_grid_value, DOCX_REVISION_TAGS
+from document_review_ingest import (IngestionLimits, IngestionError, _zip_safety, _docx_xml, _docx_story_revisions,
+    _docx_tracking_enabled, _docx_grid_value, _docx_content_issues, DOCX_REVISION_TAGS,
+    DOCX_CONTENT_WRAPPERS, DOCX_CONTENT_LAYOUT)
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 XMLNS = "http://www.w3.org/2000/xmlns/"
@@ -37,6 +39,52 @@ def _children(node, name):
 
 def _all(node, name):
     return list(node.getElementsByTagNameNS(W, name))
+
+
+def _content_nodes(parent, names):
+    """Match the ingestion walk while retaining actual DOM parent nodes."""
+    for child in _elements(parent):
+        if child.namespaceURI != W:
+            continue
+        if child.localName in names:
+            yield child
+        elif child.localName == 'sdt':
+            contents = _children(child, 'sdtContent')
+            if len(contents) != 1:
+                raise WordEditUnsupported('Word 内容控件结构无法可靠定位')
+            yield from _content_nodes(contents[0], names)
+        elif child.localName in DOCX_CONTENT_WRAPPERS:
+            yield from _content_nodes(child, names)
+
+
+def _wrapped_ancestor(node):
+    while node is not None:
+        if node.namespaceURI == W and node.localName in DOCX_CONTENT_WRAPPERS | {'sdt'}:
+            return True
+        node = node.parentNode
+    return False
+
+
+def _check_control_edit(node):
+    text_properties = {'rPr', 'alias', 'id', 'tag', 'lock', 'text', 'richText', 'group', 'placeholder', 'showingPlcHdr'}
+    while node is not None:
+        if node.namespaceURI == W and node.localName == 'sdt':
+            props = _children(node, 'sdtPr')
+            if len(props) > 1:
+                raise WordEditUnsupported('Word 内容控件属性重复，无法安全原位修改')
+            if props and (_all(props[0], 'dataBinding') or any(
+                    lock.getAttributeNS(W, 'val') not in {'unlocked', 'sdtLocked'} for lock in _all(props[0], 'lock'))):
+                raise WordEditUnsupported('内容控件含数据绑定或内容锁定，无法安全原位修改')
+            # Office extensions also define bindings and repeating controls;
+            # do not treat an unknown extended property as permission to edit.
+            if props and any(child.namespaceURI != W for child in _elements(props[0])):
+                raise WordEditUnsupported('内容控件含暂不支持的扩展属性，无法安全原位修改')
+            if props and any(child.localName not in text_properties for child in _elements(props[0])):
+                raise WordEditUnsupported('内容控件含日期、选项或暂不支持的属性，无法安全原位修改')
+            if props and any(flag.getAttributeNS(W, 'val').casefold() not in {'false', 'off', '0'}
+                    for flag in _children(props[0], 'showingPlcHdr')):
+                raise WordEditUnsupported('内容控件仍显示占位文本，需要先在 Word 中填写或转换为普通文本')
+        node = node.parentNode
 
 
 def _text(node):
@@ -161,6 +209,7 @@ def _replace_text(paragraph, text, tracked=False, change_ids=None):
     old = _text(paragraph)
     if old == text:
         return
+    _check_control_edit(paragraph)
     _editable(paragraph)
     if any(not (c in "\t\n" or 0x20 <= ord(c) <= 0xD7FF or 0xE000 <= ord(c) <= 0xFFFD or 0x10000 <= ord(c) <= 0x10FFFF) for c in text):
         raise WordEditUnsupported("修改文本包含不能写入 Word 的控制字符")
@@ -200,7 +249,7 @@ def _checked_index(value, length, label):
 def _cell(table, location):
     if table.localName != "tbl":
         raise WordEditUnsupported("表格单元格绑定到非表格位置")
-    rows = _children(table, "tr")
+    rows = list(_content_nodes(table, {'tr'}))
     row = rows[_checked_index(location.row, len(rows), "表格行")]
     if type(location.column) is not int or location.column < 0:
         raise WordEditUnsupported("表格列定位无效")
@@ -218,7 +267,7 @@ def _cell(table, location):
     declared = len(_children(grid[0], 'gridCol')) if grid else 0
     if (column and column > declared) or (not declared and (column or trailing)):
         raise WordEditUnsupported('暂不支持超出声明网格的表格偏移，无法可靠定位')
-    for candidate in _children(row, "tc"):
+    for candidate in _content_nodes(row, {'tc'}):
         props = _children(candidate, "tcPr")
         spans = _children(props[0], "gridSpan") if props else []
         try:
@@ -247,12 +296,15 @@ def _reconciled_text(node, block, final):
 
 
 def _replace_cell(cell, desired, tracked, change_ids):
-    if _all(cell, "tbl") or any(node.namespaceURI != W or node.localName not in {"tcPr", "p"} for node in _elements(cell)):
+    _check_control_edit(cell)
+    if _all(cell, "tbl") or any(node.namespaceURI != W or node.localName not in {"tcPr", "p", "sdt"} | DOCX_CONTENT_WRAPPERS for node in _elements(cell)):
         raise WordEditUnsupported("单元格包含嵌套表格或暂不支持的结构")
-    paragraphs = _children(cell, "p")
+    paragraphs = list(_content_nodes(cell, {'p'}))
     if not paragraphs:
         raise WordEditUnsupported("Word 单元格缺少段落")
     values = [_text(node) for node in paragraphs]
+    if ''.join(values) != _text(cell):
+        raise WordEditUnsupported('单元格含未映射的内容，无法安全原位修改')
     offsets = list(itertools.accumulate([0] + [len(value) for value in values]))
     outputs = [[] for _ in values]
     # The IR concatenates cell paragraphs. Map the character diff back across
@@ -277,7 +329,15 @@ def _bind_blocks(body, original, revised):
         raise WordEditUnsupported("文档包含重复文本块标识")
     if [b.block_id for b in original.blocks if b.block_id in finals] != [b.block_id for b in revised.blocks if b.block_id in originals]:
         raise WordEditUnsupported("原有文本块发生重排，无法按原定位输出")
-    source_nodes = [n for n in _elements(body) if n.namespaceURI == W and n.localName in {"p", "tbl"}]
+    layout = original.metadata.get('docx_content_layout')
+    if layout is not None and layout != DOCX_CONTENT_LAYOUT:
+        raise WordEditUnsupported('Word 正文容器定位版本不受支持')
+    if layout == DOCX_CONTENT_LAYOUT:
+        source_nodes = list(_content_nodes(body, {'p', 'tbl'}))
+    else:
+        if any(_all(body, name) for name in DOCX_CONTENT_WRAPPERS | {'sdt'}):
+            raise WordEditUnsupported('旧版识别未绑定 Word 内容容器，请重新解析为新项目')
+        source_nodes = [n for n in _elements(body) if n.namespaceURI == W and n.localName in {"p", "tbl"}]
     nodes, text_nodes = {}, set()
     for block in original.blocks:
         final = finals.get(block.block_id)
@@ -396,6 +456,8 @@ def preserve_docx(source_bytes, original, revised, *, tracked=False):
         raise WordEditUnsupported("原件含既有修订或识别全文经过人工替换，无法安全绑定原位 Word 修改")
     if _docx_story_revisions(archive, document_xml=document_xml):
         raise WordEditUnsupported("原件含既有修订，无法安全绑定原位 Word 修改")
+    if _docx_content_issues(document_xml):
+        raise WordEditUnsupported('Word 原件含尚未完整识别的特殊内容，无法安全保格式导出')
     del document_xml
     doc = minidom.parseString(archive.read("word/document.xml"))
     if any(_all(doc, name) for name in REVISION_TAGS):
@@ -423,6 +485,8 @@ def preserve_docx(source_bytes, original, revised, *, tracked=False):
         if final is None:
             if tracked:
                 raise WordEditUnsupported("本轮含段落删除；可导出保格式净稿，原生修订副本仅支持段内替换")
+            if _wrapped_ancestor(node):
+                raise WordEditUnsupported('内容容器内的段落增删或拆分需要人工核对版式')
             _editable(node)
             if _all(node, "sectPr"):
                 # A section break belongs to the paragraph mark, not the text.
@@ -448,6 +512,8 @@ def preserve_docx(source_bytes, original, revised, *, tracked=False):
         following = revised.blocks[index + 1:]
         next_original = next((b for b in following if b.block_id in originals), None)
         previous_original = next((b for b in reversed(revised.blocks[:index]) if b.block_id in originals), None)
+        if any(_wrapped_ancestor(nodes.get(b.block_id)) for b in (next_original, previous_original) if b):
+            raise WordEditUnsupported('内容容器附近的段落增删或拆分需要人工核对版式')
         previous_anchor = _body_anchor(nodes.get(previous_original.block_id), body) if previous_original else None
         next_anchor = _body_anchor(nodes.get(next_original.block_id), body) if next_original else None
         if next_original is not None and (next_original.kind == "table_cell" or (previous_anchor is not None and previous_anchor is next_anchor)):
