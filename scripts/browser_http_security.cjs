@@ -31,6 +31,18 @@ async function main() {
     context.on('page', page => page.on('pageerror', error => errors.push(error.message)));
     const a = await context.newPage(), b = await context.newPage();
     await Promise.all([a.goto(endpoints.product), b.goto(endpoints.product)]);
+    const denied = await a.evaluate(async () => {
+      const response = await fetch('/api/open', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({directory: 'must-not-open', padding: 'x'.repeat(2048)})});
+      const text = await response.text();
+      return {status: response.status, close: response.headers.get('Connection'),
+        complete: new TextEncoder().encode(text).length === Number(response.headers.get('Content-Length')),
+        error: JSON.parse(text).error};
+    });
+    assert.equal(denied.status, 403);
+    assert.equal(denied.close, 'close');
+    assert.equal(denied.complete, true);
+    assert.ok(denied.error.includes('token'));
     const create = async (page, name) => {
       await page.locator('#file').setInputFiles({name: name + '.txt', mimeType: 'text/plain', buffer: Buffer.from('The ' + name + ' claim needs evidence.')});
       await page.locator('#title').fill(name);
@@ -123,6 +135,7 @@ async function main() {
     await professional.screenshot({path: path.join(output, 'professional-stale-draft-preserved.png'), fullPage: true});
     assert.deepEqual(errors, []);
     const result = {passed: true, browser: browser.version(), checks: [
+      'A browser receives complete JSON and an explicit connection close for a rejected unauthorized POST',
       'A stale project tab receives 409 while both its original draft and selected Project B remain unchanged',
       'Pending report submission makes the page inert and blocks additional real keyboard input',
       'Successful report save restores interaction and advances to the next task',

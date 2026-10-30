@@ -78,6 +78,27 @@ def require_request_context(handler, expected: str) -> None:
         raise LocalHTTPProtocolError(HTTPStatus.CONFLICT, "项目或任务已变化，请刷新页面并核对内容后再提交")
 
 
+def _finish_http_response(connection, read=None, *, timeout=.1, maximum=65536):
+    """Bounded staged close (RFC 9112 §9.6); discarded bytes are never requests."""
+    try:
+        connection.shutdown(socket.SHUT_WR)
+        deadline = time.monotonic() + timeout
+        remaining = maximum
+        receive = read if read is not None else connection.recv
+        while remaining > 0:
+            wait = deadline - time.monotonic()
+            if wait <= 0:
+                break
+            connection.settimeout(wait)
+            chunk = receive(min(remaining, 8192))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+    except (OSError, ValueError):
+        # Peers may already be gone; a timed-out buffered reader is also done.
+        pass
+
+
 class LocalHTTPServer(ThreadingHTTPServer):
     """Bound resource use for all local UI entry points."""
     daemon_threads = True
@@ -108,6 +129,7 @@ class LocalHTTPServer(ThreadingHTTPServer):
             try:
                 request.settimeout(1)
                 request.sendall(b"HTTP/1.0 503 Service Unavailable\r\nContent-Length: 16\r\nConnection: close\r\n\r\nToo many clients")
+                _finish_http_response(request)
             except OSError:
                 pass
             finally:
@@ -130,6 +152,15 @@ class LocalRequestHandler(BaseHTTPRequestHandler):
     timeout = 30
     header_timeout = 10
     body_timeout = 30
+
+    def end_headers(self):
+        # These local interfaces serve one request per connection. Make the
+        # policy explicit before half-closing the write side during finish.
+        self.close_connection = True
+        if not any(line.lower().startswith(b'connection:') for line in getattr(self, '_headers_buffer', ())):
+            self.send_header('Connection', 'close')
+        super().end_headers()
+        self._response_sent = True
 
     def setup(self):
         super().setup()
@@ -160,9 +191,16 @@ class LocalRequestHandler(BaseHTTPRequestHandler):
     def finish(self):
         self._header_timer.cancel()
         try:
-            super().finish()
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            if getattr(self, '_response_sent', False) and not self.wfile.closed:
+                self.wfile.flush()
+                _finish_http_response(self.connection, self.rfile.read1)
+        except (OSError, ValueError):
             pass
+        finally:
+            try:
+                super().finish()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass
 
     def _local_request(self) -> bool:
         try:

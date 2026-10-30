@@ -8,7 +8,7 @@ const assert = require('node:assert/strict');
 
 async function main() {
   const root = path.resolve(__dirname, '..');
-  const output = path.join(root, 'dist', 'browser-composition-0.2.43');
+  const output = path.join(root, 'dist', 'browser-composition-0.2.44');
   await fs.mkdir(output, {recursive: true});
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'composition-browser-'));
   const child = spawn(process.env.STUDIO_PYTHON || 'python',

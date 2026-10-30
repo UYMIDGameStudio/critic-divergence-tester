@@ -10,20 +10,39 @@ permissions:
 
 jobs:
   test:
-    name: Core without optional PDF/OCR / ${{ matrix.os }} / Python ${{ matrix.python }}
+    name: Core without optional PDF/OCR / ${{ matrix.os }} / Python ${{ matrix.python }} / shard ${{ matrix.shard }}
     runs-on: ${{ matrix.os }}
-    # Windows 3.10 took 28 minutes for all 936 tests; installed-package verification
-    # finished just after the 30-minute job limit. Reserve time for setup and cleanup.
-    timeout-minutes: ${{ matrix.timeout || 30 }}
+    # Both Windows versions reached 30 minutes after tests passed, during wheel
+    # acceptance. Partition all tests so setup and installation also fit the job.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
-        python: ["3.10", "3.14"]
         include:
+          - os: ubuntu-latest
+            python: "3.10"
+            shard: 0
+            shards: 1
+          - os: ubuntu-latest
+            python: "3.14"
+            shard: 0
+            shards: 1
           - os: windows-latest
             python: "3.10"
-            timeout: 45
+            shard: 0
+            shards: 2
+          - os: windows-latest
+            python: "3.10"
+            shard: 1
+            shards: 2
+          - os: windows-latest
+            python: "3.14"
+            shard: 0
+            shards: 2
+          - os: windows-latest
+            python: "3.14"
+            shard: 1
+            shards: 2
 
     steps:
       - name: Check out repository
@@ -35,7 +54,18 @@ jobs:
           python-version: ${{ matrix.python }}
 
       - name: Run unit tests
-        run: python -m unittest discover -s test -p "test_*.py" -v
+        run: >-
+          python scripts/run_test_shard.py
+          --shard-index ${{ matrix.shard }} --shard-count ${{ matrix.shards }}
+          --manifest dist/test-shard.json
+
+      - name: Preserve the exact selected test IDs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-selection-${{ matrix.os }}-${{ matrix.python }}-${{ matrix.shard }}
+          path: dist/test-shard.json
+          if-no-files-found: error
 
       - name: Compile Python sources
         run: >-

@@ -11,6 +11,7 @@ import re
 import sys
 import tempfile
 import threading
+import time
 
 
 def _pdf_fixture(stream: bytes | None = None) -> bytes:
@@ -166,6 +167,28 @@ def run_self_test() -> dict:
                         raise RuntimeError("Self-test selected project is missing")
                 finally:
                     client.close()
+            selected_paths = (server.app.project.root, server.research_app.project_dir)
+            for path in ('/api/open', '/research/api/open'):
+                client = http.client.HTTPConnection(*server.server_address, timeout=10)
+                try:
+                    body = b'{"directory":"must-not-be-opened"}'
+                    client.putrequest('POST', path)
+                    client.putheader('Content-Type', 'application/json')
+                    client.putheader('Content-Length', str(len(body)))
+                    client.endheaders()
+                    # The body can still be in flight when authorization fails.
+                    time.sleep(.005)
+                    client.send(body)
+                    response = client.getresponse()
+                    payload = response.read()
+                    if (response.status != 403 or response.getheader('Connection') != 'close'
+                            or len(payload) != int(response.getheader('Content-Length'))):
+                        raise RuntimeError('Self-test loses an early HTTP rejection response')
+                finally:
+                    client.close()
+            if selected_paths != (server.app.project.root, server.research_app.project_dir):
+                raise RuntimeError('Self-test rejected HTTP request changed the selected project')
+            checked.append('http-teardown')
         finally:
             server.shutdown()
             worker.join(timeout=10)
