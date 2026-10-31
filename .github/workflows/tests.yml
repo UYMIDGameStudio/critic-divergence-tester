@@ -225,6 +225,18 @@ jobs:
           python -m pip install "pymupdf>=1.24,<2.0"
           python -m unittest -v test.test_runtime_delivery.InstalledRuntimeSelfTests.test_source_runtime_checks_research_ir_locales_and_http test.test_pdf_line_recovery
 
+  macos-export-folder:
+    name: macOS export folder routing
+    runs-on: macos-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.14'
+      - name: Verify actual macOS identity, export paths and native opener selection
+        run: python -m unittest test.test_export_folder -v
+
   ocr-fixture:
     name: Scanned PDF / fixed mock OCR adapter
     runs-on: ubuntu-latest

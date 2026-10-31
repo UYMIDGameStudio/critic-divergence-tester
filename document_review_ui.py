@@ -15,6 +15,7 @@ import os
 import secrets
 import shutil
 import subprocess
+import sys
 import threading
 import traceback
 import webbrowser
@@ -186,7 +187,7 @@ class StudioApp:
         folder = self.require_project().export_file(relative_path).parent
         if os.name == "nt" and hasattr(os, "startfile"):
             os.startfile(str(folder))  # type: ignore[attr-defined]
-        elif os.name == "darwin":
+        elif sys.platform == "darwin":
             subprocess.Popen(["open", str(folder)], close_fds=True)
         else:
             subprocess.Popen(["xdg-open", str(folder)], close_fds=True)
