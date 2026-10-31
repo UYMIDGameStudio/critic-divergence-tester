@@ -40,12 +40,14 @@ class _Cell:
     rowspan: int = 1
     colspan: int = 1
     header: bool = False
+    links: dict = field(default_factory=dict)
 
 
 class _DocumentBuilder:
     def __init__(self, source: RawFileBinding, parser: str):
         self.source = source
         self.parser = parser
+        self.parser_version = PARSER_VERSION
         self.blocks = []
         self.mapping = []
         self.warnings = []
@@ -72,11 +74,11 @@ class _DocumentBuilder:
                              "table_id": table_id, "row": row, "column": column})
         return block
 
-    def table(self, rows, *, line=1, caption=""):
+    def table(self, rows, *, line=1, caption="", caption_links=None):
+        if caption or caption_links:
+            self.add("paragraph", caption, line=line, attrs={"html_tag": "caption", **_html_link_attrs(caption_links)})
         if not rows:
             return
-        if caption:
-            self.add("paragraph", caption, line=line, attrs={"html_tag": "caption"})
         table = self.add("table", "", line=line, attrs={"rows": [], "caption": caption})
         table.location = replace(table.location, table_id=table.block_id)
         self.mapping[-1]["table_id"] = table.block_id
@@ -118,7 +120,7 @@ class _DocumentBuilder:
                 grid[row_index][column] = cell.text
                 block = self.add("table_cell", cell.text, line=cell.line, table_id=table.block_id,
                                  row=row_index, column=column,
-                                 attrs={"row_span": cell.rowspan, "grid_span": cell.colspan, "header": cell.header})
+                                 attrs={"row_span": cell.rowspan, "grid_span": cell.colspan, "header": cell.header, **_html_link_attrs(cell.links)})
                 table.children.append(block.block_id)
                 column += cell.colspan
         for row in grid:
@@ -131,7 +133,7 @@ class _DocumentBuilder:
         return StructuredDocument(
             stable_id("DOC", self.source.sha256),
             self.title or next((b.text for b in self.blocks if b.kind == "heading"), Path(self.source.original_name).stem),
-            self.source, self.parser, PARSER_VERSION, self.blocks, self.warnings,
+            self.source, self.parser, self.parser_version, self.blocks, self.warnings,
             QualitySignals(page_count=1, text_coverage=float(any(b.text.strip() for b in self.blocks)),
                            table_count=tables, tables_parsed=tables, requires_confirmation=True,
                            footnote_comment_revision_risk=[w.code for w in self.warnings if w.severity == "high"]),
@@ -215,6 +217,32 @@ _HTML_VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link"
 _HTML_BLOCK = {"p", "div", "section", "article", "header", "footer", "main", "aside", "nav", "address", "blockquote", "pre", "li", "ul", "ol", "dl", "dt", "dd", "h1", "h2", "h3", "h4", "h5", "h6"}
 
 
+class _HTMLLinkText:
+    """Keep a bounded label preview without counting leading/trailing space."""
+    def __init__(self, declaration):
+        self.declaration = declaration
+        self.length = 0
+        self.last_nonspace = 0
+        self.prefix = ''
+
+    def append(self, text):
+        if not self.length:
+            text = text.lstrip()
+        meaningful = len(text.rstrip())
+        if meaningful:
+            self.last_nonspace = self.length + meaningful
+        self.length += len(text)
+        self.prefix += text[:max(0, 512 - len(self.prefix))]
+
+    def value(self):
+        return {**self.declaration, 'label': self.prefix[:self.last_nonspace].rstrip(),
+                'label_truncated': self.last_nonspace > 512}
+
+
+def _html_link_attrs(links):
+    return {'hyperlink_references': [label.value() for label in links.values()]} if links else {}
+
+
 @dataclass
 class _HTMLTable:
     line: int
@@ -224,6 +252,7 @@ class _HTMLTable:
     text: list = field(default_factory=list)
     caption: list = field(default_factory=list)
     depth: int = 1
+    caption_links: dict = field(default_factory=dict)
 
     def end_cell(self):
         if self.cell is not None:
@@ -280,6 +309,59 @@ class _HTMLReader(HTMLParser):
         self.lists = []
         self.list_scopes = {}
         self.list_items = {}
+        self.current_link = None
+        self.link_declarations = {}
+        self.pending_links = {}
+        self.link_associations = 0
+        self.base_declarations = []
+
+    def link_context(self):
+        if self.table is None:
+            return self.pending_links
+        if self.table.cell is not None:
+            return self.table.cell.links
+        if any(tag == 'caption' for tag, _ in self.stack):
+            return self.table.caption_links
+        return None
+
+    def record_link_text(self, text):
+        if self.current_link is None:
+            return
+        context = self.link_context()
+        if context is None:
+            return
+        declaration = self.current_link['declaration']
+        identifier = declaration['link_id']
+        if identifier not in context:
+            self.link_associations += 1
+            if self.link_associations > MAX_BLOCKS:
+                _fail('HTML 链接或链接定位数量超过安全上限')
+            context[identifier] = _HTMLLinkText(declaration)
+        context[identifier].append(text)
+        self.current_link['attached'] = True
+
+    def close_link(self, index):
+        if self.current_link and self.current_link['depth'] >= index:
+            if index < len(self.stack) and self.stack[index][0] != 'a':
+                self.builder.warn('html-link-structure-uncertain', 'HTML 链接嵌套或未闭合，目标与文字范围需对照原件核对。')
+            if not self.current_link['attached']:
+                self.record_link_text('')
+            self.current_link = None
+
+    def start_link(self, attrs):
+        targets = [value or '' for name, value in attrs if name == 'href']
+        if not targets:
+            return
+        if len(self.link_declarations) >= MAX_BLOCKS:
+            _fail('HTML 链接或链接定位数量超过安全上限')
+        identifier = f'html-link-{self.elements}'
+        declaration = {'link_id': identifier, 'source_format': 'html', 'part': self.builder.source.original_name,
+                       'source_line': self.getpos()[0], 'target': targets[0], 'status': 'declared'}
+        if len(targets) > 1:
+            declaration['href_declarations'] = targets
+            self.builder.warn('html-link-attributes-ambiguous', 'HTML 地址声明含重复的 href 属性；已保留各项声明，请对照原件核对。')
+        self.link_declarations[identifier] = declaration
+        self.current_link = {'declaration': declaration, 'depth': len(self.stack), 'attached': False}
 
     def start_list(self, tag, attrs):
         if tag in {"ol", "ul"}:
@@ -318,15 +400,18 @@ class _HTMLReader(HTMLParser):
     def flush(self):
         text = "".join(self.pending)
         self.pending = []
+        links, self.pending_links = self.pending_links, {}
         tags = [tag for tag, _ in self.stack]
         preserve = "pre" in tags
         text = text.strip() if preserve else re.sub(r"[^\S\n]+", " ", text).strip()
-        if not text:
+        if not text and not links:
             return
+        if not text:
+            self.line = min(label.declaration['source_line'] for label in links.values())
         block = next((tag for tag in reversed(tags) if tag in _HTML_BLOCK), "p")
         kind = "heading" if re.fullmatch("h[1-6]", block) else "list_item" if block == "li" else "blockquote" if block == "blockquote" else "paragraph"
         ordered = next((tag == "ol" for tag in reversed(tags) if tag in {"ol", "ul"}), False)
-        properties = {"html_tag": block, "preserve_whitespace": preserve, "ordered": ordered}
+        properties = {"html_tag": block, "preserve_whitespace": preserve, "ordered": ordered, **_html_link_attrs(links)}
         item = self.list_items[max(self.list_items)] if self.list_items else None
         if item is not None and self.list_scopes and item["scope"] is self.list_scopes[max(self.list_scopes)]:
             first = not item["blocks"]
@@ -344,6 +429,9 @@ class _HTMLReader(HTMLParser):
             item["blocks"].append(added)
 
     def handle_starttag(self, tag, attrs):
+        if tag == 'a' and not self.hidden and any(name == 'a' for name, _ in self.stack):
+            self.builder.warn('html-link-structure-uncertain', 'HTML 链接嵌套或未闭合，目标与文字范围需对照原件核对。')
+            self.handle_endtag('a')
         # HTML permits omitted end tags. Close common optional elements at
         # structural boundaries instead of accumulating fictitious nesting.
         if self.hidden and tag == "li":
@@ -376,6 +464,15 @@ class _HTMLReader(HTMLParser):
         if self.elements > MAX_BLOCKS * 4 or len(self.stack) >= MAX_DEPTH:
             _fail("HTML 元素数量或嵌套深度超过安全上限")
         values = dict(attrs)
+        if tag == 'base' and not any(name in (_HTML_HIDDEN - {'head'}) | _HTML_EMBEDDED for name, _ in self.stack):
+            targets = [value or '' for name, value in attrs if name == 'href']
+            if targets:
+                if len(self.base_declarations) >= MAX_BLOCKS:
+                    _fail('HTML 链接或链接定位数量超过安全上限')
+                self.base_declarations.append({'target': targets[0], 'source_line': self.getpos()[0],
+                    **({'href_declarations': targets} if len(targets) > 1 else {})})
+                if len(targets) > 1:
+                    self.builder.warn('html-link-attributes-ambiguous', 'HTML 地址声明含重复的 href 属性；已保留各项声明，请对照原件核对。')
         style = re.sub(r"/\*.*?\*/", "", values.get("style") or "", flags=re.S)
         hidden = (self.hidden or tag in _HTML_HIDDEN or tag in _HTML_EMBEDDED or "hidden" in values
                   or (values.get("aria-hidden") or "").lower() == "true"
@@ -384,6 +481,8 @@ class _HTMLReader(HTMLParser):
             self.builder.warn("html-embedded-omitted", "HTML 中的嵌入对象、画布或媒体内容未执行或解析；请另行提供需要审查的正文。", severity="high")
         if not hidden:
             self._start_visible(tag, values)
+            if tag == 'a':
+                self.start_link(attrs)
             if not self.table:
                 self.start_list(tag, values)
             elif tag == "li":
@@ -423,11 +522,13 @@ class _HTMLReader(HTMLParser):
                 table.cell = _Cell("", self.getpos()[0], span("rowspan"), span("colspan"), tag == "th")
             elif tag in _HTML_BLOCK or tag in {"br", "tr", "td", "th"}:
                 table.text.append("\n")
+                self.record_link_text('\n')
         elif tag in _HTML_BLOCK or tag == "hr":
             self.flush()
             self.line = self.getpos()[0]
         elif tag == "br":
             self.pending.append("\n")
+            self.record_link_text('\n')
         if tag == "img":
             self.builder.warn("html-images-omitted", "HTML 图片未下载或识别，仅保留已有替代文字；图片正文需要另行提供。", severity="high")
             if attrs.get("alt"):
@@ -449,6 +550,7 @@ class _HTMLReader(HTMLParser):
                     self.handle_endtag(tag)
                 return
         hidden = self.stack[index][1]
+        self.close_link(index)
         if not hidden:
             if self.table:
                 if tag == "table":
@@ -456,7 +558,8 @@ class _HTMLReader(HTMLParser):
                     if self.table.depth == 0:
                         self.table.end_row()
                         self.builder.table(self.table.rows, line=self.table.line,
-                                           caption=re.sub(r"\s+", " ", "".join(self.table.caption)).strip())
+                                           caption=re.sub(r"\s+", " ", "".join(self.table.caption)).strip(),
+                                           caption_links=self.table.caption_links)
                         self.table = None
                 elif self.table.depth == 1 and tag in {"td", "th"}:
                     self.table.end_cell()
@@ -464,6 +567,7 @@ class _HTMLReader(HTMLParser):
                     self.table.end_row()
                 elif tag in _HTML_BLOCK:
                     self.table.text.append("\n")
+                    self.record_link_text('\n')
             elif tag in _HTML_BLOCK:
                 self.flush()
         del self.stack[index:]
@@ -482,6 +586,7 @@ class _HTMLReader(HTMLParser):
             return
         if "pre" not in tags:
             text = re.sub(r"\s+", " ", text)
+        self.record_link_text(text)
         if self.table:
             if self.table.cell is not None:
                 self.table.text.append(text)
@@ -494,17 +599,34 @@ class _HTMLReader(HTMLParser):
 
     def finish(self):
         self.close()
+        if self.current_link:
+            self.builder.warn('html-link-structure-uncertain', 'HTML 链接嵌套或未闭合，目标与文字范围需对照原件核对。')
+            self.close_link(0)
         if self.table:
             self.table.end_row()
-            self.builder.table(self.table.rows, line=self.table.line)
+            self.builder.table(self.table.rows, line=self.table.line,
+                caption=re.sub(r'\s+', ' ', ''.join(self.table.caption)).strip(), caption_links=self.table.caption_links)
             self.builder.warn("html-unclosed-table", "HTML 表格没有完整闭合，已按可识别的行和单元格提取，请核对。")
         self.flush()
         self.finish_lists()
         self.builder.title = re.sub(r"\s+", " ", "".join(self.title_parts)).strip()
+        records = [record for block in self.builder.blocks for record in block.attrs.get('hyperlink_references', [])]
+        associated = {record['link_id'] for record in records}
+        visibility = {'layout': 'source-html-hyperlinks-v1', 'scope': 'extracted-static-blocks',
+            'declaration_count': len(self.link_declarations), 'reference_count': len(records),
+            'unassociated_declarations': len(self.link_declarations.keys() - associated),
+            'unassociated_links': [record for key, record in self.link_declarations.items() if key not in associated],
+            'base_declarations': self.base_declarations, 'url_resolution': 'not-performed', 'fetched': False}
+        self.builder.metadata['html_hyperlink_visibility'] = visibility
+        if self.link_declarations or self.base_declarations:
+            self.builder.warn('html-link-declarations', 'HTML 链接与基准地址声明已保留；未解析相对地址，也未读取或核实目标内容。', severity='low')
+        if visibility['unassociated_declarations']:
+            self.builder.warn('html-links-unassociated', '部分 HTML 链接没有可关联的静态正文；请对照原件核对，不能据此认定作者遗漏引用。')
 
 
 def _parse_html(data, source, encoding):
     builder = _DocumentBuilder(source, "html-text")
+    builder.parser_version = 'html-text-v2'
     text = _decode(data, builder, encoding, html=True)
     reader = _HTMLReader(builder)
     reader.feed(text)

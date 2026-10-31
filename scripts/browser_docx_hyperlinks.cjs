@@ -7,11 +7,12 @@ const os = require('node:os');
 const assert = require('node:assert/strict');
 
 async function main() {
-  const root = path.resolve(__dirname, '..'), output = path.join(root, 'dist/browser-docx-hyperlinks');
+  const html = process.argv.includes('--html'), label = html ? 'html-hyperlinks' : 'docx-hyperlinks';
+  const root = path.resolve(__dirname, '..'), output = path.join(root, 'dist/browser-' + label);
   await fs.mkdir(output, {recursive:true});
-  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'docx-hyperlinks-'));
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), label + '-'));
   const child = spawn(process.env.STUDIO_PYTHON || 'python',
-    [path.join(__dirname, 'browser_fixture_server.py'), temporary, '--docx-hyperlinks'],
+    [path.join(__dirname, 'browser_fixture_server.py'), temporary, '--' + label],
     {cwd:root, windowsHide:true, env:{...process.env, PYTHONUTF8:'1'}});
   const report = {passed:false, checks:[], errors:[], externalRequests:[]};
   let browser, stderr='';
@@ -42,7 +43,7 @@ async function main() {
     const sourcePath=path.join(temporary,original.directory,original.source.relative_path), source=await fs.readFile(sourcePath);
     await action('[data-action="confirm-extraction"]','confirm_extraction');
     await page.locator('#manuscript-reader > summary').click();
-    const note=original.blocks.find(b=>b.attrs.docx_story?.kind==='footnote');
+    const note=original.blocks.find(b=>html ? b.attrs.hyperlink_references?.some(r=>r.target.startsWith('javascript:')) : b.attrs.docx_story?.kind==='footnote');
     const unsafeTarget=note.attrs.hyperlink_references[0].target;
     for(const [locale,width,title] of [['zh-Hant',1440,'原件連結聲明'],['en',320,'Original link declarations']]) {
       await page.locator('#ui-language').selectOption(locale);
@@ -60,7 +61,17 @@ async function main() {
       await page.locator('#clear-source-search').click();
     }
     report.checks.push('Part-scoped targets remain searchable, literal and inert in Hant desktop and English 320px views');
-    assert.ok((await page.locator('.source-hyperlinks').allTextContents()).some(text=>text.includes('Cached text does not establish')));
+    if (html) {
+      assert.equal(await page.locator('.source-html-bases').count(),1);
+      await page.locator('.source-html-bases > summary').click();
+      assert.ok((await page.locator('.source-html-bases').innerText()).includes('https://example.org/articles/'));
+      assert.equal(await page.locator('.source-html-bases a, .source-html-unassociated a').count(),0);
+      await page.locator('.source-html-unassociated > summary').click();
+      assert.ok((await page.locator('.source-html-unassociated').innerText()).includes('unexpanded'));
+      assert.ok((await page.locator('.source-hyperlinks').allTextContents()).some(text=>text.includes('Empty target declaration (unresolved)')));
+      assert.ok((await page.locator('.source-hyperlinks').allTextContents()).some(text=>text.includes('other-data')));
+      report.checks.push('HTML bases are displayed once, unassociated and duplicate declarations remain visible, empty targets stay explicit and no final address is guessed');
+    } else assert.ok((await page.locator('.source-hyperlinks').allTextContents()).some(text=>text.includes('Cached text does not establish')));
     await page.locator('#review_profile').selectOption('academic');
     await page.locator('#discipline').selectOption('humanities');
     await page.locator('#research_type').selectOption('theoretical');
@@ -69,8 +80,10 @@ async function main() {
     await action('#prepare-ai','prepare_ai_audits');
     for(const request of await page.evaluate(()=>state.selected.ai_requests)) {
       const contract=JSON.parse(request.prompt.split('```json\n')[1].split('\n```')[0]);
-      assert.equal(contract.source_visibility.docx_hyperlink_visibility.reference_count,2);
-      assert.equal(contract.source_visibility.docx_hyperlink_visibility.fetched,false);
+      const visibility = html ? contract.document_location_contract.html_hyperlink_visibility : contract.source_visibility.docx_hyperlink_visibility;
+      assert.equal(visibility.reference_count,html ? 5 : 2);
+      assert.equal(visibility.fetched,false);
+      if (html) assert.equal(visibility.url_resolution,'not-performed');
       assert.ok(contract.document_location_contract.hyperlinks.includes('historical'));
       assert.ok(request.prompt.includes(unsafeTarget));
       assert.equal(await fs.readFile(path.join(temporary,original.directory,'ai-requests',request.request_id,'prompt.md'),'utf8'),request.prompt);
@@ -85,7 +98,7 @@ async function main() {
     if(child.exitCode===null&&child.signalCode===null) await new Promise(resolve=>child.once('exit',resolve));
     report.stderr=stderr;await fs.writeFile(path.join(output,'result.json'),JSON.stringify(report,null,2));
     const resolved=path.resolve(temporary), parent=path.resolve(os.tmpdir());
-    assert.equal(path.dirname(resolved),parent);assert.ok(path.basename(resolved).startsWith('docx-hyperlinks-'));
+    assert.equal(path.dirname(resolved),parent);assert.ok(path.basename(resolved).startsWith(label+'-'));
     await fs.rm(resolved,{recursive:true,force:true});
   }
   console.log(JSON.stringify(report,null,2));

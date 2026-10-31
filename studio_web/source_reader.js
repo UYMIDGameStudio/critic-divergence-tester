@@ -32,12 +32,24 @@ function sourceHyperlinkDeclarations(block) {
   const rows = references.map(reference => {
     const values = [
       [tr('来源文字'), reference.label == null ? '' : reference.label + (reference.label_truncated ? '…' : '')],
-      [tr('目标声明'), reference.target], [tr('书签声明'), reference.anchor],
+      [tr('目标声明'), reference.target === '' ? tr('空目标声明（未解析）') : reference.target], [tr('书签声明'), reference.anchor],
       [tr('目标位置声明'), reference.doc_location], [tr('来源部件'), reference.part],
     ].filter(([, value]) => value != null && value !== '');
-    return `<li>${reference.status === 'unresolved' ? `<p>${tr('目标关系未能确认，请核对原件。')}</p>` : ''}<dl>${values.map(([name, value]) => `<dt>${esc(name)}</dt><dd>${esc(value)}</dd>`).join('')}</dl></li>`;
+    const duplicates = reference.href_declarations?.length > 1
+      ? `<p>${tr('存在重复的地址属性，请对照原件核对。')}</p><ul>${reference.href_declarations.map(value => `<li>${esc(value === '' ? tr('空目标声明（未解析）') : value)}</li>`).join('')}</ul>` : '';
+    return `<li>${reference.status === 'unresolved' ? `<p>${tr('目标关系未能确认，请核对原件。')}</p>` : ''}<dl>${values.map(([name, value]) => `<dt>${esc(name)}</dt><dd>${esc(value)}</dd>`).join('')}</dl>${duplicates}</li>`;
   }).join('');
-  return `<details class="source-hyperlinks"><summary>${tr('原件链接声明')} · ${references.length}</summary><p>${tr('以下为原件中的链接声明，未读取或核实目标内容；修订后仍是历史来源信息。')}</p>${rows ? `<ol>${rows}</ol>` : ''}${fields ? `<p>${tr('Word 域未求值，缓存文字不能证明链接目标已读取。')}</p>` : ''}</details>`;
+  const html = references.some(reference => reference.source_format === 'html');
+  return `<details class="source-hyperlinks"><summary>${tr('原件链接声明')} · ${references.length}</summary><p>${tr('以下为原件中的链接声明，未读取或核实目标内容；修订后仍是历史来源信息。')}</p>${html ? `<p>${tr('HTML 地址未解析；相对地址与基准声明需要对照来源核对。')}</p>` : ''}${rows ? `<ol>${rows}</ol>` : ''}${fields ? `<p>${tr('Word 域未求值，缓存文字不能证明链接目标已读取。')}</p>` : ''}</details>`;
+}
+
+function sourceHTMLBaseDeclarations(view) {
+  const visibility = view.extraction?.metadata?.html_hyperlink_visibility;
+  const bases = visibility?.base_declarations || [], unassociated = visibility?.unassociated_links || [];
+  const rows = values => values.flatMap(value => value.href_declarations || [value.target])
+    .map(value => `<li>${esc(value === '' ? tr('空目标声明（未解析）') : value)}</li>`).join('');
+  return (bases.length ? `<details class="source-hyperlinks source-html-bases"><summary>${tr('HTML 基准地址声明')} · ${bases.length}</summary><p>${tr('仅保留原件声明，未据此补全相对地址；上传文件的网页来源未知。')}</p><ol>${rows(bases)}</ol></details>` : '')
+    + (unassociated.length ? `<details class="source-hyperlinks source-html-unassociated"><summary>${tr('未关联正文的 HTML 链接')} · ${unassociated.length}</summary><p>${tr('这些声明没有可关联的静态正文，请对照原件核对。')}</p><ol>${rows(unassociated)}</ol></details>` : '');
 }
 
 function sourceReaderPane(view, standalone = false) {
@@ -62,7 +74,7 @@ function sourceReaderPane(view, standalone = false) {
     for (const id of origins.get(`${story?.kind}:${story?.id}`) || []) links.push(`<a href="#source-${esc(id)}">${tr('返回引用段落')} · ${esc(id)}</a>`);
     return links.length ? `<div class="source-note-links">${links.join('')}</div>` : '';
   };
-  return ui`<section class="${standalone ? '' : 'card '}pane manuscript-pane"><div class="source-reader-toolbar"><h3>原文与定位</h3><div class="source-reader-controls"><input id="workspace-search" type="search" aria-label="${esc(tr('搜索原文'))}" placeholder="搜索原文"><button type="button" id="clear-source-search" class="secondary" disabled>清除搜索</button></div><p id="source-search-status" class="muted source-reader-status" role="status" aria-live="polite">${esc(tr('搜索结果'))} · ${blocks.length} / ${blocks.length}</p>${sourceReaderNavigation(blocks)}</div>${blocks.map(block => {
+  return ui`<section class="${standalone ? '' : 'card '}pane manuscript-pane"><div class="source-reader-toolbar"><h3>原文与定位</h3><div class="source-reader-controls"><input id="workspace-search" type="search" aria-label="${esc(tr('搜索原文'))}" placeholder="搜索原文"><button type="button" id="clear-source-search" class="secondary" disabled>清除搜索</button></div><p id="source-search-status" class="muted source-reader-status" role="status" aria-live="polite">${esc(tr('搜索结果'))} · ${blocks.length} / ${blocks.length}</p>${sourceReaderNavigation(blocks)}</div>${sourceHTMLBaseDeclarations(view)}${blocks.map(block => {
     const heading = block.kind === 'heading';
     const level = Number.isInteger(block.level) && block.level > 0 && block.level <= 9 ? block.level : null;
     return `<div class="source-block${heading ? ' source-kind-heading' : ''}" id="source-${esc(block.block_id)}"><small>${esc(sourceBlockLabel(block))}</small><div class="source-text"${heading && level ? ` role="heading" aria-level="${level}"` : ''}>${pdfDisplayText(sourceBlockText(block))}</div>${noteLinks(block)}${sourceHyperlinkDeclarations(block)}</div>`;

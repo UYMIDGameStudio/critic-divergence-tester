@@ -70,6 +70,8 @@ def run_self_test() -> dict:
         checked.append('docx-notes')
         _check_docx_hyperlinks(root / 'docx-hyperlinks')
         checked.append('docx-hyperlinks')
+        _check_html_hyperlinks(root / 'html-hyperlinks')
+        checked.append('html-hyperlinks')
         _check_ir_budget(root / 'ir-budget')
         checked.append('ir-budget')
         _check_reviewable_text(root / "reviewable-text")
@@ -253,6 +255,38 @@ def _docx_notes_fixture() -> bytes:
         for kind, text in [('footnote', '相关人员及时完成报名。 English 简体中文 繁體中文 Deutsch Straße Français été 日本語 Русский Latīna'), ('endnote', 'This claim excludes other settings.')]:
             archive.writestr(f'word/{kind}s.xml', f'<w:{kind}s xmlns:w="{namespace}"><w:{kind} w:id="7"><w:p><w:pPr><w:tabs><w:tab w:val="left" w:pos="360"/></w:tabs></w:pPr><w:r><w:{kind}Ref/><w:t>{text}</w:t></w:r></w:p></w:{kind}></w:{kind}s>')
     return output.getvalue()
+
+
+def _html_hyperlink_fixture() -> bytes:
+    from html import escape
+    label = 'English 简体中文 繁體中文 Deutsch Straße Français été 日本語 Русский Latīna'
+    unsafe = 'javascript:alert(1)?literal=<img src=x onerror=alert(1)>&long=' + 'a' * 600
+    html = '<!doctype html><html><head><meta charset="utf-8"><base href="https://example.org/articles/"><base href="../declared-base/"></head><body>'
+    html += '<h1>Synthetic HTML paper</h1><p>Read <a href="appendix.html#scope">' + label + '</a>.</p>'
+    html += '<p><a href="' + escape(unsafe, quote=True) + '">' + escape('Source label <img src=x onerror=alert(1)>') + '</a></p>'
+    html += '<ol start="4"><li><a href="">Empty address</a></li></ol>'
+    html += '<table><caption><a href="caption.pdf">Caption source</a></caption><tr><td><a href="cell-data" href="other-data">Evidence</a></td></tr></table>'
+    html += '<table><a href="unexpanded">Unassociated</a><tr><td>Table body</td></tr></table>'
+    html += '<template><a href="https://hidden.example/">Hidden label</a></template></body></html>'
+    return html.encode('utf-8')
+
+
+def _check_html_hyperlinks(library: Path) -> None:
+    from document_review_studio import DocumentReviewProject
+    from document_review_model import ReviewContext
+    raw = _html_hyperlink_fixture()
+    project = DocumentReviewProject.create(library, filename='links.html', content=raw)
+    document = project.document()
+    visibility = document.metadata['html_hyperlink_visibility']
+    if visibility['reference_count'] != 5 or visibility['unassociated_declarations'] != 1 or visibility['url_resolution'] != 'not-performed':
+        raise RuntimeError('Packaged HTML import loses source declarations or their visibility limits')
+    project.confirm_extraction('confirm')
+    project.confirm_context(ReviewContext('paper', 'unknown', 'unknown', 'author', 'researchers', review_profile='academic', research_type='theoretical').to_dict())
+    request = project.prepare_ai_audits(['academic_argument'], provider='self-test', model='not-invoked')[0]
+    if 'base_declarations' not in request['prompt'] or 'not independent verification' not in request['prompt']:
+        raise RuntimeError('Packaged academic protocol loses HTML origin or verification limits')
+    if (project.root / 'source/links.html').read_bytes() != raw or project.integrity_errors():
+        raise RuntimeError('Packaged HTML review changes the immutable original')
 
 
 def _docx_hyperlink_fixture() -> bytes:

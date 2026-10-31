@@ -37,6 +37,7 @@ jobs:
             dist/browser-docx-containers/
             dist/browser-docx-notes/
             dist/browser-docx-hyperlinks/
+            dist/browser-html-hyperlinks/
             dist/browser-reviewable-text/
             dist/browser-reviewable-text-history/
             dist/browser-quote-context/

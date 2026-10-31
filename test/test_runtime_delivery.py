@@ -23,7 +23,7 @@ class InstalledRuntimeSelfTests(unittest.TestCase):
         self.assertTrue({"browser-assets", "research-browser-assets", "professional-browser-assets",
                          "ui-locales", "eight-language-import", "big5-research-import", "research-ir",
                          "research-product-view", "research-workbench", "research-http", "adversarial-review",
-                         "academic-quality-protocols", "revision-evidence", "readonly-recovery", "review-context", "docx-visibility", "xml-limits", "table-grid", "docx-containers", "docx-notes", "docx-hyperlinks", "http-teardown", "ir-budget", "reviewable-text", "quote-context", "secondary-quotes", "report-literal-text", "lossless-recheck-source"} <= set(result["checked"]))
+                         "academic-quality-protocols", "revision-evidence", "readonly-recovery", "review-context", "docx-visibility", "xml-limits", "table-grid", "docx-containers", "docx-notes", "docx-hyperlinks", "html-hyperlinks", "http-teardown", "ir-budget", "reviewable-text", "quote-context", "secondary-quotes", "report-literal-text", "lossless-recheck-source"} <= set(result["checked"]))
 
     def test_assets_load_from_a_zip_package_outside_the_source_directory(self):
         # This is a small importlib-resources fixture, not a release build. A
