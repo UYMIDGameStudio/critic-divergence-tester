@@ -87,6 +87,12 @@ main { max-width: 1480px; margin: auto; padding: 28px 32px 64px; }
 .source-block small { font: .6875rem/1.6 var(--font-sans); color: var(--muted); }
 .source-kind-heading .source-text { margin-top: 8px; font-weight: 600; font-size: 1.15rem; line-height: 1.5; }
 .source-note-links { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 10px; font: .75rem/1.6 var(--font-sans); }
+.source-hyperlinks { margin-top: 12px; font: .8rem/1.6 var(--font-sans); overflow-wrap: anywhere; }
+.source-hyperlinks summary { cursor: pointer; }
+.source-hyperlinks ol { padding-inline-start: 22px; }
+.source-hyperlinks dl { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; }
+.source-hyperlinks dt { margin-top: 6px; font-weight: 600; }
+.source-hyperlinks dd { margin: 0; white-space: pre-wrap; unicode-bidi: plaintext; }
 .source-notes nav { display: grid; gap: 8px; }
 .source-reader-toolbar { position: sticky; top: 0; z-index: 1; padding-top: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); background: var(--paper); }
 .workspace > .manuscript-pane { padding-top: 0; }

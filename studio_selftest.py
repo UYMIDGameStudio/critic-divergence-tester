@@ -68,6 +68,8 @@ def run_self_test() -> dict:
         checked.append("docx-containers")
         _check_docx_notes(root / 'docx-notes')
         checked.append('docx-notes')
+        _check_docx_hyperlinks(root / 'docx-hyperlinks')
+        checked.append('docx-hyperlinks')
         _check_ir_budget(root / 'ir-budget')
         checked.append('ir-budget')
         _check_reviewable_text(root / "reviewable-text")
@@ -251,6 +253,53 @@ def _docx_notes_fixture() -> bytes:
         for kind, text in [('footnote', '相关人员及时完成报名。 English 简体中文 繁體中文 Deutsch Straße Français été 日本語 Русский Latīna'), ('endnote', 'This claim excludes other settings.')]:
             archive.writestr(f'word/{kind}s.xml', f'<w:{kind}s xmlns:w="{namespace}"><w:{kind} w:id="7"><w:p><w:pPr><w:tabs><w:tab w:val="left" w:pos="360"/></w:tabs></w:pPr><w:r><w:{kind}Ref/><w:t>{text}</w:t></w:r></w:p></w:{kind}></w:{kind}s>')
     return output.getvalue()
+
+
+def _docx_hyperlink_fixture() -> bytes:
+    """Only synthetic declarations; no target is visited by the acceptance check."""
+    import zipfile
+    from xml.sax.saxutils import escape
+    from xml.etree import ElementTree as ET
+    namespace = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
+    relation = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+    output = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(_docx_notes_fixture())) as source, zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as target:
+        for name in source.namelist():
+            data = source.read(name)
+            if name in {'word/document.xml', 'word/footnotes.xml', 'word/endnotes.xml'}:
+                root = ET.fromstring(data)
+                paragraph = root.find('.//' + namespace + 'p')
+                if name == 'word/endnotes.xml':
+                    field = ET.SubElement(paragraph, namespace + 'fldSimple', {namespace + 'instr': 'HYPERLINK "https://field.example"'})
+                    ET.SubElement(ET.SubElement(field, namespace + 'r'), namespace + 't').text = 'Cached field label'
+                else:
+                    link = ET.SubElement(paragraph, namespace + 'hyperlink', {'{' + relation + '}id': 'study'})
+                    ET.SubElement(ET.SubElement(link, namespace + 'r'), namespace + 't').text = ' Source label <img src=x onerror=alert(1)>'
+                data = ET.tostring(root, encoding='utf-8', xml_declaration=True)
+            if name == 'word/_rels/document.xml.rels':
+                data = data.replace(b'</Relationships>', f'<Relationship Id="study" Type="{relation}/hyperlink" Target="https://example.org/study?x=1&amp;y=2" TargetMode="External"/></Relationships>'.encode())
+            target.writestr(name, data)
+        address = 'javascript:alert(1)?literal=<img src=x onerror=alert(1)>&long=' + 'a' * 600
+        target.writestr('word/_rels/footnotes.xml.rels', f'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="study" Type="{relation}/hyperlink" Target="{escape(address, {chr(34): "&quot;"})}" TargetMode="External"/></Relationships>')
+    return output.getvalue()
+
+
+def _check_docx_hyperlinks(library: Path) -> None:
+    from document_review_studio import DocumentReviewProject
+    from document_review_model import ReviewContext
+    raw = _docx_hyperlink_fixture()
+    project = DocumentReviewProject.create(library, filename='links.docx', content=raw)
+    document = project.document()
+    references = [record for block in document.blocks for record in block.attrs.get('hyperlink_references', [])]
+    if len(references) != 2 or references[0]['target'] != 'https://example.org/study?x=1&y=2' or not references[1]['target'].startswith('javascript:'):
+        raise RuntimeError('Packaged Word import loses or confuses source link targets')
+    project.confirm_extraction('confirm')
+    project.confirm_context(ReviewContext('paper', 'unknown', 'unknown', 'author', 'researchers', review_profile='academic', research_type='theoretical').to_dict())
+    request = project.prepare_ai_audits(['academic_argument'], provider='self-test', model='not-invoked')[0]
+    if references[1]['target'] not in request['prompt'] or 'not fetched' not in request['prompt'] or 'not-evaluated' not in request['prompt']:
+        raise RuntimeError('Packaged review loses link declarations or their visibility limits')
+    if (project.root / 'source/links.docx').read_bytes() != raw or project.integrity_errors():
+        raise RuntimeError('Packaged link recognition changes the immutable original')
 
 
 def _check_docx_notes(library: Path) -> None:

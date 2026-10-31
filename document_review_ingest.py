@@ -60,7 +60,7 @@ MEDIA_TYPES = {
     ".ppt": "application/vnd.ms-powerpoint", ".dps": "application/vnd.ms-powerpoint",
 }
 PARSER_VERSION = "document-review-studio-v1"
-DOCX_PARSER_VERSION = "document-review-studio-docx-v5"
+DOCX_PARSER_VERSION = "document-review-studio-docx-v6"
 W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 R_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 MC_NS = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
@@ -399,20 +399,22 @@ def _text_blocks(text: str, source: RawFileBinding, *, parser: str, warnings: li
     )
 
 
+_DOCX_NON_TEXT = {W_NS + name for name in DOCX_TEXT_PROPERTIES} | {
+    MC_NS + 'AlternateContent', W_NS + 'altChunk', MATH_NS + 'oMath', MATH_NS + 'oMathPara'}
+
+
+def _docx_visible_nodes(node):
+    """Use the same visibility boundary for text and its source declarations."""
+    if node.tag in _DOCX_NON_TEXT:
+        return
+    yield node
+    for child in node:
+        yield from _docx_visible_nodes(child)
+
+
 def _xml_text(element: ET.Element, *, include_deleted: bool = False) -> str:
     parts: list[str] = []
-    non_text = {W_NS + name for name in DOCX_TEXT_PROPERTIES} | {MC_NS + "AlternateContent", W_NS + "altChunk", MATH_NS + "oMath", MATH_NS + "oMathPara"}
-
-    def visible_nodes(node):
-        # These are alternatives or require a separate renderer. Concatenating
-        # Choice and Fallback produces duplicate, potentially contradictory text.
-        if node.tag in non_text:
-            return
-        yield node
-        for child in node:
-            yield from visible_nodes(child)
-
-    for child in visible_nodes(element):
+    for child in _docx_visible_nodes(element):
         if child.tag in {W_NS + "t", W_NS + "delText"}:
             if not include_deleted and child.tag == W_NS + "delText":
                 continue
@@ -422,6 +424,69 @@ def _xml_text(element: ET.Element, *, include_deleted: bool = False) -> str:
         elif child.tag in {W_NS + "br", W_NS + "cr"}:
             parts.append("\n")
     return "".join(parts).strip()
+
+
+class _DocxHyperlinks:
+    """Retain declarations as data; never fetch or execute a destination."""
+    def __init__(self, archive):
+        self.archive = archive
+        self.relationships = {}
+        self.visibility = {'layout': 'source-hyperlinks-v1', 'scope': 'extracted-blocks',
+            'reference_count': 0, 'unresolved_count': 0, 'field_code_blocks': 0,
+            'fetched': False, 'field_codes': 'not-evaluated'}
+
+    def _relations(self, part):
+        if part not in self.relationships:
+            directory, leaf = posixpath.split(part)
+            root = _docx_xml(self.archive, posixpath.join(directory, '_rels', leaf + '.rels'))
+            namespace = '{http://schemas.openxmlformats.org/package/2006/relationships}'
+            if root is not None and root.tag != namespace + 'Relationships':
+                raise IngestionError('DOCX 文件关系结构无效，无法可靠关联来源')
+            relations = {}
+            if root is not None:
+                for node in root.findall(namespace + 'Relationship'):
+                    relations.setdefault(node.get('Id'), []).append(node.attrib)
+            self.relationships[part] = relations
+        return self.relationships[part]
+
+    def attributes(self, parent, part):
+        records = []
+        fields = False
+        for node in _docx_visible_nodes(parent):
+            fields |= node.tag in {W_NS + 'fldSimple', W_NS + 'instrText', W_NS + 'fldChar'}
+            if node.tag != W_NS + 'hyperlink':
+                continue
+            label = _xml_text(node)
+            reference = {'label': label[:512], 'label_truncated': len(label) > 512,
+                'part': part, 'relationship_id': node.get(R_NS + 'id'),
+                'target': None, 'target_mode': None, 'anchor': node.get(W_NS + 'anchor'),
+                'doc_location': node.get(W_NS + 'docLocation'), 'status': 'declared'}
+            reason = None
+            if R_NS + 'id' in node.attrib:
+                relations = self._relations(part).get(reference['relationship_id'], [])
+                if not relations:
+                    reason = 'missing-relationship'
+                elif len(relations) != 1:
+                    reason = 'ambiguous-relationship'
+                else:
+                    relation = relations[0]
+                    if relation.get('Type') != R_NS[1:-1] + '/hyperlink':
+                        reason = 'wrong-relationship-type'
+                    else:
+                        reference['target'] = relation.get('Target')
+                        reference['target_mode'] = relation.get('TargetMode', 'Internal')
+                        if not reference['target'] or reference['target_mode'] not in {'Internal', 'External'}:
+                            reason = 'invalid-relationship'
+            elif not reference['anchor']:
+                reason = 'missing-target'
+            if reason:
+                reference.update(status='unresolved', reason=reason)
+                self.visibility['unresolved_count'] += 1
+            records.append(reference)
+        self.visibility['reference_count'] += len(records)
+        self.visibility['field_code_blocks'] += bool(fields)
+        return {**({'hyperlink_references': records} if records else {}),
+                **({'docx_field_codes_present': True} if fields else {})}
 
 
 def _docx_content_nodes(parent, names, *, on_unmapped=None):
@@ -742,7 +807,7 @@ def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits, *,
             "unreferenced_ids": sorted(data['notes'].keys() - set(reference_ids))}
     footnotes = note_visibility["footnote"]["part_present"] or bool(note_visibility["footnote"]["reference_count"])
     endnotes = note_visibility["endnote"]["part_present"] or bool(note_visibility["endnote"]["reference_count"])
-    hyperlinks = bool(document_xml.findall(".//" + W_NS + "hyperlink"))
+    hyperlink_reader = _DocxHyperlinks(archive)
     images = [name for name in archive.namelist() if name.startswith("word/media/")]
     if len(images) > limits.max_images:
         raise IngestionError("DOCX 图片数量超过安全限制")
@@ -757,8 +822,6 @@ def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits, *,
     if any(data['notes'] and not data['relationship_bound'] for data in note_parts.values()):
         warnings.append(ExtractionWarning('docx-note-relationship-inferred', 'high',
             'DOCX 注释部件缺少明确的文件关系，已按常用路径读取；请对照原件确认注释归属。'))
-    if hyperlinks:
-        warnings.append(ExtractionWarning("hyperlinks-present", "low", "DOCX 含超链接；链接目标存在状态已记录"))
 
     def add_block(kind: str, text: str, paragraph: int, *, level: int | None = None, attrs: dict[str, Any] | None = None, page: int | None = None, table_id: str | None = None, row: int | None = None, column: int | None = None, story=None) -> DocumentBlock:
         if len(blocks) >= limits.max_text_blocks:
@@ -799,7 +862,7 @@ def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits, *,
                 heading_match = re.search(r"heading\s*([1-9])", (style_name or "").casefold())
                 level = int(heading_match.group(1)) if heading_match else (int(outline.attrib.get(W_NS + "val", "0")) + 1 if outline is not None else None)
                 num_pr = ppr.find(W_NS + "numPr") if ppr is not None else None
-                attrs = {"style_id": style_id, "style_name": style_name, "has_hyperlink": bool(child.findall(".//" + W_NS + "hyperlink")), "has_drawing": bool(child.findall(".//" + W_NS + "drawing"))}
+                attrs = {"style_id": style_id, "style_name": style_name, "has_hyperlink": False, "has_drawing": bool(child.findall(".//" + W_NS + "drawing"))}
                 if num_pr is not None:
                     attrs["list"] = True
                     ilvl = num_pr.find(W_NS + "ilvl")
@@ -811,7 +874,9 @@ def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits, *,
                     attrs['note_references'] = note_refs
                 if attrs["has_drawing"]:
                     emit("image_placeholder", "[图片]", paragraph_index, attrs={**attrs, "description": text})
-                if text or note_refs:
+                attrs.update(hyperlink_reader.attributes(child, story['part'] if story else 'word/document.xml'))
+                attrs['has_hyperlink'] = bool(attrs.get('hyperlink_references'))
+                if text or note_refs or attrs['has_hyperlink'] or attrs.get('docx_field_codes_present'):
                     emit("heading" if level else ("list_item" if attrs.get("list") else "paragraph"), text, paragraph_index, level=level, attrs=attrs)
                 paragraph_index += 1
             elif child.tag == W_NS + "tbl":
@@ -856,6 +921,7 @@ def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits, *,
                         span = _docx_grid_value(grid_span.get(W_NS + 'val'), minimum=1,
                             maximum=table_limits['columns']) if grid_span is not None else 1
                         attrs = {"grid_span": span, "v_merge": v_merge.attrib.get(W_NS + "val", "continue") if v_merge is not None else None, "nested_tables": len(cell_xml.findall(".//" + W_NS + "tbl"))}
+                        attrs.update(hyperlink_reader.attributes(cell_xml, story['part'] if story else 'word/document.xml'))
                         note_refs = _docx_note_references(cell_xml)
                         if note_refs:
                             attrs['note_references'] = note_refs
@@ -888,8 +954,9 @@ def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits, *,
             if issues:
                 content_issues[part] = issues
             text = _xml_text(root)
-            if text:
-                add_block(kind, text, paragraph_index, attrs={"part": part})
+            attributes = {'part': part, **hyperlink_reader.attributes(root, part)}
+            if text or attributes.get('hyperlink_references'):
+                add_block(kind, text, paragraph_index, attrs=attributes)
                 paragraph_index += 1
     for kind, data in note_parts.items():
         if data['root'] is not None:
@@ -906,6 +973,13 @@ def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits, *,
     for block in blocks:
         for reference in block.attrs.get('note_references', []):
             reference['block_id'] = note_blocks.get((reference['kind'], reference['id']))
+    hyperlinks = bool(hyperlink_reader.visibility['reference_count'])
+    if hyperlinks:
+        warnings.append(ExtractionWarning('hyperlinks-present', 'low', 'DOCX 链接声明已保留；目标内容未经读取或核实。'))
+    if hyperlink_reader.visibility['unresolved_count']:
+        warnings.append(ExtractionWarning('docx-hyperlinks-unresolved', 'medium', '部分 DOCX 链接缺少明确目标或关系不一致，请对照原件核对。'))
+    if hyperlink_reader.visibility['field_code_blocks']:
+        warnings.append(ExtractionWarning('docx-fields-not-evaluated', 'medium', 'DOCX 域代码未求值；仅保留缓存文字，域生成的链接目标可能不可用。'))
     if flattened_tables:
         warnings.append(ExtractionWarning('docx-table-grid-flattened', 'medium',
             'DOCX 合并或省略单元格已按逻辑列展开；规范化副本不保留合并外观，请对照原件核对表头关系。',
@@ -915,7 +989,16 @@ def _parse_docx(data: bytes, source: RawFileBinding, limits: IngestionLimits, *,
             'DOCX 含尚未完整识别的特殊内容；请对照原件核对，必要时在 Word 中另存为 DOCX 后重新导入，或修正识别结果。',
             details={'parts': content_issues, 'content_completeness': 'not-established'}))
     quality = QualitySignals(page_count=1, text_coverage=1.0 if any(b.text.strip() for b in blocks) else 0.0, table_count=sum(b.kind == "table" for b in blocks), tables_parsed=sum(b.kind == "table" for b in blocks), footnote_comment_revision_risk=[w.code for w in warnings], requires_confirmation=True)
-    return StructuredDocument(stable_id("DOC", identity), next((b.text for b in blocks if b.kind == "heading" and not b.attrs.get("docx_story")), Path(source.original_name).stem), source, "docx-xml", DOCX_PARSER_VERSION, blocks, warnings, quality, mapping, {"revisions_present": revisions, "revision_parts": revision_parts, "comments_present": comments, "footnotes_present": footnotes, "endnotes_present": endnotes, "note_visibility": note_visibility, "docx_note_layout": DOCX_NOTE_LAYOUT, "hyperlinks_present": hyperlinks, "image_count": len(images), "nested_tables_present": any(b.attrs.get("nested_tables", 0) for b in blocks), "docx_content_layout": DOCX_CONTENT_LAYOUT, "docx_content_visibility": {"issues": content_issues, "content_completeness": "not-established", "coverage_measurement": "not-measured"}})
+    metadata = {"revisions_present": revisions, "revision_parts": revision_parts,
+        "comments_present": comments, "footnotes_present": footnotes, "endnotes_present": endnotes,
+        "note_visibility": note_visibility, "docx_note_layout": DOCX_NOTE_LAYOUT,
+        "hyperlinks_present": hyperlinks, "docx_hyperlink_visibility": hyperlink_reader.visibility,
+        "image_count": len(images), "nested_tables_present": any(b.attrs.get("nested_tables", 0) for b in blocks),
+        "docx_content_layout": DOCX_CONTENT_LAYOUT,
+        "docx_content_visibility": {"issues": content_issues, "content_completeness": "not-established", "coverage_measurement": "not-measured"}}
+    return StructuredDocument(stable_id("DOC", identity),
+        next((b.text for b in blocks if b.kind == "heading" and not b.attrs.get("docx_story")), Path(source.original_name).stem),
+        source, "docx-xml", DOCX_PARSER_VERSION, blocks, warnings, quality, mapping, metadata)
 
 
 def _pdf_backend() -> tuple[str, Any] | None:

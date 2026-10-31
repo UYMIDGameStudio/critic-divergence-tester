@@ -79,6 +79,7 @@ class AuditRunStore(_ProjectComponent):
                 "quality_signals": document.quality.to_dict(),
                 "docx_content_visibility": document.metadata.get("docx_content_visibility"),
                 "note_visibility": document.metadata.get("note_visibility"),
+                "docx_hyperlink_visibility": document.metadata.get("docx_hyperlink_visibility"),
                 "image_placeholder_count": sum(block.kind == "image_placeholder" for block in document.blocks),
                 "rule": "Review only the supplied blocks. Extraction confirmation is not proof that all original content was captured. If warnings indicate omitted notes, comments, images, tables or uncertain reading order, absence from these blocks is not evidence of absence from the original. Unexpanded embedded content, equations or compatibility branches must not be treated as absent. State the visibility limitation, identify what needs inspection, and make dependent criticisms conditional; do not invent missing content. Criticisms fully supported by visible passages remain eligible.",
             },

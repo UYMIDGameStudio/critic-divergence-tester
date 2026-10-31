@@ -463,7 +463,14 @@ class BuiltPortableTests(unittest.TestCase):
             original = (project.root / "project.json").read_bytes()
             args = ["-InstallRoot", str(install), "-ProjectRoot", str(library), "-ShortcutRoot", str(shortcuts)]
             def run(script, *extra):
-                result = subprocess.run([POWERSHELL, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(release / script), *args, *extra], capture_output=True, timeout=60)
+                # One real project runs self-test, upgrade-check and backup,
+                # each with its own installer deadline. Leave time for copying,
+                # hashing and rollback instead of killing that parent early.
+                operation_timeout = 180
+                install = script == INSTALLER
+                options = [*extra, '-OperationTimeoutSeconds', str(operation_timeout)] if install else list(extra)
+                timeout = 3 * operation_timeout + 60 if install else 60
+                result = subprocess.run([POWERSHELL, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(release / script), *args, *options], capture_output=True, timeout=timeout)
                 self.assertEqual(result.returncode, 0, (result.stdout + result.stderr).decode(errors="replace"))
             run(INSTALLER)
             self.assertTrue((install / version / "DocumentReviewStudio.exe").is_file())
