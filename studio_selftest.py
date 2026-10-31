@@ -72,6 +72,8 @@ def run_self_test() -> dict:
         checked.append('docx-hyperlinks')
         _check_html_hyperlinks(root / 'html-hyperlinks')
         checked.append('html-hyperlinks')
+        _check_word_hyperlink_edits(root / 'word-hyperlink-edits')
+        checked.append('word-hyperlink-edits')
         _check_ir_budget(root / 'ir-budget')
         checked.append('ir-budget')
         _check_reviewable_text(root / "reviewable-text")
@@ -255,6 +257,57 @@ def _docx_notes_fixture() -> bytes:
         for kind, text in [('footnote', '相关人员及时完成报名。 English 简体中文 繁體中文 Deutsch Straße Français été 日本語 Русский Latīna'), ('endnote', 'This claim excludes other settings.')]:
             archive.writestr(f'word/{kind}s.xml', f'<w:{kind}s xmlns:w="{namespace}"><w:{kind} w:id="7"><w:p><w:pPr><w:tabs><w:tab w:val="left" w:pos="360"/></w:tabs></w:pPr><w:r><w:{kind}Ref/><w:t>{text}</w:t></w:r></w:p></w:{kind}></w:{kind}s>')
     return output.getvalue()
+
+
+def _word_hyperlink_edit_fixture() -> bytes:
+    import zipfile
+    from xml.etree import ElementTree as ET
+    namespace = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
+    relation = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+    output=io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(_docx_notes_fixture())) as source, zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as target:
+        for name in source.namelist():
+            data=source.read(name)
+            if name=='word/document.xml':
+                root=ET.fromstring(data)
+                root.find('.//'+namespace+'t').text='相关人员及时完成报名。'
+                link=ET.SubElement(root.find('.//'+namespace+'p'),namespace+'hyperlink',{'{'+relation+'}id':'study'})
+                run=ET.SubElement(link,namespace+'r')
+                ET.SubElement(ET.SubElement(run,namespace+'rPr'),namespace+'i')
+                ET.SubElement(run,namespace+'t').text='CITATION'
+                data=ET.tostring(root,encoding='utf-8',xml_declaration=True)
+            elif name=='word/_rels/document.xml.rels':
+                data=data.replace(b'</Relationships>',f'<Relationship Id="study" Type="{relation}/hyperlink" Target="https://example.invalid/study" TargetMode="External"/></Relationships>'.encode())
+            target.writestr(name,data)
+    return output.getvalue()
+
+
+def _check_word_hyperlink_edits(library: Path) -> None:
+    from copy import deepcopy
+    import zipfile
+    from xml.etree import ElementTree as ET
+    from document_review_studio import DocumentReviewProject
+    from document_review_word import preserve_docx
+    raw=_word_hyperlink_edit_fixture()
+    project=DocumentReviewProject.create(library,filename='linked.docx',content=raw)
+    original=project.document();revised=deepcopy(original)
+    revised.blocks[0].text=original.blocks[0].text.replace('及时','周五前')
+    namespace='{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
+    def rendered(node,accept=True):
+        if node.tag==namespace+('del' if accept else 'ins'):return ''
+        if node.tag in {namespace+'t',namespace+'delText'}:return node.text or ''
+        return ''.join(rendered(child,accept) for child in node)
+    for tracked in (False,True):
+        result,report=preserve_docx(raw,original,revised,tracked=tracked)
+        with zipfile.ZipFile(io.BytesIO(result)) as after, zipfile.ZipFile(io.BytesIO(raw)) as before:
+            paragraph=ET.fromstring(after.read('word/document.xml')).find('.//'+namespace+'p')
+            if rendered(paragraph)!=revised.blocks[0].text or (tracked and rendered(paragraph,False)!=original.blocks[0].text):
+                raise RuntimeError('Packaged Word link revisions do not accept/reject to the expected text')
+            if not report['source_layout_preserved'] or report['changed_blocks_with_hyperlinks']!=1:
+                raise RuntimeError('Packaged Word link edit lost native preservation capability')
+            for name in before.namelist():
+                if name!='word/document.xml' and before.read(name)!=after.read(name):raise RuntimeError('Word link edit changes an unrelated source part')
+    if (project.root/'source/linked.docx').read_bytes()!=raw or project.integrity_errors():raise RuntimeError('Word link edit changes the immutable original')
 
 
 def _html_hyperlink_fixture() -> bytes:

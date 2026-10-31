@@ -7,11 +7,12 @@ const os = require('node:os');
 const assert = require('node:assert/strict');
 
 async function main() {
-  const root = path.resolve(__dirname, '..'), output = path.join(root, 'dist/browser-docx-notes');
+  const editLinks = process.argv.includes('--edit-links'), label = editLinks ? 'word-hyperlink-edits' : 'docx-notes';
+  const root = path.resolve(__dirname, '..'), output = path.join(root, 'dist/browser-' + label);
   await fs.mkdir(output, {recursive: true});
-  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'docx-notes-'));
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), label+'-'));
   const child = spawn(process.env.STUDIO_PYTHON || 'python',
-    [path.join(__dirname, 'browser_fixture_server.py'), temporary, '--docx-notes'],
+    [path.join(__dirname, 'browser_fixture_server.py'), temporary, '--'+label],
     {cwd: root, windowsHide: true, env: {...process.env, PYTHONUTF8:'1'}});
   const report = {passed:false, checks:[], errors:[], externalRequests:[]};
   let browser, stderr='';
@@ -53,7 +54,7 @@ async function main() {
     await action('[data-action="confirm-extraction"]','confirm_extraction');
     await page.locator('#manuscript-reader > summary').click();
     const passage=page.locator('#source-'+body.block_id), note=page.locator('#source-'+foot.block_id);
-    await page.locator('#workspace-search').fill('Bounded claim');
+    await page.locator('#workspace-search').fill(editLinks ? body.text : 'Bounded claim');
     assert.equal(await note.evaluate(el=>el.hidden),true);
     const noteLink=passage.locator('.source-note-links a').first();
     await noteLink.focus();await page.keyboard.press('Enter');
@@ -74,7 +75,7 @@ async function main() {
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false);
       await page.locator('.manuscript-pane').screenshot({path:path.join(output,`${locale}-${width}-reader.png`)});
     }
-    await page.locator('#review_profile').selectOption('academic');
+    await page.locator('#review_profile').selectOption(editLinks ? 'document' : 'academic');
     await page.locator('#discipline').selectOption('humanities');
     await page.locator('#research_type').selectOption('theoretical');
     for(const[id,value]of Object.entries({jurisdiction:'unknown',effective_date:'unknown',publisher_type:'author',audience:'researchers'})) await page.locator('#'+id).fill(value);
@@ -90,14 +91,49 @@ async function main() {
     }
     assert.deepEqual(await page.evaluate(()=>state.selected.extraction.blocks),original.blocks);
     assert.deepEqual(await fs.readFile(sourcePath),source);
-    report.checks.push('All three saved academic protocols receive note context and association rules; source bytes and extracted blocks remain unchanged');
+    report.checks.push('Saved independent protocols receive note context and association rules; source bytes and extracted blocks remain unchanged');
+    if(editLinks) {
+      await page.locator('.critic').evaluateAll(nodes=>nodes.forEach(node=>{node.checked=node.value==='expression_ambiguity';}));
+      await action('#run-precheck','run_local_prechecks');
+      const findings=await page.evaluate(()=>state.selected.findings);
+      const target=findings.find(f=>f.location.block_id===body.block_id);
+      assert.ok(target);
+      for(const finding of findings) {
+        await page.locator('#reason-'+finding.finding_id).fill('Owned link-edit scope');
+        await action(`.decision[data-id="${finding.finding_id}"][data-value="${finding.finding_id===target.finding_id?'accept':'reject'}"]`,'decide_finding');
+      }
+      await action('#prepare-bridge','prepare_bridge');
+      const id=await page.locator('.confirm-operation').first().getAttribute('data-action-id');
+      await page.locator('#operation-'+id).selectOption('replace_block');
+      await page.locator('#operation-reason-'+id).fill('Explicit fixture operation');
+      await action(`.confirm-operation[data-action-id="${id}"]`,'set_revision_action_operation');
+      await page.locator('#revision-'+id).fill(body.text.replace('及时','周五前'));
+      await page.locator('#revision-reason-'+id).fill('Clarify deadline, keep citation');
+      await page.locator('#revision-provenance-'+id).selectOption('human-authored');
+      await action(`.propose-hunk[data-action-id="${id}"]`,'propose_revision_hunk');
+      const hunk=await page.locator('.decide-hunk[data-decision="approve"]').getAttribute('data-hunk-id');
+      await page.locator('#hunk-reason-'+hunk).fill('Explicit fixture approval');
+      await action('.decide-hunk[data-decision="approve"]','decide_revision_hunk');
+      await action('#finalize-revision','finalize_revision');
+      await action('#export-final','export');
+      const exportId=await page.evaluate(()=>state.selected.exports.at(-1).export_id);
+      const directory=path.join(temporary,original.directory,'exports',exportId);
+      const capability=JSON.parse(await fs.readFile(path.join(directory,'track-changes-capability.json'),'utf8'));
+      assert.equal(capability.source_layout_preserved,true);assert.equal(capability.native_track_changes,true);
+      assert.equal(capability.changed_blocks_with_hyperlinks,1);
+      assert.ok((await fs.readFile(path.join(directory,'Word修订标记.docx'))).length>100);
+      assert.ok((await fs.readFile(path.join(directory,capability.output_name))).length>100);
+      assert.deepEqual(await fs.readFile(sourcePath),source);
+      report.checks.push('An explicitly approved linked paragraph edit exports preserved-layout clean and native revision files, keeps citation metadata and leaves the original intact');
+    }
     assert.deepEqual(report.errors,[]);assert.deepEqual(report.externalRequests,[]);
     report.browserVersion=browser.version();report.passed=true;
   } finally {
     if(browser) await browser.close();child.kill();
     if(child.exitCode===null&&child.signalCode===null) await new Promise(resolve=>child.once('exit',resolve));
     report.stderr=stderr;await fs.writeFile(path.join(output,'result.json'),JSON.stringify(report,null,2));
-    await fs.rm(temporary,{recursive:true,force:true});
+    const resolved=path.resolve(temporary);assert.equal(path.dirname(resolved),path.resolve(os.tmpdir()));assert.ok(path.basename(resolved).startsWith(label+'-'));
+    await fs.rm(resolved,{recursive:true,force:true});
   }
   console.log(JSON.stringify(report,null,2));
 }

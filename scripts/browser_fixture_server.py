@@ -6,6 +6,10 @@ from unified_app import serve_unified_app
 
 fixture = None
 project_dir = None
+if '--word-hyperlink-edits' in sys.argv[2:]:
+    from document_review_studio import DocumentReviewProject
+    from studio_selftest import _word_hyperlink_edit_fixture
+    project_dir=DocumentReviewProject.create(Path(sys.argv[1]),filename='linked.docx',content=_word_hyperlink_edit_fixture()).root
 if '--html-hyperlinks' in sys.argv[2:]:
     from document_review_studio import DocumentReviewProject
     from studio_selftest import _html_hyperlink_fixture

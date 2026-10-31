@@ -1,4 +1,12 @@
 {
+  "超链接重复文字的定位检查超过安全上限，请在 Word 中核对": {"zh-Hant": "超連結重複文字的定位檢查超過安全上限，請在 Word 中核對。", "en": "Checking repeated text near hyperlinks exceeded the safe limit. Check this edit in Word."},
+  "重复文字使超链接修改归属不明确；请在 Word 中核对该位置": {"zh-Hant": "重複文字使超連結修改歸屬不明確；請在 Word 中核對該位置。", "en": "Repeated text makes hyperlink ownership ambiguous. Check this location in Word."},
+  "单元格修改跨越含超链接的段落，无法确认新文字的链接归属": {"zh-Hant": "儲存格修改跨越含超連結的段落，無法確認新文字的連結歸屬。", "en": "The cell edit crosses paragraphs containing hyperlinks; ownership of the new linked text is unclear."},
+  "超链接包含域、书签、嵌套链接或暂不支持的内联结构": {"zh-Hant": "超連結含欄位、書籤、巢狀連結或暫不支援的行內結構。", "en": "The hyperlink contains fields, bookmarks, nested links or unsupported inline content."},
+  "超链接段落含未映射的文字，无法安全保留链接范围": {"zh-Hant": "超連結段落含未對應的文字，無法安全保留連結範圍。", "en": "The linked paragraph contains unmapped text; link boundaries cannot be preserved reliably."},
+  "修改跨越超链接边界，无法确认新文字的链接归属；请拆分修改或在 Word 中核对": {"zh-Hant": "修改跨越超連結邊界，無法確認新文字的連結歸屬；請拆分修改或在 Word 中核對。", "en": "The edit crosses hyperlink boundaries. Split the edit or check it in Word to confirm which new text should be linked."},
+  "超链接修改后的文字与已批准文本不一致": {"zh-Hant": "超連結修改後的文字與已批准文字不一致。", "en": "The linked paragraph after editing does not match the approved text."},
+  "含超链接的段落拆分需要在 Word 中核对链接归属": {"zh-Hant": "含超連結的段落拆分需要在 Word 中核對連結歸屬。", "en": "Splitting a linked paragraph requires checking link ownership in Word."},
   "空目标声明（未解析）": {"zh-Hant": "空目標聲明（未解析）", "en": "Empty target declaration (unresolved)"},
   "存在重复的地址属性，请对照原件核对。": {"zh-Hant": "存在重複的位址屬性，請對照原件核對。", "en": "Address attributes are duplicated. Check the original file."},
   "HTML 地址未解析；相对地址与基准声明需要对照来源核对。": {"zh-Hant": "HTML 位址未解析；相對位址與基準聲明需要對照來源核對。", "en": "HTML addresses have not been resolved. Check relative addresses and base declarations against the source."},

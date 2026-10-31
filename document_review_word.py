@@ -7,10 +7,12 @@ of text: deleting text must never implicitly delete those structures.
 from __future__ import annotations
 
 import difflib
+from bisect import bisect_left, bisect_right
 import hashlib
 import io
 import itertools
 import re
+import unicodedata
 import zipfile
 from xml.dom import minidom
 
@@ -136,12 +138,20 @@ def _editable(paragraph, *, allow_references=False):
     """Allow plain formatted runs, including soft breaks; reject hidden payloads."""
     if paragraph.namespaceURI != W or paragraph.localName != "p":
         raise WordEditUnsupported("修改位置不是 Word 段落")
+    runs = []
     for node in _elements(paragraph):
-        if node.namespaceURI != W or node.localName not in {"pPr", "r"}:
+        if node.namespaceURI != W or node.localName not in {"pPr", "r", "hyperlink"}:
             raise WordEditUnsupported("修改段落包含图片、域、链接、批注、书签或暂不支持的内联结构")
+        if node.localName == 'r':
+            runs.append(node)
+        elif node.localName == 'hyperlink':
+            children = list(_elements(node))
+            if any(child.namespaceURI != W or child.localName != 'r' for child in children):
+                raise WordEditUnsupported('超链接包含域、书签、嵌套链接或暂不支持的内联结构')
+            runs.extend(children)
     if any(_all(paragraph, name) for name in REVISION_TAGS):
         raise WordEditUnsupported("修改位置包含已有修订")
-    for run in _children(paragraph, "r"):
+    for run in runs:
         for node in _elements(run):
             allowed = {"rPr", "t", "tab", "br", "cr"}
             if allow_references:
@@ -215,6 +225,137 @@ def _template_at(runs, start):
 
 
 def _replace_text(paragraph, text, tracked=False, change_ids=None):
+    if _text(paragraph) == text:
+        return
+    if not _children(paragraph, 'hyperlink'):
+        return _replace_plain_text(paragraph, text, tracked, change_ids)
+    _check_control_edit(paragraph)
+    _editable(paragraph, allow_references=True)
+    marker_names = ('footnoteReference', 'endnoteReference', 'footnoteRef', 'endnoteRef')
+    if sum(len(_all(paragraph, name)) for name in marker_names) > 1024:
+        raise WordEditUnsupported('单段注释标记过多，请在 Word 中核对并修改该位置')
+    # Every link is one owner. Plain gaps also exist between adjacent links and
+    # at the paragraph edges. Independent boundary insertions stay plain;
+    # contiguous tails of an edited label are handled below.
+    groups, runs = [], []
+    for node in _elements(paragraph):
+        if node.localName == 'r':
+            runs.append(node)
+        elif node.localName == 'hyperlink':
+            groups.append({'link': None, 'runs': runs})
+            groups.append({'link': node, 'runs': _children(node, 'r')})
+            runs = []
+    groups.append({'link': None, 'runs': runs})
+    position, boundary_plain, boundary_links = 0, {}, {}
+    for index, group in enumerate(groups):
+        group['old'] = ''.join(_text(run) for run in group['runs'])
+        group['start'], group['end'] = position, position + len(group['old'])
+        group['pieces'] = []
+        position = group['end']
+        if group['link'] is None:
+            boundary_plain.setdefault(group['start'], index)
+            boundary_plain.setdefault(group['end'], index)
+        else:
+            boundary_links.setdefault(group['start'], []).append(index)
+            boundary_links.setdefault(group['end'], []).append(index)
+    starts, ends = [g['start'] for g in groups], [g['end'] for g in groups]
+    old = ''.join(g['old'] for g in groups)
+    if old != _text(paragraph):
+        raise WordEditUnsupported('超链接段落含未映射的文字，无法安全保留链接范围')
+    changes, edited_links = [], set()
+    for opcode in _opcodes(old, text):
+        tag, start, end, new_start, new_end = opcode
+        owners = [i for i in range(bisect_right(ends, start), bisect_left(starts, end))
+                  if groups[i]['start'] < groups[i]['end']] if start < end else []
+        changes.append((opcode, owners))
+        if tag != 'equal' and len(owners) == 1 and groups[owners[0]]['link'] is not None:
+            edited_links.add(owners[0])
+    def word_fragment(value):
+        return bool(value) and all(char == '_' or unicodedata.category(char)[0] in 'LNM' for char in value)
+    def insertion_group(position, fragment):
+        owner = boundary_plain.get(position)
+        candidates = list(dict.fromkeys(i for i in boundary_links.get(position, []) if i in edited_links))
+        if len(candidates) == 1 and word_fragment(fragment):
+            candidate = groups[candidates[0]]
+            adjacent = candidate['old'][-1:] if position == candidate['end'] else candidate['old'][:1]
+            if word_fragment(adjacent): owner = candidates[0]
+        return bisect_right(ends, position) if owner is None else owner
+    def character_link(position):
+        return groups[bisect_right(ends, position)]['link']
+    # A repeated passage can have several equivalent character alignments.
+    # Refuse if sliding one edit across unchanged context changes link ownership.
+    # This catches identical citation labels pointing at different sources.
+    edits = [opcode for opcode, _ in changes if opcode[0] != 'equal']
+    alignment_work = 0
+    for index, (_, start, end, new_start, new_end) in enumerate(edits):
+        left_old, left_new = (edits[index - 1][2], edits[index - 1][4]) if index else (0, 0)
+        right_old, right_new = (edits[index + 1][1], edits[index + 1][3]) if index + 1 < len(edits) else (len(old), len(text))
+        for direction in (-1, 1):
+            a, b, c, d = start, end, new_start, new_end
+            while ((a > left_old and c > left_new and old[b - 1] == text[d - 1]) if direction < 0
+                   else (b < right_old and d < right_new and old[a] == text[c])):
+                alignment_work += 1
+                if alignment_work > 12000:
+                    raise WordEditUnsupported('超链接重复文字的定位检查超过安全上限，请在 Word 中核对')
+                if a == b:
+                    first = groups[insertion_group(a, text[c:d])]['link']
+                    second = groups[insertion_group(a + direction, text[c + direction:d + direction])]['link']
+                elif direction < 0:
+                    first, second = character_link(a - 1), character_link(b - 1)
+                else:
+                    first, second = character_link(a), character_link(b)
+                if first is not second:
+                    raise WordEditUnsupported('重复文字使超链接修改归属不明确；请在 Word 中核对该位置')
+                a += direction; b += direction; c += direction; d += direction
+    for (tag, start, end, new_start, new_end), owners in changes:
+        if tag == 'equal':
+            for i in owners:
+                group = groups[i]
+                group['pieces'].append(old[max(start, group['start']):min(end, group['end'])])
+        elif new_end > new_start:
+            if start == end:
+                # Matching a short old suffix can split a label replacement
+                # (CITATION -> CITIN + G). Keep a contiguous word tail with the
+                # link already being edited, instead of producing a partial
+                # clickable word. Standalone boundary insertions stay plain.
+                owner = insertion_group(start, text[new_start:new_end])
+            elif len(owners) == 1:
+                owner = owners[0]
+            else:
+                raise WordEditUnsupported('修改跨越超链接边界，无法确认新文字的链接归属；请拆分修改或在 Word 中核对')
+            groups[owner]['pieces'].append(text[new_start:new_end])
+        # Deletions carry no new ownership and can span several containers.
+    document = paragraph.ownerDocument
+    change_ids = change_ids if change_ids is not None else itertools.count(1)
+    result = []
+    for group in groups:
+        desired = ''.join(group['pieces'])
+        link = group['link']
+        if desired == group['old']:
+            result.extend([link.cloneNode(True)] if link is not None else [run.cloneNode(True) for run in group['runs']])
+            continue
+        temporary = _element(document, 'p')
+        for run in group['runs']:
+            temporary.appendChild(run.cloneNode(True))
+        _replace_plain_text(temporary, desired, tracked, change_ids)
+        children = list(_elements(temporary))
+        if link is not None:
+            wrapper = link.cloneNode(False)
+            for child in children:
+                wrapper.appendChild(child)
+            result.append(wrapper)
+        else:
+            result.extend(children)
+    for node in list(_elements(paragraph)):
+        if node.localName in {'r', 'hyperlink'}:
+            paragraph.removeChild(node)
+    for node in result:
+        paragraph.appendChild(node)
+    if _text(paragraph) != text:
+        raise WordEditUnsupported('超链接修改后的文字与已批准文本不一致')
+
+
+def _replace_plain_text(paragraph, text, tracked=False, change_ids=None):
     old = _text(paragraph)
     if old == text:
         return
@@ -357,6 +498,10 @@ def _replace_cell(cell, desired, tracked, change_ids):
                 if left < right:
                     outputs[i].append(value[left:right])
         elif new_end > new_start:
+            owners = [i for i, value in enumerate(values)
+                      if max(start, offsets[i]) < min(end, offsets[i + 1])]
+            if len(owners) > 1 and any(_all(paragraphs[i], 'hyperlink') for i in owners):
+                raise WordEditUnsupported('单元格修改跨越含超链接的段落，无法确认新文字的链接归属')
             index = next((i for i in range(len(values)) if offsets[i + 1] > start), len(values) - 1)
             outputs[index].append(desired[new_start:new_end])
     for paragraph, parts in zip(paragraphs, outputs):
@@ -423,6 +568,8 @@ def _bind_blocks(body, original, revised, note_nodes=None):
             node = _cell(node, location)
             if final is None:
                 raise WordEditUnsupported("不能删除单个表格单元格")
+        if block.block_id in split_sources and _all(node, 'hyperlink'):
+            raise WordEditUnsupported('含超链接的段落拆分需要在 Word 中核对链接归属')
         if block.kind not in PROTECTED_KINDS:
             if node in text_nodes:
                 raise WordEditUnsupported("多个文本块重复绑定到同一 Word 位置")
@@ -561,13 +708,14 @@ def _preserve_docx(source_bytes, original, revised, *, tracked=False):
     existing_ids = [int(node.getAttributeNS(W, "id")) for document in documents.values()
                     for node in document.getElementsByTagName("*") if node.getAttributeNS(W, "id").isdigit()]
     change_ids = itertools.count(max(existing_ids, default=0) + 1)
-    changed, structural, retained_sections = 0, False, 0
+    changed, structural, retained_sections, linked_changes = 0, False, 0, 0
     changed_documents = set()
     for block in original.blocks:
         final = finals.get(block.block_id)
         if block.kind in PROTECTED_KINDS or (final is not None and final.text == block.text):
             continue
         node = nodes[block.block_id]
+        linked_changes += bool(_all(node, 'hyperlink'))
         changed_documents.add(node.ownerDocument)
         changed += 1
         if final is None:
@@ -630,7 +778,8 @@ def _preserve_docx(source_bytes, original, revised, *, tracked=False):
         changed += 1
         structural = True
     moved_sections = _move_split_sections(revised, originals, nodes)
-    report = {"source_layout_preserved": True, "native_track_changes": tracked, "changed_elements": changed, "structural_edits": structural, "unchanged_parts_preserved": True, "retained_section_boundaries": retained_sections, "moved_section_boundaries": moved_sections}
+    report = {"source_layout_preserved": True, "native_track_changes": tracked, "changed_elements": changed, "structural_edits": structural, "unchanged_parts_preserved": True, "retained_section_boundaries": retained_sections, "moved_section_boundaries": moved_sections,
+              'changed_blocks_with_hyperlinks': linked_changes}
     if not changed:
         return source_bytes, report
     serialized = {part: document.toxml(encoding='utf-8') for part, document in documents.items() if document in changed_documents}

@@ -309,6 +309,8 @@ class ExportCenter(_ProjectComponent):
                 try:
                     word_bytes, word_report = preserve_docx(source_bytes, original, revised_model)
                     word_report["message"] = "保留原文档包、未修改样式和附件；修改内容来自已批准版本"
+                    if word_report.get('changed_blocks_with_hyperlinks'):
+                        word_report['message'] += '。原有链接目标未重写；独立插入链接边界的文字默认不带链接，已修改标签的连续词尾仍归原链接。请核对最终可点击文字，链接存在不代表引用内容已经核实'
                 except WordEditUnsupported as exc:
                     revised_docx_path = output / f"规范化{document_label}.docx"
                     word_report.update({

@@ -115,7 +115,7 @@ class DocxHyperlinkTests(unittest.TestCase):
                 self.assertEqual((project.root / 'source/p.docx').read_bytes(), raw)
                 self.assertFalse(project.integrity_errors())
 
-    def test_original_relations_survive_native_edit_and_linked_text_is_protected(self):
+    def test_original_relations_survive_native_edits_and_link_label_changes(self):
         raw = linked_package()
         document = ingest.ingest_bytes('p.docx', raw)
         revised = deepcopy(document)
@@ -126,8 +126,11 @@ class DocxHyperlinkTests(unittest.TestCase):
                 if name != 'word/document.xml':
                     self.assertEqual(before.read(name), after.read(name), name)
         revised.blocks[0].text = 'Changed linked text.'
-        with self.assertRaises(WordEditUnsupported):
-            preserve_docx(raw, document, revised)
+        result, _ = preserve_docx(raw, document, revised)
+        changed = ingest.ingest_bytes('p.docx', result)
+        self.assertEqual(changed.blocks[0].attrs['hyperlink_references'][0]['target'], document.blocks[0].attrs['hyperlink_references'][0]['target'])
+        self.assertEqual([{k:v for k,v in ref.items() if k != 'block_id'} for ref in changed.blocks[0].attrs['note_references']],
+                         [{k:v for k,v in ref.items() if k != 'block_id'} for ref in document.blocks[0].attrs['note_references']])
 
     def test_academic_request_keeps_destinations_and_historical_contract(self):
         with tempfile.TemporaryDirectory() as temporary:
