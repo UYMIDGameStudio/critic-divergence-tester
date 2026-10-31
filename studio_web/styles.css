@@ -46,6 +46,11 @@ main { max-width: 1480px; margin: auto; padding: 28px 32px 64px; }
 .home-maintenance p, .dependency { font-size: .875rem; }
 .backup-card button { margin-top: 12px; }
 .next { border-left: 3px solid var(--action); padding-left: 24px; }
+.extraction-recovery { margin-block: 20px; padding: 16px; border: 1px solid var(--control-line); background: var(--action-soft); }
+.correction-editor { margin-top: 16px; }
+.correction-editor label { font-weight: 600; }
+.correction-editor textarea { min-height: 220px; }
+.correction-editor .row { margin-top: 12px; }
 .readonly { border: 1px solid var(--red); padding: 24px; background: var(--red2); }
 .card.ok { color: var(--ink); border-color: #79a98a; }
 .session-toolbar { padding: 10px 0; margin: 0 0 18px; border-top: 0; border-bottom: 1px solid var(--line); }

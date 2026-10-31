@@ -60,10 +60,14 @@ async function main() {
         blocks: state.selected.extraction.blocks.length, review: state.selected.can_review}));
       assert.deepEqual(stateCheck, {blocked: 'blocked', blocks: 0, review: false});
       assert.equal(await page.locator('[data-action="confirm-extraction"], [data-action="continue-extraction"], #prepare-ai').count(), 0);
+      await page.locator('#continue-workflow').click();
+      assert.equal(await page.evaluate(() => document.activeElement?.id), 'extraction-recovery');
+      assert.equal(await page.locator('#correction-editor, #correction, #submit-correction').count(), 0);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
       await page.screenshot({path: path.join(output, `${locale}-${width}.png`), fullPage: true});
       report.checks.push(`${locale}-${width}: actionable parser-limit message; no partial source or review controls`);
     }
+    report.checks.push('Continue focuses named recovery controls; rejected extraction exposes no correction editor');
     if (irBudget) {
       const retry = page.waitForResponse(r => r.url().endsWith('/api/action') && r.request().postDataJSON()?.action === 'retry_extraction');
       await page.locator('#retry-extraction').click();
@@ -97,6 +101,18 @@ async function main() {
     await page.locator('#upload').click();
     await page.locator('[data-action="confirm-extraction"]').waitFor();
     assert.equal(await page.evaluate(() => state.selected.extraction.available), true);
+    await page.locator('#continue-workflow').click();
+    assert.equal(await page.evaluate(() => document.activeElement?.id), 'source-preview');
+    await page.locator('#show-correction').click();
+    assert.equal(await page.evaluate(() => document.activeElement?.id), 'correction');
+    await page.locator('#continue-workflow').click();
+    assert.equal(await page.evaluate(() => document.activeElement?.id), 'correction');
+    await page.locator('#cancel-correction').click();
+    assert.equal(await page.evaluate(() => document.activeElement?.id), 'show-correction');
+    await page.locator('#continue-workflow').click();
+    assert.equal(await page.evaluate(() => document.activeElement?.id), 'source-preview');
+    assert.equal(await page.evaluate(() => state.selected.state.extraction_state), 'unconfirmed');
+    report.checks.push('Normal preview navigation follows the opened correction editor and returns after closing it without confirming extraction');
     assert.notEqual(await page.evaluate(() => state.selected.directory), original.directory);
     assert.deepEqual(await fs.readFile(sourcePath), sourceBytes);
     report.checks.push('The project library remains reachable, a new import succeeds, and the rejected original stays byte-for-byte intact');

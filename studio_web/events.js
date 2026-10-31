@@ -59,18 +59,18 @@ function bind() {
     ?.addEventListener('click', () => act('retry_extraction'));
   document
     .getElementById('show-correction')
-    ?.addEventListener('click', (event) => {
-      const area = document.getElementById('correction');
-      if (area.classList.contains('hidden')) {
-        area.classList.remove('hidden');
-        event.currentTarget.textContent = tr('提交修正文本');
-      } else {
-        act('confirm_extraction', {
-          choice: 'correct',
-          corrected_text: area.value,
-        });
-      }
+    ?.addEventListener('click', () => {
+      setCorrectionEditorOpen(true, true);
+      captureDraftFields();
+      scheduleDraft();
     });
+  document.getElementById('cancel-correction')?.addEventListener('click', () => {
+    setCorrectionEditorOpen(false, true);
+    captureDraftFields();
+    scheduleDraft();
+  });
+  document.getElementById('submit-correction')?.addEventListener('click', () =>
+    act('confirm_extraction', {choice: 'correct', corrected_text: document.getElementById('correction').value}));
   document
     .getElementById('confirm-context')
     ?.addEventListener('click', confirmContext);

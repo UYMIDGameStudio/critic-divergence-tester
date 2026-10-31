@@ -1,4 +1,13 @@
 {
+  "已保存的审查任务": {"zh-Hant": "已儲存的審查任務", "en": "Saved review tasks"},
+  "当前不能开始新的审查；已保存的任务仅供查阅。": {"zh-Hant": "目前不能開始新的審查；已儲存的任務僅供查閱。", "en": "A new review cannot start yet. Saved tasks are available for reference only."},
+  "恢复识别": {"zh-Hant": "恢復識別", "en": "Recover text extraction"},
+  "补充可审查正文": {"zh-Hant": "補充可審查正文", "en": "Provide body text for review"},
+  "请补充识别文本，或更换包含正文的文件。": {"zh-Hant": "請補充識別文字，或更換包含正文的檔案。", "en": "Provide corrected text, or choose a file that contains body text."},
+  "原件已保留。请重新识别，或更换整理后的文件。": {"zh-Hant": "原件已保留。請重新識別，或更換整理後的檔案。", "en": "The original file is retained. Retry extraction, or choose a revised source file."},
+  "修正后的完整审查文本": {"zh-Hant": "修正後的完整審查文字", "en": "Complete corrected review text"},
+  "请提供完整正文。提交后将以修正文本作为审查依据，原文件保留。": {"zh-Hant": "請提供完整正文。提交後將以修正文字作為審查依據，原始檔案保留。", "en": "Provide the complete body text. After submission, the corrected text becomes the review source. The original file is retained."},
+  "收起编辑（保留草稿）": {"zh-Hant": "收起編輯（保留草稿）", "en": "Close editor (keep draft)"},
   "原件链接声明": {"zh-Hant": "原件連結聲明", "en": "Original link declarations"},
   "来源文字": {"zh-Hant": "來源文字", "en": "Source label"},
   "目标声明": {"zh-Hant": "目標聲明", "en": "Declared target"},

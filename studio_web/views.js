@@ -50,11 +50,17 @@ function extractionCard(view) {
   if (!blocked) return '';
   const blocks = e.blocks || [];
   const emptyBody = e.available && e.reviewable === false;
+  const canCorrect = e.available && e.correction_available !== false;
+  const correctionButton = canCorrect ? ui`<button class="secondary" id="show-correction" aria-controls="correction-editor" aria-expanded="false">修正识别文本</button>` : '';
   const controls = !e.available ? tr('<button id="retry-extraction">重新识别</button>')
-    : emptyBody ? e.correction_available === false ? '' : tr('<button class="secondary" id="show-correction">修正识别文本</button>')
-    : tr('<button data-action="confirm-extraction">确认识别</button><button class="secondary" data-action="continue-extraction">带警告继续</button><button class="secondary" id="show-correction">修正识别文本</button>');
+    : emptyBody ? correctionButton
+    : tr('<button data-action="confirm-extraction">确认识别</button><button class="secondary" data-action="continue-extraction">带警告继续</button>') + correctionButton;
   const emptyMessage = emptyBody ? ui`<p class="error empty-body-warning">当前没有可审查正文。请补充识别文本或更换文件；空表格、图片占位和页眉页脚不能代替正文。</p>${e.correction_available === false ? tr('<p>已有上下文或审查记录，请重新导入原文件并选择「重新解析为新项目」，补充正文后重新确认。旧记录会保留。</p>') : ''}` : '';
-  return ui`<div class="card next"><h2>确认识别结果</h2><p>请先查看正文和定位；这是正式审查的质量门。</p>${emptyMessage}${(e.warnings || []).map((w) => `<p class="${['critical', 'high'].includes(w.severity) ? 'error' : 'warning'}">${esc(extractionWarningMessage(w))}</p>`).join('')}${(st.diagnostics || []).map((x) => `<p class="error">${esc(UI_MESSAGES[x]?.[uiLocale] ?? x)}</p>`).join('')}${extractionEncodingControl(view)}<h3>抽取内容与定位预览</h3><input id="source-search" type="text" placeholder="搜索正文或定位"><div id="source-preview" class="pane quote">${blocks.map((b) => `[${esc(sourceBlockLabel(b))}] ${pdfDisplayText(sourceBlockText(b))}`).join('\n\n') || tr('暂时没有可预览正文')}</div><div class="row">${controls}<button class="danger" data-action="replace-file">更换文件</button></div><textarea id="correction" class="hidden" placeholder="提供修正后的完整审查文本"></textarea><div id="err" class="error"></div></div>`;
+  const editor = canCorrect ? ui`<div id="correction-editor" class="hidden correction-editor"><label for="correction">修正后的完整审查文本</label><p id="correction-help" class="muted">请提供完整正文。提交后将以修正文本作为审查依据，原文件保留。</p><textarea id="correction" aria-describedby="correction-help" placeholder="提供修正后的完整审查文本"></textarea><div class="row"><button id="submit-correction">提交修正文本</button><button id="cancel-correction" class="secondary">收起编辑（保留草稿）</button></div></div>` : '';
+  const actions = ui`<div class="row">${controls}<button class="danger" data-action="replace-file">更换文件</button></div>${editor}`;
+  const needsRecovery = !e.available || emptyBody;
+  const recovery = needsRecovery ? ui`<div id="extraction-recovery" class="extraction-recovery" role="group" aria-labelledby="extraction-recovery-title" aria-describedby="extraction-recovery-help" tabindex="-1"><h3 id="extraction-recovery-title">${tr(emptyBody ? '补充可审查正文' : '恢复识别')}</h3><p id="extraction-recovery-help">${tr(emptyBody ? '请补充识别文本，或更换包含正文的文件。' : '原件已保留。请重新识别，或更换整理后的文件。')}</p>${actions}</div>` : '';
+  return ui`<div class="card next"><h2>确认识别结果</h2><p>请先查看正文和定位；这是正式审查的质量门。</p>${emptyMessage}${(e.warnings || []).map((w) => `<p class="${['critical', 'high'].includes(w.severity) ? 'error' : 'warning'}">${esc(extractionWarningMessage(w))}</p>`).join('')}${(st.diagnostics || []).map((x) => `<p class="error">${esc(UI_MESSAGES[x]?.[uiLocale] ?? x)}</p>`).join('')}${recovery}${extractionEncodingControl(view)}<h3>抽取内容与定位预览</h3><input id="source-search" type="text" placeholder="搜索正文或定位"><div id="source-preview" class="pane quote">${blocks.map((b) => `[${esc(sourceBlockLabel(b))}] ${pdfDisplayText(sourceBlockText(b))}`).join('\n\n') || tr('暂时没有可预览正文')}</div>${needsRecovery ? '' : actions}<div id="err" class="error"></div></div>`;
 }
 function contextCard(view) {
   const st = view.state,
@@ -96,6 +102,10 @@ function contextCard(view) {
 }
 function reviewCards(view) {
   if (view.state.context_state !== 'confirmed') return '';
+  if (view.can_review === false) {
+    const requests = view.ai_requests || [];
+    return requests.length ? ui`<details class="card saved-review-tasks"><summary>已保存的审查任务 · ${requests.length}</summary><p>当前不能开始新的审查；已保存的任务仅供查阅。</p>${requests.map(request => ui`<details><summary>${esc(request.request_id)} · ${esc(tr(critics[request.critic] || request.critic))}</summary><div class="block">${esc(request.prompt)}</div>${request.completed ? ui`<p class="muted">已保存在项目目录：${esc(request.storage_relative_path)}</p>` : ''}</details>`).join('')}</details>` : '';
+  }
   const requests = view.ai_requests || [],
     done = requests.filter((x) => x.completed).length,
     localDone = (view.workflow || []).some(

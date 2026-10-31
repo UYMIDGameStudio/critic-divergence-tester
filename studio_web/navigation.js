@@ -1,16 +1,20 @@
 function bindWorkflowNavigation() {
   const targets = {
-    extraction: ['#source-preview', '#workspace-search'], context: '#confirm-context', local: '#run-precheck',
+    extraction: ['#correction-editor:not(.hidden) #correction', '#extraction-recovery', '#source-preview', '#workspace-search'], context: '#confirm-context', local: '#run-precheck',
     ai: '#ai-request', adjudication: ['.finding-card', '.argument-assessment', '.review-empty'],
     bridge: '.revision-action-card, #prepare-bridge',
     export: '.download, #export-final, #export-results',
   };
   root.querySelectorAll('[data-stage]').forEach(button => {
     const selectors = targets[button.dataset.stage];
-    const target = (Array.isArray(selectors) ? selectors : [selectors])
-      .map(selector => root.querySelector(selector)).find(Boolean);
-    button.disabled = !target;
+    const resolveTarget = () => (Array.isArray(selectors) ? selectors : [selectors])
+      .flatMap(selector => [...root.querySelectorAll(selector)])
+      .find(target => target && !target.matches(':disabled') && !target.closest('.hidden, [hidden]'));
+    button.disabled = !resolveTarget();
     button.onclick = () => {
+      // Correction can open or close without rerendering the workflow.
+      const target = resolveTarget();
+      if (!target) return;
       let parent = target;
       while (parent && parent !== root) {
         if (parent.tagName === 'DETAILS') parent.open = true;

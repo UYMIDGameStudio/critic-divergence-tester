@@ -31,6 +31,19 @@ if "--quote-context" in sys.argv[2:]:
 if "--empty-body" in sys.argv[2:]:
     from document_review_studio import DocumentReviewProject
     project_dir = DocumentReviewProject.create(Path(sys.argv[1]), filename="empty.csv", content=b',\n,\n').root
+if '--empty-history' in sys.argv[2:]:
+    from unittest.mock import patch
+    from document_review_studio import DocumentReviewProject
+    from document_review_model import ReviewContext
+    # Reproduce a formerly permitted empty review with valid historical receipts.
+    historical = DocumentReviewProject.create(Path(sys.argv[1]), filename='blank.txt', content=b' \n')
+    with patch('document_review_studio.has_reviewable_text', return_value=True):
+        historical.confirm_extraction('confirm')
+        historical.confirm_context(ReviewContext('document', 'unknown', 'unknown', 'author', 'readers').to_dict())
+        historical.run_local_prechecks(['expression_ambiguity'])
+        historical.prepare_ai_audits(['expression_ambiguity'], provider='fixture', model='not-invoked')
+        historical.export()
+    project_dir = historical.root
 if "--docx-containers" in sys.argv[2:]:
     from document_review_studio import DocumentReviewProject
     from studio_selftest import _docx_container_fixture

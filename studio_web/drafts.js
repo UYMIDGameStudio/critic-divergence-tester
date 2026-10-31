@@ -3,6 +3,15 @@ let draftContext = null;
 let draftTimer = null;
 let draftWrites = Promise.resolve();
 const fieldDefaults = new WeakMap();
+function setCorrectionEditorOpen(open, focus = false) {
+  const editor = document.getElementById('correction-editor');
+  const button = document.getElementById('show-correction');
+  if (!editor || !button) return;
+  editor.classList.toggle('hidden', !open);
+  button.classList.toggle('hidden', open);
+  button.setAttribute('aria-expanded', String(open));
+  if (focus) (open ? document.getElementById('correction') : button).focus();
+}
 function editableFields() {
   return [
     ...root.querySelectorAll(
@@ -86,6 +95,9 @@ function restoreDraftFields() {
         : fieldDefaults.get(element),
     );
   }
+  const editorOpen = draftContext.fields['correction-editor-open'];
+  setCorrectionEditorOpen(typeof editorOpen === 'boolean' ? editorOpen
+    : Boolean(document.getElementById('correction')?.value));
   filterFindings();
   restoreSourceReaderState();
   draftStatus();
@@ -93,6 +105,14 @@ function restoreDraftFields() {
 function captureDraftFields() {
   if (!draftContext) return;
   let changed = captureSourceReaderState();
+  const editor = document.getElementById('correction-editor');
+  if (editor) {
+    const open = !editor.classList.contains('hidden'), key = 'correction-editor-open';
+    if ((open || Object.hasOwn(draftContext.fields, key)) && draftContext.fields[key] !== open) {
+      draftContext.fields[key] = open;
+      changed = true;
+    }
+  }
   for (const element of editableFields()) {
     const key = element.dataset.draftKey || fieldKey(element);
     const value = elementValue(element);
