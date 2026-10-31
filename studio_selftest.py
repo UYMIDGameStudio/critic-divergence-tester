@@ -68,6 +68,8 @@ def run_self_test() -> dict:
         checked.append("docx-containers")
         _check_docx_notes(root / 'docx-notes')
         checked.append('docx-notes')
+        _check_ir_budget(root / 'ir-budget')
+        checked.append('ir-budget')
         _check_reviewable_text(root / "reviewable-text")
         checked.append("reviewable-text")
         _check_academic_protocols(root / "academic")
@@ -283,6 +285,41 @@ def _check_docx_notes(library: Path) -> None:
                     raise RuntimeError('Packaged Word note edit changes an unrelated part')
     if (project.root/'source/notes.docx').read_bytes() != raw or project.integrity_errors():
         raise RuntimeError('Packaged note review changes source bytes')
+
+
+def _ir_budget_fixture(*, paragraphs=2100, path_length=16384) -> bytes:
+    import zipfile
+    namespace='http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    leaf='n'*path_length+'.xml'
+    output=io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(_docx_notes_fixture())) as template, zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as archive:
+        for name in template.namelist():
+            if name=='word/footnotes.xml':
+                text=''.join(f'<w:p><w:r><w:t>Owned qualification {index}.</w:t></w:r></w:p>' for index in range(paragraphs))
+                archive.writestr('word/'+leaf,f'<w:footnotes xmlns:w="{namespace}"><w:footnote w:id="7">{text}</w:footnote></w:footnotes>')
+            elif name=='word/_rels/document.xml.rels':
+                archive.writestr(name,template.read(name).decode('utf-8').replace('Target="footnotes.xml"','Target="'+leaf+'"'))
+            else:
+                archive.writestr(name,template.read(name))
+    return output.getvalue()
+
+
+def _check_ir_budget(library: Path) -> None:
+    from document_review_studio import DocumentReviewProject, ReviewStudioError
+    from document_review_ingest import IR_SIZE_MESSAGE
+    raw=_ir_budget_fixture()
+    project=DocumentReviewProject.create(library,filename='expanded-notes.docx',content=raw)
+    if (project.state()['extraction_state']!='blocked' or project.document_path.exists()
+            or project.state()['diagnostics']!=[IR_SIZE_MESSAGE] or project.can_review()[0]):
+        raise RuntimeError('Packaged import accepts an over-budget expanded document')
+    try:
+        project.confirm_extraction('confirm')
+    except ReviewStudioError:
+        pass
+    else:
+        raise RuntimeError('Packaged import confirms a missing over-budget document')
+    if (project.root/'source/expanded-notes.docx').read_bytes()!=raw or project.integrity_errors():
+        raise RuntimeError('Packaged budget rejection loses source bytes or integrity')
 
 
 def _table_grid_fixture() -> bytes:

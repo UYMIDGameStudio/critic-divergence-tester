@@ -6,6 +6,10 @@ from unified_app import serve_unified_app
 
 fixture = None
 project_dir = None
+if '--ir-budget' in sys.argv[2:]:
+    from document_review_studio import DocumentReviewProject
+    from studio_selftest import _ir_budget_fixture
+    project_dir = DocumentReviewProject.create(Path(sys.argv[1]), filename='expanded-notes.docx', content=_ir_budget_fixture()).root
 if '--docx-notes' in sys.argv[2:]:
     from document_review_studio import DocumentReviewProject
     from studio_selftest import _docx_notes_fixture

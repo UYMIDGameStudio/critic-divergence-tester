@@ -240,7 +240,11 @@ async function main() {
     await stale.locator('#ai-response').fill('Task A: stale conflicting tab');
     await save(stale, 409);
     assert.equal(await stale.locator('#ai-response').inputValue(), 'Task A: stale conflicting tab');
-    assert.match(await stale.locator('#draft-status').innerText(), /另一页面已保存/);
+    for (const [locale, expected] of [['zh-Hant', '另一個頁面已儲存'], ['en', 'Another page saved']]) {
+      await stale.locator('#ui-language').selectOption(locale);
+      assert.ok((await stale.locator('#draft-status').innerText()).includes(expected));
+      assert.equal(await stale.locator('#ai-response').inputValue(), 'Task A: stale conflicting tab');
+    }
     await assertLeaveProtection(stale, true);
     const current = await page.evaluate(() => api('/api/state'));
     assert.equal(current.selected.ui_draft.revision, newSave.revision);

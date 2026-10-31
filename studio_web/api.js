@@ -45,6 +45,7 @@ async function api(path, body) {
       ? adversarialErrorMessage(errorText)
       : ['create_backup', 'restore_backup', 'delete_project'].includes(body?.action)
         ? maintenanceErrorMessage(errorText, body.action) : (UI_MESSAGES[errorText]?.[uiLocale] ?? errorText));
+    if (Object.hasOwn(UI_MESSAGES, rawError)) error.systemMessage = rawError;
     error.uncertainMutation = Boolean(body) && response.status >= 500;
     throw error;
   }

@@ -22,6 +22,7 @@ def main():
         'document_review_stores.exports', 'document_review_studio',
         'review_profiles', 'academic_review', 'unified_app',
         'project_lifecycle', 'document_review_word', 'studio_ui_state', 'studio_web',
+        'document_review_json_limits',
         'document_review_stores.editing', 'cli.maintenance',
         'studio_selftest', 'studio_startup',
         'document_text_encoding', 'document_file_names', 'document_review_office_formats',

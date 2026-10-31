@@ -108,6 +108,7 @@ class IngestionLimits:
     max_xml_elements: int = 1_000_000
     max_xml_total_elements: int = 2_000_000
     max_xml_depth: int = 128
+    max_ir_json_bytes: int = 64 * 1024 * 1024
 
 
 class OCRAdapter(Protocol):
@@ -1259,7 +1260,27 @@ class TesseractOCR:
             return {"page": page_number, "text": text, "low_confidence_words": low, "word_count": len(words), "confidence": min(confidences) if confidences else 0.0, "engine": self.name, "engine_version": self.version, "language": language}
 
 
+IR_SIZE_MESSAGE = '解析结果展开后超过安全大小上限，请拆分文档后重试。'
+IR_DATA_MESSAGE = '解析结果包含不能保存的数值或文字，请核对原件后重试。'
+
+
 def ingest_bytes(name: str, data: bytes, *, limits: IngestionLimits | None = None, ocr: OCRAdapter | None = None, ocr_language: str = "chi_sim+chi_tra+eng", encoding: str | None = None) -> StructuredDocument:
+    from document_review_json_limits import JSONSizeLimitError, json_encoded_size
+    limits = limits or IngestionLimits()
+    maximum = getattr(limits, 'max_ir_json_bytes', IngestionLimits.max_ir_json_bytes)
+    if type(maximum) is not int or maximum < 0:
+        raise IngestionError('解析结果大小上限必须是非负整数')
+    document = _ingest_bytes(name, data, limits=limits, ocr=ocr, ocr_language=ocr_language, encoding=encoding)
+    try:
+        json_encoded_size(document.to_dict(), maximum)
+    except JSONSizeLimitError as exc:
+        raise IngestionError(IR_SIZE_MESSAGE) from exc
+    except ValueError as exc:
+        raise IngestionError(IR_DATA_MESSAGE) from exc
+    return document
+
+
+def _ingest_bytes(name: str, data: bytes, *, limits: IngestionLimits | None = None, ocr: OCRAdapter | None = None, ocr_language: str = "chi_sim+chi_tra+eng", encoding: str | None = None) -> StructuredDocument:
     limits = limits or IngestionLimits()
     safe_name = safe_upload_name(name)
     if not isinstance(data, bytes):

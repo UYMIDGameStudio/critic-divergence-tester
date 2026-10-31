@@ -247,5 +247,12 @@
   "注释正文不可用": {"zh-Hant": "註釋正文無法讀取", "en": "Note text unavailable"},
   "DOCX 的脚注引用缺少可读取的注释正文；请对照原件核对，不能将未读取内容当作原文遗漏。": {"zh-Hant": "DOCX 的腳註引用缺少可讀取的註釋正文；請對照原件核對，不能將未讀取內容當作原文遺漏。", "en": "Some DOCX footnote references have no readable note text. Check the original; unavailable content is not evidence of an omission."},
   "DOCX 的尾注引用缺少可读取的注释正文；请对照原件核对，不能将未读取内容当作原文遗漏。": {"zh-Hant": "DOCX 的尾註引用缺少可讀取的註釋正文；請對照原件核對，不能將未讀取內容當作原文遺漏。", "en": "Some DOCX endnote references have no readable note text. Check the original; unavailable content is not evidence of an omission."},
-  "DOCX 注释部件缺少明确的文件关系，已按常用路径读取；请对照原件确认注释归属。": {"zh-Hant": "DOCX 註釋部件缺少明確的檔案關係，已按常用路徑讀取；請對照原件確認註釋歸屬。", "en": "The DOCX note part has no explicit package relationship and was read from the conventional path. Check its association against the original."}
+  "DOCX 注释部件缺少明确的文件关系，已按常用路径读取；请对照原件确认注释归属。": {"zh-Hant": "DOCX 註釋部件缺少明確的檔案關係，已按常用路徑讀取；請對照原件確認註釋歸屬。", "en": "The DOCX note part has no explicit package relationship and was read from the conventional path. Check its association against the original."},
+  "解析结果展开后超过安全大小上限，请拆分文档后重试。": {"zh-Hant": "解析結果展開後超過安全大小上限，請拆分文件後再試。", "en": "Parsed document exceeds the safe size limit after expansion. Split the document and try again."},
+  "解析结果包含不能保存的数值或文字，请核对原件后重试。": {"zh-Hant": "解析結果包含無法儲存的數值或文字，請核對原件後再試。", "en": "The parsed document contains a value or text that cannot be saved. Check the original and try again."},
+  "解析结果大小上限必须是非负整数": {"zh-Hant": "解析結果大小上限必須是非負整數", "en": "The parsed document size limit must be a non-negative integer"},
+  "另一页面已保存新草稿；当前输入仍保留，请先下载当前草稿，再重新打开页面": {"zh-Hant": "另一個頁面已儲存新草稿；目前輸入仍保留，請先下載目前草稿，再重新開啟頁面", "en": "Another page saved a newer draft. Your current input is still here; download it before reopening the page."},
+  "文档已变化，当前输入仍保留在页面；请复制后重新打开项目": {"zh-Hant": "文件已變更，目前輸入仍保留在頁面；請複製後重新開啟專案", "en": "The document has changed. Your current input is still here; copy it before reopening the project."},
+  "草稿所属项目已变化，拒绝写入其他项目": {"zh-Hant": "草稿所屬專案已變更，拒絕寫入其他專案", "en": "The draft belongs to a different project and cannot be saved here."},
+  "草稿缺少版本，请重新打开页面": {"zh-Hant": "草稿缺少版本，請重新開啟頁面", "en": "The draft has no version. Reopen the page."}
 }

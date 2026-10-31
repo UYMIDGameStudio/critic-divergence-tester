@@ -42,6 +42,7 @@ jobs:
             dist/browser-source-projection/
             dist/browser-source-reader/
             dist/browser-xml-limits/
+            dist/browser-ir-budget/
             dist/browser-table-grid/
             dist/browser-resolution-evidence/
             dist/browser-adversarial/

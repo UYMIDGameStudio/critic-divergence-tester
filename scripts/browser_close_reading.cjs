@@ -8,7 +8,7 @@ const assert = require('node:assert/strict');
 
 async function main() {
   const repo = path.resolve(__dirname, '..');
-  const output = path.join(repo, 'dist', 'browser-close-reading-0.2.44');
+  const output = path.join(repo, 'dist', 'browser-close-reading-0.2.45');
   await fs.mkdir(output, { recursive: true });
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'close-reading-browser-'));
   const child = spawn(process.env.STUDIO_PYTHON || 'python',

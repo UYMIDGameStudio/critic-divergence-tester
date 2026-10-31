@@ -119,7 +119,7 @@ function draftStatus() {
   const label = document.getElementById('draft-status');
   if (!label || !draftContext) return;
   label.textContent = draftContext.error
-    ? tr('草稿未保存：') + draftContext.error
+    ? tr('草稿未保存：') + (UI_MESSAGES[draftContext.error]?.[uiLocale] ?? draftContext.error)
     : draftContext.pending || draftContext.sequence > draftContext.savedSequence
       ? tr('正在保存…')
       : tr('草稿已保存到本机');
@@ -155,12 +155,20 @@ async function saveDraft() {
       context.revision = result.revision;
       context.savedSequence = Math.max(context.savedSequence, sequence);
       context.error = null;
+      const selected = state.selected, saved = selected?.ui_draft;
+      if (selected?.directory === context.directory && saved?.scope === context.scope
+          && !selected.state?.read_only && !saved.error && saved.revision < result.revision) {
+        // A language rerender can reuse this view without another state fetch.
+        // Retain only acknowledged values, never later unsaved input or an older
+        // project's delayed response, and do not replace a newer server view.
+        selected.ui_draft = {...saved, revision: result.revision, fields: {...fields}, scroll, error: null};
+      }
     });
   draftWrites = write;
   try {
     await write;
   } catch (error) {
-    context.error = error.message;
+    context.error = error.systemMessage || error.message;
     throw error;
   } finally {
     context.pending--;
