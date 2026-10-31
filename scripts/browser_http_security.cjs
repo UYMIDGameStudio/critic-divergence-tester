@@ -40,7 +40,7 @@ async function main() {
         error: JSON.parse(text).error};
     });
     assert.equal(denied.status, 403);
-    assert.equal(denied.close, 'close');
+    assert.equal(denied.close, null);
     assert.equal(denied.complete, true);
     assert.ok(denied.error.includes('token'));
     const create = async (page, name) => {
@@ -135,7 +135,7 @@ async function main() {
     await professional.screenshot({path: path.join(output, 'professional-stale-draft-preserved.png'), fullPage: true});
     assert.deepEqual(errors, []);
     const result = {passed: true, browser: browser.version(), checks: [
-      'A browser receives complete JSON and an explicit connection close for a rejected unauthorized POST',
+      'A browser receives complete JSON for a rejected unauthorized POST with HTTP/1.0 default close semantics',
       'A stale project tab receives 409 while both its original draft and selected Project B remain unchanged',
       'Pending report submission makes the page inert and blocks additional real keyboard input',
       'Successful report save restores interaction and advances to the next task',

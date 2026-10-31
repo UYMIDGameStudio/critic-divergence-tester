@@ -128,7 +128,7 @@ class LocalHTTPServer(ThreadingHTTPServer):
         if not self.connection_slots.acquire(blocking=False):
             try:
                 request.settimeout(1)
-                request.sendall(b"HTTP/1.0 503 Service Unavailable\r\nContent-Length: 16\r\nConnection: close\r\n\r\nToo many clients")
+                request.sendall(b"HTTP/1.0 503 Service Unavailable\r\nContent-Length: 16\r\n\r\nToo many clients")
                 _finish_http_response(request)
             except OSError:
                 pass
@@ -154,10 +154,12 @@ class LocalRequestHandler(BaseHTTPRequestHandler):
     body_timeout = 30
 
     def end_headers(self):
-        # These local interfaces serve one request per connection. Make the
-        # policy explicit before half-closing the write side during finish.
+        # HTTP/1.0 already closes by default. A redundant Connection: close
+        # reproduces truncated large responses on the local Windows browser
+        # path, even with an independent stdlib server. Keep the actual close
+        # policy, and advertise it explicitly only for HTTP/1.1 responses.
         self.close_connection = True
-        if not any(line.lower().startswith(b'connection:') for line in getattr(self, '_headers_buffer', ())):
+        if self.protocol_version != 'HTTP/1.0' and not any(line.lower().startswith(b'connection:') for line in getattr(self, '_headers_buffer', ())):
             self.send_header('Connection', 'close')
         super().end_headers()
         self._response_sent = True

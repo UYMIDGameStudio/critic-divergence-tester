@@ -30,13 +30,37 @@ def delayed_post(server, path, *, headers=None, delay=.005):
         response = connection.getresponse()
         data = response.read()
         assert len(data) == int(response.getheader('Content-Length'))
-        assert response.getheader('Connection') == 'close'
+        assert response.will_close
         return response.status, json.loads(data)
     finally:
         connection.close()
 
 
 class HTTPTeardownTests(unittest.TestCase):
+    def test_complete_shells_close_at_eof_with_implicit_1_0_and_explicit_1_1(self):
+        for kind, handler in [('product', ProductRequestHandler), ('unified', UnifiedRequestHandler)]:
+            for protocol in ('HTTP/1.0', 'HTTP/1.1'):
+                with self.subTest(kind=kind, protocol=protocol), patch.object(handler, 'protocol_version', protocol), running(kind) as (server, _):
+                    connection = socket.create_connection(server.server_address, timeout=3)
+                    try:
+                        host = f'127.0.0.1:{server.server_address[1]}'
+                        # A second request must be discarded even if the client
+                        # asks for persistence. The response body must be whole.
+                        request = f'GET / HTTP/1.1\r\nHost: {host}\r\nConnection: keep-alive\r\n\r\n'
+                        connection.sendall((request + request).encode('ascii'))
+                        response = http.client.HTTPResponse(connection)
+                        response.begin()
+                        payload = response.read()
+                        self.assertEqual(response.status, 200)
+                        self.assertEqual(response.version, 10 if protocol == 'HTTP/1.0' else 11)
+                        self.assertEqual(response.getheader('Connection'), None if protocol == 'HTTP/1.0' else 'close')
+                        self.assertTrue(response.will_close)
+                        self.assertGreater(len(payload), 10000)
+                        self.assertEqual(len(payload), int(response.getheader('Content-Length')))
+                        self.assertEqual(connection.recv(1), b'')
+                    finally:
+                        connection.close()
+
     def test_rejected_in_flight_bodies_deliver_complete_responses_on_both_interfaces(self):
         for kind, paths, handler in [('product', ['/api/open'], ProductRequestHandler),
                                      ('unified', ['/api/open', '/research/api/open'], UnifiedRequestHandler)]:
@@ -107,7 +131,7 @@ class HTTPTeardownTests(unittest.TestCase):
                 response = connection.getresponse()
                 self.assertEqual(response.status, 503)
                 self.assertEqual(response.read(), b'Too many clients')
-                self.assertEqual(response.getheader('Connection'), 'close')
+                self.assertTrue(response.will_close)
             finally:
                 connection.close()
                 for _ in range(server.max_connections):

@@ -189,7 +189,7 @@ def run_self_test() -> dict:
                     client.send(body)
                     response = client.getresponse()
                     payload = response.read()
-                    if (response.status != 403 or response.getheader('Connection') != 'close'
+                    if (response.status != 403 or not response.will_close
                             or len(payload) != int(response.getheader('Content-Length'))):
                         raise RuntimeError('Self-test loses an early HTTP rejection response')
                 finally:
